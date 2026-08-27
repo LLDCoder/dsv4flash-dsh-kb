@@ -13,7 +13,7 @@
 - LLM Adapter：未配置模型时使用 mock，配置 `LLM_BASE_URL`/`LLM_API_KEY` 后调用 OpenAI-compatible streaming API（默认模型名 `deepseek-v4-flash`）。
 - 配置与 Skill API：提供版本化配置更新和运维 Skill CRUD，终端测试界面只选择会话，不上传 Skill。
 - OCR Tool Gateway：只由 DSH Runtime 调用的内部工具服务，转发到 PaddleOCR-VL-1.6 产线 API；不向前端暴露 OCR 业务接口。
-- Knowledge Tool Gateway：只由 DSH Runtime 调用的内部知识库工具服务，转发到 77 服务器 `18085` 匿名代理；调用必须携带当前请求的 UMC Token。DSH 逻辑默认 `top_k=32`，向上游传递 BM25、图谱和向量三路检索模式；当前 77 代理对单次 `top_k` 的校验上限为 20，因此网关仅将线路参数安全截断到 `KNOWLEDGE_UPSTREAM_MAX_TOP_K=20`，避免上游 422；不开放上传、解析、删除、移动或原文件下载。
+- Knowledge Tool Gateway：只由 DSH Runtime 调用的内部知识库工具服务，转发到 77 服务器 `18085` 的 `public/knowledge` 匿名只读接口；目录、文件和检索请求不向上游携带 Authorization。DSH 逻辑默认 `top_k=32`，向上游传递 BM25、图谱和向量三路检索模式；当前 77 代理对单次 `top_k` 的校验上限为 20，因此网关仅将线路参数安全截断到 `KNOWLEDGE_UPSTREAM_MAX_TOP_K=20`，避免上游 422；不开放上传、解析、删除、移动或原文件下载。
 - Platform Data Access Gateway：只由 DSH Runtime 调用的内部平台接口服务，连接同一台 77 服务器的 UMC Data Access 根地址；仅转发申请详情、ISBN 查询和受控新增草稿三个已发布端点，调用必须携带当前请求的 UMC Token。正式提交 `type=1` 在网关层拒绝。
 
 当前 MVP 的运行面使用后端容器内的逻辑 Runtime Lease，接口已将实例管理边界独立出来；后续可以把 `RuntimeManager` 的启动/清理实现替换为 Docker/Kubernetes 动态容器调度，而不改变会话、事件和 WebSocket 契约。
@@ -41,7 +41,7 @@ curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/message
 
 知识库服务只在 Docker 网络内暴露给 `backend`，外部客户端通过 DSH Runtime 间接调用。首期使用附件中推荐的匿名只读接口：目录树、文件元数据和目录检索。上游地址由 `KNOWLEDGE_BASE_URL` 配置，默认是 `http://77.242.240.158:18085/api/platform/api/v1`。
 
-DSH Runtime 的开发标记示例：
+DSH Runtime 的开发标记示例（DSH 外层请求仍可带当前会话的 UMC Token，但知识库 public 上游不要求该 Token）：
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/messages \
@@ -53,7 +53,7 @@ curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/message
 
 可用工具名：
 
-- `knowledge.search`：必须传 `query` 和 `folder_id`；默认召回 32 条，三路模式由 `KNOWLEDGE_RETRIEVAL_MODES=bm25,graph,vector` 配置并随请求传给代理。最终是否启用某一路由由 18085 上游版本决定。
+- `knowledge.search`：必须传 `query` 和 `folder_id`；默认召回 32 条，三路模式由 `KNOWLEDGE_RETRIEVAL_MODES=bm25,graph,vector` 配置并作为兼容提示随请求传给代理。最终是否启用某一路由由 18085 上游版本决定；当前 public 返回中的 `retrieval_mode=vector`/`completed_channels=["vector"]` 只能说明向量单路完成，不能当作三路均已执行。
 - `knowledge.folders_tree`：获取当前租户可见目录树。
 - `knowledge.files`：读取目录文件元数据，可选 `folder_id`、`recursive`。
 - `knowledge.files_page`：分页读取文件元数据，`page_size` 范围 10–100。

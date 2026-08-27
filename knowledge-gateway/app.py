@@ -3,7 +3,7 @@ import asyncio
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 
@@ -73,7 +73,9 @@ async def healthz() -> dict[str, Any]:
         "status": "ok",
         "provider": "77-knowledge-proxy",
         "upstream": UPSTREAM_BASE_URL,
-        "authMode": "anonymous-readonly",
+        "authMode": "public-anonymous-readonly",
+        "publicAuthorizationRequired": False,
+        "authenticatedBasePath": "/api/knowledge",
         "retrievalModes": list(RETRIEVAL_MODES),
         "defaultTopK": 32,
         "upstreamMaxTopK": UPSTREAM_MAX_TOP_K,
@@ -81,14 +83,14 @@ async def healthz() -> dict[str, Any]:
     }
 
 
-def _require_umc_token(authorization: str | None) -> str:
-    if not authorization or not authorization.lower().startswith("bearer ") or not authorization[7:].strip():
-        raise HTTPException(status_code=401, detail={"code": "umc_token_required", "message": "Authorization: Bearer <UMC_TOKEN> is required"})
-    return authorization
-
-
 @app.post("/search")
-async def search(request: SearchRequest, authorization: str | None = Header(default=None)) -> Any:
+async def search(request: SearchRequest) -> Any:
+    """Proxy the anonymous public search endpoint.
+
+    The 77 public knowledge contract explicitly does not require an
+    Authorization header.  DSH may still send a user token to this internal
+    route, but it is deliberately not forwarded upstream.
+    """
     # The public proxy accepts the MailGraph query shape.  The retrieval mode
     # hint is sent as an additive field so newer proxies can enable all three
     # routes (BM25, graph and vector) while older proxies keep compatibility.
@@ -99,25 +101,23 @@ async def search(request: SearchRequest, authorization: str | None = Header(defa
     # preserving the caller's requested value at the DSH boundary.
     body["top_k"] = min(request.top_k, UPSTREAM_MAX_TOP_K)
     body["retrieval_modes"] = list(RETRIEVAL_MODES)
-    return await _request("POST", "/public/knowledge/search", json=body, headers={"Authorization": _require_umc_token(authorization)})
+    return await _request("POST", "/public/knowledge/search", json=body)
 
 
 @app.get("/folders/tree")
-async def folders_tree(authorization: str | None = Header(default=None)) -> Any:
-    return await _request("GET", "/public/knowledge/folders/tree", headers={"Authorization": _require_umc_token(authorization)})
+async def folders_tree() -> Any:
+    return await _request("GET", "/public/knowledge/folders/tree")
 
 
 @app.get("/files")
 async def files(
     folder_id: str | None = Query(default=None),
     recursive: bool = Query(default=False),
-    authorization: str | None = Header(default=None),
 ) -> Any:
-    token = _require_umc_token(authorization)
     params: dict[str, Any] = {"recursive": str(recursive).lower()}
     if folder_id:
         params["folder_id"] = folder_id
-    return await _request("GET", "/public/knowledge/files", params=params, headers={"Authorization": token})
+    return await _request("GET", "/public/knowledge/files", params=params)
 
 
 @app.get("/files/page")
@@ -126,9 +126,7 @@ async def files_page(
     recursive: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=10, le=100),
-    authorization: str | None = Header(default=None),
 ) -> Any:
-    token = _require_umc_token(authorization)
     params: dict[str, Any] = {
         "recursive": str(recursive).lower(),
         "page": page,
@@ -136,4 +134,4 @@ async def files_page(
     }
     if folder_id:
         params["folder_id"] = folder_id
-    return await _request("GET", "/public/knowledge/files/page", params=params, headers={"Authorization": token})
+    return await _request("GET", "/public/knowledge/files/page", params=params)
