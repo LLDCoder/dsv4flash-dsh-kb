@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DSH UMC 测试控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">DSH · UMC EXTERNAL SERVICE</p>
+          <h1>测试控制台</h1>
+          <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证。</p>
+        </div>
+        <span id="connection" class="pill offline">未连接</span>
+      </header>
+
+      <nav class="tabs" aria-label="控制台功能">
+        <button class="tab active" data-tab="chatPanel">对话测试</button>
+        <button class="tab" data-tab="configPanel">运行配置</button>
+        <button class="tab" data-tab="testPanel">多语言业务测试</button>
+      </nav>
+
+      <section id="chatPanel" class="tab-panel active">
+      <section class="toolbar card">
+        <label>用户 ID<input id="userId" value="demo-user" /></label>
+        <label>租户 ID<input id="tenantId" value="demo-tenant" /></label>
+        <label>会话 ID<input id="conversationId" placeholder="新建后自动填充" /></label>
+        <button id="createBtn" class="secondary">新建会话</button>
+        <button id="connectBtn">连接 WS</button>
+      </section>
+
+      <section class="chat card">
+        <div id="events" class="events"><div class="empty">先连接 WS 并创建会话。</div></div>
+        <form id="messageForm" class="composer">
+          <textarea id="message" rows="3" placeholder="输入消息，回车发送（Shift+Enter 换行）"></textarea>
+          <button type="submit">发送</button>
+        </form>
+      </section>
+
+      <section class="diagnostics card">
+        <div><span>runtime</span><code id="runtimeId">-</code></div>
+        <div><span>last seq</span><code id="lastSeq">-</code></div>
+        <div><span>request</span><code id="requestId">-</code></div>
+      </section>
+      </section>
+
+      <section id="configPanel" class="tab-panel">
+        <section class="card panel-head">
+          <div>
+            <h2>内部参数与外部 Tool</h2>
+            <p class="muted">敏感项只显示配置状态；Database/Redis URL 修改后需要重启 Docker 容器。</p>
+          </div>
+          <div class="panel-actions"><button id="reloadConfigBtn" class="secondary">重新读取</button><button id="saveConfigBtn">保存配置</button></div>
+        </section>
+        <form id="configForm" class="config-grid"><div class="empty">正在读取配置…</div></form>
+        <div id="configStatus" class="notice"></div>
+      </section>
+
+      <section id="testPanel" class="tab-panel">
+        <section class="card panel-head">
+          <div>
+            <h2>英文 / 阿语业务测试</h2>
+            <p class="muted">先从实时知识库取证，再生成覆盖许可、法规、费用、续期、申请、支付、投诉、罚款、OCR 等场景的测试问题。</p>
+          </div>
+          <div class="panel-actions"><button id="generateTestsBtn">生成测试用例</button><button id="runTestsBtn" class="secondary" disabled>执行已勾选</button></div>
+        </section>
+        <section class="test-options card">
+          <div class="language-option"><span>语言</span><span class="checks"><label class="check"><input id="langEn" type="checkbox" checked /> English</label><label class="check"><input id="langAr" type="checkbox" checked /> العربية</label></span></div>
+          <label>知识库目录 ID<input id="testFolderId" value="34a89aa7b43b473d8326cf6540fc3894" /></label>
+          <label>用例数上限<input id="testLimit" type="number" min="2" max="40" value="40" /></label>
+          <label>单题超时（秒）<input id="testTimeout" type="number" min="10" max="180" value="90" /></label>
+        </section>
+        <section class="test-summary card" id="testSummary"><span>尚未生成测试集</span></section>
+        <section class="card table-card"><div class="table-scroll"><table id="testCasesTable"><thead><tr><th><input id="selectAllTests" type="checkbox" /></th><th>ID</th><th>语言</th><th>业务</th><th>Skill</th><th>问题</th><th>知识证据</th><th>来源</th><th>结果</th><th>评分</th></tr></thead><tbody><tr><td colspan="10" class="empty">点击“生成测试用例”</td></tr></tbody></table></div></section>
+        <pre id="testLog" class="test-log card"></pre>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

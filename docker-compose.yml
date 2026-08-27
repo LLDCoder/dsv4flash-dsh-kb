@@ -1,0 +1,185 @@
+name: dsh-external-service
+
+services:
+  postgres:
+    image: public.ecr.aws/docker/library/postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dsh}
+      POSTGRES_USER: ${POSTGRES_USER:-dsh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dsh}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: public.ecr.aws/docker/library/redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ocr-gateway:
+    build:
+      context: ./ocr-gateway
+    environment:
+      OCR_VL_URL: ${OCR_VL_URL:-http://ocr-vl-api:8080}
+      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
+    expose:
+      - "8100"
+    command: uvicorn app:app --host 0.0.0.0 --port 8100
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  knowledge-gateway:
+    build:
+      context: ./knowledge-gateway
+    environment:
+      KNOWLEDGE_BASE_URL: ${KNOWLEDGE_BASE_URL:-http://77.242.240.158:18085/api/platform/api/v1}
+      KNOWLEDGE_TIMEOUT_SECONDS: ${KNOWLEDGE_TIMEOUT_SECONDS:-30}
+      KNOWLEDGE_RETRY_ATTEMPTS: ${KNOWLEDGE_RETRY_ATTEMPTS:-3}
+      KNOWLEDGE_RETRIEVAL_MODES: ${KNOWLEDGE_RETRIEVAL_MODES:-bm25,graph,vector}
+    expose:
+      - "8101"
+    command: uvicorn app:app --host 0.0.0.0 --port 8101
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  platform-gateway:
+    build:
+      context: ./platform-gateway
+    environment:
+      PLATFORM_BASE_URL: ${PLATFORM_BASE_URL:-http://77.242.240.158:18085/api/platform}
+      PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
+      PLATFORM_RETRY_ATTEMPTS: ${PLATFORM_RETRY_ATTEMPTS:-2}
+    expose:
+      - "8102"
+    command: uvicorn app:app --host 0.0.0.0 --port 8102
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8102/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-dsh}:${POSTGRES_PASSWORD:-dsh}@postgres:5432/${POSTGRES_DB:-dsh}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      RUNTIME_IDLE_TTL_SECONDS: ${RUNTIME_IDLE_TTL_SECONDS:-900}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      KNOWLEDGE_API_KEY: ${KNOWLEDGE_API_KEY:-}
+      OCR_GATEWAY_URL: ${OCR_GATEWAY_URL:-http://ocr-gateway:8100}
+      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
+      KNOWLEDGE_GATEWAY_URL: ${KNOWLEDGE_GATEWAY_URL:-http://knowledge-gateway:8101}
+      KNOWLEDGE_TIMEOUT_SECONDS: ${KNOWLEDGE_TIMEOUT_SECONDS:-30}
+      KNOWLEDGE_RETRY_ATTEMPTS: ${KNOWLEDGE_RETRY_ATTEMPTS:-2}
+      KNOWLEDGE_DEFAULT_FOLDER_ID: ${KNOWLEDGE_DEFAULT_FOLDER_ID:-}
+      KNOWLEDGE_TOP_K: ${KNOWLEDGE_TOP_K:-32}
+      PLATFORM_API_KEY: ${PLATFORM_API_KEY:-}
+      PLATFORM_GATEWAY_URL: ${PLATFORM_GATEWAY_URL:-http://platform-gateway:8102}
+      PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
+      EXTERNAL_TOOLS_ENABLED: ${EXTERNAL_TOOLS_ENABLED:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ocr-gateway:
+        condition: service_healthy
+      knowledge-gateway:
+        condition: service_healthy
+      platform-gateway:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-18080}:80"
+
+  # Official PaddleOCR-VL-1.6 production services. They are behind a profile
+  # because the vendor images use NVIDIA/CUDA and are tens of GB in size.
+  # Start them with: docker compose --profile ocr-gpu up -d
+  ocr-vl-api:
+    profiles: ["ocr-gpu"]
+    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-vl:${OCR_API_IMAGE_TAG_SUFFIX:-latest-nvidia-gpu-offline}
+    expose:
+      - "8080"
+    depends_on:
+      ocr-vlm-server:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${OCR_GPU_DEVICE:-0}"]
+              capabilities: [gpu]
+    shm_size: 64g
+    user: root
+    restart: unless-stopped
+    environment:
+      VLM_BACKEND: ${OCR_VLM_BACKEND:-vllm}
+    command: /bin/bash -c "paddlex --serve --pipeline /home/paddleocr/pipeline_config_${OCR_VLM_BACKEND:-vllm}.yaml"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 300s
+
+  ocr-vlm-server:
+    profiles: ["ocr-gpu"]
+    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-${OCR_VLM_BACKEND:-vllm}-server:${OCR_VLM_IMAGE_TAG_SUFFIX:-latest-nvidia-gpu-offline}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${OCR_GPU_DEVICE:-0}"]
+              capabilities: [gpu]
+    shm_size: 64g
+    user: root
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 300s
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,65 @@
+import asyncio
+from contextlib import asynccontextmanager, suppress
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from .api import make_router
+from .config import get_settings
+from .db import ConfigEntry, SessionLocal, init_db
+from .llm import LLMAdapter
+from .knowledge import KnowledgeGatewayClient
+from .ocr import OCRGatewayClient
+from .platform import PlatformGatewayClient
+from .runtime import RuntimeManager
+from .service import DSHService, EventBroker
+from sqlalchemy import select
+
+
+settings = get_settings()
+runtime_manager = RuntimeManager(settings.runtime_idle_ttl_seconds)
+broker = EventBroker()
+llm = LLMAdapter(settings)
+ocr = OCRGatewayClient(settings)
+knowledge = KnowledgeGatewayClient(settings)
+platform = PlatformGatewayClient(settings)
+service = DSHService(runtime_manager, llm, broker, ocr, knowledge, platform)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    # Re-apply operator-managed live settings after every container restart.
+    # The DB/Redis URLs remain restart-only because their pools are constructed
+    # before the application lifespan begins.
+    async with SessionLocal() as db:
+        entries = list((await db.execute(select(ConfigEntry).where(ConfigEntry.scope == "system"))).scalars().all())
+        await service.apply_config_entries(entries)
+    stop = asyncio.Event()
+
+    async def sweeper() -> None:
+        while not stop.is_set():
+            await asyncio.sleep(30)
+            await runtime_manager.sweep()
+
+    task = asyncio.create_task(sweeper())
+    yield
+    stop.set()
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.include_router(make_router(service))
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok", "service": settings.app_name, "runtimeMode": "embedded-lease-mvp", "ocrGateway": settings.ocr_gateway_url, "knowledgeGateway": settings.knowledge_gateway_url, "platformGateway": settings.platform_gateway_url}
+
+
+@app.get("/")
+async def root():
+    return {"service": settings.app_name, "docs": "/docs", "health": "/healthz"}

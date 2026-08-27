@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.docx-render-*/
+.docx-inspect-*/
+.xlsx-inspect-*/
+outputs/**/*.inspect.ndjson
+Term1-Test.zip
+**/__MACOSX/
+**/._*
