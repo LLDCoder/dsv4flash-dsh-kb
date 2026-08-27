@@ -12,5 +12,6 @@ outputs/**/term1_rerun_raw*.json
 outputs/**/term1_knowledge_retry*.json
 outputs/**/platform_checks.json
 Term1-Test.zip
+dist/docker-release/
 **/__MACOSX/
 **/._*

@@ -4,6 +4,14 @@
 
 ## 2026-08-28
 
+### Docker Release 离线分发
+
+- 增加可重复执行的 Docker 镜像导出和恢复脚本。
+- Release 包覆盖 Compose 使用的全部 9 个 `linux/amd64` 镜像，包括 PaddleOCR-VL-1.6 两个官方 GPU 离线镜像。
+- 使用 zstd 压缩并按 1900 MiB 分卷，满足 GitHub Release 单文件小于 2 GiB 的限制。
+- 为每个分卷及完整压缩包生成 SHA-256，并在恢复前强制校验。
+- `dist/docker-release/` 仅用于本地生成 Release 资产，不进入普通 Git 历史。
+
 ### PaddleOCR-VL-1.6 Docker 部署
 
 - 将 OCR 从可选 Compose profile 调整为 DSH 默认必需工具服务，执行 `docker compose up -d` 时自动启动 OCR Gateway、PaddleOCR-VL API 和 VLM 推理服务。

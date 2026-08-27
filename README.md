@@ -125,6 +125,25 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
+### Docker 离线镜像 Release
+
+GitHub Release 提供当前 Compose 全部 9 个 `linux/amd64` 镜像的 zstd 压缩分卷包，包括 DSH 自建服务、PostgreSQL、Redis 和 PaddleOCR-VL-1.6 GPU 离线镜像。每个分卷小于 GitHub 的 2 GiB 单附件限制，并配套 SHA-256 清单与恢复脚本。
+
+生成发布资产：
+
+```powershell
+.\scripts\export-docker-release.ps1 -ZstdPath "D:\path\to\zstd.exe"
+```
+
+下载同一 Release 的全部 `dsh-docker-images-linux-amd64*` 文件和 `import-docker-release.ps1` 到同一目录后恢复：
+
+```powershell
+.\import-docker-release.ps1 -AssetDirectory . -ZstdPath "D:\path\to\zstd.exe"
+docker compose up -d
+```
+
+恢复脚本会先校验每个分卷和完整压缩包的 SHA-256，再执行 `docker image load`；默认会清理重组产生的中间文件。
+
 访问：
 
 - 测试控制台：http://localhost:18080（可用 `FRONTEND_PORT` 覆盖）
@@ -157,6 +176,7 @@ DB/Redis URL 只作为部署参数保存，修改后需要重新创建 backend �
 ## 变更记录
 
 - 2026-08-28：PaddleOCR-VL-1.6 改为 Docker 默认必需服务，固定 `PaddleOCR-VL-1.6-0.9B`，增加完整链路就绪检查并修复官方 VLM 服务网络解析；新增英/阿语输出策略和会话双语欢迎事件。
+- 2026-08-28：增加 Docker Release 离线包导出/恢复工具，支持 9 个 Compose 镜像的 zstd 压缩、GitHub 附件分卷和 SHA-256 完整性校验。
 - 2026-08-27：完成 Docker DSH 基线、请求级 UMC Token 匿名代理、草稿写入确认、知识库 `top_k` 兼容与 public 代理鉴权修复，并执行 Term1/Term2 全量回归。
 
 逐提交说明、验证记录和兼容性变化见 [CHANGELOG.md](CHANGELOG.md)。
