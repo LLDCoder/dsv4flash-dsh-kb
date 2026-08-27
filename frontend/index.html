@@ -27,7 +27,7 @@
       <section class="toolbar card">
         <label>用户 ID<input id="userId" value="demo-user" /></label>
         <label>租户 ID<input id="tenantId" value="demo-tenant" /></label>
-        <label>UMC Token<input id="umcToken" type="password" autocomplete="off" placeholder="粘贴前端登录后获得的 UMC Token" /></label>
+        <label>UMC Token<input id="umcToken" type="password" autocomplete="off" placeholder="先调用 /api/User/Login 获取，再粘贴 Token" /></label>
         <label>会话 ID<input id="conversationId" placeholder="新建后自动填充" /></label>
         <button id="createBtn" class="secondary">新建会话</button>
         <button id="connectBtn">连接 WS</button>

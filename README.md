@@ -64,6 +64,12 @@ curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/message
 
 上游统一地址：`http://77.242.240.158:18085/api/platform/api/v1/public/data-access`。它是匿名 Backend 代理，但调用方必须携带自己的 UMC Bearer Token；DSH 不再配置或转发其他平台 Token。
 
+### UMC 客户登录 Token
+
+客户门户获取 UMC Token 使用：`POST http://77.242.240.158:18085/api/User/Login`。请求体由客户门户前端组装，字段为 `loginProvider`（邮箱）、`providerKey`（前端加密后的密码）和 `loginType`（PC 端为 `2`）；登录成功后从响应中的 `token` 获取 UMC Bearer Token。密码不应以明文 `providerKey` 发送，也不应写入 DSH 配置或日志。
+
+`/api/v1/login/umc/access-token` 是 FF AI 平台的会话交换接口，不是客户门户登录接口，DSH 不调用该接口。拿到客户门户 Token 后，按请求放入 `Authorization: Bearer <UMC_TOKEN>`，由 DSH 透传给知识库和 UMC Data Access 代理。
+
 当前内部 Tool 映射：
 
 - `umc.application_detail` → `POST /data-access/application-detail` → `nma-application-detail`
@@ -103,7 +109,7 @@ docker compose up --build -d
 访问：
 
 - 测试控制台：http://localhost:18080（可用 `FRONTEND_PORT` 覆盖）
-- 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL 和 Tool 开关；UMC Token 不保存到配置页，只在对话测试栏按当前会话输入。API Key/DB/Redis 只显示配置状态，不回显密文。
+- 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL 和 Tool 开关；UMC Token 可先通过客户门户 `/api/User/Login` 获取，再在对话测试栏按当前会话输入，不保存到配置页。API Key/DB/Redis 只显示配置状态，不回显密文。
 - 多语言业务测试：在控制台“多语言业务测试”页从 `/umc` 知识库目录生成 English/العربية 测试集，并执行 DSH 端到端路由、检索、Tool 和 5 分制评分。
 - DSH API Swagger：http://localhost:8000/docs
 - DSH OpenAPI JSON：http://localhost:8000/openapi.json
