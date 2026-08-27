@@ -95,6 +95,8 @@ class ToolGateway:
                     parameters = arguments.get("parameters")
                     if not isinstance(parameters, dict):
                         return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "required": ["parameters"]}
+                    if arguments.get("confirmed") is not True:
+                        return {"ok": False, "code": "confirmation_required", "toolName": tool_name, "message": "explicit confirmed=true is required before creating or updating an application"}
                     if parameters.get("type") == 1:
                         return {"ok": False, "code": "formal_submission_not_allowed", "toolName": tool_name}
                     if parameters.get("type") not in {2, 3}:
