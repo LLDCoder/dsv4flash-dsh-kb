@@ -13,6 +13,7 @@ UPSTREAM_BASE_URL = os.getenv(
 ).rstrip("/")
 TIMEOUT_SECONDS = float(os.getenv("KNOWLEDGE_TIMEOUT_SECONDS", "30"))
 RETRY_ATTEMPTS = max(1, int(os.getenv("KNOWLEDGE_RETRY_ATTEMPTS", "3")))
+UPSTREAM_MAX_TOP_K = max(1, int(os.getenv("KNOWLEDGE_UPSTREAM_MAX_TOP_K", "20")))
 RETRIEVAL_MODES = tuple(
     mode.strip().lower()
     for mode in os.getenv("KNOWLEDGE_RETRIEVAL_MODES", "bm25,graph,vector").split(",")
@@ -75,6 +76,7 @@ async def healthz() -> dict[str, Any]:
         "authMode": "anonymous-readonly",
         "retrievalModes": list(RETRIEVAL_MODES),
         "defaultTopK": 32,
+        "upstreamMaxTopK": UPSTREAM_MAX_TOP_K,
         "retryAttempts": RETRY_ATTEMPTS,
     }
 
@@ -91,6 +93,11 @@ async def search(request: SearchRequest, authorization: str | None = Header(defa
     # hint is sent as an additive field so newer proxies can enable all three
     # routes (BM25, graph and vector) while older proxies keep compatibility.
     body = request.model_dump()
+    # The DSH contract keeps a logical top_k of 32, while the current 77
+    # anonymous proxy validates its upstream payload at <=20.  Cap only the
+    # wire value here so requests do not become opaque 422/502 failures while
+    # preserving the caller's requested value at the DSH boundary.
+    body["top_k"] = min(request.top_k, UPSTREAM_MAX_TOP_K)
     body["retrieval_modes"] = list(RETRIEVAL_MODES)
     return await _request("POST", "/public/knowledge/search", json=body, headers={"Authorization": _require_umc_token(authorization)})
 
