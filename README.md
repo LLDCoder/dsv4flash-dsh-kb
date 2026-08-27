@@ -4,7 +4,7 @@
 
 ## 已实现的架构边界
 
-- API Gateway/BFF：Principal 由 `X-User-Id`、`X-Tenant-Id` 传入；原始 Token 不写入 Session 或普通日志，仅保留短指纹引用。
+- API Gateway/BFF：Principal 由 `X-User-Id`、`X-Tenant-Id` 传入；前端获取的 `umctoken` 使用 `Authorization: Bearer <UMC_TOKEN>` 按请求透传，原始 Token 不写入 Session 或普通日志，仅保留短指纹引用。
 - Session Router：所有会话查询先校验 tenant/user 所有权。
 - Session Persistence：共享 PostgreSQL 的追加式 `session_event`，按 `conversation_id + seq` 回放。
 - WS 主通道：支持 `subscribe`、`resume`、`message`、`ack`、`cancel`；SSE 提供 `afterSeq` 重放和降级订阅。
@@ -13,8 +13,8 @@
 - LLM Adapter：未配置模型时使用 mock，配置 `LLM_BASE_URL`/`LLM_API_KEY` 后调用 OpenAI-compatible streaming API（默认模型名 `deepseek-v4-flash`）。
 - 配置与 Skill API：提供版本化配置更新和运维 Skill CRUD，终端测试界面只选择会话，不上传 Skill。
 - OCR Tool Gateway：只由 DSH Runtime 调用的内部工具服务，转发到 PaddleOCR-VL-1.6 产线 API；不向前端暴露 OCR 业务接口。
-- Knowledge Tool Gateway：只由 DSH Runtime 调用的内部知识库工具服务，转发到 77 服务器 `18085` 匿名只读代理；默认 `top_k=32`，向上游传递 BM25、图谱和向量三路检索模式；不转发平台 Token，也不开放上传、解析、删除、移动或原文件下载。
-- Platform Swagger Gateway：只由 DSH Runtime 调用的内部平台接口服务，连接同一台 77 服务器的 Swagger 根地址 `http://77.242.240.158:18085/api/platform`；首期接入 `POST /api/MyRequest/ApplicationPage`（内部工具名 `umc.applications`），并保留 `/swagger/document` 用于读取上游 OpenAPI。需要用户态数据的其他接口必须配置平台登录/UMC Bearer Token 后再启用，不能用测试数据冒充真实账户数据。
+- Knowledge Tool Gateway：只由 DSH Runtime 调用的内部知识库工具服务，转发到 77 服务器 `18085` 匿名代理；调用必须携带当前请求的 UMC Token。默认 `top_k=32`，向上游传递 BM25、图谱和向量三路检索模式；不开放上传、解析、删除、移动或原文件下载。
+- Platform Data Access Gateway：只由 DSH Runtime 调用的内部平台接口服务，连接同一台 77 服务器的 UMC Data Access 根地址；仅转发申请详情、ISBN 查询和受控新增草稿三个已发布端点，调用必须携带当前请求的 UMC Token。正式提交 `type=1` 在网关层拒绝。
 
 当前 MVP 的运行面使用后端容器内的逻辑 Runtime Lease，接口已将实例管理边界独立出来；后续可以把 `RuntimeManager` 的启动/清理实现替换为 Docker/Kubernetes 动态容器调度，而不改变会话、事件和 WebSocket 契约。
 
@@ -46,6 +46,7 @@ DSH Runtime 的开发标记示例：
 ```bash
 curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/messages \
   -H "X-User-Id: demo-user" \
+  -H "Authorization: Bearer <UMC_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"content":"/tool knowledge.search {\"query\":\"media regulation\",\"folder_id\":\"34a89aa7b43b473d8326cf6540fc3894\",\"top_k\":32}","clientMessageId":"kb-001"}'
 ```
@@ -59,16 +60,38 @@ curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/message
 
 附件中的鉴权管理接口（上传、解析、删除、移动、原文件下载等）不在 DSH Tool 范围内；如未来开放写操作，应另行接入平台身份与权限校验。
 
+## UMC Data Access（更新版匿名代理）
+
+上游统一地址：`http://77.242.240.158:18085/api/platform/api/v1/public/data-access`。它是匿名 Backend 代理，但调用方必须携带自己的 UMC Bearer Token；DSH 不再配置或转发其他平台 Token。
+
+当前内部 Tool 映射：
+
+- `umc.application_detail` → `POST /data-access/application-detail` → `nma-application-detail`
+- `umc.book_by_isbn` → `POST /data-access/book-by-isbn` → `nma-book-by-isbn`
+- `umc.add_application` → `POST /data-access/add-application` → `nma-add-new-application`
+
+其中新增申请只允许受控草稿（`type=3`、`isTest=true`）；正式提交 `type=1` 会被 DSH 网关拒绝。新增草稿会产生真实持久化数据，必须经过用户确认。三类 Tool 都只使用当前请求的 `umctoken`，不把 Token 写入数据库或事件。
+
+开发环境可通过 DSH Runtime 工具边界验证，例如：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/messages \
+  -H "X-User-Id: demo-user" \
+  -H "Authorization: Bearer <UMC_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"/tool umc.book_by_isbn {\"isbn\":\"9781302000011\"}","clientMessageId":"isbn-001"}'
+```
+
 ## 77 平台 Swagger Tool
 
 平台 Swagger 与知识库使用相同服务器 IP，但挂载路径不同：
 
 - Swagger/OpenAPI：`http://77.242.240.158:18085/api/platform/api/v1/openapi.json`
 - 平台网关（Docker 内）：`http://platform-gateway:8102`
-- 应用分页：`POST /api/MyRequest/ApplicationPage`，请求体 `{"pageIndex":1,"pageSize":100}`
-- DSH 内部工具：`umc.applications`；申请状态和待付款 Skill 会自动拉取第一页数据，再按申请编号继续确认。
+- 兼容应用分页：`POST /api/MyRequest/ApplicationPage`，请求体 `{"pageIndex":1,"pageSize":100}`；如启用，仍只转发当前请求的 UMC Token。
+- 更新版 Data Access 工具见上节；申请详情、ISBN 和新增草稿使用 `umc.application_detail`、`umc.book_by_isbn`、`umc.add_application`，不会配置固定平台 Token。
 
-平台登录接口在 Swagger 中为 `/api/v1/login/access-token` 和 `/api/v1/login/umc/access-token`。本地没有可用的客户账号/UMC Token 时，DSH 只记录“需要认证”，不生成个人账户结果。
+新的 UMC 代理不要求 DSH 配置平台 Token、Data Gateway Token 或固定账号。前端登录后获得的 `umctoken` 必须在每次 HTTP 请求的 `Authorization` 头中传入；浏览器 WebSocket 则在连接后发送一次 `{"type":"auth","umctoken":"..."}`。本地没有可用的 UMC Token 时，DSH 只返回“需要认证”，不生成个人账户结果。
 
 ## 启动
 
@@ -80,7 +103,7 @@ docker compose up --build -d
 访问：
 
 - 测试控制台：http://localhost:18080（可用 `FRONTEND_PORT` 覆盖）
-- 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL、Bearer Token 和 Tool 开关；API Key/DB/Redis 只显示配置状态，不回显密文。
+- 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL 和 Tool 开关；UMC Token 不保存到配置页，只在对话测试栏按当前会话输入。API Key/DB/Redis 只显示配置状态，不回显密文。
 - 多语言业务测试：在控制台“多语言业务测试”页从 `/umc` 知识库目录生成 English/العربية 测试集，并执行 DSH 端到端路由、检索、Tool 和 5 分制评分。
 - DSH API Swagger：http://localhost:8000/docs
 - DSH OpenAPI JSON：http://localhost:8000/openapi.json

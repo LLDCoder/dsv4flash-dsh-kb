@@ -79,6 +79,12 @@ async def healthz() -> dict[str, Any]:
     }
 
 
+def _require_umc_token(authorization: str | None) -> str:
+    if not authorization or not authorization.lower().startswith("bearer ") or not authorization[7:].strip():
+        raise HTTPException(status_code=401, detail={"code": "umc_token_required", "message": "Authorization: Bearer <UMC_TOKEN> is required"})
+    return authorization
+
+
 @app.post("/search")
 async def search(request: SearchRequest, authorization: str | None = Header(default=None)) -> Any:
     # The public proxy accepts the MailGraph query shape.  The retrieval mode
@@ -86,12 +92,12 @@ async def search(request: SearchRequest, authorization: str | None = Header(defa
     # routes (BM25, graph and vector) while older proxies keep compatibility.
     body = request.model_dump()
     body["retrieval_modes"] = list(RETRIEVAL_MODES)
-    return await _request("POST", "/public/knowledge/search", json=body, headers={"Authorization": authorization} if authorization else None)
+    return await _request("POST", "/public/knowledge/search", json=body, headers={"Authorization": _require_umc_token(authorization)})
 
 
 @app.get("/folders/tree")
 async def folders_tree(authorization: str | None = Header(default=None)) -> Any:
-    return await _request("GET", "/public/knowledge/folders/tree", headers={"Authorization": authorization} if authorization else None)
+    return await _request("GET", "/public/knowledge/folders/tree", headers={"Authorization": _require_umc_token(authorization)})
 
 
 @app.get("/files")
@@ -100,10 +106,11 @@ async def files(
     recursive: bool = Query(default=False),
     authorization: str | None = Header(default=None),
 ) -> Any:
+    token = _require_umc_token(authorization)
     params: dict[str, Any] = {"recursive": str(recursive).lower()}
     if folder_id:
         params["folder_id"] = folder_id
-    return await _request("GET", "/public/knowledge/files", params=params, headers={"Authorization": authorization} if authorization else None)
+    return await _request("GET", "/public/knowledge/files", params=params, headers={"Authorization": token})
 
 
 @app.get("/files/page")
@@ -114,6 +121,7 @@ async def files_page(
     page_size: int = Query(default=20, ge=10, le=100),
     authorization: str | None = Header(default=None),
 ) -> Any:
+    token = _require_umc_token(authorization)
     params: dict[str, Any] = {
         "recursive": str(recursive).lower(),
         "page": page,
@@ -121,4 +129,4 @@ async def files_page(
     }
     if folder_id:
         params["folder_id"] = folder_id
-    return await _request("GET", "/public/knowledge/files/page", params=params, headers={"Authorization": authorization} if authorization else None)
+    return await _request("GET", "/public/knowledge/files/page", params=params, headers={"Authorization": token})

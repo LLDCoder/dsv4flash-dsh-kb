@@ -17,10 +17,9 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-v4-flash"
     llm_timeout_seconds: float = 60.0
-    # External tool credentials are optional. They are injected only into the
-    # corresponding gateway and are never returned by the config API.
-    knowledge_api_key: str = ""
-    platform_api_key: str = ""
+    # UMC access is request-scoped: the frontend supplies the caller's
+    # umctoken in Authorization and DSH forwards it to the anonymous proxies.
+    # It is deliberately not a persisted configuration value.
     external_tools_enabled: bool = True
     ocr_gateway_url: str = "http://ocr-gateway:8100"
     ocr_timeout_seconds: float = 300.0
@@ -56,12 +55,10 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "database_url", "label": "Database URL", "env": "DATABASE_URL", "secret": True, "restartRequired": True, "group": "基础设施"},
     {"key": "redis_url", "label": "Redis URL", "env": "REDIS_URL", "secret": True, "restartRequired": True, "group": "基础设施"},
     {"key": "knowledge_gateway_url", "label": "知识库 Tool URL", "env": "KNOWLEDGE_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
-    {"key": "knowledge_api_key", "label": "知识库 API Key", "env": "KNOWLEDGE_API_KEY", "secret": True, "restartRequired": False, "group": "外部 Tool"},
     {"key": "knowledge_default_folder_id", "label": "知识库默认目录 ID", "env": "KNOWLEDGE_DEFAULT_FOLDER_ID", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "knowledge_top_k", "label": "知识库 top_k", "env": "KNOWLEDGE_TOP_K", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "knowledge_timeout_seconds", "label": "知识库超时（秒）", "env": "KNOWLEDGE_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "platform_gateway_url", "label": "Swagger Tool URL", "env": "PLATFORM_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
-    {"key": "platform_api_key", "label": "Swagger/API Bearer Token", "env": "PLATFORM_API_KEY", "secret": True, "restartRequired": False, "group": "外部 Tool"},
     {"key": "platform_timeout_seconds", "label": "Swagger 超时（秒）", "env": "PLATFORM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "ocr_gateway_url", "label": "OCR Tool URL", "env": "OCR_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "external_tools_enabled", "label": "启用外部 Tools", "env": "EXTERNAL_TOOLS_ENABLED", "secret": False, "restartRequired": False, "group": "外部 Tool"},

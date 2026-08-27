@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import config_catalog, get_settings
 from .db import ConfigEntry, Skill, get_db
-from .principal import Principal, get_principal
+from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .schemas import ConfigPatch, ConversationCreate, MessageCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
@@ -134,7 +134,7 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.post("/test-cases/generate")
     async def generate_test_cases_endpoint(payload: TestCaseGenerateRequest, principal: Principal = Depends(get_principal)):
-        return await generate_test_cases(service, list(payload.languages), payload.folder_id, payload.limit)
+        return await generate_test_cases(service, list(payload.languages), payload.folder_id, payload.limit, umc_token=principal.umc_token)
 
     @router.post("/test-cases/run")
     async def run_test_cases_endpoint(payload: TestCaseRunRequest, principal: Principal = Depends(get_principal)):
@@ -182,6 +182,8 @@ def make_router(service: DSHService) -> APIRouter:
             user_id=user_id,
             tenant_id=websocket.headers.get("x-tenant-id") or (websocket.query_params.get("tenantId") if get_settings().environment == "development" else None) or "default",
             request_id=websocket.headers.get("x-request-id", "ws"),
+            token_ref=None,
+            umc_token=_bearer_token(websocket.headers.get("authorization")),
         )
         subscriptions: dict[str, asyncio.Queue[dict]] = {}
         forwarders: dict[str, asyncio.Task[None]] = {}
@@ -200,7 +202,24 @@ def make_router(service: DSHService) -> APIRouter:
             while True:
                 raw = await websocket.receive_json()
                 message = WSMessage.model_validate(raw)
-                if message.type == "subscribe" or message.type == "resume":
+                if message.type == "auth":
+                    # Browser WebSocket clients cannot set an Authorization
+                    # header, so they send the UMC token once as the first
+                    # application frame. Keep the raw token only in memory;
+                    # all persisted events use token_ref instead.
+                    token = (message.umc_token or "").strip()
+                    if not token:
+                        await send({"type": "error", "code": "umc_token_required"})
+                        continue
+                    principal = Principal(
+                        user_id=principal.user_id,
+                        tenant_id=principal.tenant_id,
+                        request_id=principal.request_id,
+                        token_ref=_token_reference(f"Bearer {token}"),
+                        umc_token=token,
+                    )
+                    await send({"type": "authenticated", "token": "umctoken"})
+                elif message.type == "subscribe" or message.type == "resume":
                     if not message.conversation_id:
                         continue
                     conversation_id = message.conversation_id

@@ -54,9 +54,10 @@ class SkillUpsert(APIModel):
 
 
 class WSMessage(APIModel):
-    type: Literal["subscribe", "message", "resume", "ack", "cancel"]
+    type: Literal["auth", "subscribe", "message", "resume", "ack", "cancel"]
     conversation_id: str | None = Field(default=None, validation_alias=AliasChoices("conversationId", "conversation_id"))
     content: str | None = None
     client_message_id: str | None = Field(default=None, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
     after_seq: int = Field(default=0, validation_alias=AliasChoices("afterSeq", "after_seq"))
     seq: int | None = None
+    umc_token: str | None = Field(default=None, validation_alias=AliasChoices("umctoken", "umcToken", "umc_token"))

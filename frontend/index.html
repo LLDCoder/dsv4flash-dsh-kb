@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">DSH · UMC EXTERNAL SERVICE</p>
           <h1>测试控制台</h1>
-          <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证。</p>
+          <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证；UMC Token 按请求透传，不落库。</p>
         </div>
         <span id="connection" class="pill offline">未连接</span>
       </header>
@@ -27,6 +27,7 @@
       <section class="toolbar card">
         <label>用户 ID<input id="userId" value="demo-user" /></label>
         <label>租户 ID<input id="tenantId" value="demo-tenant" /></label>
+        <label>UMC Token<input id="umcToken" type="password" autocomplete="off" placeholder="粘贴前端登录后获得的 UMC Token" /></label>
         <label>会话 ID<input id="conversationId" placeholder="新建后自动填充" /></label>
         <button id="createBtn" class="secondary">新建会话</button>
         <button id="connectBtn">连接 WS</button>
@@ -51,7 +52,7 @@
         <section class="card panel-head">
           <div>
             <h2>内部参数与外部 Tool</h2>
-            <p class="muted">敏感项只显示配置状态；Database/Redis URL 修改后需要重启 Docker 容器。</p>
+            <p class="muted">敏感项只显示配置状态；UMC Token 在对话栏按会话输入，不写入配置；Database/Redis URL 修改后需要重启 Docker 容器。</p>
           </div>
           <div class="panel-actions"><button id="reloadConfigBtn" class="secondary">重新读取</button><button id="saveConfigBtn">保存配置</button></div>
         </section>

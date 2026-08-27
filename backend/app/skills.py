@@ -29,6 +29,27 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "content": "根据媒体活动和申请主体筛选候选服务；候选服务不是法律资格结论。",
     },
     {
+        "skill_id": "umc_application_detail",
+        "name": "UMC application detail lookup",
+        "allowed_tools": ["umc.application_detail"],
+        "dependencies": ["trusted_principal", "umc_data_access"],
+        "content": "使用调用方的 UMC Token 查询指定 applicationId；没有 ID 时先追问，不编造申请数据。",
+    },
+    {
+        "skill_id": "umc_book_by_isbn",
+        "name": "UMC book ISBN lookup",
+        "allowed_tools": ["umc.book_by_isbn"],
+        "dependencies": ["trusted_principal", "umc_data_access"],
+        "content": "ISBN 必须按字符串传递；只展示 UMC 返回的图书记录，不把 ISBN 转为数字。",
+    },
+    {
+        "skill_id": "umc_add_application",
+        "name": "UMC controlled draft application",
+        "allowed_tools": ["umc.add_application"],
+        "dependencies": ["trusted_principal", "umc_data_access", "explicit_confirmation"],
+        "content": "新增草稿会产生真实持久化数据；固定 type=3、isTest=true，正式提交 type=1 禁止通过测试网关。",
+    },
+    {
         "skill_id": "copyright_guidance",
         "name": "Copyright and content guidance",
         "allowed_tools": ["knowledge.search"],
@@ -80,14 +101,14 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "skill_id": "application_payment",
         "name": "Pending payment workflow",
-        "allowed_tools": ["umc.applications", "umc.payments"],
+        "allowed_tools": [],
         "dependencies": ["trusted_principal"],
         "content": "先列出 Pending Payment 申请并要求选择 application_number；不能用其他交易记录清除待付款状态。",
     },
     {
         "skill_id": "application_status",
         "name": "Application status",
-        "allowed_tools": ["umc.applications"],
+        "allowed_tools": ["umc.application_detail"],
         "dependencies": ["trusted_principal"],
         "content": "返回最新申请必须给出申请编号、服务、创建时间和当前状态，并说明分页范围。",
     },
@@ -194,6 +215,12 @@ def resolve_skill(text: str) -> SkillRoute:
     """Deterministic first-pass router; the LLM may refine only after this gate."""
     if _has(text, "ocr", "optical character", "attached document", "attached Arabic trade license", "upload", "image", "screenshot", "IMG-", "识别材料", "扫描件", "图片", "截图", "上传", "رخصة التجارة العربية", "المرفقة", "صورة", "لقطة شاشة"):
         return SkillRoute("document_ocr", "api_call", "ocr.layout_parsing", "collect", ("file", "file_type"))
+    if _has(text, "book by isbn", "isbn lookup", "isbn 查询", "isbn"):
+        return SkillRoute("umc_book_by_isbn", "api_call", "umc.book_by_isbn", "answer", ("isbn",))
+    if _has(text, "application detail", "applicationdetail", "application id", "applicationid", "申请详情", "申请 ID"):
+        return SkillRoute("umc_application_detail", "api_call", "umc.application_detail", "answer", ("applicationId",))
+    if _has(text, "add new application", "new draft application", "create a draft application", "新增申请", "新建草稿"):
+        return SkillRoute("umc_add_application", "api_call", "umc.add_application", "collect", ("parameters",), confirmation_required=True)
     if _has(text, "quote", "exactly", "逐字", "原文", "اقتبس", "حرفيًا", "النص الأصلي"):
         return SkillRoute(
             "latest_regulations", "knowledge", "knowledge.search", "exact_quote",
@@ -223,7 +250,7 @@ def resolve_skill(text: str) -> SkillRoute:
     # "social media" or "license application" (for example, "What is the
     # status of my social media license?").
     if _has(text, "latest status", "application status", "status of my", "what's the status", "open applications", "summarize my open", "申请状态", "状态", "حالة الطلب", "آخر حالة"):
-        return SkillRoute("application_status", "data_query", "umc.applications", "answer")
+        return SkillRoute("application_status", "data_query", None, "answer")
     if _has(text, "which service should", "very specific media activity", "not listed", "media service comparison", "difference between a photography permit and an advertiser permit", "apply for a media service", "advertiser permit", "paid product reviews", "social media", "服务对比", "未列出", "选择哪项服务", "الخدمة المناسبة", "نشاطي التجاري"):
         return SkillRoute("service_discovery", "knowledge", "knowledge.search", "answer", ("account_type", "media_activity"))
     if _has(text, "content standards", "advertising on social media", "media content", "child-safety", "child safety", "children", "advertising rules", "policy comparison", "regulation version", "版权", "copyright", "photograph from the internet", "commercial campaign", "معايير المحتوى", "سلامة الأطفال", "حقوق الطبع"):
@@ -238,7 +265,7 @@ def resolve_skill(text: str) -> SkillRoute:
     # Status/payment intent must win over the words “license application” in a
     # sentence such as “show the latest status of my media license application”.
     if _has(text, "pending payment", "待付款", "الدفع المعلق", "قيد الدفع"):
-        return SkillRoute("application_payment", "data_query", "umc.applications", "collect", ("application_number",))
+        return SkillRoute("application_payment", "data_query", None, "collect", ("application_number",))
     if _has(text, "download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر") and _has(text, "permit", "license", "许可", "تصريح", "رخصة"):
         return SkillRoute("permit_download", "api_call", None, "collect", ("license_id",), confirmation_required=True)
     if _has(text, "complaint", "投诉", "شكوى"):
@@ -265,9 +292,9 @@ def resolve_skill(text: str) -> SkillRoute:
     if _has(text, "eligible", "eligibility", "资格", "مؤهل", "الأهلية"):
         return SkillRoute("service_eligibility", "data_query", None, "collect", ("profile_id", "account_type", "media_activity"), ("Individual", "Commercial", "Government"))
     if _has(text, "pending payment", "待付款", "الدفع المعلق", "قيد الدفع"):
-        return SkillRoute("application_payment", "data_query", "umc.applications", "collect", ("application_number",))
+        return SkillRoute("application_payment", "data_query", None, "collect", ("application_number",))
     if _has(text, "latest status", "application status", "申请状态", "حالة الطلب", "آخر حالة"):
-        return SkillRoute("application_status", "data_query", "umc.applications", "answer")
+        return SkillRoute("application_status", "data_query", None, "answer")
     if _has(text, "download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر") and _has(text, "permit", "license", "许可", "تصريح", "رخصة"):
         return SkillRoute("permit_download", "api_call", None, "collect", ("license_id",), confirmation_required=True)
     if _has(text, "payment", "receipt", "付款", "收据", "إيصال", "إيصال الدفع"):
@@ -292,6 +319,8 @@ def build_knowledge_query(route: SkillRoute, original_text: str) -> str:
         "service_fees": "UMC UAE Media Council media service fees service ID",
         "latest_regulations": "UAE media regulation Federal Decree-Law 55 of 2023 Cabinet Decision 68 of 2024 article",
         "fine_payment": "UMC media violation fine payment process",
+        "copyright_guidance": "UMC UAE media content copyright permission commercial campaign guidance",
+        "service_discovery": "UMC UAE Media Council media services service catalogue applicant activity",
     }
     prefix = prefixes.get(route.skill_id)
     return f"{prefix} {original_text}" if prefix else original_text
@@ -329,6 +358,9 @@ def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
         "license_renewal": "请提供需要续期或延期的许可证/permit 类型；账户查询还需要许可证号。",
         "service_fees": "请提供需要查询费用的具体媒体服务或 service ID。",
         "latest_regulations": "请提供法规主题或具体法规/内阁决议编号、标题和日期；逐字引用还必须定位到明确条款。",
+        "umc_application_detail": "请提供 applicationId；查询只会把当前 UMC Token 的授权结果返回给你。",
+        "umc_book_by_isbn": "请提供 ISBN 字符串；查询只会把 UMC 返回的图书记录展示出来。",
+        "umc_add_application": "请先确认草稿参数；type=3 且 isTest=true 才允许走受控测试，正式提交不会通过此网关。",
     }.get(route.skill_id, "请补充必要信息后继续。")
     return {
         "required": True,

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
@@ -101,11 +102,9 @@ class DSHService:
         knowledge.base_url = self.settings.knowledge_gateway_url.rstrip("/")
         knowledge.timeout = self.settings.knowledge_timeout_seconds
         knowledge.retry_attempts = max(1, int(self.settings.knowledge_retry_attempts))
-        knowledge.api_key = self.settings.knowledge_api_key
         platform = self.tool_gateway.platform
         platform.base_url = self.settings.platform_gateway_url.rstrip("/")
         platform.timeout = self.settings.platform_timeout_seconds
-        platform.api_key = self.settings.platform_api_key
         self.ocr.base_url = self.settings.ocr_gateway_url.rstrip("/")
         self.ocr.timeout = self.settings.ocr_timeout_seconds
 
@@ -232,8 +231,16 @@ class DSHService:
                                 "top_k": self.settings.knowledge_top_k,
                             },
                         )
-                    elif not tool_request and route.tool_name == "umc.applications":
-                        tool_request = ("umc.applications", {"page_index": 1, "page_size": 100})
+                    elif not tool_request and route.tool_name == "umc.application_detail":
+                        match = re.search(r"(?:application\s*(?:id|number)?|申请(?:详情|ID)?)[\s:#-]*(\d{1,12})\b", latest_content, re.IGNORECASE)
+                        if match:
+                            tool_request = ("umc.application_detail", {"applicationId": int(match.group(1))})
+                    elif not tool_request and route.tool_name == "umc.book_by_isbn":
+                        match = re.search(r"\b(?:97[89][\d\s-]{9,20}|\d[\d\s-]{9,20})\b", latest_content)
+                        if match:
+                            isbn = re.sub(r"[\s-]", "", match.group(0))
+                            if len(isbn) >= 10:
+                                tool_request = ("umc.book_by_isbn", {"isbn": isbn})
                     elif tool_request and tool_request[0] == "knowledge.search":
                         tool_name, arguments = tool_request
                         arguments = dict(arguments)
@@ -265,6 +272,9 @@ class DSHService:
                             "topK": arguments.get("top_k") or arguments.get("topK") or 32,
                             "pageIndex": arguments.get("page_index") or arguments.get("pageIndex"),
                             "pageSize": arguments.get("page_size") or arguments.get("pageSize"),
+                            "applicationId": arguments.get("applicationId") or arguments.get("application_id"),
+                            "isbn": str(arguments.get("isbn", ""))[:32] if "isbn" in arguments else None,
+                            "parameterKeys": sorted(arguments.get("parameters", {}).keys()) if isinstance(arguments.get("parameters"), dict) else None,
                         }
                         await self.append_event(db, conversation, "tool.call", {"toolName": tool_name, "arguments": safe_arguments, "requestId": principal.request_id})
                         if not self.settings.external_tools_enabled:

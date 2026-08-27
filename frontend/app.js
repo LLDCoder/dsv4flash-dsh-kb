@@ -20,7 +20,9 @@ function addEvent(type, content, meta = "") {
 }
 
 async function api(path, options = {}) {
+  const rawToken = $("umcToken")?.value.trim() || "";
   const headers = { "Content-Type": "application/json", "X-User-Id": $("userId").value, "X-Tenant-Id": $("tenantId").value, ...(options.headers || {}) };
+  if (rawToken && !headers.Authorization) headers.Authorization = rawToken.toLowerCase().startsWith("bearer ") ? rawToken : `Bearer ${rawToken}`;
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
@@ -186,9 +188,11 @@ async function createConversation() {
 function connect() {
   if (state.ws && state.ws.readyState <= 1) state.ws.close();
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  state.ws = new WebSocket(`${protocol}://${location.host}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}`);
+  state.ws = new WebSocket(`${protocol}://${location.host}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
   state.ws.onopen = async () => {
     setConnection("已连接", true);
+    const umcToken = $("umcToken")?.value.trim() || "";
+    if (umcToken) state.ws.send(JSON.stringify({ type: "auth", umctoken: umcToken }));
     if (!state.conversationId && !$("conversationId").value) await createConversation();
     state.conversationId = state.conversationId || $("conversationId").value;
     state.ws.send(JSON.stringify({ type: "subscribe", conversationId: state.conversationId, afterSeq: state.seq }));

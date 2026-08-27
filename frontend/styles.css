@@ -11,7 +11,7 @@ h2 { margin: 0 0 6px; font-size: 20px; } h3 { margin: 0 0 14px; font-size: 15px;
 .tab { color: #4b6480; background: transparent; padding: 9px 14px; }.tab.active { color: #fff; background: #2f76c8; }
 .tab-panel { display: none; }.tab-panel.active { display: block; }
 .card { background: rgba(255,255,255,.92); border: 1px solid #dce5f1; border-radius: 18px; box-shadow: 0 12px 35px rgba(33,63,106,.07); }
-.toolbar { display: grid; grid-template-columns: 1fr 1fr 1.5fr auto auto; gap: 12px; padding: 16px; align-items: end; }
+.toolbar { display: grid; grid-template-columns: 1fr 1fr 1.5fr 1.5fr auto auto; gap: 12px; padding: 16px; align-items: end; }
 label { display: grid; gap: 6px; color: #66758d; font-size: 12px; font-weight: 600; }
 input, textarea { width: 100%; border: 1px solid #d5dfed; border-radius: 10px; padding: 10px 12px; color: #162338; background: #fbfdff; font: inherit; }
 button { border: 0; border-radius: 10px; padding: 11px 16px; color: #fff; background: #2f76c8; font-weight: 700; cursor: pointer; }

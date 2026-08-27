@@ -13,15 +13,27 @@ class Principal:
     tenant_id: str
     request_id: str
     token_ref: str | None = None
+    # The caller's UMC token is kept in memory for the lifetime of one
+    # request/turn only. It is never serialized into session events or logs.
+    umc_token: str | None = None
 
 
 def _token_reference(raw_token: str | None) -> str | None:
-    if not raw_token:
-        return None
-    token = raw_token.removeprefix("Bearer ").strip()
+    token = _bearer_token(raw_token)
     if not token:
         return None
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _bearer_token(raw_token: str | None) -> str | None:
+    """Extract a Bearer token without persisting the raw credential."""
+
+    if not raw_token:
+        return None
+    scheme, _, value = raw_token.partition(" ")
+    if scheme.lower() != "bearer" or not value.strip():
+        return None
+    return value.strip()
 
 
 async def get_principal(
@@ -43,4 +55,11 @@ async def get_principal(
         raise HTTPException(status_code=401, detail="missing trusted principal: X-User-Id")
     tenant_id = x_tenant_id or "default"
     request_id = x_request_id or str(uuid4())
-    return Principal(user_id=user_id, tenant_id=tenant_id, request_id=request_id, token_ref=_token_reference(authorization))
+    umc_token = _bearer_token(authorization)
+    return Principal(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        token_ref=_token_reference(authorization),
+        umc_token=umc_token,
+    )

@@ -213,13 +213,13 @@ def _sources(raw: Any) -> list[dict[str, Any]]:
     return [item for item in chunks if isinstance(item, dict)]
 
 
-async def generate_test_cases(service: DSHService, languages: list[str], folder_id: str | None = None, limit: int = 40) -> dict[str, Any]:
+async def generate_test_cases(service: DSHService, languages: list[str], folder_id: str | None = None, limit: int = 40, *, umc_token: str | None = None) -> dict[str, Any]:
     requested = [lang for lang in languages if lang in {"en", "ar"}] or ["en", "ar"]
     selected_folder = folder_id or service.settings.knowledge_default_folder_id
     folder_source = "config"
     if not selected_folder:
         try:
-            selected_folder = _first_folder(await service.tool_gateway.knowledge.folders_tree())
+            selected_folder = _first_folder(await service.tool_gateway.knowledge.folders_tree(umc_token=umc_token))
             folder_source = "knowledge_tree"
         except Exception:
             folder_source = "not_available"
@@ -264,7 +264,7 @@ async def generate_test_cases(service: DSHService, languages: list[str], folder_
         async with semaphore:
             try:
                 blueprint = next(entry for entry in TEST_BLUEPRINTS if f"{entry['id']}-{item['language']}" == item["caseId"])
-                raw = await service.tool_gateway.knowledge.search(str(blueprint["query"]), selected_folder, service.settings.knowledge_top_k)
+                raw = await service.tool_gateway.knowledge.search(str(blueprint["query"]), selected_folder, service.settings.knowledge_top_k, umc_token=umc_token)
                 sources = _sources(raw)
                 item["evidenceCount"] = len(sources)
                 if sources:
