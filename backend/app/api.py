@@ -29,6 +29,18 @@ def make_router(service: DSHService) -> APIRouter:
         conversation = await service.create_conversation(db, principal, payload.workspace, payload.skill_profile, payload.runtime_profile)
         return service.conversation_json(conversation)
 
+    @router.get("/conversations")
+    async def list_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+        conversations = await service.list_owned_conversations(db, principal)
+        items: list[dict] = []
+        for conversation in conversations:
+            events = await service.list_events(db, conversation, event_type="user.message")
+            title = ""
+            if events:
+                title = str(events[0].event_json.get("content", "")).strip()[:160]
+            items.append({**service.conversation_json(conversation), "title": title})
+        return {"conversations": items}
+
     @router.get("/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
         try:
@@ -38,12 +50,41 @@ def make_router(service: DSHService) -> APIRouter:
         lease = service.runtime_manager.get(conversation_id)
         return service.conversation_json(conversation, lease.state if lease else None)
 
+    @router.delete("/conversations/{conversation_id}")
+    async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+        try:
+            await service.delete_owned_conversation(db, principal, conversation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"deleted": True, "conversationId": conversation_id}
+
     @router.post("/conversations/{conversation_id}/messages")
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(get_principal)):
         try:
-            return await service.submit_message(principal, conversation_id, payload.content, payload.client_message_id)
+            return await service.submit_message(
+                principal,
+                conversation_id,
+                payload.content,
+                payload.client_message_id,
+                payload.attachment.model_dump(by_alias=True) if payload.attachment else None,
+            )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/conversations/{conversation_id}/history")
+    async def get_conversation_history(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+        try:
+            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        events = await service.list_events(db, conversation)
+        return {
+            "conversationId": conversation_id,
+            "events": [
+                {"seq": event.seq, "eventType": event.event_type, "data": event.event_json}
+                for event in events
+            ],
+        }
 
     @router.get("/conversations/{conversation_id}/events")
     async def sse_events(conversation_id: str, after_seq: int = Query(default=0, alias="afterSeq"), event_type: str | None = Query(default=None, alias="eventType"), db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
@@ -235,9 +276,15 @@ def make_router(service: DSHService) -> APIRouter:
                         for event in await service.list_events(db, conversation, after_seq=message.after_seq):
                             await send({"type": "event", "seq": event.seq, "eventType": event.event_type, "data": event.event_json})
                         await send({"type": "subscribed", "conversationId": conversation_id, "afterSeq": message.after_seq})
-                elif message.type == "message" and message.conversation_id and message.content is not None and message.client_message_id:
+                elif message.type == "message" and message.conversation_id and message.client_message_id:
                     try:
-                        result = await service.submit_message(principal, message.conversation_id, message.content, message.client_message_id)
+                        result = await service.submit_message(
+                            principal,
+                            message.conversation_id,
+                            message.content or "",
+                            message.client_message_id,
+                            message.attachment.model_dump(by_alias=True) if message.attachment else None,
+                        )
                     except LookupError:
                         await send({"type": "error", "code": "conversation_not_found"})
                     else:

@@ -1,0 +1,103 @@
+name: dsh-external-service
+
+# Local development mode: keeps the conversation stack and remote knowledge
+# retrieval available without the PaddleOCR GPU images.
+services:
+  redis:
+    image: public.ecr.aws/docker/library/redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  platform-gateway:
+    build:
+      context: ./platform-gateway
+    environment:
+      PLATFORM_BASE_URL: ${PLATFORM_BASE_URL:-http://77.242.240.158:18085/api/platform}
+      PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
+      PLATFORM_RETRY_ATTEMPTS: ${PLATFORM_RETRY_ATTEMPTS:-2}
+    expose:
+      - "8102"
+    command: uvicorn app:app --host 0.0.0.0 --port 8102
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8102/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  knowledge-gateway:
+    build:
+      context: ./knowledge-gateway
+    environment:
+      KNOWLEDGE_BASE_URL: ${KNOWLEDGE_BASE_URL:-http://77.242.240.158:18085/api/platform/api/v1}
+      KNOWLEDGE_TIMEOUT_SECONDS: ${KNOWLEDGE_TIMEOUT_SECONDS:-30}
+      KNOWLEDGE_RETRY_ATTEMPTS: ${KNOWLEDGE_RETRY_ATTEMPTS:-3}
+      KNOWLEDGE_UPSTREAM_MAX_TOP_K: ${KNOWLEDGE_UPSTREAM_MAX_TOP_K:-20}
+      KNOWLEDGE_RETRIEVAL_MODES: ${KNOWLEDGE_RETRIEVAL_MODES:-bm25,graph,vector}
+    expose:
+      - "8101"
+    command: uvicorn app:app --host 0.0.0.0 --port 8101
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: ${DSH_DATABASE_URL:?Set DSH_DATABASE_URL in .env.lite}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      RUNTIME_IDLE_TTL_SECONDS: ${RUNTIME_IDLE_TTL_SECONDS:-900}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      # OCR remains intentionally absent from the lightweight stack.
+      OCR_GATEWAY_URL: ""
+      UMC_DOCUMENT_BASE_URL: ${UMC_DOCUMENT_BASE_URL:-}
+      UMC_DOCUMENT_TIMEOUT_SECONDS: ${UMC_DOCUMENT_TIMEOUT_SECONDS:-60}
+      KNOWLEDGE_GATEWAY_URL: ${KNOWLEDGE_GATEWAY_URL:-http://knowledge-gateway:8101}
+      KNOWLEDGE_DEFAULT_FOLDER_ID: ${KNOWLEDGE_DEFAULT_FOLDER_ID:-}
+      KNOWLEDGE_TIMEOUT_SECONDS: ${KNOWLEDGE_TIMEOUT_SECONDS:-30}
+      KNOWLEDGE_RETRY_ATTEMPTS: ${KNOWLEDGE_RETRY_ATTEMPTS:-2}
+      KNOWLEDGE_TOP_K: ${KNOWLEDGE_TOP_K:-32}
+      PLATFORM_GATEWAY_URL: http://platform-gateway:8102
+      PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
+      EXTERNAL_TOOLS_ENABLED: ${EXTERNAL_TOOLS_ENABLED:-true}
+    depends_on:
+      redis:
+        condition: service_healthy
+      platform-gateway:
+        condition: service_healthy
+      knowledge-gateway:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-18080}:80"
+
+volumes:
+  redis_data:

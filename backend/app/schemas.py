@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class APIModel(BaseModel):
@@ -13,9 +13,23 @@ class ConversationCreate(APIModel):
     runtime_profile: str = Field(default="default", validation_alias=AliasChoices("runtimeProfile", "runtime_profile"))
 
 
+class MessageAttachment(APIModel):
+    file_ref: str = Field(min_length=1, max_length=2_000, validation_alias=AliasChoices("fileRef", "file_ref"), serialization_alias="fileRef")
+    file_name: str = Field(min_length=1, max_length=512, validation_alias=AliasChoices("fileName", "file_name"), serialization_alias="fileName")
+    mime_type: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("mimeType", "mime_type"), serialization_alias="mimeType")
+    file_type: Literal[0, 1] = Field(validation_alias=AliasChoices("fileType", "file_type"), serialization_alias="fileType")
+
+
 class MessageCreate(APIModel):
-    content: str = Field(min_length=1, max_length=50_000)
+    content: str = Field(default="", max_length=50_000)
     client_message_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
+    attachment: MessageAttachment | None = None
+
+    @model_validator(mode="after")
+    def require_content_or_attachment(self):
+        if not self.content.strip() and not self.attachment:
+            raise ValueError("message content or attachment is required")
+        return self
 
 
 class ConfigPatch(APIModel):
@@ -61,8 +75,15 @@ class SkillUpsert(APIModel):
 class WSMessage(APIModel):
     type: Literal["auth", "subscribe", "message", "resume", "ack", "cancel"]
     conversation_id: str | None = Field(default=None, validation_alias=AliasChoices("conversationId", "conversation_id"))
-    content: str | None = None
+    content: str | None = Field(default=None, max_length=50_000)
+    attachment: MessageAttachment | None = None
     client_message_id: str | None = Field(default=None, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
     after_seq: int = Field(default=0, validation_alias=AliasChoices("afterSeq", "after_seq"))
     seq: int | None = None
     umc_token: str | None = Field(default=None, validation_alias=AliasChoices("umctoken", "umcToken", "umc_token"))
+
+    @model_validator(mode="after")
+    def require_message_payload(self):
+        if self.type == "message" and not (self.content or "").strip() and not self.attachment:
+            raise ValueError("message content or attachment is required")
+        return self

@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     external_tools_enabled: bool = True
     ocr_gateway_url: str = "http://ocr-gateway:8100"
     ocr_timeout_seconds: float = 300.0
+    umc_document_base_url: str = ""
+    umc_document_timeout_seconds: float = 60.0
     knowledge_gateway_url: str = "http://knowledge-gateway:8101"
     knowledge_timeout_seconds: float = 30.0
     knowledge_retry_attempts: int = 2
@@ -61,6 +63,7 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "platform_gateway_url", "label": "Swagger Tool URL", "env": "PLATFORM_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "platform_timeout_seconds", "label": "Swagger 超时（秒）", "env": "PLATFORM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "ocr_gateway_url", "label": "OCR Tool URL", "env": "OCR_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
+    {"key": "umc_document_base_url", "label": "UMC Document URL", "env": "UMC_DOCUMENT_BASE_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "external_tools_enabled", "label": "启用外部 Tools", "env": "EXTERNAL_TOOLS_ENABLED", "secret": False, "restartRequired": False, "group": "外部 Tool"},
 )
 

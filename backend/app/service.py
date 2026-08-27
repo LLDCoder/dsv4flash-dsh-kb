@@ -1,4 +1,5 @@
 import asyncio
+import httpx
 import json
 import re
 from collections import defaultdict
@@ -6,10 +7,11 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal
+from .customer_documents import CustomerDocumentClient
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
@@ -62,6 +64,7 @@ class DSHService:
         self.tool_gateway = ToolGateway(ocr, knowledge, platform)
         from .config import get_settings
         self.settings = get_settings()
+        self.documents = CustomerDocumentClient(self.settings)
         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
         self._writer_locks: dict[str, asyncio.Lock] = {}
 
@@ -89,6 +92,7 @@ class DSHService:
             "knowledge_top_k": int,
             "platform_timeout_seconds": float,
             "ocr_timeout_seconds": float,
+            "umc_document_timeout_seconds": float,
         }
         bool_keys = {"external_tools_enabled"}
         for item in entries:
@@ -119,6 +123,8 @@ class DSHService:
         platform.timeout = self.settings.platform_timeout_seconds
         self.ocr.base_url = self.settings.ocr_gateway_url.rstrip("/")
         self.ocr.timeout = self.settings.ocr_timeout_seconds
+        self.documents.base_url = self.settings.umc_document_base_url.rstrip("/")
+        self.documents.timeout = self.settings.umc_document_timeout_seconds
 
     async def parse_document(self, file: str, file_type: int | None, options: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self.ocr.layout_parsing(file, file_type=file_type, options=options)
@@ -163,6 +169,37 @@ class DSHService:
             raise LookupError("conversation not found")
         return conversation
 
+    async def list_owned_conversations(self, db: AsyncSession, principal: Principal) -> list[Conversation]:
+        result = await db.execute(
+            select(Conversation)
+            .where(
+                Conversation.tenant_id == principal.tenant_id,
+                Conversation.user_id == principal.user_id,
+            )
+            .order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
+        )
+        return list(result.scalars().all())
+
+    async def delete_owned_conversation(
+        self,
+        db: AsyncSession,
+        principal: Principal,
+        conversation_id: str,
+    ) -> None:
+        conversation = await self.get_owned_conversation(db, principal, conversation_id)
+        task = self._turn_tasks.pop(conversation_id, None)
+        if task and not task.done():
+            task.cancel()
+        await self.runtime_manager.release(conversation_id)
+        await db.execute(
+            delete(MessageIdempotency).where(
+                MessageIdempotency.conversation_id == conversation_id,
+            )
+        )
+        await db.execute(delete(SessionEvent).where(SessionEvent.conversation_id == conversation_id))
+        await db.delete(conversation)
+        await db.commit()
+
     @staticmethod
     def conversation_json(conversation: Conversation, runtime_state: str | None = None) -> dict[str, Any]:
         return {
@@ -176,6 +213,7 @@ class DSHService:
             "status": conversation.status,
             "lastSeq": conversation.last_seq,
             "lastActivityAt": conversation.last_activity_at.isoformat() if conversation.last_activity_at else None,
+            "createdAt": conversation.created_at.isoformat() if conversation.created_at else None,
             "lastError": conversation.last_error,
         }
 
@@ -203,7 +241,14 @@ class DSHService:
         await self.broker.publish(conversation.conversation_id, result)
         return result
 
-    async def submit_message(self, principal: Principal, conversation_id: str, content: str, client_message_id: str) -> dict[str, Any]:
+    async def submit_message(
+        self,
+        principal: Principal,
+        conversation_id: str,
+        content: str,
+        client_message_id: str,
+        attachment: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
@@ -217,7 +262,14 @@ class DSHService:
                 lease = await self.runtime_manager.ensure_runtime(conversation_id, conversation.runtime_profile)
                 conversation.runtime_id = lease.runtime_id
                 conversation.status = "BUSY"
-                event = await self.append_event(db, conversation, "user.message", {"content": content, "clientMessageId": client_message_id, "requestId": principal.request_id})
+                event_payload: dict[str, Any] = {
+                    "content": content,
+                    "clientMessageId": client_message_id,
+                    "requestId": principal.request_id,
+                }
+                if attachment:
+                    event_payload["attachment"] = attachment
+                event = await self.append_event(db, conversation, "user.message", event_payload)
                 db.add(MessageIdempotency(conversation_id=conversation_id, client_message_id=client_message_id, user_event_seq=event["seq"]))
                 await db.commit()
                 await self.runtime_manager.mark_busy(conversation_id)
@@ -234,9 +286,18 @@ class DSHService:
                     await self.append_event(db, conversation, "turn.started", {"requestId": principal.request_id, "runtimeId": conversation.runtime_id})
                     latest_user = next((event for event in reversed(history) if event.event_type == "user.message"), None)
                     latest_content = latest_user.event_json.get("content", "") if latest_user else ""
+                    raw_attachment = latest_user.event_json.get("attachment") if latest_user else None
+                    latest_attachment = raw_attachment if isinstance(raw_attachment, dict) else None
                     response_language = response_language_for(latest_content)
                     route = resolve_skill(latest_content)
-                    tool_request = parse_tool_request(latest_content) if latest_user else None
+                    tool_request = (
+                        ("ocr.layout_parsing", {
+                            "attachment": latest_attachment,
+                            "fileType": latest_attachment.get("fileType"),
+                        })
+                        if latest_attachment
+                        else parse_tool_request(latest_content) if latest_user else None
+                    )
                     if not tool_request and route.category == "knowledge" and route.mode == "exact_quote" and not exact_quote_source_sufficient(latest_content):
                         # Do not retrieve and let ranking choose a random law for
                         # an unqualified exact-quotation request.
@@ -281,11 +342,18 @@ class DSHService:
                     messages.insert(0, {"role": "system", "content": build_system_prompt(route, evidence_available=bool(tool_request), response_language=response_language)})
                     if route.category in {"data_query", "api_call"}:
                         messages.insert(1, {"role": "system", "content": "FLOW INTERACTION CONSTRAINTS: " + json.dumps(build_flow_prompt(route), ensure_ascii=False)})
+                    document_failure_message: str | None = None
                     if tool_request:
                         tool_name, arguments = tool_request
+                        attachment_argument = arguments.get("attachment")
                         safe_arguments = {
                             "fileType": arguments.get("fileType"),
-                            "hasFile": bool(arguments.get("file")),
+                            "hasFile": bool(arguments.get("file") or attachment_argument),
+                            "attachment": {
+                                "fileName": attachment_argument.get("fileName"),
+                                "mimeType": attachment_argument.get("mimeType"),
+                                "fileType": attachment_argument.get("fileType"),
+                            } if isinstance(attachment_argument, dict) else None,
                             "query": str(arguments.get("query", ""))[:500] if "query" in arguments else None,
                             "folderId": arguments.get("folder_id") or arguments.get("folderId"),
                             "topK": arguments.get("top_k") or arguments.get("topK") or 32,
@@ -298,18 +366,56 @@ class DSHService:
                         await self.append_event(db, conversation, "tool.call", {"toolName": tool_name, "arguments": safe_arguments, "requestId": principal.request_id})
                         if not self.settings.external_tools_enabled:
                             tool_result = {"ok": False, "code": "external_tools_disabled", "toolName": tool_name}
+                        elif isinstance(attachment_argument, dict):
+                            try:
+                                document_data_url = await self.documents.as_data_url(
+                                    str(attachment_argument.get("fileRef", "")),
+                                    mime_type=str(attachment_argument.get("mimeType", "")),
+                                    umc_token=principal.umc_token,
+                                )
+                                tool_result = await self.tool_gateway.invoke(
+                                    principal,
+                                    tool_name,
+                                    {
+                                        "file": document_data_url,
+                                        "fileType": attachment_argument.get("fileType"),
+                                    },
+                                )
+                            except (httpx.HTTPError, PermissionError, RuntimeError, ValueError) as exc:
+                                tool_result = {
+                                    "ok": False,
+                                    "code": "tool_unavailable",
+                                    "toolName": tool_name,
+                                    "error": str(exc)[:500],
+                                }
                         else:
                             tool_result = await self.tool_gateway.invoke(principal, tool_name, arguments)
                         result_for_event = dict(tool_result)
                         if isinstance(result_for_event.get("result"), dict):
                             result_for_event["result"] = json.dumps(result_for_event["result"], ensure_ascii=False)[:20_000]
                         await self.append_event(db, conversation, "tool.result", result_for_event)
-                        messages.append({"role": "user", "content": f"Tool {tool_name} result: {json.dumps(tool_result, ensure_ascii=False)[:20_000]}"})
-                    chunks: list[str] = []
-                    async for token in self.llm.stream(messages):
-                        chunks.append(token)
-                        await self.append_event(db, conversation, "assistant.chunk", {"content": token, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
-                    await self.append_event(db, conversation, "assistant.message", {"content": "".join(chunks), "requestId": principal.request_id})
+                        if latest_attachment and not tool_result.get("ok"):
+                            document_failure_message = (
+                                "تعذر علي قراءة الملف المرفق لأن خدمة تحليل المستندات غير متاحة حالياً. "
+                                "يرجى المحاولة مرة أخرى بعد توفر خدمة OCR."
+                                if response_language == "ar"
+                                else "I could not read the attached file because document analysis is unavailable right now. Please try again after the OCR service is available."
+                            )
+                        elif latest_attachment and not latest_content.strip():
+                            messages.append({
+                                "role": "user",
+                                "content": "The user uploaded a document without a written question. Extract the relevant information from the OCR result and give a concise, NMA-focused summary.",
+                            })
+                        if not document_failure_message:
+                            messages.append({"role": "user", "content": f"Tool {tool_name} result: {json.dumps(tool_result, ensure_ascii=False)[:20_000]}"})
+                    if document_failure_message:
+                        await self.append_event(db, conversation, "assistant.message", {"content": document_failure_message, "requestId": principal.request_id})
+                    else:
+                        chunks: list[str] = []
+                        async for token in self.llm.stream(messages):
+                            chunks.append(token)
+                            await self.append_event(db, conversation, "assistant.chunk", {"content": token, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
+                        await self.append_event(db, conversation, "assistant.message", {"content": "".join(chunks), "requestId": principal.request_id})
                     await self.append_event(db, conversation, "turn.completed", {"requestId": principal.request_id, "runtimeId": conversation.runtime_id})
                     conversation.status = "READY"
                     conversation.last_activity_at = datetime.now(timezone.utc)

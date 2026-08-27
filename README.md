@@ -125,6 +125,24 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
+### 本机轻量启动（不拉 OCR，保留远端知识库）
+
+开发本机不需要加载 PaddleOCR-VL 的 GPU 镜像时，使用独立的轻量 Compose 文件：
+
+```bash
+docker compose --env-file .env.lite -f docker-compose.lite.yml up --build -d
+```
+
+该模式使用 `.env.lite` 中配置的远程 PostgreSQL，启动前端、Backend、Redis、Platform Gateway 和 Knowledge Gateway。Knowledge Gateway 复用 `.env.example` 的 `KNOWLEDGE_*` 配置，连接既有远端 UMC 知识库；它不运行本地知识库数据库。该模式不会声明或拉取 `ocr-gateway`、`ocr-vl-api`、`ocr-vlm-server` 或本地 PostgreSQL，因此 OCR Tool 会返回不可用，普通聊天、会话历史、LLM、知识库检索和 UMC 平台接口仍可使用。默认 `.env.lite` 使用 `18180`，避免占用常见的本地 `18080` 端口。
+
+客户门户附件上传后，DSH 使用 `UMC_DOCUMENT_BASE_URL` 和当前回合的 UMC Bearer Token 从 `/api/Document/Dowload` 读取文件，再交给内部 OCR。Token 不写入会话事件；事件仅保存文件引用、文件名、MIME 类型和 PDF/图片类型。轻量模式不启动 OCR，因此附件消息会明确提示文档解析尚不可用，而不会生成脱离附件内容的回答。
+
+轻量和全量模式使用同一个 Compose 项目名与数据卷，因此会话历史可在两种模式间保留。若此前已运行全量模式，切换前先停止不需要的服务：
+
+```bash
+docker compose stop ocr-gateway ocr-vl-api ocr-vlm-server
+```
+
 ### Docker 离线镜像 Release
 
 GitHub Release 提供当前 Compose 全部 9 个 `linux/amd64` 镜像的 zstd 压缩分卷包，包括 DSH 自建服务、PostgreSQL、Redis 和 PaddleOCR-VL-1.6 GPU 离线镜像。每个分卷小于 GitHub 的 2 GiB 单附件限制，并配套 SHA-256 清单与恢复脚本。
