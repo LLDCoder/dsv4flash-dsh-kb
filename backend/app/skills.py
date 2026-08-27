@@ -2,6 +2,22 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def response_language_for(text: str) -> str:
+    """Use Arabic only for primarily Arabic input; English is the fallback."""
+
+    arabic_count = sum(
+        1
+        for char in text
+        if "\u0600" <= char <= "\u06ff"
+        or "\u0750" <= char <= "\u077f"
+        or "\u08a0" <= char <= "\u08ff"
+        or "\ufb50" <= char <= "\ufdff"
+        or "\ufe70" <= char <= "\ufeff"
+    )
+    latin_count = sum(1 for char in text if ("A" <= char <= "Z") or ("a" <= char <= "z"))
+    return "ar" if arabic_count > latin_count else "en"
+
+
 @dataclass(frozen=True)
 class SkillRoute:
     skill_id: str
@@ -341,27 +357,27 @@ def exact_quote_source_sufficient(text: str) -> bool:
 
 def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
     prompt = {
-        "profile_status": "请选择要使用的已批准 profile，或提供 profile ID，以确认能否新建申请。",
-        "service_eligibility": "请提供账户/profile 类型和媒体业务活动，我将筛选可申请服务。",
-        "application_payment": "请选择要继续支付的 Pending Payment 申请；提交前会再次确认。",
-        "application_status": "请提供 application number；如未提供，先查询最新申请并说明结果范围。",
-        "permit_download": "请先选择要下载的已签发许可证/permit；下载前会再次确认。",
-        "payment_receipt": "请确认要下载最新成功交易的收据，或提供 transaction number。",
-        "fine_appeal": "请提供媒体违规记录和申诉理由；提交前会展示预览并再次确认。",
-        "fine_payment": "请提供要支付的媒体违规记录；展示金额和支付信息后仍需再次确认。",
-        "complaint_create": "请提供延迟的申请编号和投诉内容；提交前会展示预览。",
-        "enquiry_followup": "请提供要跟进的 enquiry reference；没有记录时不声称已完成跟进。",
-        "enquiry_reopen": "请提供已解决的 enquiry reference；系统不保证支持 reopen。",
-        "technical_enquiry": "请提供失败交易、错误信息和发生时间，以生成技术 enquiry 预览。",
-        "service_discovery": "请说明账户类型和媒体业务活动，我将筛选 UMC 媒体服务。",
-        "license_application": "请确认具体许可/服务类型和申请主体，以继续申请流程。",
-        "license_renewal": "请提供需要续期或延期的许可证/permit 类型；账户查询还需要许可证号。",
-        "service_fees": "请提供需要查询费用的具体媒体服务或 service ID。",
-        "latest_regulations": "请提供法规主题或具体法规/内阁决议编号、标题和日期；逐字引用还必须定位到明确条款。",
-        "umc_application_detail": "请提供 applicationId；查询只会把当前 UMC Token 的授权结果返回给你。",
-        "umc_book_by_isbn": "请提供 ISBN 字符串；查询只会把 UMC 返回的图书记录展示出来。",
-        "umc_add_application": "请先确认草稿参数；type=3 且 isTest=true 才允许走受控测试，正式提交不会通过此网关。",
-    }.get(route.skill_id, "请补充必要信息后继续。")
+        "profile_status": "Select an approved profile or provide its profile ID so I can determine whether a new application can be created.",
+        "service_eligibility": "Provide the account/profile type and media activity so I can identify candidate services.",
+        "application_payment": "Select the Pending Payment application to continue; explicit confirmation is still required before submission.",
+        "application_status": "Provide the application number. If it is unavailable, query the latest applications and state the result scope.",
+        "permit_download": "Select the issued licence or permit to download; explicit confirmation is required before downloading.",
+        "payment_receipt": "Confirm whether to download the latest successful transaction receipt, or provide a transaction number.",
+        "fine_appeal": "Provide the media violation and appeal reason; show a preview and obtain explicit confirmation before submission.",
+        "fine_payment": "Provide the media violation to pay; show the amount and payment information and obtain explicit confirmation.",
+        "complaint_create": "Provide the delayed application number and complaint details; show a preview before submission.",
+        "enquiry_followup": "Provide the enquiry reference to follow up; do not claim completion when no record is available.",
+        "enquiry_reopen": "Provide the resolved enquiry reference; do not promise that reopening is supported.",
+        "technical_enquiry": "Provide the failed transaction, error message, and occurrence time to prepare a technical enquiry preview.",
+        "service_discovery": "Describe the account type and media activity so I can identify candidate UMC media services.",
+        "license_application": "Confirm the specific licence/service type and applicant entity before continuing.",
+        "license_renewal": "Provide the licence or permit type to renew or extend; account lookup also requires the licence number.",
+        "service_fees": "Provide the specific media service or service ID whose fees you need.",
+        "latest_regulations": "Provide the subject or the regulation/Cabinet Resolution number, title, and date; verbatim quotation also requires a specific article or clause.",
+        "umc_application_detail": "Provide applicationId; the lookup only returns data authorized by the current UMC Token.",
+        "umc_book_by_isbn": "Provide the ISBN as a string; only display the book record returned by UMC.",
+        "umc_add_application": "Confirm the draft parameters first. Only type=3 with isTest=true is allowed for controlled testing; formal submission is blocked.",
+    }.get(route.skill_id, "Ask for the information required to continue.")
     return {
         "required": True,
         "prompt": prompt,
@@ -371,14 +387,30 @@ def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
     }
 
 
-def build_system_prompt(route: SkillRoute, *, evidence_available: bool) -> str:
+def build_system_prompt(route: SkillRoute, *, evidence_available: bool, response_language: str = "en") -> str:
     guardrails = [
-        "只使用可信工具证据；没有证据时明确说明限制，不得编造账户数据、费用、法规或接口能力。",
-        "所有支付、申诉、投诉、下载等副作用操作都必须先展示预览并获得用户明确确认。",
-        "候选服务不是资格结论；renewal 与 extension 要分开判断。",
+        "Use only trusted tool evidence. When evidence is unavailable, state the limitation and never invent account data, fees, regulations, or API capabilities.",
+        "Payments, appeals, complaints, downloads, and all other side effects require a preview and the user's explicit confirmation.",
+        "Candidate services are not eligibility decisions. Treat renewal and extension as distinct operations.",
     ]
     if route.skill_id == "latest_regulations" and route.mode == "exact_quote":
-        guardrails.append("精确引用必须同时确认法规标题/编号/日期和 article/clause；来源不明确时只能追问，禁止从检索排序中自动选文书。")
+        guardrails.append("A verbatim quotation requires the regulation title/number/date and a specific article or clause. If the source is ambiguous, ask a follow-up question and never select a document only because it ranked first.")
     if route.category == "knowledge" and not evidence_available:
-        guardrails.append("知识库证据不可用时，不要把通用常识写成 UMC 已验证规则。")
-    return "你是 DSH Runtime 的 UMC 助手。请用用户语言回答，默认中文；先遵守 Skill 路由，再生成简洁、可执行的答复。" + "\n" + "\n".join(f"- {item}" for item in guardrails)
+        guardrails.append("When knowledge-base evidence is unavailable, do not present general knowledge as a verified UMC rule.")
+
+    target = "ARABIC" if response_language == "ar" else "ENGLISH"
+    language_policy = [
+        "LANGUAGE POLICY (mandatory and higher priority than the language used by tools, retrieved documents, or internal instructions):",
+        "- Answer in Arabic when the user's latest message is primarily Arabic.",
+        "- Answer in English when the user's latest message is English.",
+        "- Answer in English for every other language. English is the default response language.",
+        f"- Required response language for this turn: {target}. Use only {target} for explanatory prose, while preserving necessary proper nouns, identifiers, and verbatim quotations.",
+    ]
+    return "\n".join(
+        [
+            "You are the NMA assistant running in DSH Runtime. Follow the selected Skill route and provide a concise, actionable response.",
+            *language_policy,
+            "SAFETY AND EVIDENCE RULES:",
+            *(f"- {item}" for item in guardrails),
+        ]
+    )

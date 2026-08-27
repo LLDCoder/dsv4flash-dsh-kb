@@ -11,6 +11,8 @@
 - 幂等：`clientMessageId` 有唯一约束，重复提交不会重复创建用户事件。
 - Runtime/Instance Manager：每个 conversation 一个独立逻辑租约，状态包含 `CLEAN_IDLE/STARTING/READY/BUSY/DRAINING/CLEANING/DEAD`。
 - LLM Adapter：未配置模型时使用 mock，配置 `LLM_BASE_URL`/`LLM_API_KEY` 后调用 OpenAI-compatible streaming API（默认模型名 `deepseek-v4-flash`）。
+- 对话语言策略：英文问题使用英文回答，阿语问题使用阿语回答，中文及其他语言统一回退到英文；工具结果、知识库内容或内部流程提示的语言不会覆盖该规则。
+- 会话初始化：新建会话后持久化一条 `assistant.welcome` 英阿双语欢迎事件，并通过 WS/SSE 的序号回放机制展示；该事件不参与正常问答完成判定。
 - 配置与 Skill API：提供版本化配置更新和运维 Skill CRUD，终端测试界面只选择会话，不上传 Skill。
 - OCR Tool Gateway：只由 DSH Runtime 调用的内部工具服务，转发到 PaddleOCR-VL-1.6 产线 API；不向前端暴露 OCR 业务接口。
 - Knowledge Tool Gateway：只由 DSH Runtime 调用的内部知识库工具服务，转发到 77 服务器 `18085` 的 `public/knowledge` 匿名只读接口；目录、文件和检索请求不向上游携带 Authorization。DSH 逻辑默认 `top_k=32`，向上游传递 BM25、图谱和向量三路检索模式；当前 77 代理对单次 `top_k` 的校验上限为 20，因此网关仅将线路参数安全截断到 `KNOWLEDGE_UPSTREAM_MAX_TOP_K=20`，避免上游 422；不开放上传、解析、删除、移动或原文件下载。
@@ -18,15 +20,32 @@
 
 当前 MVP 的运行面使用后端容器内的逻辑 Runtime Lease，接口已将实例管理边界独立出来；后续可以把 `RuntimeManager` 的启动/清理实现替换为 Docker/Kubernetes 动态容器调度，而不改变会话、事件和 WebSocket 契约。
 
+## 对话语言与欢迎语
+
+DSH 根据用户最新一条消息确定当前轮次的输出语言。主要为阿语时使用阿语；英文及其他语言均使用英文。系统提示词会显式写入本轮目标语言，避免上游 Tool、检索证据或内部流程提示改变回答语言。
+
+每个新会话的首个持久化事件为以下双语欢迎语：
+
+> Hello! 👋 I’m your AI assistant for the National Media Authority (NMA). Tell me about your work or publishing needs, and I’ll help you find the right services.
+>
+> مرحباً! 👋 أنا مساعدك الذكي من الهيئة الوطنية للإعلام (NMA). أخبرني عن عملك أو احتياجاتك للنشر، وسأساعدك في اختيار الخدمات المناسبة.
+
 ## PaddleOCR-VL-1.6
 
-OCR Gateway 默认指向 `http://ocr-vl-api:8080`。官方 PaddleOCR-VL-1.6 产线容器和底层 VLM 推理容器放在 `ocr-gpu` Compose profile 中，使用 NVIDIA/CUDA GPU：
+OCR Gateway 默认指向 `http://ocr-vl-api:8080`。`docker compose up -d` 会启动官方 PaddleOCR-VL API 和底层 NVIDIA/CUDA VLM 推理容器，模型固定为 `PaddleOCR-VL-1.6-0.9B`（可通过 `OCR_MODEL_NAME` 配置）：
 
 ```bash
-docker compose --profile ocr-gpu up -d
+docker compose up -d
 ```
 
-不启用该 profile 时，主 Chat 闭环仍可启动；调用 OCR 会返回上游不可用，避免在没有 GPU 的开发机上自动拉取几十 GB 的模型镜像。官方服务默认使用 `PaddleOCR-VL-1.6-0.9B`，并提供 `POST /layout-parsing` 服务接口。生产环境可通过 `OCR_VLM_BACKEND` 在 `vllm`/`fastdeploy` 间选择，并按显卡调整 `OCR_GPU_DEVICE`。
+OCR 是 DSH 的正式内部工具依赖，未配置可用 NVIDIA GPU 时 OCR 链路不会被标记为就绪。官方服务提供 `POST /layout-parsing`，其中 `file` 接受 URL 或 Base64，`fileType=0` 表示 PDF、`fileType=1` 表示图片。生产环境可通过 `OCR_VLM_BACKEND` 在 `vllm`/`fastdeploy` 间选择，并按显卡调整 `OCR_GPU_DEVICE`。
+
+可在容器内分别检查 Gateway 存活和完整 OCR 链路就绪状态：
+
+```bash
+docker compose exec ocr-gateway python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8100/healthz').read().decode())"
+docker compose exec ocr-gateway python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8100/readyz').read().decode())"
+```
 
 DSH Runtime 的本地工具边界可用以下开发标记验证（生产环境由 DSH Harness 原生 tool-call 替换）：
 
@@ -134,6 +153,13 @@ docker compose down
 DB/Redis URL 只作为部署参数保存，修改后需要重新创建 backend 容器；LLM、知识库、平台和 OCR Tool 的地址/密钥在后续请求中热更新。生产环境应关闭开发 Principal 回退并由受信任 API Gateway 注入 `X-User-Id`/`X-Tenant-Id`。
 
 如需删除本项目数据库和 Redis 数据，明确确认后再执行 `docker compose down -v`。
+
+## 变更记录
+
+- 2026-08-28：PaddleOCR-VL-1.6 改为 Docker 默认必需服务，固定 `PaddleOCR-VL-1.6-0.9B`，增加完整链路就绪检查并修复官方 VLM 服务网络解析；新增英/阿语输出策略和会话双语欢迎事件。
+- 2026-08-27：完成 Docker DSH 基线、请求级 UMC Token 匿名代理、草稿写入确认、知识库 `top_k` 兼容与 public 代理鉴权修复，并执行 Term1/Term2 全量回归。
+
+逐提交说明、验证记录和兼容性变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## WS 示例
 

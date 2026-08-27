@@ -178,10 +178,16 @@ async function runTests() {
 async function createConversation() {
   const data = await api("/api/v1/conversations", { method: "POST", body: JSON.stringify({ workspace: "demo", skill_profile: "default", runtime_profile: "default" }) });
   state.conversationId = data.conversationId;
+  state.seq = 0;
+  state.assistantNode = null;
   $("conversationId").value = state.conversationId;
   $("runtimeId").textContent = data.runtimeId || "等待首条消息";
   $("lastSeq").textContent = data.lastSeq;
+  $("events").innerHTML = "";
   addEvent("system", `已创建 ${state.conversationId}`, data.dshSessionId);
+  if (state.ws?.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: "subscribe", conversationId: state.conversationId, afterSeq: 0 }));
+  }
   return data;
 }
 
@@ -193,9 +199,12 @@ function connect() {
     setConnection("已连接", true);
     const umcToken = $("umcToken")?.value.trim() || "";
     if (umcToken) state.ws.send(JSON.stringify({ type: "auth", umctoken: umcToken }));
-    if (!state.conversationId && !$("conversationId").value) await createConversation();
-    state.conversationId = state.conversationId || $("conversationId").value;
-    state.ws.send(JSON.stringify({ type: "subscribe", conversationId: state.conversationId, afterSeq: state.seq }));
+    if (!state.conversationId && !$("conversationId").value) {
+      await createConversation();
+    } else {
+      state.conversationId = state.conversationId || $("conversationId").value;
+      state.ws.send(JSON.stringify({ type: "subscribe", conversationId: state.conversationId, afterSeq: state.seq }));
+    }
   };
   state.ws.onclose = () => setConnection("已断开", false);
   state.ws.onerror = () => setConnection("连接错误", false);
@@ -209,7 +218,9 @@ function connect() {
     state.seq = Math.max(state.seq, packet.seq || 0);
     $("lastSeq").textContent = state.seq;
     const data = packet.data || {};
-    if (packet.eventType === "assistant.chunk") {
+    if (packet.eventType === "assistant.welcome") {
+      addEvent("assistant.welcome", data.content || "", `seq ${packet.seq}`);
+    } else if (packet.eventType === "assistant.chunk") {
       if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", "", `seq ${packet.seq}`);
       state.assistantNode.textContent += data.content || "";
       $("events").scrollTop = $("events").scrollHeight;

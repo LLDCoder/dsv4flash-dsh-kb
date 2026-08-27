@@ -37,7 +37,12 @@ class TestCaseRunRequest(APIModel):
 
 class OCRRequest(APIModel):
     file: str = Field(min_length=1, description="可访问的文件 URL 或 Base64 内容")
-    file_type: int | None = Field(default=None, validation_alias=AliasChoices("fileType", "file_type"))
+    file_type: int | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        validation_alias=AliasChoices("fileType", "file_type"),
+    )
     options: dict[str, Any] = Field(default_factory=dict)
 
 

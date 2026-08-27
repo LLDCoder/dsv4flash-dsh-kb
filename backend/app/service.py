@@ -16,8 +16,20 @@ from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
 from .runtime import RuntimeManager
-from .skills import build_flow_prompt, build_knowledge_query, build_system_prompt, exact_quote_source_sufficient, resolve_skill
+from .skills import (
+    build_flow_prompt,
+    build_knowledge_query,
+    build_system_prompt,
+    exact_quote_source_sufficient,
+    resolve_skill,
+    response_language_for,
+)
 from .tool_gateway import ToolGateway, parse_tool_request
+
+
+WELCOME_MESSAGE = """Hello! 👋 I’m your AI assistant for the National Media Authority (NMA). Tell me about your work or publishing needs, and I’ll help you find the right services.
+
+مرحباً! 👋 أنا مساعدك الذكي من الهيئة الوطنية للإعلام (NMA). أخبرني عن عملك أو احتياجاتك للنشر، وسأساعدك في اختيار الخدمات المناسبة."""
 
 
 class EventBroker:
@@ -130,6 +142,12 @@ class DSHService:
         db.add(conversation)
         await db.commit()
         await db.refresh(conversation)
+        await self.append_event(
+            db,
+            conversation,
+            "assistant.welcome",
+            {"content": WELCOME_MESSAGE, "source": "conversation.initialization"},
+        )
         return conversation
 
     async def get_owned_conversation(self, db: AsyncSession, principal: Principal, conversation_id: str) -> Conversation:
@@ -216,6 +234,7 @@ class DSHService:
                     await self.append_event(db, conversation, "turn.started", {"requestId": principal.request_id, "runtimeId": conversation.runtime_id})
                     latest_user = next((event for event in reversed(history) if event.event_type == "user.message"), None)
                     latest_content = latest_user.event_json.get("content", "") if latest_user else ""
+                    response_language = response_language_for(latest_content)
                     route = resolve_skill(latest_content)
                     tool_request = parse_tool_request(latest_content) if latest_user else None
                     if not tool_request and route.category == "knowledge" and route.mode == "exact_quote" and not exact_quote_source_sufficient(latest_content):
@@ -259,9 +278,9 @@ class DSHService:
                             "requestId": principal.request_id,
                         },
                     )
-                    messages.insert(0, {"role": "system", "content": build_system_prompt(route, evidence_available=bool(tool_request))})
+                    messages.insert(0, {"role": "system", "content": build_system_prompt(route, evidence_available=bool(tool_request), response_language=response_language)})
                     if route.category in {"data_query", "api_call"}:
-                        messages.insert(1, {"role": "system", "content": "流程交互约束：" + json.dumps(build_flow_prompt(route), ensure_ascii=False)})
+                        messages.insert(1, {"role": "system", "content": "FLOW INTERACTION CONSTRAINTS: " + json.dumps(build_flow_prompt(route), ensure_ascii=False)})
                     if tool_request:
                         tool_name, arguments = tool_request
                         safe_arguments = {
