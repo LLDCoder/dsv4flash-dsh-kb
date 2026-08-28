@@ -1,0 +1,251 @@
+.identity-ocr-modal-root {
+  .identity-ocr-modal--size-scan-fullscreen {
+    .identity-ocr-modal__scene--scan {
+      position: relative;
+      min-height: 100vh;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    .identity-ocr-modal__scan-stage-label {
+      display: none;
+    }
+
+    .identity-ocr-modal__scan-copy {
+      position: absolute;
+      top: calc(50% - 275px);
+      left: 50%;
+      z-index: 3;
+      width: max-content;
+      max-width: calc(100vw - 48px);
+      padding: 0;
+      text-align: center;
+      transform: translateX(-50%);
+    }
+
+    .identity-ocr-modal__scan-title {
+      margin: 0;
+      display: block;
+      width: 100%;
+      color: #cba344;
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 24px;
+      white-space: nowrap;
+      overflow: visible;
+    }
+
+    .identity-ocr-modal__scan-description {
+      margin: 16px auto 0;
+      max-width: none;
+      color: #f9f7ed;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 20px;
+      white-space: nowrap;
+    }
+
+    .identity-ocr-modal__scan-surface {
+      position: absolute;
+      inset: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      border-radius: 0;
+      background: transparent;
+    }
+
+    .identity-ocr-modal__video--background,
+    .identity-ocr-modal__captured-image--background {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      filter: blur(18px);
+      transform: scale(1.04);
+      opacity: 1;
+    }
+
+    .identity-ocr-modal__captured-image {
+      pointer-events: none;
+    }
+
+    .identity-ocr-modal__scan-surface-overlay {
+      display: none;
+    }
+
+    .identity-ocr-modal__scan-frame {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      z-index: 2;
+      width: min(540px, calc(100vw - 48px), calc((100vh - 200px) * 1.542857));
+      height: auto;
+      aspect-ratio: 540 / 350;
+      border-radius: 16px;
+      overflow: hidden;
+      background: transparent;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+      transform: translate(-50%, -50%);
+    }
+
+    .identity-ocr-modal__video--frame,
+    .identity-ocr-modal__captured-image--frame {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .identity-ocr-modal__scan-frame-outline {
+      position: absolute;
+      inset: 0;
+      border: 4px solid #e1e3e5;
+      border-radius: 16px;
+      pointer-events: none;
+    }
+
+    .identity-ocr-modal__actions--scan {
+      position: absolute;
+      left: 50%;
+      top: calc(50% + 215px);
+      z-index: 3;
+      width: 533px;
+      justify-content: center;
+      gap: 27px;
+      margin-top: 0;
+      transform: translateX(-50%);
+    }
+
+    .identity-ocr-modal__action-button {
+      width: 253px;
+      min-width: 253px;
+      height: 48px;
+      padding: 0 24px;
+      border-radius: 8px;
+    }
+
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--outline {
+      background: #ffffff;
+      border-color: #92722a;
+      color: #92722a;
+    }
+
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--outline:hover:not(:disabled),
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--outline:focus:not(:disabled),
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--outline:focus-visible:not(:disabled) {
+      background: #ffffff;
+      border-color: #92722a;
+      color: #92722a !important;
+    }
+
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--outline.ant-btn[disabled],
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--outline.ant-btn[disabled]:hover,
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--outline.ant-btn[disabled]:focus {
+      background: #ffffff;
+      border-color: #92722a;
+      color: #92722a;
+    }
+
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--primary {
+      background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+      border: none;
+      color: #ffffff;
+    }
+
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--primary:hover:not(:disabled),
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--primary:focus:not(:disabled),
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--primary:focus-visible:not(:disabled) {
+      background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+      border: none;
+      color: #ffffff !important;
+    }
+
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--primary.ant-btn[disabled],
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--primary.ant-btn[disabled]:hover,
+    .identity-ocr-modal__actions--scan .identity-ocr-modal__action-button--primary.ant-btn[disabled]:focus {
+      background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+      border: none;
+      color: #ffffff;
+    }
+  }
+}
+
+html[dir="rtl"] .identity-ocr-modal-root {
+  .identity-ocr-modal--size-scan-fullscreen {
+    .identity-ocr-modal__actions--scan,
+    .identity-ocr-modal__scan-copy {
+      left: 50%;
+      right: auto;
+    }
+  }
+}
+
+@media (max-width: 1023px) {
+  .identity-ocr-modal-root {
+    .identity-ocr-modal--size-scan-fullscreen {
+      .identity-ocr-modal__scan-copy {
+        top: calc(50% - 251px);
+        width: max-content;
+        max-width: calc(100vw - 40px);
+      }
+
+      .identity-ocr-modal__actions--scan {
+        top: calc(50% + 199px);
+        width: calc(100vw - 48px);
+        max-width: 533px;
+        gap: 16px;
+      }
+
+      .identity-ocr-modal__action-button {
+        width: calc((100% - 16px) / 2);
+        min-width: 0;
+      }
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .identity-ocr-modal-root {
+    .identity-ocr-modal--size-scan-fullscreen {
+      .identity-ocr-modal__scan-copy {
+        top: calc(50% - 232px);
+        width: calc(100% - 40px);
+      }
+
+      .identity-ocr-modal__scan-frame {
+        width: min(calc(100vw - 40px), calc((100vh - 220px) * 1.542857));
+        height: auto;
+        aspect-ratio: 540 / 350;
+      }
+
+      .identity-ocr-modal__scan-title {
+        font-size: 14px;
+        line-height: 20px;
+        white-space: normal;
+      }
+
+      .identity-ocr-modal__scan-description {
+        margin-top: 12px;
+        font-size: 12px;
+        line-height: 18px;
+        white-space: normal;
+      }
+
+      .identity-ocr-modal__actions--scan {
+        top: calc(50% + 198px);
+        width: calc(100% - 40px);
+        max-width: 340px;
+        gap: 12px;
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .identity-ocr-modal__action-button {
+        width: 100%;
+        min-width: 0;
+      }
+    }
+  }
+}

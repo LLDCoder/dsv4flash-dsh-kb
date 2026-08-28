@@ -1,0 +1,524 @@
+// ===== Public Enquiries & Feedback — pixel-faithful to Figma (node 28915:4717 / 28918:5202) =====
+
+.public-enquiry {
+  display: flex;
+  justify-content: center;
+  padding: 52px 16px 40px;
+
+  .pe-card {
+    width: 1280px;
+    max-width: 100%;
+    background: #ffffff;
+    border-radius: 40px;
+    overflow: hidden;
+  }
+
+  // ---- Title ----
+  .pe-title {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 40px 80px;
+
+    .pe-back {
+      width: 24px;
+      height: 24px;
+      color: #361e12;
+      cursor: pointer;
+      flex: none;
+    }
+
+    .pe-title-text {
+      font-family: Inter;
+      font-weight: 800;
+      font-size: 32px;
+      line-height: 1.2;
+      color: #361e12;
+    }
+  }
+
+  // ---- Form grid (2 columns) ----
+  .pe-form .pe-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 24px;
+    row-gap: 24px;
+    padding: 0 80px 40px;
+
+    .ant-form-item {
+      margin-bottom: 0;
+    }
+
+    .pe-notes-cell {
+      grid-column: span 2;
+      position: relative;
+    }
+  }
+
+  // labels: Body3 Medium 14 / #361E12, 8px gap to control
+  .ant-form-item-label {
+    padding-bottom: 8px !important;
+
+    >label {
+      height: auto;
+      font-family: Inter;
+      font-weight: 500;
+      font-size: 14px;
+      line-height: 20px;
+      color: #361e12;
+
+      &::after {
+        display: none !important;
+      }
+
+      &::before {
+        display: none !important;
+      }
+    }
+  }
+
+  .pe-req {
+    color: #ea4f49;
+    margin-inline-start: 2px;
+  }
+
+  // Attachment label: text + question-mark icon (hint shown via Tooltip on hover)
+  .pe-attach-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .pe-attach-info {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+  }
+
+  // inputs / selects: 48px, #E1E3E5 border, 8px radius, placeholder #797E86
+  .pe-input,
+  .pe-input.ant-input {
+    height: 48px;
+    padding: 14px 16px;
+    border: 1px solid #e1e3e5;
+    border-radius: 8px;
+    font-family: Inter;
+    font-size: 14px;
+    line-height: 20px;
+    color: #361e12;
+
+    &::placeholder {
+      color: #797e86;
+    }
+  }
+
+  .pe-select.ant-select {
+    .ant-select-selector {
+      height: 48px !important;
+      padding: 0 16px !important;
+      border: 1px solid #e1e3e5 !important;
+      border-radius: 8px !important;
+      display: flex;
+      align-items: center;
+    }
+
+    .ant-select-selection-search-input {
+      height: 46px;
+    }
+
+    .ant-select-selection-item,
+    .ant-select-selection-placeholder {
+      line-height: 46px;
+      font-family: Inter;
+      font-size: 14px;
+      color: #361e12;
+    }
+
+    .ant-select-selection-placeholder {
+      color: #797e86;
+    }
+  }
+
+  // radio group — gold accent, matches Figma
+  .pe-radio-item {
+    .ant-radio-group {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 0;
+    }
+
+    .ant-radio-wrapper {
+      font-family: Inter;
+      font-size: 14px;
+      color: #361e12;
+      margin-inline-end: 0;
+    }
+
+    .ant-radio-checked .ant-radio-inner {
+      border-color: #cba344;
+      background: #cba344;
+
+      &::after {
+        background-color: #ffffff;
+      }
+    }
+
+    .ant-radio:hover .ant-radio-inner {
+      border-color: #cba344;
+    }
+  }
+
+  // upload box: 48px, cloud + "Upload File", #E1E3E5 border
+  .ant-form-item .document-viewer-wrapper {
+
+    .file-upload-wrapper,
+    .upload-input-wrapper {
+      width: 100%;
+    }
+
+    .ant-upload,
+    .ant-upload-select {
+      width: 100%;
+      display: block;
+    }
+  }
+
+  // notes textarea + counter
+  .pe-notes-cell {
+    .pe-textarea.ant-input {
+      min-height: 110px;
+      padding: 14px 16px 24px;
+      border: 1px solid #e1e3e5;
+      border-radius: 8px;
+      font-family: Inter;
+      font-size: 14px;
+      line-height: 20px;
+      color: #361e12;
+
+      &::placeholder {
+        color: #797e86;
+      }
+    }
+  }
+
+  .pe-notes-counter {
+    position: absolute;
+    right: 16px;
+    bottom: 10px;
+    font-family: Inter;
+    font-size: 12px;
+    line-height: 16px;
+    color: #797e86;
+    pointer-events: none;
+  }
+
+  // ---- Footer ----
+  .pe-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 16px;
+    padding: 24px 40px;
+    box-shadow: 0px -4px 8px 0px rgba(0, 0, 0, 0.04);
+  }
+}
+
+// ===== Shared buttons (form footer + modal CTA) =====
+.pe-btn {
+  height: 48px;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 24px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+}
+
+.pe-btn-outline {
+  background: transparent;
+  border: 1px solid #92722a;
+  color: #92722a;
+
+  &:hover {
+    opacity: 0.85;
+  }
+}
+
+.pe-btn-primary {
+  background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+  color: #ffffff;
+  border: none;
+
+  &:hover {
+    opacity: 0.9;
+  }
+
+  &:disabled {
+    background: #e1e3e5;
+    color: #9ea2a9;
+    cursor: not-allowed;
+    opacity: 1;
+  }
+}
+
+// ===== Success modal — Figma node 28918:5202 =====
+.pe-success-modal {
+  width: 720px !important; // via CSS so it scales with the app's rem system (not a fixed px prop)
+
+  .ant-modal-content {
+    border-radius: 20px;
+    padding: 0;
+    overflow: hidden;
+    backdrop-filter: blur(5px);
+  }
+
+  .ant-modal-body {
+    padding: 0;
+  }
+
+  .ant-modal-close {
+    top: 20px;
+    inset-inline-end: 40px;
+    width: 24px;
+    height: 24px;
+    color: #797e86;
+  }
+
+  .ant-modal-close-x {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    margin: 0;
+    line-height: 24px;
+  }
+
+  .pe-success-close-icon {
+    position: relative;
+    display: block;
+    width: 14px;
+    height: 14px;
+  }
+
+  .pe-success-close-icon::before,
+  .pe-success-close-icon::after {
+    position: absolute;
+    top: 6.25px;
+    inset-inline-start: 0;
+    width: 18px;
+    height: 1.5px;
+    background: #797e86;
+    border-radius: 1px;
+    content: "";
+  }
+
+  .pe-success-close-icon::before {
+    transform: rotate(45deg);
+  }
+
+  .pe-success-close-icon::after {
+    transform: rotate(-45deg);
+  }
+
+  .pe-success-body {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 60px 40px 40px; // 20px header(close) + 40px top of body
+  }
+
+  .pe-success-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .pe-success-icon {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: #f9f7ed;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    img {
+      width: 72px;
+      height: 72px;
+      object-fit: contain;
+    }
+  }
+
+  .pe-success-tt {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    text-align: center;
+  }
+
+  .pe-success-title {
+    font-family: Inter;
+    font-weight: 700;
+    font-size: 26px;
+    line-height: 1.2;
+    color: #361e12;
+  }
+
+  .pe-success-sub {
+    font-family: Inter;
+    font-weight: 500;
+    font-size: 16px;
+    line-height: 24px;
+    color: #5f646d;
+  }
+
+  .pe-ticket-box {
+    align-self: stretch;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 24px;
+    border-radius: 12px;
+    background: linear-gradient(90deg, #f7f6f3 0%, #f6f6f5 56%, #f7f2eb 100%);
+
+    .pe-ticket-inner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pe-ticket-label {
+      font-family: Inter;
+      font-weight: 400;
+      font-size: 16px;
+      line-height: 24px;
+      color: #361e12;
+    }
+
+    .pe-ticket-value {
+      font-family: Inter;
+      font-weight: 600;
+      font-size: 18px;
+      line-height: 22px;
+      color: #361e12;
+    }
+
+    .pe-ticket-copy {
+      display: inline-flex;
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+      color: #361e12;
+    }
+  }
+
+  // dashed divider + rating
+  .pe-rating {
+    padding-top: 24px;
+    border-top: 1px dashed #e1e3e5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .pe-rating-title {
+    font-family: Inter;
+    font-weight: 700;
+    font-size: 20px;
+    line-height: 24px;
+    color: #343a40;
+    text-align: center;
+  }
+
+  .pe-rating-stars {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: min(100%, 384px);
+    min-width: 0;
+  }
+
+  .pe-stars,
+  .pe-stars.ant-rate,
+  .pe-stars .ant-rate {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    white-space: nowrap;
+    font-size: 32px !important;
+    color: #cba344;
+  }
+
+  .pe-stars .ant-rate-star:not(:last-child) {
+    margin-inline-end: 0 !important;
+  }
+
+  .pe-stars .ant-rate-star .anticon {
+    font-size: 32px;
+  }
+
+  .pe-stars .ant-rate-star .anticon-star svg {
+    overflow: visible;
+  }
+
+  .pe-stars
+    .ant-rate-star-zero
+    .ant-rate-star-second
+    .anticon-star
+    path {
+    stroke: #a97925;
+    stroke-linejoin: round;
+    stroke-width: 48px;
+  }
+
+  .pe-stars .ant-rate-star-zero .ant-rate-star-second .anticon-star svg {
+    fill: transparent;
+  }
+
+  .pe-rating-labels {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+
+    span {
+      max-width: 48%;
+      font-family: Inter;
+      font-weight: 500;
+      font-size: 12px;
+      line-height: 16px;
+      color: #797e86;
+
+      &:last-child {
+        text-align: end;
+      }
+    }
+  }
+
+  .pe-rating-submit {
+    align-self: center;
+    min-width: 104px;
+    height: 36px;
+    padding: 8px 12px;
+    justify-content: center;
+    align-items: center;
+  }
+}
+
+// ---- RTL ----
+html[dir="rtl"] .public-enquiry .pe-title .pe-back {
+  transform: scaleX(-1);
+}

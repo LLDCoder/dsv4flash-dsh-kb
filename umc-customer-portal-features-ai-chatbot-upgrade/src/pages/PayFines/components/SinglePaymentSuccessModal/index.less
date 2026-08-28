@@ -1,0 +1,106 @@
+.pay-fines-payment-modal.pay-fines-single-payment-success-modal {
+  .ant-modal-body {
+    padding: 48px 40px 40px;
+  }
+}
+
+.pay-fines-single-payment-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.pay-fines-single-payment-success__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #f9f7ed;
+
+  img {
+    display: block;
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+  }
+}
+
+.pay-fines-single-payment-success__title {
+  margin-top: 24px;
+  color: #361e12;
+  font-family: Inter;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 31px;
+}
+
+.pay-fines-single-payment-success__description {
+  margin-top: 8px;
+  color: #5f646d;
+  font-family: Inter;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 24px;
+}
+
+.pay-fines-single-payment-success__actions {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.pay-fines-single-payment-success__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  height: 48px;
+  border: 1px solid #92722a;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #92722a;
+  cursor: pointer;
+  font-family: Inter;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pay-fines-single-payment-success__button--primary {
+  border: 0;
+  background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+  color: #ffffff;
+}
+
+.pay-fines-single-payment-success__button:disabled {
+  border-color: #e1e3e5;
+  background: #e1e3e5;
+  color: #9ea2a9;
+  cursor: not-allowed;
+}
+
+.pay-fines-single-payment-success > .payment-success-feedback {
+  width: calc(100% + 80px);
+  margin-top: 40px;
+}
+
+@media (max-width: 768px) {
+  .pay-fines-payment-modal.pay-fines-single-payment-success-modal .ant-modal-body {
+    padding: 40px 24px 32px;
+  }
+
+  .pay-fines-single-payment-success > .payment-success-feedback {
+    width: calc(100% + 48px);
+  }
+
+  .pay-fines-single-payment-success__actions {
+    width: 100%;
+  }
+
+  .pay-fines-single-payment-success__button {
+    width: calc(50% - 8px);
+  }
+}

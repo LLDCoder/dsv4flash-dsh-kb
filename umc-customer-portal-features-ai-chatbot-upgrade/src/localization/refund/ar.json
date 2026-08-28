@@ -1,0 +1,135 @@
+{
+  "list": {
+    "searchPlaceholder": "بحث",
+    "allCategories": "جميع الفئات",
+    "allStatus": "جميع الحالات",
+    "addRefundRequest": "إضافة طلب استرداد",
+    "noData": "لا توجد بيانات"
+  },
+  "addForm": {
+    "title": "إضافة طلب استرداد",
+    "noticeTitle": "تنبيه مهم",
+    "noticeContent": "يُرجى التأكد من صحة جميع المعلومات. تستغرق معالجة طلبات الاسترداد عادةً من 3 إلى 5 أيام عمل. وبعد الموافقة، تُعاد المبالغ إلى وسيلة الدفع الأصلية خلال 7 إلى 14 يوم عمل.",
+    "refundCategory": "فئة الاسترداد",
+    "referenceNumber": "رقم المخالفة / رقم الطلب",
+    "refundAmount": "مبلغ الاسترداد",
+    "refundReason": "سبب الاسترداد",
+    "description": "الوصف",
+    "attachments": "المرفقات",
+    "uploadTip": "الحد الأقصى للحجم: 4 ميجابايت. أنواع الملفات: JPG وJPEG وPNG وPDF.",
+    "submit": "تقديم"
+  },
+  "pagination": {
+    "total": "الإجمالي {{count}}",
+    "pageOfTotal": "{{current}}/{{pages}}"
+  },
+  "table": {
+    "applicationNo": "رقم الطلب",
+    "refundCategory": "فئة الاسترداد",
+    "referenceNo": "الرقم المرجعي",
+    "refundReason": "سبب الاسترداد",
+    "refundAmount": "مبلغ الاسترداد",
+    "requestTime": "وقت الطلب",
+    "refundStatus": "حالة الاسترداد",
+    "actions": "الإجراءات",
+    "cancel": "إلغاء"
+  },
+  "category": {
+    "fineRefund": "استرداد غرامة",
+    "applicationRefund": "استرداد رسوم الطلب"
+  },
+  "messages": {
+    "loadListFailed": "تعذر تحميل قائمة طلبات الاسترداد",
+    "cancelSuccess": "تم إلغاء طلب الاسترداد بنجاح"
+  },
+  "successModal": {
+    "title": "تم الإرسال بنجاح",
+    "content": "تم تقديم طلب الاسترداد بنجاح. يُتوقع إكمال المراجعة خلال 3 إلى 5 أيام عمل.",
+    "applicationNumber": "رقم الطلب",
+    "viewDetails": "عرض التفاصيل",
+    "close": "إغلاق"
+  },
+  "cancelModal": {
+    "title": "إلغاء طلب الاسترداد",
+    "content": "هل أنت متأكد من إلغاء طلب الاسترداد هذا؟ لا يمكن التراجع عن هذا الإجراء."
+  },
+  "refundStatus": {
+    "under_review": "قيد المراجعة",
+    "pending_refund": "بانتظار الاسترداد",
+    "approved": "بانتظار الاسترداد",
+    "rejected": "مرفوض",
+    "refunded": "تم الاسترداد",
+    "cancelled": "ملغى",
+    "unknown": "غير معروف"
+  },
+  "detail": {
+    "summary": {
+      "refundNumber": "رقم الاسترداد",
+      "refundCategory": "فئة الاسترداد",
+      "submissionTime": "وقت التقديم",
+      "status": "الحالة"
+    },
+    "banner": {
+      "refundRejected": "تم رفض الاسترداد",
+      "pendingRefund": "بانتظار الاسترداد",
+      "attachment": "مرفق"
+    },
+    "title": {
+      "fineInformation": "معلومات طلب الاسترداد",
+      "applicationInformation": "تفاصيل الاسترداد"
+    },
+    "fields": {
+      "refundCategory": "فئة الاسترداد",
+      "fineNumber": "رقم الغرامة",
+      "applicationNumber": "رقم الطلب",
+      "refundReason": "سبب الاسترداد",
+      "refundAmount": "مبلغ الاسترداد"
+    },
+    "attachments": "المرفقات",
+    "notes": "ملاحظات",
+    "relatedPayment": "معلومات الدفع المرتبطة",
+    "payment": {
+      "transactionNumber": "رقم المعاملة",
+      "status": "الحالة",
+      "transactionType": "نوع المعاملة",
+      "lastUpdatedTime": "آخر وقت تحديث",
+      "paymentMethod": "طريقة الدفع",
+      "cardInformation": "معلومات البطاقة",
+      "amountCharged": "المبلغ المخصوم",
+      "applyFor": "مقدم لـ",
+      "description": "الوصف"
+    },
+    "communications": {
+      "title": "مراسلات الاسترداد",
+      "showMore": "عرض المزيد من الرسائل",
+      "empty": "لا توجد رسائل بعد.",
+      "placeholder": "إذا كنت بحاجة إلى مساعدة أو لديك تحديث، يرجى ترك رسالة لفريق الدعم.",
+      "send": "إرسال",
+      "sending": "جارٍ الإرسال...",
+      "you": "أنت"
+    },
+    "related": {
+      "violation": "المخالفة المرتبطة",
+      "application": "الطلب المرتبط",
+      "violationType": "نوع المخالفة",
+      "violator": "المخالِف",
+      "serviceName": "اسم الخدمة",
+      "submissionTime": "وقت التقديم",
+      "view": "عرض"
+    },
+    "attachmentModalTitle": "قائمة المرفقات",
+    "messages": {
+      "loadFailed": "تعذر تحميل تفاصيل الاسترداد.",
+      "cancelSuccess": "تم إلغاء طلب الاسترداد بنجاح",
+      "cancelFailed": "تعذر إلغاء طلب الاسترداد.",
+      "uploadSuccess": "تم رفع الملف بنجاح",
+      "uploadFailed": "تعذر رفع الملف.",
+      "maxFiles": "يمكنك رفع {{count}} ملفات فقط.",
+      "invalidFormat": "صيغة الملف غير صالحة. يرجى رفع ملف JPG أو JPEG أو PNG أو PDF.",
+      "maxFileSize": "حجم الملف يتجاوز {{mb}} ميجابايت",
+      "messageRequired": "يرجى إدخال رسالة قبل الإرسال.",
+      "sendSuccess": "تم إرسال الرسالة بنجاح.",
+      "sendFailed": "تعذر إرسال الرسالة."
+    }
+  }
+}

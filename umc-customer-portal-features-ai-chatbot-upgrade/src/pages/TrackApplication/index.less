@@ -1,0 +1,322 @@
+.track-application {
+  width: min(1280px, 100%);
+  box-sizing: border-box;
+  background-color: #fff;
+  border-radius: 40px;
+  padding: 32px 128px;
+  margin: 0 auto;
+
+  .pay-fines-back {
+    display: flex;
+    align-items: center;
+    line-height: 39px;
+    column-gap: 16px;
+    margin-bottom: 32px;
+
+    .go-back {
+      color: #361e12;
+      font-size: 24px;
+    }
+
+    .pay-fines-title {
+      font-family: Inter;
+      font-weight: 800;
+      font-size: 32px;
+      color: #361e12;
+    }
+  }
+
+  .track-application-filter {
+    border: 1px solid #e1e3e5;
+    padding: 24px;
+    border-radius: 10px;
+    margin-bottom: 32px;
+
+    .track-application-search {
+      display: flex;
+      justify-content: end;
+
+      .search-btn {
+        width: 131px;
+        height: 48px;
+      }
+    }
+
+    .track-application-form {
+      display: flex;
+      column-gap: 24px;
+
+      & > div {
+        flex: 1;
+      }
+    }
+  }
+
+  .track-application-empty {
+    margin: 120px auto 223px;
+    text-align: center;
+    font-family: Inter;
+    font-weight: 400;
+    font-size: 18px;
+    line-height: 26px;
+    color: #797e86;
+  }
+
+  .track-application-loading-height {
+    min-height: 337px;
+  }
+
+  .track-application-content-wrapper {
+    min-height: 337px;
+    border: 1px solid #e1e3e5;
+    border-radius: 10px;
+    min-width: 0;
+  }
+
+  .track-application-content {
+    padding: 24px;
+    border-radius: 12px;
+
+    .track-application-content-title {
+      display: flex;
+      align-items: center;
+      column-gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 32px;
+
+      .track-application-reference-number {
+        font-family: Inter;
+        font-weight: 700;
+        font-size: 24px;
+        line-height: 28px;
+        color: #361e12;
+      }
+    }
+
+    .track-application-content-data {
+      display: flex;
+      flex-wrap: wrap;
+      row-gap: 24px;
+    }
+
+    .track-application-data-item {
+      width: 50%;
+      min-width: 0;
+
+      .track-application-fields-name {
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 14px;
+        line-height: 20px;
+        color: #797e86;
+        margin-bottom: 6px;
+      }
+
+      .track-application-fields-value {
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 16px;
+        line-height: 24px;
+        color: #361e12;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .track-application-service-name {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        word-break: break-word;
+        line-height: 1.5;
+        max-height: 3em;
+      }
+    }
+  }
+
+  .track-application-status-tag {
+    align-items: center;
+    border-radius: 4px;
+    display: inline-flex;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    min-height: 26px;
+    padding: 2px 6px;
+    white-space: nowrap;
+
+    &--warning {
+      background-color: #fffbeb;
+      color: #f29f0e;
+    }
+
+    &--alert {
+      background-color: #fef5ee;
+      color: #eb5f24;
+    }
+
+    &--rejected {
+      background-color: #FEF2F2;
+      color: #EA4F49;
+    }
+
+    &--approved {
+      background-color: #f3faf4;
+      color: #4a9d5c;
+    }
+
+    &--neutral {
+      background-color: #f5f5f6;
+      color: #5f646d;
+    }
+  }
+
+  .track-application-refund-amount {
+    align-items: center;
+    display: inline-flex;
+    gap: 4px;
+  }
+
+  .track-application-login-required {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    padding: 24px;
+    border: none !important;
+    .track-application-login-required-content {
+      align-items: center;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+      max-width: 100%;
+      min-width: 0;
+      text-align: center;
+    }
+
+    .track-application-login-required-message {
+      color: #361e12;
+      white-space: pre-line;
+      font-family: Inter;
+      font-weight: 400;
+      font-style: Regular;
+      font-size: 18px;
+      leading-trim: NONE;
+      line-height: 22px;
+      letter-spacing: 0px;
+      text-align: center;
+    }
+    .track-application-login-required-message-error {
+      color: #ea4f49;
+      white-space: pre-line;
+      font-family: Inter;
+      font-weight: 400;
+      font-style: Regular;
+      font-size: 18px;
+      leading-trim: NONE;
+      line-height: 22px;
+      letter-spacing: 0px;
+      text-align: center;
+    }
+    .track-application-login-required-button {
+      min-width: 131px;
+    }
+  }
+}
+
+@media (max-width: 1024px) {
+  .track-application {
+    padding: 32px 48px;
+    border-radius: 32px;
+    .pay-fines-back .pay-fines-title {
+      font-size: 28px;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .track-application {
+    margin-top: 16px;
+    padding: 24px;
+    border-radius: 24px;
+    .pay-fines-back {
+      margin-bottom: 24px;
+      .pay-fines-title {
+        font-size: 24px;
+      }
+    }
+    .track-application-filter {
+      padding: 16px;
+      margin-bottom: 24px;
+      // Stack the reference-number / email fields on small screens.
+      .track-application-form {
+        flex-direction: column;
+        column-gap: 0;
+      }
+      .track-application-search {
+        margin-top: 8px;
+        .search-btn {
+          width: 100%;
+        }
+      }
+    }
+    .track-application-empty {
+      margin: 64px auto 80px;
+      font-size: 16px;
+    }
+    .track-application-content {
+      padding: 16px;
+      .track-application-reference-number {
+        font-size: 20px;
+      }
+    }
+    // Single column for the result fields on phones.
+    .track-application-data-item {
+      width: 100%;
+    }
+    .track-application-login-required {
+      min-height: 280px;
+      padding: 16px;
+
+      .track-application-login-required-message {
+        font-size: 16px;
+        line-height: 24px;
+      }
+    }
+  }
+}
+
+@media (max-width: 376px) {
+  .track-application {
+    padding: 16px;
+    border-radius: 20px;
+    .pay-fines-back {
+      column-gap: 12px;
+      margin-bottom: 20px;
+      .pay-fines-title {
+        font-size: 22px;
+      }
+    }
+    .track-application-empty {
+      margin: 48px auto 56px;
+      font-size: 15px;
+    }
+  }
+}
+
+// RTL: mirror the English layout. dir="auto" on the values keeps numeric/latin
+// content (date, "-", application no.) reading LTR so it never reorders, but
+// without this they align to their own ltr start (left) and break the grid —
+// force them to the RTL start edge so labels and values line up on the right.
+html[dir="rtl"] .track-application-content {
+  .track-application-fields-name,
+  .track-application-fields-value {
+    text-align: right;
+  }
+}
+
+// RTL: mirror the back arrow so it points to the right in Arabic.
+html[dir="rtl"] .track-application .pay-fines-back .go-back {
+  transform: scaleX(-1);
+}

@@ -1,0 +1,10 @@
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build:nma:staging
+
+FROM umc-customer-portal:ai-chatbot-65164f976706-ffai
+COPY --from=build /app/dist/ /usr/share/nginx/html/
+COPY profile-sync-config.json /usr/share/nginx/html/config.json

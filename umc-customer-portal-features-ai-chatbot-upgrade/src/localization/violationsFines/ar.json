@@ -1,0 +1,278 @@
+{
+  "pagination": {
+    "total": "الإجمالي {{count}}"
+  },
+  "common": {
+    "search": "بحث",
+    "startDate": "تاريخ البدء",
+    "endDate": "تاريخ الانتهاء",
+    "startTime": "وقت البدء",
+    "endTime": "وقت الانتهاء",
+    "back": "رجوع",
+    "cancel": "إلغاء",
+    "confirm": "تأكيد",
+    "submit": "تقديم",
+    "view": "عرض",
+    "appeal": "تظلم",
+    "payNow": "ادفع الآن",
+    "downloadReceipt": "تنزيل الإيصال",
+    "copyViolationNumber": "نسخ رقم المخالفة",
+    "downloading": "جارٍ التنزيل...",
+    "attachments": "المرفقات",
+    "attachment": "مرفق",
+    "notes": "ملاحظات",
+    "reported": "تم الإبلاغ",
+    "maintained": "تم الإبقاء",
+    "status": "الحالة",
+    "fineAmount": "مبلغ الغرامة",
+    "violationType": "نوع المخالفة",
+    "violator": "المخالِف",
+    "send": "إرسال",
+    "sending": "جارٍ الإرسال",
+    "noData": "لا توجد بيانات"
+  },
+  "tabs": {
+    "violations": "المخالفات والغرامات",
+    "appeals": "التظلمات",
+    "decision": "قرار التظلم",
+    "reported": "المخالفات المبلغ عنها"
+  },
+  "list": {
+    "pendingPayments": {
+      "payNow": "ادفع الآن"
+    },
+    "violations": {
+      "allTypes": "جميع أنواع المخالفات",
+      "allStatuses": "جميع الحالات",
+      "columns": {
+        "violationNo": "رقم المخالفة",
+        "violationType": "نوع المخالفة",
+        "fineAmountAed": "مبلغ الغرامة (درهم)",
+        "issuedTime": "وقت الإصدار",
+        "status": "الحالة",
+        "actions": "الإجراءات"
+      }
+    },
+    "appeals": {
+      "submit": "تقديم تظلم",
+      "allReasons": "جميع أسباب التظلم",
+      "allStatuses": "جميع الحالات",
+      "columns": {
+        "appealNo": "رقم التظلم",
+        "appealReason": "سبب التظلم",
+        "violationNumber": "رقم المخالفة",
+        "fineAmount": "مبلغ الغرامة",
+        "submissionTime": "وقت التقديم",
+        "status": "الحالة",
+        "action": "الإجراء"
+      },
+      "cancelModal": {
+        "title": "إلغاء التظلم؟",
+        "content": "سيؤدي ذلك إلى إلغاء التظلم. لا يمكن التراجع عن هذا الإجراء."
+      }
+    }
+  },
+  "batchPayment": {
+    "selectedLabelOne": "مخالفة محددة",
+    "selectedLabelOther": "مخالفات محددة",
+    "totalAmount": "المبلغ الإجمالي",
+    "payNow": "ادفع الآن",
+    "description": "دفع جماعي للغرامات لعدد {{count}} مخالفة",
+    "messages": {
+      "notAvailable": "بعض الغرامات المحددة لم تعد متاحة للدفع. يرجى تحديث القائمة والمحاولة مرة أخرى.",
+      "popupBlocked": "تم حظر النوافذ المنبثقة. يُرجى السماح لهذا الموقع بفتح النوافذ المنبثقة وعلامات تبويب جديدة في المتصفح، ثم إعادة محاولة الدفع.",
+      "purchaseFailed": "تعذر إنشاء طلب الدفع. يرجى المحاولة لاحقًا.",
+      "confirmationPending": "لا يزال تأكيد نتيجة الدفع قيد المعالجة. يرجى المحاولة قريبًا.",
+      "timeout": "لا يزال تأكيد نتيجة الدفع قيد المعالجة. يرجى تحديث القائمة لاحقًا."
+    },
+    "result": {
+      "successTitle": "تم الدفع بنجاح",
+      "successDescription": "تم تأكيد دفع الغرامة بنجاح.",
+      "failedTitle": "فشل الدفع",
+      "cancelledTitle": "تم إلغاء الدفع",
+      "failedDescription": "تعذر إكمال عملية الدفع.",
+      "failedAlert": "لم يتم تحصيل أي رسوم. ستبقى الغرامات المحددة متاحة للدفع بعد تحديث الحالة.",
+      "amount": "المبلغ:",
+      "cancel": "إلغاء",
+      "retry": "إعادة محاولة الدفع",
+      "ok": "موافق"
+    }
+  },
+  "submitAppeal": {
+    "title": "تقديم تظلم",
+    "selectCase": "اختر الحالة",
+    "selectCasePlaceholder": "اختر الحالة",
+    "selectCaseRequired": "يرجى اختيار حالة",
+    "appealReason": "سبب التظلم",
+    "appealReasonPlaceholder": "اختر سبب التظلم",
+    "appealReasonRequired": "يرجى اختيار سبب التظلم",
+    "attachment": "مرفق",
+    "attachmentTooltip": "يجب أن تكون الصورة حديثة وملونة وبخلفية بيضاء. يجب أن يكون الوجه كاملًا في المنتصف وأن يشغل حوالي 50٪ من الصورة. يجب أن تكون التعابير حيادية مع فتح العينين.",
+    "uploadFile": "رفع ملف",
+    "uploadTip": "الحد الأقصى للحجم: 5 ميجابايت. أنواع الملفات: jpg وjpeg وpng وpdf",
+    "notes": "ملاحظات",
+    "notesPlaceholder": "قدّم أي تفاصيل إضافية حول طلبك",
+    "notesRequired": "يرجى إدخال ملاحظات لسبب التظلم الآخر",
+    "maxCharacters": "الحد الأقصى 1000 حرف",
+    "success": "تم تقديم التظلم بنجاح.",
+    "successModal": {
+      "title": "تم الإرسال بنجاح",
+      "description": "تم تقديم تظلمك بنجاح. من المتوقع إكمال عملية المراجعة خلال 15 يوم عمل.",
+      "appealNumber": "رقم التظلم",
+      "feedbackTitle": "شاركنا تجربتك، نقدر ملاحظاتك!",
+      "dissatisfied": "غير راضٍ تمامًا",
+      "satisfied": "راضٍ تمامًا",
+      "copy": "نسخ رقم التظلم",
+      "copySuccess": "تم نسخ رقم التظلم.",
+      "copyFailed": "تعذر نسخ رقم التظلم."
+    }
+  },
+  "appealDetail": {
+    "summary": {
+      "appealNumber": "رقم التظلم",
+      "submissionDate": "تاريخ التقديم",
+      "status": "الحالة"
+    },
+    "banner": {
+      "approved": "تمت الموافقة على التظلم",
+      "rejected": "تم رفض التظلم"
+    },
+    "details": {
+      "title": "تفاصيل التظلم",
+      "appealReason": "سبب التظلم",
+      "attachments": "المرفقات",
+      "notes": "ملاحظات"
+    },
+    "communications": {
+      "title": "مراسلات التذكرة",
+      "showMore": "عرض المزيد من الرسائل",
+      "empty": "لا توجد رسائل بعد.",
+      "placeholder": "إذا كنت بحاجة إلى مساعدة أو لديك تحديث، يرجى ترك رسالة لفريق الدعم.",
+      "youSuffix": "(أنت)",
+      "system": "النظام",
+      "customer": "المتعامل",
+      "agent": "الموظف"
+    },
+    "related": {
+      "title": "مخالفة مرتبطة",
+      "violationType": "نوع المخالفة",
+      "violator": "المخالِف",
+      "fineAmount": "مبلغ الغرامة",
+      "view": "عرض"
+    },
+    "attachmentModalTitle": "المرفقات",
+    "cancelModal": {
+      "title": "إلغاء التظلم",
+      "content": "هل أنت متأكد أنك تريد إلغاء هذا التظلم؟ لا يمكن التراجع عن هذا الإجراء."
+    },
+    "empty": "تعذر تحميل تفاصيل التظلم."
+  },
+  "violationDetail": {
+    "loading": "جارٍ تحميل تفاصيل المخالفة...",
+    "empty": "تفاصيل المخالفة غير متاحة.",
+    "summary": {
+      "violationNumber": "رقم المخالفة",
+      "violationType": "نوع المخالفة",
+      "status": "الحالة",
+      "issuedTime": "وقت الإصدار"
+    },
+    "reported": {
+      "title": "المخالفات المبلغ عنها"
+    },
+    "fineDetails": {
+      "title": "تفاصيل الغرامة",
+      "violation": "المخالفة",
+      "degree": "الدرجة",
+      "count": "العدد",
+      "amount": "المبلغ",
+      "totalFee": "إجمالي الرسوم"
+    },
+    "decision": {
+      "title": "قرار التظلم",
+      "defaultNotes": "تم تطبيق قرار الإدارة على المخالفات المبلغ عنها."
+    },
+    "relatedAppeal": {
+      "title": "تظلم مرتبط",
+      "appealReason": "سبب التظلم",
+      "appliedFor": "مقدم لـ"
+    },
+    "payment": {
+      "walletUnavailable": "دفع المحفظة غير متاح لدفع الغرامات.",
+      "detailUnavailable": "تفاصيل المخالفة غير متاحة.",
+      "popupBlocked": "تم حظر النوافذ المنبثقة. يُرجى السماح لهذا الموقع بفتح النوافذ المنبثقة وعلامات تبويب جديدة في المتصفح، ثم إعادة محاولة الدفع.",
+      "startFailed": "تعذر بدء الدفع بالبطاقة الآن. يرجى المحاولة مرة أخرى.",
+      "description": "دفع غرامة المخالفة {{reference}}"
+    }
+  },
+  "paymentResult": {
+    "status": {
+      "loadingTitle": "جارٍ تأكيد الدفع",
+      "loadingDescription": "نقوم بتأكيد حالة الدفع الخاصة بك.",
+      "successTitle": "تم الدفع بنجاح",
+      "successDescription": "شكرًا لك على الدفع. تمت تسوية الغرامة ({{fineReferenceNumber}}).",
+      "processingTitle": "الدفع قيد المعالجة",
+      "processingDescription": "لا يزال الدفع قيد المعالجة. يرجى التحديث أو المحاولة لاحقًا.",
+      "missingTitle": "حالة الدفع غير متاحة",
+      "missingDescription": "تعذر العثور على جلسة الدفع. يرجى بدء الدفع مرة أخرى.",
+      "cancelledTitle": "تم إلغاء الدفع",
+      "failedTitle": "فشل الدفع",
+      "failedDescription": "تعذرت معالجة الدفع. يرجى المحاولة مرة أخرى أو استخدام طريقة دفع مختلفة."
+    },
+    "failureDetails": {
+      "errorCode": "رمز الخطأ",
+      "reason": "السبب",
+      "referenceNumber": "الرقم المرجعي",
+      "transactionNumber": "رقم المعاملة",
+      "attemptedAmount": "المبلغ الذي تمت محاولة دفعه",
+      "timestamp": "الطابع الزمني"
+    },
+    "actions": {
+      "refreshStatus": "تحديث الحالة",
+      "tryAgain": "إعادة المحاولة",
+      "useDifferentMethod": "استخدام طريقة مختلفة"
+    },
+    "feedback": {
+      "title": "شاركنا تجربتك، نقدر ملاحظاتك!",
+      "dissatisfied": "غير راضٍ تمامًا",
+      "satisfied": "راضٍ تمامًا"
+    }
+  },
+  "messages": {
+    "dateRangeNeedsEnd": "يرجى اختيار تاريخ انتهاء لإكمال نطاق التاريخ.",
+    "dateRangeInvalid": "يرجى التحقق من التواريخ. يجب أن يكون تاريخ البدء قبل تاريخ الانتهاء أو مساويًا له.",
+    "dateRangeTooLarge": "نطاق التاريخ كبير جدًا. الحد الأقصى المسموح به هو سنتان.",
+    "loadAppealsFailed": "تعذر تحميل التظلمات.",
+    "cancelAppealSuccess": "تم إلغاء التظلم",
+    "cancelAppealFailed": "تعذر إلغاء التظلم.",
+    "loadAppealReasonsFailed": "تعذر تحميل أسباب التظلم.",
+    "loadAppealableViolationsFailed": "تعذر تحميل المخالفات القابلة للتظلم.",
+    "loadFinesFailed": "تعذر تحميل الغرامات.",
+    "someFineProfilesFailed": "تعذر تحميل بعض ملفات الغرامات.",
+    "loadAppealDetailFailed": "تعذر تحميل تفاصيل التظلم.",
+    "uploadFailed": "تعذر رفع الملف.",
+    "uploadSuccess": "تم رفع الملف",
+    "uploadNoUrl": "تعذر رفع الملف",
+    "maxFiles": "الحد الأقصى {{count}} ملفات.",
+    "fileTypes": "أنواع الملفات: jpg وjpeg وpng وpdf.",
+    "fileSize": "حجم الملف يتجاوز {{size}} ميجابايت.",
+    "messageRequired": "يرجى إدخال رسالة.",
+    "messageSent": "تم إرسال الرسالة",
+    "sendMessageFailed": "تعذر إرسال الرسالة.",
+    "submitAppealFailed": "تعذر تقديم التظلم.",
+    "loadViolationDetailFailed": "تعذر تحميل تفاصيل المخالفة.",
+    "receiptUnavailable": "الإيصال غير متاح بعد. يرجى المحاولة لاحقًا.",
+    "receiptDownloadFailed": "إيصال الغرامة غير متاح بعد.",
+    "paymentProcessing": "لا يزال الدفع قيد المعالجة. يرجى التحديث أو المحاولة لاحقًا.",
+    "paymentConfirmFailed": "تعذر تأكيد حالة الدفع الآن. يرجى المحاولة مرة أخرى.",
+    "paymentCancelled": "تم إلغاء عملية الدفع بنجاح.",
+    "ratingSubmitted": "تم إرسال التقييم.",
+    "ratingSubmitFailed": "تعذر إرسال التقييم.",
+    "paymentFailed": "تعذرت معالجة الدفع. يرجى المحاولة مرة أخرى."
+  },
+  "breadcrumbs": {
+    "appealDetails": "تفاصيل التظلم",
+    "violationDetails": "تفاصيل المخالفة",
+    "paymentSuccessful": "تم الدفع بنجاح",
+    "paymentFailed": "فشل الدفع"
+  }
+}

@@ -1,0 +1,31 @@
+{
+    "actionType": 1,
+    "expectedRuleVersion": "1.0.0",
+    "request": {
+      "serviceId": 801,
+      "applicantUserId": "user-801",
+      "establishmentId": "EST-801",
+      "submissionMode": "submit",
+      "requestTime": "2026-04-07T00:00:00+00:00",
+      "isRadio": true,
+      "isEncrypted": true,
+      "languageIds": [
+        1,
+        2
+      ],
+      "capitalAmount": 250000,
+      "fundingSources": "Internal capital and shareholder contribution",
+      "channelName": "Radio Vision 801",
+      "programsOffered": "News, culture, and documentary content.",
+      "companyObjectiveFileUrl": "https://example.com/company-objective.pdf",
+      "feasibilityStudyFileUrl": "https://example.com/feasibility-study.pdf",
+      "frequencyFileUrl": "https://example.com/frequency-file.pdf",
+      "chiefEditor": {
+        "fullName": "Editor 801",
+        "identityNumber": "784-1987",
+        "photoUrl": "https://example.com/chief-editor-photo.jpg",
+        "acquaintanceFormDocumentUrl": "https://example.com/acquaintance-form.pdf"
+      },
+      "termsAccepted": true
+    }
+  }

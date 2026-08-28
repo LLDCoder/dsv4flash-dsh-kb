@@ -1,0 +1,66 @@
+@import "@/styles/variables.less";
+
+.announcement-modal {
+  .ant-modal-content {
+    border-radius: 24px;
+    padding: 0;
+    background: transparent;
+  }
+
+  .ant-modal-body {
+    padding: 0;
+  }
+  .ant-modal-close {
+    height: 30px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+}
+
+.announcement-container {
+  background: #f9f7ed;
+  border-radius: 24px;
+}
+
+.announcement-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #6b4c14;
+  padding: 24px;
+  height: 72px;
+}
+
+.announcement-icon {
+  img {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+.announcement-label {
+  font-size: 16px;
+}
+
+.announcement-body {
+  background: #ffffff;
+  padding: 24px 32px 32px;
+  min-height: 200px;
+}
+
+.announcement-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: @text-color;
+  margin: 0 0 16px;
+}
+
+.announcement-content {
+  font-size: 16px;
+  line-height: 1.5;
+  color: #4b4f56;
+  margin: 0;
+}

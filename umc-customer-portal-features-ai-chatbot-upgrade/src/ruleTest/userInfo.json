@@ -1,0 +1,52 @@
+{
+    "id": "1b7565e3-fe30-418c-8772-ada1952b48a0",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJVc2VySUQiOiIxYjc1NjVlMy1mZTMwLTQxOGMtODc3Mi1hZGExOTUyYjQ4YTAiLCJVc2VyUHJvRmlsZUlkIjoiOTIxMCIsIlVzZXJUeXBlSWQiOiIyIiwiVXNlclR5cGVDb2RlIjoiMiIsIkVzdGFibGlzaG1lbnRJZCI6IjE0NzEzIiwiVXNlck5hbWUiOiJEYWlzeSBXYW5nIiwiaHR0cDovL3NjaGVtYXMueG1sc29hcC5vcmcvd3MvMjAwNS8wNS9pZGVudGl0eS9jbGFpbXMvZW1haWxhZGRyZXNzIjoicnVpLndhbmdAY3RlY2htLmNvbSIsImp0aSI6ImE3NGQ3ZGY0LTk1YTMtNDAzMi1iZDZjLWEyMmRiMGMyNjUwOCIsIkxpc3RSb2xlIjoiW10iLCJleHAiOjE3Nzc0NjUyMzgsImlzcyI6InNoaHNoc2hzaHNoc2hzc2hzaHNoc2hzIiwiYXVkIjoic2hoc2hzaHNoc2hzaHNzaHNoc2hzaHMifQ.5u7WHWPG5dj5t6MtZqHFnakOUf9ZP_8L5nD8ChdbO_c",
+    "firstName": "Daisy",
+    "lastName": "Wang",
+    "email": null,
+    "phoneNumber": null,
+    "isActive": null,
+    "isFirstLogin": false,
+    "isChangePwd": false,
+    "createOn": null,
+    "lastLoginTime": "2026-04-25T12:46:41.84",
+    "userInvitation": {
+        "userProfileId": "9212",
+        "userTypeId": "1",
+        "id": 8228,
+        "name": "Daisy Wang",
+        "photoUrl": "2026/04/11/1242295453/image169.jpg",
+        "email": "rui.wang@ctechm.com"
+    },
+    "userEstablishments": [
+        {
+            "userProfileId": "9210",
+            "id": 14713,
+            "userTypeId": "2",
+            "userTypeCode": null,
+            "nameEn": "Test Commercial - Daisy",
+            "nameAr": "Test Commercial - Daisy",
+            "email": "rui.wang@ctechm.com",
+            "establishmentUrl": null
+        },
+        {
+            "userProfileId": "9211",
+            "id": 14714,
+            "userTypeId": "2",
+            "userTypeCode": null,
+            "nameEn": "Test Government - Daisy",
+            "nameAr": "Test Government - Daisy",
+            "email": "daisy@gov.ae",
+            "establishmentUrl": null
+        }
+    ],
+    "listRoles": null,
+    "rolesInfo": null,
+    "listUserFilter": null,
+    "listUserProfile": null,
+    "listUserType": null,
+    "establishments": null,
+    "persons": null,
+    "uaepassLink": null,
+    "twoFactorEnabled": false
+}

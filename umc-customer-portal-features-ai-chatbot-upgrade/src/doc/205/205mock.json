@@ -1,0 +1,7 @@
+[
+    {
+        "stepNameEn": "Activity Details",
+        "stepNameAr": "Activity Details",
+        "formData": "{\"form\":{\"labelCol\":6,\"wrapperCol\":12,\"layout\":\"vertical\"},\"schema\":{\"type\":\"object\",\"properties\":{\"SelectTableSingle\":{\"name\":\"SelectTableSingle\",\"x-decorator\":\"FormItem\",\"x-component\":\"SelectTableSingle\",\"x-component-props\":{\"activityTitle\":\"Activity Details\",\"activityLabelName\":\"Activities\",\"placeholder\":\"Search or Select from the list of Activities\",\"visible\":true,\"editable\":true,\"activityConfiguration\":{}},\"x-decorator-props\":{},\"x-display\":\"visible\",\"x-pattern\":\"editable\",\"x-designable-id\":\"762svua8zc3\",\"x-index\":0},\"ScriptPublicationForm\":{\"name\":\"ScriptPublicationForm\",\"x-decorator\":\"FormItem\",\"x-component\":\"ScriptPublicationForm\",\"x-designable-id\":\"gaxygtuuwz7\",\"x-index\":1}},\"x-designable-id\":\"7g85s6kmgub\"},\"formValues\":{\"SelectTableSingle\":{\"selectedKey\":[2050],\"tableData\":[{\"Number\":1,\"Activity\":\"Permit for play script or theatrical scenario\",\"money\":1000,\"Id\":2050,\"ActivityAr\":\"Permit for play script or theatrical scenario\",\"ActivityEn\":\"Permit for play script or theatrical scenario\"}]}},\"fileList\":[]}"
+    }
+]

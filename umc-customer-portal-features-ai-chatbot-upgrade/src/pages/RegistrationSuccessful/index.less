@@ -1,0 +1,113 @@
+.registration-successful-layout {
+    padding-bottom: 40px;
+}
+
+.registration-successful-layout .public-layout-header {
+    height: 128px;
+}
+
+.registration-successful-layout .public-layout-content {
+    width: 100%;
+}
+
+.registration-successful-page {
+    width: 100%;
+    min-height: calc(100vh - 128px);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-bottom: 80px;
+    box-sizing: border-box;
+}
+
+.registration-successful-box {
+    width: min(1280px, calc(100vw - 80px));
+    height: 872px;
+    background-color: #fff;
+    border-radius: 40px;
+    padding: 32px 80px;
+    box-sizing: border-box;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+
+    .registration-successful-back-btn {
+        position: absolute;
+        top: 32px;
+        inset-inline-start: 80px;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: none;
+        background: transparent;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #361E12;
+        cursor: pointer;
+    }
+
+    .registration-successful-back-icon {
+        font-size: 24px;
+        flex-shrink: 0;
+    }
+
+    &[dir="rtl"] {
+        .registration-successful-back-icon {
+            transform: scaleX(-1);
+        }
+    }
+
+    .registration-successful-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+
+        .registration-successful-image {
+            width: 96px;
+            height: 96px;
+        }
+
+        .registration-successful-title {
+            margin-top: 32px;
+            font-family: Inter, sans-serif;
+            font-weight: 800;
+            font-size: 32px;
+            color: #361E12;
+            text-align: center;
+        }
+
+        .registration-successful-desc {
+            font-family: Inter, sans-serif;
+            font-weight: 400;
+            font-size: 16px;
+            line-height: 24px;
+            color: #361E12;
+            text-align: center;
+        }
+
+        .registration-successful-login-btn {
+            margin-top: 32px;
+            box-sizing: border-box;
+            width: 128px;
+            height: 48px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+            color: #fff;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: Inter, sans-serif;
+            font-weight: 500;
+            font-size: 18px;
+            user-select: none;
+            flex-shrink: 0;
+        }
+    }
+}

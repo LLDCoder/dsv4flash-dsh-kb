@@ -1,0 +1,137 @@
+@import "@/styles/variables.less";
+
+.application-timeline-card {
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 24px;
+  width: 100%;
+
+  .card-title {
+    color: #361e12;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 24px;
+    margin: 0 0 24px;
+  }
+
+  .application-timeline-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .application-timeline-item {
+    align-items: flex-start;
+    display: flex;
+    width: 100%;
+
+    &.completed .timeline-title,
+    &.active .timeline-title {
+      color: #361e12;
+    }
+
+    &.pending .timeline-title {
+      color: #5f646d;
+    }
+
+    &.error .timeline-title {
+      color: #ea4f49;
+    }
+  }
+
+  .timeline-marker {
+    align-items: center;
+    display: flex;
+    flex: 0 0 24px;
+    flex-direction: column;
+    gap: 2px;
+    width: 24px;
+  }
+
+  .timeline-head {
+    align-items: center;
+    border-radius: 50%;
+    display: flex;
+    flex: 0 0 auto;
+    justify-content: center;
+    position: relative;
+
+    &.completed,
+    &.pending {
+      height: 16px;
+      margin: 4px;
+      width: 16px;
+    }
+
+    &.active,
+    &.error {
+      border-style: solid;
+      border-width: 4px;
+      box-sizing: border-box;
+      height: 12px;
+      margin: 6px;
+      width: 12px;
+    }
+
+    &.completed {
+      background: #cba344;
+    }
+
+    &.active {
+      background: #cba344;
+      border-color: #e6d7a2;
+    }
+
+    &.pending {
+      background: #9ea2a9;
+    }
+
+    &.error {
+      background: #ea4f49;
+      border-color: #fde4e3;
+    }
+  }
+
+  .timeline-check {
+    border-bottom: 1.6px solid #ffffff;
+    border-right: 1.6px solid #ffffff;
+    display: block;
+    height: 5px;
+    margin-top: -1px;
+    transform: rotate(45deg);
+    width: 3px;
+  }
+
+  .timeline-trail {
+    background: rgba(0, 0, 0, 0.06);
+    display: block;
+    flex: 0 0 auto;
+    min-height: 28px;
+    width: 1px;
+  }
+
+  .timeline-content {
+    flex: 1;
+    min-width: 0;
+    padding: 0 0 30px 12px;
+  }
+
+  .application-timeline-item:last-child .timeline-content {
+    padding-bottom: 0;
+  }
+
+  .application-timeline-item:last-child.pending .timeline-marker {
+    padding-bottom: 2px;
+  }
+
+  .timeline-title {
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+  }
+
+  .application-timeline-empty {
+    color: #797e86;
+    font-size: 14px;
+    line-height: 20px;
+  }
+}

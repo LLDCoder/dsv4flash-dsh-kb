@@ -1,0 +1,7 @@
+[
+    {
+        "stepNameEn": "Activity Details",
+        "stepNameAr": "تفاصيل النشاط",
+        "formData": "{\"form\":{\"labelCol\":6,\"wrapperCol\":12,\"layout\":\"vertical\"},\"schema\":{\"type\":\"object\",\"properties\":{\"Game Distribution Form\":{\"name\":\"Game Distribution Form\",\"x-decorator\":\"FormItem\",\"x-component\":\"GameDistributionForm\",\"x-component-props\":{},\"x-designable-id\":\"w0lwz7ybyff\",\"x-index\":0}},\"x-designable-id\":\"eyy4w5cff9t\"},\"formValues\":{\"GameDistributionForm\":{\"addDigitalVersion\":\"No\",\"ageRatingPermit\":2,\"title\":\"a a a\",\"type\":\"2\",\"language\":\"2\",\"source\":\"2\",\"copyrightsType\":\"2\",\"copyrightsValidityPeriod\":[\"2026-07-25\",\"2026-08-19\"],\"economyCertificate\":\"common/2026/07/06/logo-118977ec40bb409b88b4533566352106.png\"}},\"fileList\":[]}"
+    }
+]

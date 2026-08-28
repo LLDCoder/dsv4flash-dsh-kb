@@ -1,0 +1,176 @@
+{
+  "common": {
+    "search": "بحث",
+    "select": "يرجى الاختيار",
+    "uploadFile": "رفع ملف",
+    "password": "كلمة المرور",
+    "enterFirstName": "أدخل الاسم الأول",
+    "enterLastName": "أدخل اسم العائلة",
+    "enterName": "أدخل الاسم",
+    "enterEmail": "أدخل البريد الإلكتروني",
+    "enterMobileNumber": "أدخل رقم الهاتف المتحرك",
+    "enterPhoneNumber": "أدخل رقم الهاتف",
+    "enterStreet": "أدخل الشارع",
+    "selectEmirate": "اختر الإمارة",
+    "selectRegion": "اختر المنطقة",
+    "selectArea": "اختر المنطقة الفرعية",
+    "selectAuthority": "اختر جهة الترخيص",
+    "selectSubType": "اختر الأنواع الفرعية للمنشأة",
+    "startDate": "تاريخ البدء",
+    "endDate": "تاريخ الانتهاء",
+    "startTime": "وقت البدء",
+    "endTime": "وقت الانتهاء",
+    "allStatuses": "جميع الحالات",
+    "allTypes": "جميع الأنواع",
+    "provideRequestDetails": "قدّم أي تفاصيل إضافية حول طلبك",
+    "leaveSupportMessage": "إذا كنت بحاجة إلى مساعدة أو لديك تحديث، يرجى ترك رسالة لفريق الدعم.",
+    "ddmmyyyy": "DD/MM/YYYY"
+  },
+  "components": {
+    "individualIdentityForm": {
+      "emiratesIdMask": "784-XXXX-XXXXXXX-X",
+      "enterUid": "أدخل الرقم الموحد (UID)",
+      "enterPassportNumber": "أدخل رقم جواز السفر",
+      "enterOccupation": "أدخل مهنتك",
+      "enterFullNameArabic": "أدخل الاسم الكامل باللغة العربية",
+      "enterFullNameEnglish": "أدخل اسمك الكامل باللغة الإنجليزية",
+      "selectNationality": "اختر الجنسية",
+      "selectGender": "اختر الجنس"
+    },
+    "nmaCredentialsForm": {
+      "email": "بريدك الإلكتروني",
+      "password": "كلمة المرور الخاصة بك"
+    }
+  },
+  "pages": {
+    "establishmentProfile": {
+      "enterNameArabic": "أدخل اسم المنشأة باللغة العربية",
+      "enterNameEnglish": "أدخل اسم المنشأة باللغة الإنجليزية",
+      "info": {
+        "enterLicenseNumber": "أدخل رقم الرخصة",
+        "selectLicenseExpiryDate": "اختر تاريخ انتهاء الرخصة",
+        "selectTenancyContractEndDate": "اختر تاريخ انتهاء عقد الإيجار",
+        "enterEntityEstablishmentNameArabic": "أدخل اسم الجهة/المنشأة باللغة العربية",
+        "enterEntityEstablishmentNameEnglish": "أدخل اسم الجهة/المنشأة باللغة الإنجليزية"
+      },
+      "partner": {
+        "selectPartnerType": "اختر نوع الشريك",
+        "selectNationality": "اختر الجنسية"
+      },
+      "emailModal": {
+        "enterVerificationCode": "أدخل رمز التحقق"
+      }
+    },
+    "login": {
+      "newPassword": {
+        "password": "أدخل كلمة المرور الجديدة",
+        "confirmPassword": "أعد إدخال كلمة المرور الجديدة الخاصة بك"
+      }
+    },
+    "myRequests": {
+      "filters": {
+        "requestTypes": "جميع أنواع الطلبات"
+      }
+    },
+    "myAccount": {
+      "enterCode": "أدخل الرمز",
+      "mobileNumberModal": {
+        "enterCurrentMobileNumber": "أدخل رقم الهاتف المتحرك الحالي",
+        "enterMobileNumber": "أدخل رقم الهاتف المتحرك"
+      },
+      "emailModal": {
+        "enterNewEmail": "أدخل البريد الإلكتروني الجديد"
+      },
+      "changePassword": {
+        "enterCurrentPassword": "أدخل كلمة المرور الحالية",
+        "enterNewPassword": "أدخل كلمة المرور الجديدة",
+        "confirmPassword": "أعد إدخال كلمة المرور"
+      }
+    },
+    "signUp": {
+      "password": "كلمة المرور",
+      "confirmPassword": "تأكيد كلمة المرور",
+      "enterMobilePhone": "أدخل رقم الهاتف المتحرك"
+    },
+    "payFines": {
+      "individual": {
+        "selectMethod": "اختر الطريقة",
+        "enterEmiratesId": "784-XXXX-XXXXXXX-X",
+        "enterEmail": "أدخل البريد الإلكتروني"
+      },
+      "establishment": {
+        "enterLicenseNumber": "أدخل رقم رخصتك التجارية",
+        "enterEmirate": "أدخل إمارتك"
+      },
+      "fineNumber": {
+        "enterFineNumber": "أدخل رقم المخالفة"
+      },
+      "detail": {
+        "mostFrequentReasons": "الأسباب الأكثر تكرارًا"
+      }
+    },
+    "complaints": {
+      "list": {
+        "enquiryTypes": "جميع أنواع الاستفسارات"
+      },
+      "addModal": {
+        "enquiryTypePlaceholder": "يرجى اختيار نوع الاستفسار",
+        "applicationPlaceholder": "اختر رقم الطلب",
+        "servicePlaceholder": "يرجى اختيار الخدمة"
+      },
+      "reopenModal": {
+        "reasonPlaceholder": "أدخل سبب إعادة الفتح"
+      }
+    },
+    "refund": {
+      "list": {
+        "categories": "جميع الفئات",
+        "status": "جميع الحالات"
+      },
+      "requestModal": {
+        "enterFineNumber": "أدخل رقم المخالفة",
+        "enterApplicationNumber": "أدخل رقم الطلب",
+        "amountAuto": "يتم إنشاؤه تلقائيًا",
+        "selectReason": "اختر سبب الاسترداد",
+        "notesPlaceholder": "قدّم أي تفاصيل إضافية حول طلب الاسترداد...",
+        "referenceRequired": "أدخل رقم المخالفة / رقم الطلب"
+      }
+    },
+    "violationsFines": {
+      "violations": {
+        "types": "جميع أنواع المخالفات"
+      },
+      "appeals": {
+        "reasons": "جميع أسباب التظلم"
+      },
+      "submitAppeal": {
+        "selectCasePlaceholder": "اختر الحالة",
+        "appealReasonPlaceholder": "اختر سبب التظلم"
+      }
+    },
+    "services": {
+      "filters": {
+        "userType": "اختر نوع المستخدم"
+      }
+    },
+    "trackApplication": {
+      "enterReference": "أدخل رقم المرجع"
+    },
+    "payments": {
+      "recharge": {
+        "customAmount": "مبلغ مخصص"
+      }
+    },
+    "home": {
+      "loginAs": {
+        "search": "اكتب للبحث"
+      }
+    },
+    "detail": {
+      "enterNotes": "أدخل الملاحظات"
+    },
+    "mediaLicense": {
+      "selectActivities": "اختر الأنشطة"
+    }
+  }
+}

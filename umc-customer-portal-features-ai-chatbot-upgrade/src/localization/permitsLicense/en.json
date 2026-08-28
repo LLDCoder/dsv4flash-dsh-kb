@@ -1,0 +1,65 @@
+{
+  "title": "Licenses & Permits",
+  "actionNeeded": {
+    "sectionTitle": "Action Needed ({{count}})"
+  },
+  "searchPlaceholder": "Search",
+  "status": {
+    "active": "Active",
+    "expireSoon": "Expiring Soon",
+    "expired": "Expired",
+    "suspended": "Suspended",
+    "cancelled": "Cancelled",
+    "allPlaceholder": "All Statuses"
+  },
+  "actions": {
+    "renew": "Renew",
+    "modify": "Modify",
+    "cancel": "Cancel",
+    "transfer": "Transfer",
+    "partnerManagement": "Partner Management",
+    "download": "Download"
+  },
+  "table": {
+    "documentName": "Document Name",
+    "licensePermitNo": "License/Permit No.",
+    "applicationNo": "Application No.",
+    "effectiveDate": "Effective Date",
+    "expireDate": "Expire Date",
+    "lastUpdate": "Last Update",
+    "status": "Status",
+    "actions": "Actions"
+  },
+  "pagination": {
+    "total": "Total {{total}}"
+  },
+  "empty": {
+    "noResults": "No results match your search.",
+    "noLicenses": "No licenses or permits found."
+  },
+  "clearFilters": "Clear Filters",
+  "error": {
+    "loadFailed": "Failed to load licenses or permits."
+  },
+  "retry": "Retry",
+  "viewMode": {
+    "ariaLabel": "View mode"
+  },
+  "messages": {
+    "documentPreviewUnavailable": "Document preview is not available for this record.",
+    "documentPreparing": "Document file is not available yet. Please try again later.",
+    "documentDownloadFailed": "Failed to download the document. Please try again.",
+    "inProgressApplication": "You already have an application under review",
+    "actionUnavailable": "This action is currently unavailable.",
+    "routingUnavailable": "The service routing information is not available.",
+    "licensePermitNumberRequired": "A license or permit number is required for this service."
+  },
+  "documentModal": {
+    "title": "PDF Access Code",
+    "subtitle": "Use the access code below to open your downloaded PDF file.",
+    "noteTitle": "Note",
+    "noteText": "Copy and keep this access code. You will need it to open the PDF file after downloading.",
+    "passwordLabel": "Access Code",
+    "copyButtonText": "Copy Access Code & Download"
+  }
+}

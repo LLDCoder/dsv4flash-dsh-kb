@@ -1,0 +1,31 @@
+{
+  "applicationNumberLabel": "Application Number",
+  "licenseNumberLabel": "License Number",
+  "back": "Back",
+  "viewDetails": "View Details",
+  "rating": {
+    "extremelyDissatisfied": "Extremely Dissatisfied",
+    "extremelySatisfied": "Extremely Satisfied",
+    "submit": "Submit"
+  },
+  "submissionSuccessful": {
+    "title": "Submission Successful",
+    "description": "Service request submitted successfully! We will process your request shortly. The review will be completed in accordance with the applicable review timeline."
+  },
+  "underReview": {
+    "title": "Your Application is Under Review",
+    "description": "We will process your request shortly. The review will be completed in accordance with the applicable review timeline."
+  },
+  "permitIssued": {
+    "title": "Permit Successfully Issued",
+    "description": "Congratulations! Your service permit has been issued."
+  },
+  "permitExpiredGrace": {
+    "title": "Your Permit Has Expired",
+    "description": "Your permit expired on {{expiryDate}}. You have {{graceDays}} days remaining to renew without penalties."
+  },
+  "permitExpiredPenalty": {
+    "title": "Your Permit Has Expired",
+    "description": "Your permit expired on {{expiryDate}}. The 30-day grace period has passed, penalties apply."
+  }
+}

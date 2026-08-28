@@ -1,0 +1,52 @@
+{
+    "id": "1b7565e3-fe30-418c-8772-ada1952b48a0",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJVc2VySUQiOiIxYjc1NjVlMy1mZTMwLTQxOGMtODc3Mi1hZGExOTUyYjQ4YTAiLCJVc2VyUHJvRmlsZUlkIjoiOTIxMCIsIlVzZXJUeXBlSWQiOiIxYjc1NjVlMy1mZTMwLTQxOGMtODc3Mi1hZGExOTUyYjQ4YTAiLCJVc2VyVHlwZUNvZGUiOiIyIiwiRXN0YWJsaXNobWVudElkIjoiMTQ3MTMiLCJVc2VyTmFtZSI6IkRhaXN5IFdhbmciLCJodHRwOi8vc2NoZW1hcy54bWxzb2FwLm9yZy93cy8yMDA1LzA1L2lkZW50aXR5L2NsYWltcy9lbWFpbGFkZHJlc3MiOiJydWkud2FuZ0BjdGVjaG0uY29tIiwianRpIjoiNTUwMzdhZjAtNzRmNi00ZDBkLWE4Y2YtODk3NDMyOTk4NzZiIiwiTGlzdFJvbGUiOiJbXSIsImV4cCI6MTc3NzIyMzg5NiwiaXNzIjoic2hoc2hzaHNoc2hzaHNzaHNoc2hzaHMiLCJhdWQiOiJzaGhzaHNoc2hzaHNoc3Noc2hzaHNocyJ9.h29s-Zcf8BRnRl6ffeU29Q7HIcedhnDraohdLNN1WX8",
+    "firstName": "Daisy",
+    "lastName": "Wang",
+    "email": null,
+    "phoneNumber": null,
+    "isActive": null,
+    "isFirstLogin": false,
+    "isChangePwd": false,
+    "createOn": null,
+    "lastLoginTime": "2026-04-25T20:56:39.933",
+    "userInvitation": {
+        "userProfileId": "9212",
+        "userTypeId": "1",
+        "id": 8228,
+        "name": "Daisy Wang",
+        "photoUrl": "2026/04/11/1242295453/image169.jpg",
+        "email": "rui.wang@ctechm.com"
+    },
+    "userEstablishments": [
+        {
+            "userProfileId": "9210",
+            "id": 14713,
+            "userTypeId": "2",
+            "userTypeCode": null,
+            "nameEn": "Test Commercial - Daisy",
+            "nameAr": "Test Commercial - Daisy",
+            "email": "rui.wang@ctechm.com",
+            "establishmentUrl": null
+        },
+        {
+            "userProfileId": "9211",
+            "id": 14714,
+            "userTypeId": "2",
+            "userTypeCode": null,
+            "nameEn": "Test Government - Daisy",
+            "nameAr": "Test Government - Daisy",
+            "email": "daisy@gov.ae",
+            "establishmentUrl": null
+        }
+    ],
+    "listRoles": null,
+    "rolesInfo": null,
+    "listUserFilter": null,
+    "listUserProfile": null,
+    "listUserType": null,
+    "establishments": null,
+    "persons": null,
+    "uaepassLink": null,
+    "twoFactorEnabled": false
+}

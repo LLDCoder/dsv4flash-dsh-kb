@@ -1,0 +1,5 @@
+{
+  "emailRequiredMessage": "This field is required",
+  "emailPatternMessage": "Please enter a valid email address",
+  "passwordRequiredMessage": "This field is required"
+}

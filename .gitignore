@@ -16,3 +16,13 @@ Term1-Test.zip
 dist/docker-release/
 **/__MACOSX/
 **/._*
+
+# Imported frontend local environment files may contain API keys and must stay
+# outside version control. Commit a sanitized example file instead.
+umc-customer-portal-features-ai-chatbot-upgrade/.env
+umc-customer-portal-features-ai-chatbot-upgrade/.env.*
+!umc-customer-portal-features-ai-chatbot-upgrade/.env.example
+
+# Test outputs can contain authenticated responses or generated artifacts.
+# Keep existing tracked outputs available, but do not add new local captures.
+/outputs/**

@@ -1,0 +1,276 @@
+.matched-account-link-wrap {
+  backdrop-filter: blur(5px);
+
+  .ant-modal {
+    padding-bottom: 0;
+  }
+}
+
+.matched-account-link-modal {
+  max-width: calc(100vw - 32px);
+
+  .ant-modal-content {
+    height: 511px;
+    padding: 0;
+    border-radius: 20px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  .ant-modal-body {
+    padding: 0;
+  }
+}
+
+.matched-account-link {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 511px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.matched-account-link__header {
+  display: flex;
+  flex: 0 0 64px;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  height: 64px;
+  padding: 20px 40px;
+}
+
+.matched-account-link__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  color: #5f646d;
+  background: transparent;
+  cursor: pointer;
+
+  svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    fill: #5f646d;
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+}
+
+.matched-account-link__body {
+  display: flex;
+  flex: 0 0 447px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  height: 447px;
+  min-height: 300px;
+  padding: 0 40px 40px;
+  gap: 24px;
+}
+
+.matched-account-link__intro {
+  display: flex;
+  flex: 0 0 159px;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  height: 159px;
+  overflow: hidden;
+}
+
+.matched-account-link__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #f9f7ed;
+
+  img {
+    width: 48px;
+    height: 48px;
+  }
+}
+
+.matched-account-link__titles {
+  display: flex;
+  flex: 0 0 63px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 63px;
+  text-align: center;
+}
+
+.matched-account-link__title {
+  margin: 0;
+  font-family: Inter, sans-serif;
+  color: #361e12;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 31px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.matched-account-link__subtitle {
+  margin: 0;
+  color: #5f646d;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  letter-spacing: 0;
+}
+
+.matched-account-link__actions {
+  display: flex;
+  flex: 0 0 160px;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  height: 160px;
+  padding-top: 16px;
+}
+
+.matched-account-link__details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  height: 72px;
+  padding: 24px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f7f6f3 0%, #f6f6f5 56.25%, #f7f2eb 100%);
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  letter-spacing: 0;
+}
+
+.matched-account-link__label {
+  flex-shrink: 0;
+  color: #5f646d;
+}
+
+.matched-account-link__value {
+  min-width: 0;
+  color: #361e12;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+.matched-account-link__button.custom-button {
+  width: 245px !important;
+  min-width: 245px !important;
+  height: 48px !important;
+  min-height: 48px !important;
+  padding: 12px 20px !important;
+  border-radius: 8px !important;
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  line-height: 24px !important;
+  letter-spacing: 0 !important;
+
+  .custom-button-content,
+  .custom-button-contentWithIcon {
+    font-family: Inter, sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+    letter-spacing: 0;
+  }
+
+  &.custom-button-primary,
+  &.custom-button-primary:hover,
+  &.custom-button-primary:focus,
+  &.custom-button-primary:focus-visible {
+    border-color: transparent !important;
+    background: linear-gradient(90deg, #9e7538 0%, #c19453 100%) !important;
+  }
+}
+
+.matched-account-link__footnote {
+  flex: 0 0 40px;
+  margin: 0;
+  width: 100%;
+  height: 40px;
+  color: #5f646d;
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+@media (max-width: 576px) {
+  .matched-account-link-modal {
+    .ant-modal-content {
+      height: auto;
+    }
+  }
+
+  .matched-account-link {
+    height: auto;
+  }
+
+  .matched-account-link__header {
+    flex-basis: 56px;
+    height: 56px;
+    padding: 16px 24px;
+  }
+
+  .matched-account-link__body {
+    flex-basis: auto;
+    height: auto;
+    padding: 0 24px 32px;
+  }
+
+  .matched-account-link__intro,
+  .matched-account-link__titles,
+  .matched-account-link__actions,
+  .matched-account-link__footnote {
+    flex-basis: auto;
+    height: auto;
+  }
+
+  .matched-account-link__actions {
+    padding-top: 8px;
+  }
+
+  .matched-account-link__details {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    padding: 20px;
+  }
+
+  .matched-account-link__value {
+    text-align: start;
+  }
+
+  .matched-account-link__button.custom-button {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+}

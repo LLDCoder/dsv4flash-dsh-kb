@@ -1,0 +1,9 @@
+{
+  "signalr": {
+    "hubUrl": "/customer-signalr/chatHub"
+  },
+  "ffAi": {
+    "apiBaseUrl": "/api/platform",
+    "cardAllowedExternalHosts": ["nma.gov.ae", "www.nma.gov.ae"]
+  }
+}

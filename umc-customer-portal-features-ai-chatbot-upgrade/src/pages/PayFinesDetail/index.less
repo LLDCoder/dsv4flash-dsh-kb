@@ -1,0 +1,613 @@
+
+@import "@/styles/variables.less";
+
+
+.pay-fines-d-layout{
+    background: url(../../assets/images/pay-fines-detail-bg.png) no-repeat;
+    background-size: 100% auto;
+    background-color: #F5F4F3;
+    width: 100%;
+    height: 100vh;
+    min-height: 100vh;
+    overflow: hidden;
+
+    .pay-fines-d-page-scroll{
+        width: 100vw;
+        height: 100vh;
+    }
+
+    .pay-fines-d-page-scroll .simplebar-content{
+        min-height: 100vh;
+    }
+
+    .pay-fines-d-scroll-content{
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+    }
+
+    &.pay-fines-d-layout--with-actions .pay-fines-d-scroll-content{
+        padding-bottom: 96px;
+        box-sizing: border-box;
+    }
+
+    .pay-fines-d-layout-header{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        height: 128px;
+        box-sizing: border-box;
+        padding: 0 40px;
+    }
+    .pay-fines-d-layout-logo{
+        display: flex;
+        align-items: center;
+        .logo-img{
+            width: 238px;
+            height: 68px;
+            object-fit: contain;
+        }
+    }
+    .pay-fines-d-layout-login{
+        width: 147px;
+        height: 46px;
+        border-radius: 40px;
+        background: transparent;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        color: #CBA344;
+        border: 1.5px solid #CBA344;
+        font-family: Inter;
+        font-weight: 600;
+        font-size: 16px;
+        cursor: pointer;
+        user-select: none;
+    }
+    .pay-fines-d-layout-right{
+        display: flex;
+        align-items: center;
+        column-gap: 24px;
+
+        .lang-selector{
+            margin-top: 0;
+        }
+    }
+}
+.pay-fines-d-title{
+    margin-top: 48px;
+    margin-bottom: 32px;
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 38px;
+    color: #FFFFFF;
+}
+.pay-fines-d-layout-content{
+    width: 100%;
+    max-width: 1680px;
+    margin: 0 auto;
+    padding: 0 24px;
+    box-sizing: border-box;
+    flex: 1;
+}
+.pay-fines-d-layout-content .violations-fines-summary-card + .violations-fines-detail-layout{
+    margin-top: 16px;
+}
+.pay-fines-d-layout--with-actions .pay-fines-d-layout-content{
+    margin-bottom: 16px;
+}
+.pay-fines-d-header{
+    width: 100%;
+    min-height: 130px;
+    border-radius: 20px;
+    column-gap: 16px;
+    row-gap: 16px;
+    background-color: #FFFFFF;
+    display: flex;
+    align-items: center;
+    padding: 24px;
+    // Same pattern as the other detail headers: cards keep a readable
+    // minimum width and the strip scrolls horizontally when they don't fit.
+    overflow-x: auto;
+}
+.pay-fines-d-header-item{
+    display: flex;
+    align-items: center;
+    flex: 1 0 auto;
+    min-width: 280px;
+    min-height: 64px;
+    column-gap: 16px;
+    .status-active{
+        width: 130px;
+        height: 26px;
+        border-radius: 4px;
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 14px;
+        background-color: #FFFBEB;
+        color: #F29F0E;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+}
+.pay-fines-detail__notice{
+    min-height: 280px;
+    border-radius: 20px;
+    background-color: #FFFFFF;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    row-gap: 24px;
+    color: #361E12;
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 18px;
+}
+.pay-fines-detail__notice-title{
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 20px;
+    color: #361E12;
+}
+.pay-fines-detail__notice-button{
+    width: 128px;
+    height: 48px;
+    border-radius: 8px;
+    border: 1px solid #92722A;
+    background-color: #FFFFFF;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    user-select: none;
+    cursor: pointer;
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 16px;
+    color: #92722A;
+}
+.pay-fines-d-header-item-icon{
+    font-size: 0;
+    img{
+        width: 40px;
+        height: 40px;
+    }
+}
+.pay-fines-d-header-item-title{
+    font-family: Inter;
+    font-weight: 400;
+    font-size: 14px;
+    color: #361E12;
+    white-space: nowrap;
+}
+.pay-fines-d-header-item-value{
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 16px;
+    color: #361E12;
+    white-space: nowrap;
+}
+
+.pay-fines-d-section{
+    width: 100%;
+    padding: 24px;
+    background-color: #fff;
+    margin-top: 16px;
+    border-radius: 20px;
+    .pay-fines-d-section-title{
+        font-family: Inter;
+        font-weight: 700;
+        font-size: 20px;
+        color: #361E12;
+    }
+    .pay-fines-d-section-info{
+        margin-top: 32px;
+        display: flex;
+        .pay-fines-d-section-info-item{
+            flex: 1;
+            .pay-fines-d-section-info-item-title{
+                font-family: Inter;
+                font-weight: 500;
+                font-size: 14px;
+                color: #797E86;
+            }
+            .pay-fines-d-section-info-item-value{
+                font-family: Inter;
+                font-weight: 500;
+                font-size: 16px;
+                color: #361E12;
+            }
+        }
+    }
+    .pay-fines-d-section-desc{
+        margin-top: 32px;
+    }
+    .pay-fines-d-section-desc-title{
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 14px;
+        color: #797E86;
+        margin-bottom: 8px;
+    }
+    .pay-fines-d-section-desc-content{
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 16px;
+        color: #361E12; 
+    }
+}
+.pay-fines-d-section--reported{
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+}
+.pay-fines-d-reported-list{
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+}
+.pay-fines-d-reported-item{
+    border: 1px solid #E1E3E5;
+    border-radius: 10px;
+    overflow: hidden;
+}
+.pay-fines-d-reported-item__header{
+    width: 100%;
+    min-height: 66px;
+    padding: 20px;
+    border: 0;
+    background: #FFFFFF;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    cursor: pointer;
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 18px;
+    line-height: 22px;
+    color: #361E12;
+    text-align: left;
+}
+.pay-fines-d-reported-item.is-expanded .pay-fines-d-reported-item__header{
+    border-bottom: 1px solid #E1E3E5;
+}
+.pay-fines-d-reported-item__left{
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    gap: 8px;
+    min-width: 0;
+}
+.pay-fines-d-reported-item__chevron{
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+.pay-fines-d-reported-item__chevron-icon{
+    display: block;
+    width: 17.2px;
+    height: 8.6px;
+}
+.pay-fines-d-reported-item__index{
+    flex: 0 0 auto;
+}
+.pay-fines-d-reported-item__title{
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+.pay-fines-d-reported-item__tag{
+    flex: 0 0 auto;
+    height: 26px;
+    border-radius: 4px;
+    padding: 2px 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-family: Inter;
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 20px;
+}
+.pay-fines-d-reported-item__tag--amount{
+    background: #FEF2F2;
+    color: #EA4F49;
+}
+.pay-fines-d-reported-item__tag--warning{
+    background: #FFFBEB;
+    color: #F29F0E;
+}
+.pay-fines-d-reported-item__body{
+    padding: 20px;
+}
+.pay-fines-d-reported-attachments{
+    display: flex;
+    flex-direction: column;
+}
+.pay-fines-d-reported-attachments-title{
+    font-family: Inter;
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 20px;
+    color: #797E86;
+    margin-bottom: 8px;
+}
+.pay-fines-d-divider{
+    width: 100%;
+    height: 1px;
+    background-color: #E1E3E5;
+    margin: 32px 0;
+}
+.pay-fines-d-attachment{
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 16px;
+}
+.pay-fines-d-attachment-item{
+    width: 100%;
+    min-width: 0;
+
+    .document-file{
+        height: 48px;
+        border-radius: 10px;
+        padding: 8px 20px;
+    }
+}
+.pay-fines-d-attachment-title{
+    grid-column: 1 / -1;
+    margin-top: 32px;
+    font-family: Inter;
+    font-weight: 500;
+    font-size: 14px;
+    color: #797E86;
+}
+.pay-fines-d-empty{
+    grid-column: 1 / -1;
+    margin-top: 8px;
+    font-family: Inter;
+    font-weight: 500;
+    font-size: 16px;
+    color: #797E86;
+}
+.pay-fines-d-amount{
+    display: flex;
+    align-items: center;
+    column-gap: 4px;
+    white-space: nowrap;
+    img{
+        width: 26px;
+        height: 20px;
+    }
+}
+.pay-fines-d-total-fee{
+    padding: 24px 24px 56px;
+    background-color: #fff;
+    border-radius: 20px;
+    margin-top: 16px;
+    margin-bottom: 24px;
+    .pay-fines-d-total-fee-title{
+        font-family: Inter;
+        font-weight: 600;
+        font-size: 20px;
+        color: #361E12;
+        margin-bottom: 32px;
+    }
+}
+.pay-fines-d-fine-table{
+    .ant-table-container{
+        border-radius: 8px 8px 0 0;
+    }
+    table{
+        table-layout: fixed;
+        width: 100%;
+    }
+    .ant-table-thead > tr > th{
+        height: 46px;
+        padding: 12px 16px;
+        background: #F8F7F4;
+        font-family: Inter;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 20px;
+        color: #797E86;
+    }
+    .ant-table-tbody > tr > td{
+        height: 76px;
+        padding: 14px 16px;
+        font-family: Inter;
+        font-weight: 400;
+        font-size: 16px;
+        line-height: 24px;
+        color: #361E12;
+    }
+    .ant-table-thead > tr > th:nth-child(2),
+    .ant-table-thead > tr > th:nth-child(3),
+    .ant-table-tbody > tr > td:nth-child(2),
+    .ant-table-tbody > tr > td:nth-child(3){
+        white-space: nowrap;
+    }
+}
+.pay-fines-d-total-fee-summary{
+    margin-top: 24px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    column-gap: 16px;
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 18px;
+    color: #361E12;
+
+    strong{
+        display: flex;
+        align-items: center;
+        column-gap: 4px;
+        color: #92722A;
+    }
+}
+.pay-fines-d-btns{
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    padding: 24px 40px;
+    min-height: 96px;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #FFFFFF;
+    box-shadow: 0px -4px 12px 0px #28241908;
+    border-top-left-radius: 20px;
+    border-top-right-radius: 20px;
+    .pay-fines-d-btns-right{
+        display: flex;
+        column-gap: 16px;
+        .pay-fines-d-btns-pay-fine{
+            width: 128px;
+            height: 48px;
+            border: 0;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            user-select: none;
+            cursor: pointer;
+            background: linear-gradient(90deg, #9E7538 0%, #C19453 100%);
+            font-family: Inter;
+            font-weight: 600;
+            font-size: 16px;
+            color: #fff;
+        }
+        .pay-fines-d-btns-pay-fine:disabled{
+            background: #E1E3E5;
+            color: #9EA2A9;
+            cursor: not-allowed;
+        }
+    }
+    .pay-fines-d-btns-back{
+        width: 128px;
+        height: 48px;
+        border-radius: 8px;
+        border: 1px solid #92722A;
+        background-color: #FFFFFF;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        user-select: none;
+        cursor: pointer;
+        font-family: Inter;
+        font-weight: 600;
+        font-size: 16px;
+        color: #92722A;
+    }
+    
+}
+@media (max-width: 1023px) {
+  .pay-fines-d-layout-content {
+    padding: 0 16px;
+  }
+  .pay-fines-d-layout {
+    .pay-fines-d-layout-header {
+      padding: 0 24px;
+    }
+  }
+  .pay-fines-d-section {
+    .pay-fines-d-section-info {
+      flex-wrap: wrap;
+      .pay-fines-d-section-info-item {
+        flex: 1 1 45%;
+        min-width: 0;
+        margin-bottom: 16px;
+      }
+    }
+  }
+  .pay-fines-d-btns {
+    padding: 16px;
+    flex-wrap: wrap;
+    gap: 12px;
+    .pay-fines-d-btns-right {
+      flex-wrap: wrap;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .pay-fines-d-layout-content {
+    padding: 0 8px;
+  }
+  .pay-fines-d-layout {
+    .pay-fines-d-layout-header {
+      height: 80px;
+      padding: 0 16px;
+    }
+    .pay-fines-d-layout-logo .logo-img {
+      width: 168px;
+      height: 48px;
+    }
+  }
+  .pay-fines-d-header {
+    .pay-fines-d-header-item-title,
+    .pay-fines-d-header-item-value {
+      white-space: normal;
+    }
+  }
+}
+
+.pay-fines-d-payment-failure-modal {
+    .ant-modal-content {
+        border-radius: 20px;
+        overflow: hidden;
+    }
+
+    .ant-modal-body {
+        padding: 0;
+    }
+
+    .card-payment-result-shell {
+        padding: 0;
+    }
+
+    .card-payment-failure-page__shell,
+    .card-payment-failure-page__body {
+        min-height: 0;
+    }
+
+    .card-payment-failure-page__body {
+        width: 100%;
+        padding: 56px 40px 40px;
+        gap: 24px;
+    }
+
+    .card-payment-failure-page__copy {
+        gap: 8px;
+
+        h1 {
+            font-size: 28px;
+        }
+
+        p {
+            font-size: 16px;
+            line-height: 24px;
+        }
+    }
+
+    .card-payment-failure-page__details {
+        width: 560px;
+        padding: 16px 24px;
+    }
+
+    .card-payment-failure-page__actions {
+        padding-top: 12px;
+    }
+}

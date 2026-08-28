@@ -1,0 +1,23 @@
+{
+  "passwordTitle": "إدخال كلمة المرور",
+  "passwordPrompt": "هذا المستند محمي بكلمة مرور. يرجى إدخال كلمة المرور لعرضه.",
+  "passwordPlaceholder": "كلمة المرور",
+  "confirm": "تأكيد",
+  "cancel": "إلغاء",
+  "incorrectPassword": "كلمة المرور غير صحيحة. يُرجى المحاولة مرة أخرى.",
+  "documentPreview": "معاينة المستند",
+  "documentLoadFailed": "تعذر تحميل مستند PDF.",
+  "pageRenderFailed": "تعذر عرض صفحة PDF هذه.",
+  "download": "تنزيل",
+  "closePreview": "إغلاق المعاينة",
+  "imagePreview": "معاينة الصورة",
+  "imagePreviewFailed": "تعذرت معاينة الصورة.",
+  "noImageAvailable": "لا توجد صورة متاحة.",
+  "videoPreview": "معاينة الفيديو",
+  "videoPreviewFailed": "تعذرت معاينة الفيديو.",
+  "noVideoAvailable": "لا يتوفر فيديو.",
+  "zoomOut": "تصغير",
+  "zoomIn": "تكبير",
+  "downloadImage": "تنزيل الصورة",
+  "downloadVideo": "تنزيل الفيديو"
+}

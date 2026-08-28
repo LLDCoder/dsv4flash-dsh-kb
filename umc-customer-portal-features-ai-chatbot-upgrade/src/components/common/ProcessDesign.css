@@ -1,0 +1,80 @@
+.process-design {
+  display: flex;
+  background-color: transparent;
+  height: 100%;
+}
+.process-design .design-wrapper{
+  background-color: #fff;
+  flex: 1;
+  padding: 16px;
+  border-radius: 16px;
+  margin-right: 16px;;
+  height: 100%;
+}
+.process-design .design-wrapper .designer{
+  background-color: transparent;
+  height: 100%;
+}
+.process-design .node-properties-configration{
+  width: 344px;
+  background-color: #fff;
+  border-radius: 10px;
+  padding: 24px;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+.node-config-content{
+  padding: 0 20px 20px;
+}
+.process-design-drawer-header{
+    color: #72767b;
+    margin-bottom: 32px;
+    padding: 20px 20px 0;
+    cursor: pointer;
+}
+.process-design-drawer-title{
+    display: flex;
+    align-items: center;
+    font-size: medium;
+    column-gap: 10px;
+}
+.process-design-drawer-title:hover{
+    color: #409EFF;
+    text-decoration: underline;
+}
+.process-design-drawer-title svg{
+    font-size: 24px;
+}
+.process-design-drawer-title:hover svg{
+    color: #409EFF;
+}

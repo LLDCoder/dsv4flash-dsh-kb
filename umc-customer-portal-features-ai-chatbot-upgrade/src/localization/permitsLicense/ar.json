@@ -1,0 +1,65 @@
+{
+  "title": "التراخيص والتصاريح",
+  "actionNeeded": {
+    "sectionTitle": "إجراء مطلوب ({{count}})"
+  },
+  "searchPlaceholder": "بحث",
+  "status": {
+    "active": "نشط",
+    "expireSoon": "ينتهي قريبًا",
+    "expired": "منتهٍ",
+    "suspended": "موقوف",
+    "cancelled": "ملغى",
+    "allPlaceholder": "جميع الحالات"
+  },
+  "actions": {
+    "renew": "تجديد",
+    "modify": "تعديل",
+    "cancel": "إلغاء",
+    "transfer": "نقل",
+    "partnerManagement": "إدارة الشركاء",
+    "download": "تنزيل"
+  },
+  "table": {
+    "documentName": "اسم المستند",
+    "licensePermitNo": "رقم الترخيص/التصريح",
+    "applicationNo": "رقم الطلب",
+    "effectiveDate": "تاريخ السريان",
+    "expireDate": "تاريخ الانتهاء",
+    "lastUpdate": "آخر تحديث",
+    "status": "الحالة",
+    "actions": "الإجراءات"
+  },
+  "pagination": {
+    "total": "الإجمالي {{total}}"
+  },
+  "empty": {
+    "noResults": "لا توجد نتائج مطابقة لبحثك.",
+    "noLicenses": "لم يتم العثور على تراخيص أو تصاريح."
+  },
+  "clearFilters": "مسح عوامل التصفية",
+  "error": {
+    "loadFailed": "تعذّر تحميل التراخيص أو التصاريح."
+  },
+  "retry": "إعادة المحاولة",
+  "viewMode": {
+    "ariaLabel": "طريقة العرض"
+  },
+  "messages": {
+    "documentPreviewUnavailable": "معاينة المستند غير متاحة لهذا السجل.",
+    "documentPreparing": "ملف المستند غير متاح بعد. يُرجى المحاولة لاحقاً.",
+    "documentDownloadFailed": "تعذّر تنزيل المستند. يُرجى المحاولة مرة أخرى.",
+    "inProgressApplication": "لديك طلب قيد المراجعة بالفعل",
+    "actionUnavailable": "هذا الإجراء غير متاح حاليًا.",
+    "routingUnavailable": "معلومات توجيه الخدمة غير متاحة.",
+    "licensePermitNumberRequired": "رقم الرخصة أو التصريح مطلوب لهذه الخدمة."
+  },
+  "documentModal": {
+    "title": "رمز الوصول إلى ملف PDF",
+    "subtitle": "استخدم رمز الوصول أدناه لفتح ملف PDF الذي تم تنزيله.",
+    "noteTitle": "ملاحظة",
+    "noteText": "انسخ رمز الوصول هذا واحتفظ به. ستحتاج إليه لفتح ملف PDF بعد تنزيله.",
+    "passwordLabel": "رمز الوصول",
+    "copyButtonText": "نسخ رمز الوصول وتنزيل الملف"
+  }
+}

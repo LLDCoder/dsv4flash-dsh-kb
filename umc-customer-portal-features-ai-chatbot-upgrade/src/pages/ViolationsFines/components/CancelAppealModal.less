@@ -1,0 +1,215 @@
+.cancel-appeal-modal-wrap {
+  .ant-modal {
+    padding-bottom: 0;
+  }
+}
+
+.cancel-appeal-modal {
+  max-width: calc(100vw - 32px);
+  width: 720px !important;
+
+  .ant-modal-content {
+    background: #ffffff;
+    border-radius: 20px;
+    box-shadow: none;
+    overflow: hidden;
+  }
+
+  .ant-modal-body {
+    padding: 0;
+  }
+}
+
+.cancel-appeal-modal__root {
+  align-items: center;
+  background: #ffffff;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  isolation: isolate;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.cancel-appeal-modal__header {
+  align-items: center;
+  display: flex;
+  height: 64px;
+  justify-content: flex-end;
+  padding: 20px 40px;
+  position: relative;
+  width: 100%;
+  z-index: 2;
+}
+
+.cancel-appeal-modal__close {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+  position: relative;
+  width: 24px;
+}
+
+.cancel-appeal-modal__close:disabled {
+  cursor: not-allowed;
+}
+
+.cancel-appeal-modal__close-inner {
+  display: block;
+  height: 24px;
+  overflow: hidden;
+  position: relative;
+  width: 24px;
+}
+
+.cancel-appeal-modal__close-stroke {
+  display: block;
+  height: 14px;
+  inset: 5px;
+  max-width: none;
+  position: absolute;
+  width: 14px;
+}
+
+.cancel-appeal-modal__body {
+  background: #ffffff;
+  min-height: 300px;
+  position: relative;
+  width: 100%;
+  z-index: 1;
+}
+
+.cancel-appeal-modal__body::before {
+  border: 0 solid transparent;
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.cancel-appeal-modal__content {
+  align-items: center;
+  display: flex;
+  flex: 1 0 0;
+  flex-direction: column;
+  gap: 24px;
+  justify-content: center;
+  min-height: 300px;
+  min-width: 1px;
+  overflow: hidden;
+  padding: 0 32px 40px;
+  position: relative;
+  width: 100%;
+}
+
+.cancel-appeal-modal__icon {
+  align-items: center;
+  background: #fef2f2;
+  border-radius: 90.909px;
+  display: flex;
+  flex: 0 0 auto;
+  height: 72px;
+  justify-content: center;
+  position: relative;
+  width: 72px;
+}
+
+.cancel-appeal-modal__icon-image {
+  display: block;
+  height: 43.1992px;
+  width: 43.1992px;
+}
+
+.cancel-appeal-modal__copy {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+  width: 100%;
+}
+
+.cancel-appeal-modal__title {
+  color: #361e12;
+  flex: 0 0 auto;
+  font-family: Inter, sans-serif;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: normal;
+  margin: 0;
+  position: relative;
+  white-space: nowrap;
+}
+
+.cancel-appeal-modal__description {
+  color: #5f646d;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 24px;
+  margin: 0;
+  min-width: 100%;
+  position: relative;
+  text-align: center;
+  width: min-content;
+}
+
+.cancel-appeal-modal__actions {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  padding-top: 12px;
+  position: relative;
+  width: 100%;
+}
+
+.cancel-appeal-modal__button {
+  align-items: center;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  height: 48px;
+  justify-content: center;
+  letter-spacing: 0;
+  line-height: 24px;
+  min-width: 120px;
+  overflow: hidden;
+  position: relative;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.cancel-appeal-modal__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.cancel-appeal-modal__button--cancel {
+  background: #ffffff;
+  border: 1px solid #e1e3e5;
+  color: #361e12;
+  gap: 10px;
+  padding: 13px 21px;
+  width: 160px;
+}
+
+.cancel-appeal-modal__button--confirm {
+  background: #ea4f49;
+  border: 0;
+  color: #ffffff;
+  padding: 12px 16px;
+  width: 160px;
+}

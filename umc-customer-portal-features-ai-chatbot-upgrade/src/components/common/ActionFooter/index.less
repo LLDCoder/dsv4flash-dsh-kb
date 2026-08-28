@@ -1,0 +1,170 @@
+@import "@/styles/variables.less";
+
+// Popup rendered at body level by Ant Design Popover — must be top-level
+.action-footer-overflow-popover {
+  .ant-popover-inner {
+    border-radius: 12px;
+    padding: 4px 0;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  }
+  .ant-popover-inner-content {
+    padding: 0;
+  }
+  .action-footer-overflow-popup {
+    display: flex;
+    flex-direction: column;
+
+    .ant-btn {
+      border: none;
+      border-radius: 0;
+      text-align: left;
+      height: 44px;
+      padding: 0 16px;
+      font-size: 14px;
+      font-weight: 500;
+      color: @text-color;
+      background: transparent;
+      box-shadow: none;
+
+      &:hover,
+      &:focus {
+        background: #f5f5f5;
+        color: @text-color;
+      }
+    }
+  }
+}
+
+.layout-content.layout-content--with-action-footer {
+  padding-bottom: calc(48px + var(--action-footer-height, 96px));
+}
+
+.action-footer {
+  position: fixed;
+  bottom: var(--action-footer-offset, 0);
+  inset-inline: 0;
+  background: #ffffff;
+  border-top: 1px solid #e5e5e5;
+  z-index: 100;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
+  height: 96px;
+  border-top-left-radius: 20px;
+  border-top-right-radius: 20px;
+
+  .action-footer-content {
+    margin: 0 auto;
+    padding-block: 24px;
+    padding-inline: 120px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 96px;
+
+    .action-footer-left {
+      display: flex;
+      align-items: center;
+      button {
+        width: 128px;
+        height: 48px;
+      }
+    }
+
+    .action-footer-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+  }
+
+  // Three-dot overflow trigger button
+  .action-footer-overflow-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    flex: 0 0 48px;
+    width: 48px;
+    height: 48px;
+    border: 1px solid #cba344;
+    border-radius: 12px;
+    background: #fff;
+    cursor: pointer;
+    padding: 0;
+
+    span {
+      display: block;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #cba344;
+    }
+  }
+
+  @media (max-width: 1440px) {
+    .action-footer-content {
+      padding-inline: 64px;
+    }
+  }
+
+  @media (max-width: 1280px) {
+    .action-footer-content {
+      padding-inline: 40px;
+    }
+  }
+
+  @media (max-width: 768px) {
+    height: auto;
+
+    .action-footer-content {
+      padding-inline: 16px;
+      padding-block: 12px;
+      height: auto;
+
+      .action-footer-right {
+        width: 100%;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: stretch;
+
+        // Flatten any wrapper div so all buttons are direct flex siblings
+        .action-buttons {
+          display: contents;
+        }
+
+        // Primary/gold fills remaining space
+        .custom-button-primary,
+        .custom-button-gold {
+          flex: 1 1 auto;
+        }
+
+        // Secondary buttons shrink proportionally so the "..." trigger never
+        // wraps to the next line on narrow screens
+        .custom-button-outline,
+        .custom-button-secondary,
+        .custom-button-text,
+        .custom-button-danger,
+        .custom-button-danger-outline {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+
+        // Overflow trigger wrapper — fixed width, never grows or shrinks
+        .action-footer-overflow-wrapper {
+          flex: 0 0 48px;
+          display: flex;
+        }
+
+        // 3+ buttons: primary CTA gets its own full-width row on top
+        &--multi {
+          .custom-button-primary,
+          .custom-button-gold {
+            flex: 0 0 100%;
+            order: -1;
+            border-radius: 24px;
+            height: 52px;
+          }
+        }
+      }
+    }
+  }
+}

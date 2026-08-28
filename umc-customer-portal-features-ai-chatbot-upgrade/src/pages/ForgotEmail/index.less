@@ -1,0 +1,620 @@
+.forgot-email-layout {
+  padding-bottom: 40px;
+}
+
+.forgot-email-layout .public-layout-header {
+  height: 128px;
+}
+
+.forgot-email-content {
+  min-height: calc(100vh - 128px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 40px;
+  box-sizing: border-box;
+}
+
+.forgot-email-box {
+  width: min(1280px, calc(100vw - 80px));
+  height: 872px;
+  min-height: 600px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 80px;
+  border-radius: 40px;
+  background-color: #fff;
+  box-sizing: border-box;
+}
+
+.forgot-email-step {
+  width: 100%;
+  max-width: 540px;
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.forgot-email-title {
+  margin: 0;
+  color: #361e12;
+  font-family: Inter, sans-serif;
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 40px;
+  text-align: center;
+}
+
+.forgot-email-description {
+  margin: 8px auto 0;
+  color: #5f646d;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 24px;
+  text-align: center;
+}
+
+.forgot-email-license-tabs {
+  width: 100%;
+  display: flex;
+  margin: 32px auto 0;
+  border-bottom: 1px solid #e1e3e5;
+}
+
+.forgot-email-license-tab {
+  flex: 1 1 50%;
+  min-width: 0;
+  height: 64px;
+  margin-bottom: -1px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: #361e12;
+  cursor: pointer;
+  font-family: Inter, sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+.forgot-email-license-tab.active {
+  border-bottom-color: #92722a;
+  color: #92722a;
+}
+
+.forgot-email-license-tab:focus-visible,
+.forgot-email-back:focus-visible,
+.forgot-email-primary:focus-visible,
+.forgot-email-resend-button:focus-visible {
+  outline: 2px solid #92722a;
+  outline-offset: 2px;
+}
+
+.forgot-email-form {
+  width: 100%;
+  margin-top: 32px;
+
+  .ant-form-item {
+    margin-bottom: 24px;
+  }
+
+  .ant-form-item-label {
+    padding-bottom: 12px;
+  }
+
+  .ant-form-item-label > label {
+    color: #361e12;
+    font-family: Inter, sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+
+  .ant-input {
+    width: 100%;
+    // height: 48px;
+    border-radius: 8px;
+  }
+
+  .forgot-email-checkbox-item {
+    margin-top: -8px;
+    margin-bottom: 32px;
+  }
+}
+
+.forgot-email-checkbox {
+  color: #361e12;
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.forgot-email-error-message {
+  margin: -8px 0 24px;
+  color: #d92d20;
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.forgot-email-actions {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.forgot-email-form > .forgot-email-actions,
+.forgot-email-new-email-form > .forgot-email-actions {
+  margin-top: 0;
+}
+
+.forgot-email-back,
+.forgot-email-primary {
+  min-width: 0;
+  height: 48px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  white-space: nowrap;
+}
+
+.forgot-email-back {
+  width: 131px;
+  background: rgba(189, 148, 55, 0.1);
+  color: #92722a;
+}
+
+.forgot-email-primary {
+  min-width: 128px;
+  background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+  color: #fff;
+}
+
+.forgot-email-primary--wide {
+  min-width: 209px;
+}
+
+.forgot-email-primary:disabled {
+  background: #e1e3e5;
+  color: #9ea2a9;
+  cursor: not-allowed;
+}
+
+.forgot-email-info-panel {
+  width: 100%;
+  border-radius: 12px;
+  background: #f8f7f4;
+  box-sizing: border-box;
+  color: #361e12;
+  font-family: Inter, sans-serif;
+  text-align: center;
+}
+
+.forgot-email-info-panel h2,
+.forgot-email-panel-heading h2 {
+  margin: 0;
+  color: #361e12;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 24px;
+}
+
+.forgot-email-info-panel p,
+.forgot-email-panel-heading p {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 24px;
+}
+
+.forgot-email-account-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  margin-top: 32px;
+  padding: 24px 48px;
+}
+
+.forgot-email-panel-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
+}
+
+.forgot-email-account-radio-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 100%;
+
+  .ant-radio-wrapper {
+    max-width: 100%;
+    display: inline-flex;
+    align-items: center;
+    margin-inline-end: 0;
+    color: #361e12;
+    font-family: Inter, sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+
+  .ant-radio-wrapper + .ant-radio-wrapper {
+    margin-inline-start: 0;
+  }
+
+  .ant-radio:hover .ant-radio-inner,
+  .ant-radio-wrapper:hover .ant-radio-inner,
+  .ant-radio-input:focus + .ant-radio-inner,
+  .ant-radio-checked .ant-radio-inner {
+    border-color: #92722a;
+  }
+
+  .ant-radio-inner::after {
+    background-color: #92722a;
+  }
+}
+
+.forgot-email-masked-value {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+
+.forgot-email-account-option {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  text-align: start;
+}
+
+.forgot-email-account-radio-group .forgot-email-error-message {
+  width: 100%;
+  margin: 8px 0 0;
+  text-align: start;
+}
+
+.forgot-email-result-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 32px;
+  padding: 32px 48px;
+}
+
+.forgot-email-result-email {
+  max-width: 100%;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: #c19453;
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 32px;
+}
+
+.forgot-email-result-panel .forgot-email-result-note {
+  margin-top: 4px;
+  color: #797e86;
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 20px;
+  text-align: center;
+}
+
+.forgot-email-phone-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 32px;
+  padding: 24px 48px;
+}
+
+.forgot-email-phone-value {
+  color: #c19453;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.forgot-email-code-prompt {
+  margin: 32px 0 8px;
+  color: #361e12;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 24px;
+  text-align: center;
+}
+
+.forgot-email-otp-inputs {
+  width: 100%;
+  max-width: 492px;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 auto;
+}
+
+.forgot-email-otp-input.ant-input {
+  width: 100%;
+  min-width: 0;
+  height: 72px;
+  padding: 0;
+  border: 1px solid #c3c6cb;
+  border-radius: 8px;
+  color: #361e12;
+  font-family: Inter, sans-serif;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 72px;
+  text-align: center;
+}
+
+.forgot-email-otp-input.ant-input:hover,
+.forgot-email-otp-input.ant-input:focus {
+  border-color: #92722a;
+  box-shadow: none;
+}
+
+.forgot-email-resend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+  color: #8a8f98;
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.forgot-email-resend-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.forgot-email-resend-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #92722a;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 500;
+}
+
+.forgot-email-resend-button:disabled {
+  color: #c9af75;
+  cursor: not-allowed;
+}
+
+.forgot-email-new-email-form {
+  width: 100%;
+  margin-top: 32px;
+
+  .ant-form-item {
+    margin-bottom: 30px;
+  }
+
+  .ant-form-item-label {
+    padding-bottom: 8px;
+  }
+
+  .ant-form-item-label > label {
+    color: #361e12;
+    font-family: Inter, sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+
+  .ant-input {
+    width: 100%;
+    // height: 48px;
+    border-radius: 8px;
+  }
+}
+
+.forgot-email-email-otp-description {
+  margin: 8px auto 48px;
+  color: #361e12;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 24px;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.forgot-email-email-otp-description strong {
+  display: inline-block;
+  font-weight: 700;
+}
+
+html[dir="rtl"] .forgot-email-account-radio-group {
+  align-items: flex-end;
+}
+
+@media (max-width: 1023px) {
+  .forgot-email-layout .public-layout-header {
+    height: 80px;
+  }
+
+  .forgot-email-content {
+    min-height: calc(100vh - 80px);
+    align-items: flex-start;
+    padding: 32px 0;
+  }
+
+  .forgot-email-box {
+    width: 100%;
+    height: auto;
+    min-height: calc(100vh - 144px);
+    padding: 48px;
+    border-radius: 32px;
+  }
+}
+
+@media (max-width: 768px) {
+  .forgot-email-layout .public-layout-header {
+    height: 64px;
+  }
+
+  .forgot-email-content {
+    min-height: calc(100vh - 64px);
+    padding: 24px 0;
+  }
+
+  .forgot-email-box {
+    min-height: calc(100vh - 112px);
+    padding: 32px 24px;
+    border-radius: 24px;
+  }
+
+  .forgot-email-title {
+    font-size: 28px;
+    line-height: 36px;
+  }
+
+  .forgot-email-license-tab {
+    height: 56px;
+    padding: 0 8px;
+    font-size: 16px;
+  }
+
+  .forgot-email-account-panel,
+  .forgot-email-result-panel,
+  .forgot-email-phone-panel {
+    padding-inline: 24px;
+  }
+
+  .forgot-email-result-email {
+    font-size: 20px;
+    line-height: 28px;
+  }
+
+  .forgot-email-otp-inputs {
+    gap: 8px;
+  }
+
+  .forgot-email-otp-input.ant-input {
+    height: 56px;
+    font-size: 20px;
+    line-height: 56px;
+  }
+}
+
+@media (max-width: 376px) {
+  .forgot-email-layout .public-layout-header {
+    height: 56px;
+  }
+
+  .forgot-email-content {
+    min-height: calc(100vh - 56px);
+    padding: 16px 0;
+  }
+
+  .forgot-email-box {
+    min-height: calc(100vh - 88px);
+    padding: 24px 16px;
+    border-radius: 20px;
+  }
+
+  .forgot-email-title {
+    font-size: 24px;
+    line-height: 32px;
+  }
+
+  .forgot-email-description {
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .forgot-email-license-tab {
+    height: 48px;
+    font-size: 13px;
+  }
+
+  .forgot-email-account-panel,
+  .forgot-email-result-panel,
+  .forgot-email-phone-panel {
+    padding-inline: 16px;
+  }
+
+  .forgot-email-info-panel p,
+  .forgot-email-panel-heading p {
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .forgot-email-actions {
+    gap: 8px;
+  }
+
+  .forgot-email-back,
+  .forgot-email-primary {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    height: 44px;
+    padding: 0 8px;
+    font-size: 14px;
+  }
+
+  .forgot-email-primary--wide {
+    flex-grow: 1.5;
+  }
+
+  .forgot-email-otp-inputs {
+    gap: 6px;
+  }
+
+  .forgot-email-otp-input.ant-input {
+    height: 44px;
+    font-size: 18px;
+    line-height: 44px;
+  }
+
+  .forgot-email-resend {
+    gap: 5px;
+    font-size: 13px;
+  }
+
+  .forgot-email-email-otp-description {
+    margin-bottom: 32px;
+    font-size: 14px;
+    line-height: 20px;
+  }
+}

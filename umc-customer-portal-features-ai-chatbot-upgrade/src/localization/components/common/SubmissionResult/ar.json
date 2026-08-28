@@ -1,0 +1,31 @@
+{
+  "applicationNumberLabel": "رقم الطلب",
+  "licenseNumberLabel": "رقم الترخيص",
+  "back": "رجوع",
+  "viewDetails": "عرض التفاصيل",
+  "rating": {
+    "extremelyDissatisfied": "غير راضٍ إطلاقًا",
+    "extremelySatisfied": "راضٍ تمامًا",
+    "submit": "إرسال"
+  },
+  "submissionSuccessful": {
+    "title": "تم الإرسال بنجاح",
+    "description": "تم تقديم طلب الخدمة بنجاح! سنعالج طلبك قريبًا. سيتم استكمال المراجعة وفقًا للإطار الزمني المعتمد."
+  },
+  "underReview": {
+    "title": "طلبك قيد المراجعة",
+    "description": "سنعالج طلبك قريبًا. سيتم استكمال المراجعة وفقًا للإطار الزمني المعتمد."
+  },
+  "permitIssued": {
+    "title": "تم إصدار التصريح بنجاح",
+    "description": "تهانينا! تم إصدار تصريح الخدمة الخاص بك."
+  },
+  "permitExpiredGrace": {
+    "title": "انتهت صلاحية تصريحك",
+    "description": "انتهت صلاحية تصريحك في {{expiryDate}}. لديك {{graceDays}} يومًا متبقيًا للتجديد دون غرامات."
+  },
+  "permitExpiredPenalty": {
+    "title": "انتهت صلاحية تصريحك",
+    "description": "انتهت صلاحية تصريحك في {{expiryDate}}. انتهت فترة السماح 30 يومًا وتسري الغرامات."
+  }
+}

@@ -1,0 +1,218 @@
+@import "../ViolationsFines/components/PageShared.less";
+
+.violations-fines-result-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 520px;
+}
+
+.violations-fines-payment-result {
+  align-items: center;
+  background: #ffffff;
+  backdrop-filter: blur(5px);
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  margin: 24px auto 0;
+  max-width: 1680px;
+  padding: 24px;
+  text-align: center;
+  width: 100%;
+}
+
+.violations-fines-payment-result--success {
+  gap: 32px;
+}
+
+.violations-fines-payment-result__main {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.violations-fines-payment-result--success
+  .violations-fines-payment-result__main {
+  min-height: 400px;
+  padding: 40px 40px 0;
+  width: 880px;
+}
+
+.violations-fines-payment-result--failed
+  .violations-fines-payment-result__main {
+  min-height: 400px;
+  padding: 40px;
+  width: 800px;
+}
+
+.violations-fines-payment-result__icon {
+  align-items: center;
+  border-radius: 72px;
+  display: flex;
+  flex: 0 0 72px;
+  height: 72px;
+  justify-content: center;
+  line-height: 1;
+  width: 72px;
+}
+
+.violations-fines-payment-result--success
+  .violations-fines-payment-result__icon {
+  background: rgba(182, 138, 53, 0.1);
+  color: #b68a35;
+  font-size: 36px;
+}
+
+.violations-fines-payment-result--failed
+  .violations-fines-payment-result__icon {
+  background: #fef2f2;
+  color: #d83731;
+  font-size: 28px;
+}
+
+.violations-fines-payment-result__copy {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  justify-content: center;
+  width: 680px;
+}
+
+.violations-fines-payment-result__copy h2 {
+  color: #361e12;
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1;
+  margin: 0;
+}
+
+.violations-fines-payment-result__copy p {
+  color: #5f646d;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: normal;
+  margin: 0;
+  max-width: 680px;
+}
+
+.violations-fines-payment-result__actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+
+.violations-fines-payment-result__button {
+  height: 48px;
+}
+
+.violations-fines-payment-result__button .custom-button-content,
+.violations-fines-payment-result__button .custom-button-contentWithIcon {
+  font-weight: 600;
+}
+
+.violations-fines-payment-result__button--back,
+.violations-fines-payment-result__button--receipt {
+  min-width: 160px;
+}
+
+.violations-fines-payment-result__button--back .custom-button-content,
+.violations-fines-payment-result__button--back .custom-button-contentWithIcon,
+.violations-fines-payment-result__button--try-again .custom-button-content,
+.violations-fines-payment-result__button--try-again
+  .custom-button-contentWithIcon,
+.violations-fines-payment-result__button--different-method
+  .custom-button-content,
+.violations-fines-payment-result__button--different-method
+  .custom-button-contentWithIcon {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.violations-fines-payment-result__button--receipt .custom-button-content,
+.violations-fines-payment-result__button--receipt
+  .custom-button-contentWithIcon {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.violations-fines-payment-result__button--try-again {
+  min-width: 120px;
+}
+
+.violations-fines-payment-result__button--different-method {
+  min-width: 207px;
+}
+
+.violations-fines-failure-details {
+  background: #f9fafb;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px;
+  text-align: left;
+  width: 680px;
+}
+
+.violations-fines-failure-details__row {
+  align-items: center;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  min-height: 24px;
+}
+
+.violations-fines-failure-details__row
+  + .violations-fines-failure-details__row {
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.violations-fines-failure-details__label {
+  color: #5f646d;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.violations-fines-failure-details__value {
+  color: #361e12;
+  flex: 1;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  text-align: right;
+  word-break: break-word;
+}
+
+.violations-fines-failure-details__amount {
+  align-items: center;
+  display: inline-flex;
+  gap: 2px;
+  justify-content: flex-end;
+}
+
+.violations-fines-failure-details__amount-icon {
+  align-items: center;
+  color: #361e12;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  height: 12px;
+  justify-content: center;
+  width: 14px;
+}
+
+.violations-fines-feedback-card {
+  background: #ffffff;
+  border-top: 1px dashed #e1e3e5;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+  padding: 24px 40px 0;
+  text-align: center;
+  width: 100%;
+}

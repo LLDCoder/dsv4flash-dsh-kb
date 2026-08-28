@@ -1,0 +1,38 @@
+{
+  "pageTitle": "Payment Result",
+  "checking": {
+    "title": "Confirming your payment…",
+    "body": "Your payment has been submitted. We are confirming the result with the payment provider. This usually takes a few seconds. Please do not close this page."
+  },
+  "success": {
+    "title": "Payment successful",
+    "body": "Your payment has been received and your request has been submitted for processing.",
+    "receipt": "Download receipt"
+  },
+  "failed": {
+    "title": "Payment failed",
+    "body": "Your payment could not be completed. No amount has been charged. You can try again with the same or a different card.",
+    "reasonLabel": "Reason",
+    "genericReason": "The payment was declined by the card issuer."
+  },
+  "unconfirmed": {
+    "title": "Payment result not yet confirmed",
+    "body": "We could not confirm the result of this payment yet. If your payment was completed, it will be credited automatically. Please do not pay again — check the Payments section for the latest status.",
+    "refresh": "Refresh status"
+  },
+  "invalid": {
+    "title": "This payment link is not valid",
+    "body": "We could not find a payment matching this link. Please check the Payments section for your recent payments."
+  },
+  "common": {
+    "transactionNo": "Transaction No.",
+    "reference": "Reference",
+    "details": "Transaction details (for support)",
+    "paymentId": "Payment ID",
+    "gatewayStatus": "Gateway status",
+    "errorCode": "Error code",
+    "help": "Get help",
+    "goPayments": "Go to Payments",
+    "backHome": "Back to home"
+  }
+}

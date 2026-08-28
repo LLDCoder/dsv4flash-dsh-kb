@@ -1,0 +1,306 @@
+.individual-identity-form {
+  @disabled-field-bg: #f8f7f4;
+  @disabled-field-border: #e1e3e5;
+
+  .ant-input[disabled],
+  .ant-input[disabled]:hover,
+  .ant-input-disabled,
+  .ant-input-disabled:hover,
+  .ant-input-affix-wrapper-disabled,
+  .ant-input-affix-wrapper-disabled:hover,
+  .ant-input-affix-wrapper-disabled:focus,
+  .ant-select-disabled.ant-select:not(.ant-select-customize-input)
+    .ant-select-selector,
+  .ant-select-disabled.ant-select:not(.ant-select-customize-input):hover
+    .ant-select-selector,
+  .ant-picker.ant-picker-disabled,
+  .ant-picker.ant-picker-disabled:hover,
+  textarea[disabled],
+  textarea[disabled]:hover {
+    background: @disabled-field-bg;
+    border-color: @disabled-field-border;
+    box-shadow: none;
+  }
+
+  .ant-input-affix-wrapper-disabled .ant-input[disabled],
+  .ant-picker.ant-picker-disabled input,
+  .ant-select-disabled .ant-select-selection-item,
+  .ant-select-disabled .ant-select-selection-placeholder,
+  textarea[disabled] {
+    background: transparent;
+  }
+
+  .verification-search-field {
+    width: 100%;
+    min-width: 0;
+
+    &__control {
+      flex: 1 1 auto;
+      width: 100%;
+      min-width: 0;
+
+      .ant-input {
+        height: 48px !important;
+        border-radius: 8px;
+
+        &.emirates-id-input--template {
+          color: #797e86;
+        }
+      }
+    }
+
+    &--inline-action {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    &__inline-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      min-width: 48px;
+      height: 48px !important;
+      padding: 0;
+      border-radius: 8px;
+      outline: none;
+      background: linear-gradient(to right, #8a6530, #a87f45);
+      box-shadow: none;
+      > svg {
+        width: 20px;
+        height: 20px;
+      }
+      &:hover,
+      &:focus,
+      &:active {
+        border-color: unset;
+        background: linear-gradient(to right, #8a6530, #a87f45);
+      }
+    }
+  }
+
+  .ant-form-item:not(.ant-form-item-has-error) {
+    .verification-search-field__control {
+      .ant-input-affix-wrapper:hover,
+      .ant-input-affix-wrapper:focus,
+      .ant-input-affix-wrapper-focused {
+        border-color: #cba344 !important;
+        box-shadow: none !important;
+      }
+
+      .ant-input:hover,
+      .ant-input:focus,
+      .ant-input:active {
+        border-color: #cba344 !important;
+        box-shadow: none !important;
+      }
+    }
+  }
+
+  .verification-search-action {
+    &__button {
+      height: 48px !important;
+      min-width: 120px;
+      padding: 0 16px;
+      box-shadow: none;
+      white-space: nowrap;
+    }
+
+    &__label-placeholder {
+      visibility: hidden;
+    }
+  }
+
+  .verification-search-action-form-item {
+    width: 100%;
+
+    .ant-form-item-control-input-content {
+      display: flex;
+      justify-content: flex-start;
+    }
+
+    &--modal {
+      .verification-search-action__button {
+        width: 48px;
+        min-width: 48px;
+        padding: 0;
+        border-radius: 8px;
+        background: linear-gradient(to right, #8a6530, #a87f45);
+
+        &:hover,
+        &:focus,
+        &:active {
+          border-color: unset;
+          background: linear-gradient(to right, #8a6530, #a87f45);
+        }
+      }
+    }
+  }
+
+  .verification-method-form-item {
+    margin-bottom: 24px !important;
+  }
+
+  // Override the global custorm-form label min-height for this shared form only.
+  .custorm-form.ant-form & {
+    .ant-form-item {
+      .ant-form-item-label {
+        min-height: 0;
+      }
+      .ant-form-item-control-input-content {
+        min-height: 44px;
+      }
+    }
+  }
+
+  .document-item,
+  .individual-identity-form-col {
+    width: 100%;
+    min-width: 0;
+
+    .ant-form-item-control,
+    .ant-form-item-control-input,
+    .ant-form-item-control-input-content {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .document-viewer-wrapper,
+    .document-file {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .file-info {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .file-name {
+      flex: 1 1 auto;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  &--profile {
+    .document-item .ant-form-item-extra {
+      min-height: 0;
+      margin-top: 8px;
+      color: #797e86;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 18px;
+    }
+
+    .verify-method {
+      margin-bottom: 16px;
+
+      .verify-label {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        margin-bottom: 8px;
+        color: #1a1a1a;
+      }
+
+      .ant-form-item {
+        margin-bottom: 0;
+      }
+
+      .ant-radio-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 24px;
+      }
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+
+      .form-item {
+        margin-bottom: 0;
+      }
+    }
+
+    .documents-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+
+      > * {
+        min-width: 0;
+      }
+    }
+  }
+
+  @media (max-width: 1023px) {
+    &--profile {
+      .form-grid {
+        grid-template-columns: 1fr;
+        gap: 16px;
+      }
+      .documents-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 16px;
+      }
+    }
+  }
+
+  @media (max-width: 576px) {
+    &--profile {
+      .documents-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  }
+
+  &--modal {
+    .individual-identity-form-row {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+      margin-bottom: 0;
+
+      > * {
+        min-width: 0;
+      }
+
+      .individual-identity-form-col {
+        margin-bottom: 24px;
+        min-width: 0;
+      }
+    }
+
+    // Mobile: one field per row. Column gap is dropped because every child
+    // already carries its own 24px bottom margin.
+    @media (max-width: 768px) {
+      .individual-identity-form-row {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+    }
+  }
+
+  .arabic-input {
+    direction: rtl;
+    text-align: right;
+
+    &.arabic-input-placeholder--ltr::placeholder {
+      direction: ltr;
+      text-align: left;
+    }
+
+    &.arabic-input-placeholder--rtl::placeholder {
+      direction: rtl;
+      text-align: right;
+    }
+  }
+}

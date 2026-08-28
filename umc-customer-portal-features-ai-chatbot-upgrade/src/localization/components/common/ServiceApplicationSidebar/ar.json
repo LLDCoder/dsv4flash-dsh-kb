@@ -1,0 +1,12 @@
+{
+  "applicationProgressTitle": "تقدم الطلب",
+  "overallProgress": "التقدم الإجمالي",
+  "serviceDetailsTitle": "تفاصيل الخدمة",
+  "processTime": "مدة المعالجة",
+  "totalAmount": "المبلغ الإجمالي",
+  "paymentTimelineLabel": "الجدول الزمني للدفع",
+  "paymentTimelineValue": "{{count}} يوم عمل",
+  "more": "المزيد",
+  "less": "أقل",
+  "processTimeValue": "{{count}} يوم"
+}

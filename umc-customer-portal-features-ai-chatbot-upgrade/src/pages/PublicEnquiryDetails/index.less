@@ -1,0 +1,614 @@
+// ===== Public Enquiry Details — Figma node 28948:104630 =====
+.public-enquiry-details {
+  width: 1680px;
+  max-width: calc(100% - 48px);
+  margin: 0 auto;
+  padding: 32px 0 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: relative;
+  z-index: 1; // float the cards above the light-grey content band
+
+  // <Spin> wraps the cards in .ant-spin-container; push the column layout down to it
+  // so the 16px gap actually lands between the cards (otherwise they touch).
+  .ant-spin-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  // ---- head (on the dark hero) ----
+  .ped-head {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 8px;
+
+    .ped-breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: Inter;
+      font-size: 14px;
+      color: #ffffff;
+      .ped-bc-muted {
+        opacity: 0.5;
+      }
+      .ped-bc-sep {
+        opacity: 0.5;
+      }
+    }
+    .ped-title {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-family: Inter;
+      font-weight: 600;
+      font-size: 38px;
+      color: #ffffff;
+      .ped-back {
+        width: 28px;
+        height: 28px;
+        cursor: pointer;
+      }
+    }
+  }
+
+  // ---- white card base ----
+  .ped-status-card,
+  .ped-section {
+    background: #ffffff;
+    border-radius: 20px;
+  }
+
+  // ---- status card: 4 items in a row (icon PNG + label/value) — matches ComplaintsDetails .base_info ----
+  .ped-status-card {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(max-content, 1fr));
+    align-items: center;
+    gap: 16px;
+    padding: 32px 24px;
+    overflow-x: auto;
+    .ped-status-item {
+      display: flex;
+      align-items: center;
+    }
+    .ped-status-ico {
+      flex: none;
+      width: 40px;
+      height: 40px;
+    }
+    .ped-status-text {
+      margin-inline-start: 10px;
+      min-width: 0;
+    }
+    .ped-status-label {
+      font-family: Inter;
+      font-size: 14px;
+      font-weight: 400;
+      color: #361e12;
+      white-space: nowrap;
+    }
+    .ped-status-value {
+      font-family: Inter;
+      font-weight: 600;
+      font-size: 16px;
+      line-height: 24px;
+      color: #361e12;
+      margin-top: 6px;
+      white-space: nowrap;
+    }
+    .ped-status-text .ped-badge {
+      margin-top: 6px;
+    }
+  }
+
+  // status badge
+  .ped-badge {
+    align-self: flex-start;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: Inter;
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 20px;
+  }
+  .ped-badge-processing {
+    background: #fffbeb;
+    color: #f29f0e;
+  }
+  .ped-badge-cancelled {
+    background: #fdecec;
+    color: #ea4f49;
+  }
+  .ped-badge-done {
+    background: #ecfdf3;
+    color: #12b76a;
+  }
+
+  // ---- section ----
+  .ped-section {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .ped-section-title {
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 20px;
+    line-height: 24px;
+    color: #361e12;
+  }
+
+  // basic info 2-col grid
+  .ped-data-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+    .ped-data-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+    .ped-data-label {
+      font-family: Inter;
+      font-weight: 400;
+      font-size: 14px;
+      line-height: 20px;
+      color: #797e86;
+    }
+    .ped-data-value {
+      font-family: Inter;
+      font-weight: 500;
+      font-size: 16px;
+      line-height: 24px;
+      color: #361e12;
+      word-break: break-word;
+    }
+  }
+
+  // ---- communications ----
+  .ped-toggle {
+    align-self: flex-start;
+    font-family: Inter;
+    font-size: 14px;
+    font-weight: 500;
+    color: #92722a;
+    cursor: pointer;
+  }
+  .ped-msg-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .ped-msg-empty {
+    font-family: Inter;
+    font-size: 14px;
+    color: #797e86;
+    padding: 8px 0;
+  }
+  .ped-msg {
+    display: flex;
+    gap: 12px;
+    padding: 16px 0;
+    border-bottom: 1px solid #e1e3e5;
+    &:last-child {
+      border-bottom: none;
+    }
+    .ped-msg-avatar {
+      flex: none;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: #f3eee3;
+      color: #92722a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: Inter;
+      font-weight: 600;
+      font-size: 16px;
+      text-transform: uppercase;
+    }
+    .ped-msg-body {
+      flex: 1 1 0;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .ped-msg-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .ped-msg-name {
+      font-family: Inter;
+      font-weight: 600;
+      font-size: 16px;
+      color: #361e12;
+    }
+    .ped-msg-time {
+      font-family: Inter;
+      font-weight: 500;
+      font-size: 16px;
+      color: #5f646d;
+    }
+    .ped-msg-content {
+      font-family: Inter;
+      font-weight: 500;
+      font-size: 16px;
+      line-height: 24px;
+      color: #361e12;
+      word-break: break-word;
+    }
+    .ped-msg-atts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .ped-msg-att {
+      font-size: 13px;
+      color: #92722a;
+      text-decoration: underline;
+      word-break: break-all;
+    }
+  }
+
+  // input box
+  .ped-cancelled-note {
+    font-family: Inter;
+    font-size: 14px;
+    color: #797e86;
+    padding: 12px 0;
+  }
+  .ped-input-box {
+    border: 1px solid #e1e3e5;
+    border-radius: 12px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    .ped-input.ant-input {
+      border: none;
+      box-shadow: none;
+      padding: 0;
+      resize: none;
+      font-family: Inter;
+      font-size: 16px;
+      color: #361e12;
+      &::placeholder {
+        color: #9ea2a9;
+      }
+    }
+    // selected-file chips
+    .ped-att-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .ped-att-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 260px;
+      padding: 6px 10px;
+      background: #f7f4ee;
+      border: 1px solid #e8e0cf;
+      border-radius: 8px;
+      font-family: Inter;
+      font-size: 13px;
+      color: #5f646d;
+      .ped-att-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ped-att-x {
+        cursor: pointer;
+        color: #797e86;
+        font-size: 16px;
+        line-height: 1;
+      }
+    }
+    .ped-input-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .ped-counter {
+      font-family: Inter;
+      font-size: 12px;
+      color: #797e86;
+    }
+    .ped-input-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    // compact paperclip attach button (40x40) — matches ComplaintsDetails .attachment-trigger
+    .ped-clip {
+      width: 40px;
+      height: 40px;
+      flex: none;
+      border: 1px solid #e1e3e5;
+      border-radius: 8px;
+      background: #ffffff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #361e12;
+      cursor: pointer;
+      svg {
+        width: 20px;
+        height: 20px;
+      }
+      &:hover {
+        background: #faf8f3;
+      }
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    }
+    .ped-send-btn {
+      background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+      color: #ffffff;
+      border: none;
+      min-width: 96px;
+      height: 40px;
+      padding: 0 24px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      // disabled = grey, per design (empty message)
+      &[disabled],
+      &.ant-btn[disabled],
+      &:disabled {
+        background: #e1e3e5 !important;
+        color: #9ea2a9 !important;
+        cursor: not-allowed;
+      }
+    }
+  }
+
+  // ---- bottom bar ----
+  .ped-bottom-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 24px;
+    background: #ffffff;
+    border-radius: 20px;
+    box-shadow: 0px -4px 12px 0px rgba(40, 36, 25, 0.03);
+  }
+}
+
+// shared buttons
+.ped-btn {
+  height: 48px;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 16px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+  &:hover {
+    opacity: 0.88;
+  }
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+.ped-btn-outline {
+  background: transparent;
+  border: 1px solid #92722a;
+  color: #92722a;
+}
+.ped-btn-danger {
+  background: #ea4f49;
+  color: #ffffff;
+  border: none;
+}
+.ped-btn-danger-outline {
+  background: transparent;
+  border: 1px solid #ea4f49;
+  color: #ea4f49;
+}
+
+// ---- cancel confirm modal — Figma node 28948:105045 ----
+.ped-cancel-modal {
+  width: 720px !important; // CSS width so it scales with the rem system (not a fixed antd px prop)
+  .ant-modal-content {
+    border-radius: 20px;
+    padding: 0;
+    overflow: hidden;
+    backdrop-filter: blur(5px);
+  }
+  .ant-modal-body {
+    padding: 0;
+  }
+  .ant-modal-close {
+    top: 20px;
+    inset-inline-end: 40px;
+    width: 24px;
+    height: 24px;
+    color: #797e86;
+  }
+  .ped-cancel-body {
+    padding: 60px 40px 40px; // 20px header(close) + 40px body top
+  }
+  .ped-cancel-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 24px;
+  }
+  .ped-cancel-icon {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: #fef2f2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    img {
+      width: 40px;
+      height: 40px;
+      object-fit: contain;
+    }
+  }
+  .ped-cancel-tt {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .ped-cancel-title {
+    font-family: Inter;
+    font-weight: 700;
+    font-size: 26px;
+    line-height: 1.2;
+    color: #361e12;
+  }
+  .ped-cancel-desc {
+    font-family: Inter;
+    font-weight: 400;
+    font-size: 16px;
+    line-height: 24px;
+    color: #5f646d;
+  }
+  .ped-cancel-actions {
+    align-self: stretch;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    padding-top: 12px;
+    .ped-cancel-cancel {
+      width: 160px;
+      height: 48px;
+      font-size: 14px;
+    }
+    .ped-submit-submit{
+       width: 160px;
+         height: 48px;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .public-enquiry-details {
+    .ped-status-card {
+      grid-template-columns: 1fr;
+      overflow-x: visible;
+
+      .ped-status-label,
+      .ped-status-value {
+        white-space: normal;
+        word-break: break-word;
+      }
+    }
+
+    .ped-data-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+}
+
+html[dir="rtl"] .public-enquiry-details .ped-head .ped-title .ped-back {
+  transform: scaleX(-1);
+}
+
+// ---- page background: keep the dark hero only at the top, put a full-width light-grey
+//      content band (#F5F4F3) behind the cards. Scoped to this page's layout class so the
+//      shared PublicLayout (and other public pages) are untouched. ----
+.public-layout.ped-public-layout .public-layout-content {
+  position: relative;
+}
+.public-layout.ped-public-layout .public-layout-content::before {
+  content: "";
+  position: absolute;
+  left: -40px; // cancel PublicLayout's 40px side padding -> full viewport width
+  right: -40px;
+  // grey starts ~middle of the status card (card straddles the hero/content boundary).
+  // px is converted to rem by postcss, so this tracks the (rem-scaled) card across viewports.
+  top: 204px;
+  bottom: 0;
+  background: #f5f4f3;
+  z-index: 0;
+}
+
+// ---- page-local footer (Figma): full-width dark bar at the bottom ----
+.ped-footer {
+  position: relative;
+  z-index: 1; // above the grey content band
+  margin: 0 -40px; // cancel PublicLayout's 40px side padding -> full viewport width
+  padding: 28px 40px;
+  background: #271b00;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+
+  .ped-footer-copyright {
+    font-family: Inter;
+    font-size: 14px;
+    color: #8a8174;
+    white-space: nowrap;
+  }
+  .ped-footer-links {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    span {
+      font-family: Inter;
+      font-size: 14px;
+      color: #b6afa4;
+      cursor: pointer;
+      &:hover {
+        color: #d8d2c7;
+      }
+    }
+    .ped-footer-sep {
+      width: 1px;
+      height: 14px;
+      background: #5a5040;
+      display: inline-block;
+    }
+  }
+  .ped-footer-social {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    white-space: nowrap;
+    .ped-footer-follow {
+      font-family: Inter;
+      font-size: 14px;
+      color: #8a8174;
+      margin-inline-end: 4px;
+    }
+    img {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      cursor: pointer;
+    }
+  }
+}

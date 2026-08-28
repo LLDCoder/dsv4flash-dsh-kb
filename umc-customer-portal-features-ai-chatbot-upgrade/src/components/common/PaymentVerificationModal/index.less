@@ -1,0 +1,206 @@
+@import "@/styles/variables.less";
+.confirm-payment-text{
+  margin-right: 8px;
+}
+.payment-verification-modal {
+  width: 640px;
+  .ant-modal-content {
+    border-radius: 16px;
+    overflow: hidden;
+  }
+
+  .ant-modal-header {
+    display: none;
+  }
+
+  .ant-modal-body {
+    padding: 80px 32px;
+  }
+
+  .modal-close-icon {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    font-size: 20px;
+    color: #8b8b8b;
+    cursor: pointer;
+    z-index: 10;
+
+    &:hover {
+      color: #595959;
+    }
+  }
+
+  .modal-content {
+    text-align: center;
+
+    .lock-icon-container {
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 0 24px 0;
+      img {
+        width: 76px;
+        height: 76px;
+      }
+    }
+
+    .modal-title {
+      font-size: 24px;
+      font-weight: 700;
+      color: @text-color;
+      margin: 0 0 12px;
+      line-height: 1.2;
+    }
+
+    .modal-subtitle {
+      font-size: 16px;
+      color: #5f646d;
+      margin: 0 0 48px;
+      line-height: 1.5;
+      font-weight: 400;
+    }
+
+    .pin-input-container {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-bottom: 40px;
+      height: 64px;
+
+      .pin-input {
+        width: 56px;
+        height: 64px;
+        border: 1px solid #c3c6cb;
+        border-radius: 8px;
+        text-align: center;
+        font-size: 24px;
+        font-weight: 600;
+        background: #ffffff;
+        outline: none;
+        transition: all 0.2s ease;
+        caret-color: transparent;
+        position: relative;
+        color: #000;
+
+        &::placeholder {
+          color: transparent;
+        }
+
+        &.focused {
+          border-color: #92722a;
+        }
+
+        &.filled {
+          border-color: #92722a;
+          background: #ffffff;
+
+          &::before {
+            content: "•";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #262626;
+            font-size: 32px;
+            font-weight: bold;
+            pointer-events: none;
+            z-index: 1;
+          }
+        }
+
+        &:hover:not(.focused) {
+          border-color: #92722a;
+        }
+
+        // Ensure text is always transparent
+        // color: transparent !important;
+        text-shadow: none !important;
+      }
+    }
+
+    .confirm-button {
+      width: 396px;
+      margin-bottom: 20px;
+
+      font-size: 16px;
+    }
+
+    .cancel-button {
+      width: 396px;
+      margin-bottom: 48px;
+      font-size: 16px;
+      border-color: #c3c6cb;
+      color: #361e12;
+      font-family: Inter;
+      font-weight: 600;
+      font-style: Semi Bold;
+      font-size: 16px;
+      line-height: 24px;
+      letter-spacing: 0px;
+      text-align: center;
+    }
+
+    .forgot-pin-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 48px;
+
+      .question-icon {
+        font-size: 16px;
+        color: #92722a;
+      }
+
+      .forgot-pin-link {
+        background: none;
+        border: none;
+        color: #92722a;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        text-decoration: none;
+
+        &:hover {
+          text-decoration: underline;
+        }
+      }
+    }
+
+    .security-notice {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: #5f646d;
+      font-size: 14px;
+      border-top: 1px solid #e1e3e5;
+      padding-top: 20px;
+
+      .security-icon {
+        font-size: 16px;
+        color: #4a9d5c;
+      }
+    }
+  }
+}
+
+// Animation for modal entrance
+.payment-verification-modal.ant-modal {
+  .ant-modal-content {
+    animation: modalSlideIn 0.3s ease-out;
+  }
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}

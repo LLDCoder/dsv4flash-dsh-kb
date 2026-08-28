@@ -1,0 +1,279 @@
+.account-merge-confirm-wrap {
+  backdrop-filter: blur(5px);
+
+  .ant-modal {
+    padding-bottom: 0;
+  }
+}
+
+.account-merge-confirm-modal {
+  max-width: calc(100vw - 32px);
+
+  .ant-modal-content {
+    height: 551px;
+    padding: 0;
+    border-radius: 20px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  .ant-modal-body {
+    padding: 0;
+  }
+}
+
+.account-merge-confirm {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 551px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.account-merge-confirm__header {
+  display: flex;
+  flex: 0 0 64px;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  height: 64px;
+  padding: 20px 40px;
+}
+
+.account-merge-confirm__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  color: #5f646d;
+  background: transparent;
+  cursor: pointer;
+
+  svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    fill: #5f646d;
+  }
+}
+
+.account-merge-confirm__body {
+  display: flex;
+  flex: 0 0 487px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+  width: 100%;
+  height: 487px;
+  min-height: 300px;
+  padding: 0 40px 48px;
+  text-align: center;
+}
+
+.account-merge-confirm__intro {
+  display: flex;
+  flex: 0 0 159px;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  height: 159px;
+  overflow: hidden;
+}
+
+.account-merge-confirm__icon {
+  display: flex;
+  justify-content: center;
+
+  .account-merge-confirm__icon-inner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: #f9f7ed;
+
+    img {
+      width: 48px;
+      height: 48px;
+    }
+  }
+}
+
+.account-merge-confirm__titles {
+  display: flex;
+  flex: 0 0 63px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 63px;
+}
+
+.account-merge-confirm__title {
+  margin: 0;
+  color: #361e12;
+  font-family: Inter, sans-serif;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 31px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.account-merge-confirm__subtitle {
+  margin: 0;
+  color: #5f646d;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  letter-spacing: 0;
+}
+
+.account-merge-confirm__cta {
+  display: flex;
+  flex: 0 0 60px;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  width: 100%;
+  height: 60px;
+  padding-top: 12px;
+}
+
+.account-merge-confirm__btn-yes.custom-button,
+.account-merge-confirm__btn-no.custom-button {
+  width: 160px !important;
+  min-width: 160px !important;
+  height: 48px !important;
+  min-height: 48px !important;
+  padding: 12px 20px !important;
+  border-radius: 8px !important;
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  line-height: 24px !important;
+  letter-spacing: 0 !important;
+
+  .custom-button-content,
+  .custom-button-contentWithIcon {
+    font-family: Inter, sans-serif;
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+}
+
+.account-merge-confirm__btn-yes.custom-button {
+  .custom-button-content,
+  .custom-button-contentWithIcon {
+    font-size: 16px;
+    line-height: 24px;
+  }
+}
+
+.account-merge-confirm__btn-no.custom-button {
+  padding: 13px 21px !important;
+  border-color: #92722a !important;
+  color: #92722a !important;
+
+  .custom-button-content,
+  .custom-button-contentWithIcon {
+    font-size: 14px;
+    line-height: 20px;
+  }
+}
+
+.account-merge-confirm__explanation {
+  flex: 0 0 128px;
+  width: 100%;
+  height: 128px;
+  margin: 0;
+  padding: 16px 24px 16px 48px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f7f6f3 0%, #f6f6f5 56.25%, #f7f2eb 100%);
+  color: #361e12;
+  font-family: Inter, sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  letter-spacing: 0;
+  text-align: start;
+}
+
+.account-merge-confirm__note {
+  flex: 0 0 20px;
+  margin: 0;
+  width: 100%;
+  height: 20px;
+  color: #5f646d;
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  letter-spacing: 0;
+  text-align: start;
+}
+
+html[dir="rtl"] .account-merge-confirm__explanation {
+  padding: 16px 48px 16px 24px;
+}
+
+@media (max-width: 576px) {
+  .account-merge-confirm-modal {
+    .ant-modal-content {
+      height: auto;
+    }
+  }
+
+  .account-merge-confirm {
+    height: auto;
+  }
+
+  .account-merge-confirm__header {
+    flex-basis: 56px;
+    height: 56px;
+    padding: 16px 24px;
+  }
+
+  .account-merge-confirm__body {
+    flex-basis: auto;
+    height: auto;
+    padding: 0 24px 32px;
+  }
+
+  .account-merge-confirm__intro,
+  .account-merge-confirm__titles,
+  .account-merge-confirm__cta,
+  .account-merge-confirm__explanation,
+  .account-merge-confirm__note {
+    flex-basis: auto;
+    height: auto;
+  }
+
+  .account-merge-confirm__cta {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-merge-confirm__btn-yes.custom-button,
+  .account-merge-confirm__btn-no.custom-button {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .account-merge-confirm__explanation {
+    padding: 16px 20px 16px 40px;
+  }
+
+  html[dir="rtl"] .account-merge-confirm__explanation {
+    padding: 16px 40px 16px 20px;
+  }
+}

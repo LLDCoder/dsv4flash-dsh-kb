@@ -1,0 +1,29 @@
+// Sits below the address fields, spanning the section. The design frames the map at
+// 1632x348, so hold that ratio rather than a fixed height and let it scale.
+.address-map {
+  margin-top: 24px;
+
+  .filming-locations-map-frame {
+    width: 100%;
+    aspect-ratio: 1632 / 348;
+    min-height: 240px;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  // The picker ships its own hint, hardcoded in English and worded for filming
+  // locations. Hidden in favour of the translated line below, which also matches the
+  // wording in the design.
+  .filming-locations-map-hint {
+    display: none;
+  }
+
+  .address-map__hint {
+    display: block;
+    margin-top: 8px;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 500;
+    color: #667085;
+  }
+}

@@ -1,0 +1,369 @@
+@import "@/styles/variables.less";
+
+.transactiondetails{
+    width: 100%;
+    max-width: 1680px;
+    margin: 0 auto;
+    margin-top: 72px;
+    position: relative;
+    min-height: calc(100% + 141px);
+}
+.transactiondetails-header{
+    display: grid;
+    grid-template-columns: repeat(4, minmax(max-content, 1fr));
+    gap: 16px;
+    align-items: center;
+    background-color: #fff;
+    border-radius: 20px;
+    padding: 32px 24px;
+    overflow-x: auto;
+}
+.transactiondetails-header-item{
+    display: flex;
+    align-items: center;
+    // Keep each card readable; the header scrolls horizontally when they
+    // don't fit (overflow-x: auto on the container).
+    min-width: 280px;
+}
+.transactiondetails-header-title{
+    font-family: Inter;
+    font-weight: 400;
+    font-size: 14px;
+    line-height: 20px;
+    margin-bottom: 4px;
+    white-space: nowrap;
+}
+.transactiondetails-header-value{
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 16px;
+    line-height: 24px;
+    white-space: nowrap;
+}
+.transactiondetails-header-icon{
+    margin-right: 16px;
+    font-size: 0;
+}
+.transactiondetails-header-icon img{
+    width: 40px;
+    height: 40px;
+}
+.transactiondetails-content{
+    width: 100%;
+    display: flex;
+    margin-top: 16px;
+    column-gap: 16px;
+    margin-bottom: 100px;
+    .transactiondetails-content-left{
+        flex: 1;
+        min-width: 0;
+        border-radius: 20px;
+        background-color: #fff;
+    }
+    .transactiondetails-content-right{
+        // Match the My Requests detail sidebar (fixed 380px)
+        flex: 0 0 380px;
+        width: 380px;
+    }
+}
+.transactiondetails-payment-info{
+    display: flex;
+    flex-direction: column;
+    row-gap: 24px;
+    padding: 24px;
+    .payment-info-title{
+        font-family: Inter;
+        font-weight: 600;
+        font-size: 18px;
+        line-height: 22px;
+        margin-bottom: 0;
+    }
+    .payment-info-items{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: 24px;
+        row-gap: 20px;
+        padding-bottom: 24px;
+        border-bottom: 1px solid #E1E3E5;
+    }
+    .payment-info-item{
+        min-width: 0;
+        width: auto;
+    }
+    .payment-info-item-recharge{
+        grid-column: 1 / -1;
+        .payment-info-item-value{
+            color: #4A9D5C;
+        }
+    }
+    .payment-info-item-title{
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 14px;
+        line-height: 20px;
+        margin-bottom: 6px;
+        color: #797E86;
+    }
+    .payment-info-item-value{
+        display: flex;
+        align-items: center;
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 16px;
+        line-height: 24px;
+        color: #361E12;
+        svg{
+            font-size: 14px;
+        }
+    }
+    .payment-info-item-desc{
+        min-width: 0;
+    }
+    .related-refund-detail{
+        margin-top: 0;
+        padding: 24px;
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid #E1E3E5;
+        background-color: #F9FAFB;
+    }
+    .related-refund-title-wrapper{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+    }
+    .related-refund-title{
+        font-family: Inter;
+        font-weight: 600;
+        font-size: 16px;
+        line-height: 20px;
+    }
+    .related-refund-view-details{
+        line-height: 0;
+        font-size: 0;
+    }
+    .related-refund-items{
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: 24px;
+        row-gap: 20px;
+    }
+    .related-refund-item{
+        min-width: 0;
+        width: auto;
+    }
+    .related-refund-last-item{
+        grid-column: 1 / -1;
+        width: auto;
+        border-top: 1px solid #E1E3E5;
+        padding-top: 16px;
+        margin-top: 0;
+    }
+    .related-refund-item-title{
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 14px;
+        line-height: 20px;
+        color: #797E86;
+        margin-bottom: 6px;
+    }
+    .related-refund-item-value{
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 16px;
+        line-height: 24px;
+        color: #361E12;
+        svg{
+            font-size: 14px;
+            color: #361E12;
+        }
+    }
+    .application-number{
+        color: #92722A;
+    }
+    .related-refund-item-tag{
+        padding: 3px 6px;
+        border-radius: 4px;
+        background-color: #FFFBEB;
+        width: fit-content;
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 14px;
+        line-height: 20px;
+        color: #F29F0E;
+    }
+}
+
+.transactiondetails-related-application{
+    padding: 24px;
+    background-color: #fff;
+    border-radius: 20px;
+    .related-application-title{
+        font-family: Inter;
+        font-weight: 600;
+        font-size: 20px;
+        line-height: 24px;
+        color: #361E12;
+    }
+    .related-application-content{
+        padding: 20px;
+        margin-top: 24px;
+        border-radius: 10px;
+        background: linear-gradient(90deg, #F7F6F3 0%, #F6F6F5 56.25%, #F7F2EB 100%);
+    }
+    .related-application-id-wrapper{
+        display: flex;
+        justify-content: space-between;
+        .related-application-id{
+            font-family: Inter;
+            font-weight: 600;
+            font-size: 18px;
+            line-height: 26px;
+            text-overflow: ellipsis;
+            overflow: hidden;
+            word-break: break-all;
+            white-space: nowrap;
+        }
+        .related-application-status{
+            padding-top: 2px;
+            padding-right: 6px;
+            padding-bottom: 2px;
+            padding-left: 6px;
+            border-radius: 4px;
+            font-family: Inter;
+            font-weight: 500;
+            font-size: 14px;
+            line-height: 20px;
+            background-color: #E1E3E580;
+            color: #5F646D;
+            text-overflow: ellipsis;
+            overflow: hidden;
+            word-break: break-all;
+            white-space: nowrap;
+        }
+        .related-application-status-success{
+            background-color: #ECFDF3;
+            color: #16A34A;
+        }
+    }
+    .related-application-item{
+        margin-top: 20px;
+        .related-application-item-title{
+            font-family: Inter;
+            font-weight: 500;
+            font-size: 14px;
+            line-height: 20px;
+            color: #797E86;
+            margin-bottom: 6px;
+        }
+        .related-application-item-value{
+            font-family: Inter;
+            font-weight: 500;
+            font-size: 16px;
+            line-height: 24px;
+            color: #361E12;
+            svg{
+                font-size: 14px;
+                color: #361E12;
+            }
+        }
+    }
+    .related-application-view{
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 20px;
+        .view-btn{
+            height: 36px;
+        }
+    }
+}
+.transactiondetails-failure-reason{
+    background-color: #FEF2F2;
+    display: flex;
+    align-items: flex-start;
+    padding: 10px 24px;
+    border-radius: 8px;
+    margin-top: 0;
+    .failure-reason-icon{
+        font-size: 0;
+        margin-right: 12px;
+        img{
+            width: 20px;
+            height: 20px;
+        }
+    }
+    .failure-reason-title{
+        font-family: Inter;
+        font-weight: 500;
+        font-size: 16px;
+        line-height: 24px;
+        color: #EA4F49;
+    }
+    .failure-reason-content{
+        font-family: Inter;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 20px;
+        color: #EA4F49;
+    }
+}
+
+@media (max-width: 1023px) {
+  .transactiondetails {
+    margin-top: 24px;
+  }
+  .transactiondetails-header {
+    grid-template-columns: repeat(4, minmax(max-content, 1fr));
+  }
+  .transactiondetails-content {
+    flex-direction: column;
+    row-gap: 16px;
+    .transactiondetails-content-left {
+      order: 1;
+    }
+    .transactiondetails-content-right {
+      flex: none;
+      width: 100%;
+      order: 0;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .transactiondetails-header {
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+
+    .transactiondetails-header-title,
+    .transactiondetails-header-value {
+      white-space: normal;
+    }
+  }
+  .transactiondetails-payment-info {
+    .payment-info-items,
+    .related-refund-items {
+      grid-template-columns: 1fr;
+    }
+    .payment-info-item {
+      width: 100%;
+    }
+    .related-refund-item {
+      width: 100%;
+    }
+  }
+}
+
+.transactiondetails-btn-refund{
+    padding: 12px 40px;
+    border-radius: 8px;
+    background-color: @primary-bgColor-strong;
+    font-family: Inter;
+    font-weight: 600;
+    font-size: 16px;
+    line-height: 24px;
+    color: #92722A;
+    cursor: pointer;
+    user-select: none;
+}

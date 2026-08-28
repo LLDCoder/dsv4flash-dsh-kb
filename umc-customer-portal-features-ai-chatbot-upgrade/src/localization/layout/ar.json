@@ -1,0 +1,44 @@
+{
+  "layoutContent": {
+    "greeting": "مرحبًا بعودتك، {{name}}",
+    "firstLoginPrompt": "هل أنت مستعد للبدء؟ ابدأ طلبك الآن!",
+    "pendingActions": "لديك <highlight>{{count}} من الإجراءات المعلقة</highlight> لإكمالها!",
+    "allSet": "كل شيء جاهز، <highlight>لا توجد إجراءات مطلوبة!</highlight>"
+  },
+  "header": {
+    "menu": {
+      "profile": "الملف الشخصي",
+      "myAccount": "حسابي",
+      "accessibility": "إمكانية الوصول",
+      "logOut": "تسجيل الخروج"
+    },
+    "search": {
+      "minLengthHint": "يجب إدخال 3 أحرف على الأقل"
+    },
+    "aria": {
+      "logo": "الشعار",
+      "avatar": "صورة المستخدم",
+      "profileMenu": "الملف الشخصي",
+      "accessibilityMenu": "إمكانية الوصول",
+      "logOutMenu": "تسجيل الخروج"
+    }
+  },
+  "footer": {
+    "links": {
+      "faqs": "الأسئلة الشائعة",
+      "privacyPolicy": "سياسة الخصوصية",
+      "termsAndConditions": "الشروط والأحكام",
+      "customerHappiness": "سعادة المتعاملين",
+      "accessibility": "إمكانية الوصول"
+    },
+    "copyright": "جميع الحقوق محفوظة © {{year}} {{organization}}",
+    "organization": "الهيئة الوطنية للإعلام",
+    "social": {
+      "facebook": "فيسبوك",
+      "instagram": "إنستغرام",
+      "linkedin": "لينكد إن",
+      "twitter": "X",
+      "youtube": "يوتيوب"
+    }
+  }
+}

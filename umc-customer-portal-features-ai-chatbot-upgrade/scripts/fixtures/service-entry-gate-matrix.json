@@ -1,0 +1,696 @@
+{
+  "entries": [
+    {
+      "scenario": "2301-allow-basic",
+      "serviceId": "2301",
+      "serviceName": "Service Entry Gate Allow",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2301,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Allow"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2302-redirect-renewal",
+      "serviceId": "2302",
+      "serviceName": "Service Entry Gate Redirect Renewal",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2302,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "RedirectRenewal",
+            "promptCode": "REDIRECT_TO_RENEWAL",
+            "targetServiceId": 2057,
+            "targetServiceCode": "1201"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2303-redirect-renewal-missing-target",
+      "serviceId": "2303",
+      "serviceName": "Service Entry Gate Redirect Missing Target",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2303,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "RedirectRenewal",
+            "promptCode": "REDIRECT_TO_RENEWAL"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2304-document-not-found",
+      "serviceId": "2304",
+      "serviceName": "Service Entry Gate Document Not Found",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2304,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "DOCUMENT_NOT_FOUND"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2305-renewable-document-not-found",
+      "serviceId": "2305",
+      "serviceName": "Service Entry Gate Renewable Document Missing",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2305,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "RENEWABLE_DOCUMENT_NOT_FOUND"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2306-missing-prerequisite-document",
+      "serviceId": "2306",
+      "serviceName": "Service Entry Gate Missing Prerequisite",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2306,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "MissingPrerequisiteDocument"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2307-prerequisite-document-unavailable",
+      "serviceId": "2307",
+      "serviceName": "Service Entry Gate Prerequisite Unavailable",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2307,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "PrerequisiteDocumentUnavailable"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2308-individual-add-personal",
+      "serviceId": "2308",
+      "serviceName": "Service Entry Gate Add Personal",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2308,
+          "serviceCode": "1901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "applicantKind": "Individual",
+            "profileState": "missing"
+          },
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "ApplicantTypeNotAllowed",
+            "requiredApplicantType": "Individual"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2309-individual-complete-personal",
+      "serviceId": "2309",
+      "serviceName": "Service Entry Gate Complete Personal",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2309,
+          "serviceCode": "1801",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "applicantKind": "Individual",
+            "profileState": "incomplete"
+          },
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "ApplicantTypeNotAllowed",
+            "requiredApplicantType": "Individual"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2310-individual-switch-to-personal",
+      "serviceId": "2310",
+      "serviceName": "Service Entry Gate Switch Personal",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2310,
+          "serviceCode": "4",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "applicantKind": "Individual",
+            "profileState": "complete"
+          },
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "ApplicantTypeNotAllowed",
+            "requiredApplicantType": "Individual"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2311-establishment-add-basic",
+      "serviceId": "2311",
+      "serviceName": "Service Entry Gate Add Establishment",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2311,
+          "serviceCode": "801",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "applicantKind": "Establishment",
+            "profileState": "missing"
+          },
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "MissingEstablishmentContext",
+            "requiredApplicantType": "Establishment"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2312-establishment-add-required",
+      "serviceId": "2312",
+      "serviceName": "Service Entry Gate Add Required Establishment",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2312,
+          "serviceCode": "1201",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "applicantKind": "Establishment",
+            "profileState": "missing"
+          },
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "MissingEstablishmentContext",
+            "requiredApplicantType": "Establishment"
+          },
+          "uiHints": {
+            "establishmentTypes": [
+              "Commercial Entity",
+              "Government Entity"
+            ],
+            "qualifyingProfiles": []
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2313-establishment-switch-required",
+      "serviceId": "2313",
+      "serviceName": "Service Entry Gate Switch Required Establishment",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2313,
+          "serviceCode": "1201",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "applicantKind": "Establishment",
+            "profileState": "complete"
+          },
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "ApplicantTypeNotAllowed",
+            "requiredApplicantType": "Establishment"
+          },
+          "uiHints": {
+            "qualifyingProfiles": [
+              {
+                "profileId": 14713,
+                "userTypeId": 2,
+                "nameEn": "AKB News Arabia"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2314-establishment-switch-selector",
+      "serviceId": "2314",
+      "serviceName": "Service Entry Gate Switch Establishment Selector",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2314,
+          "serviceCode": "13",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "applicantKind": "Establishment",
+            "profileState": "complete"
+          },
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "ApplicantTypeNotAllowed",
+            "requiredApplicantType": "Establishment"
+          },
+          "uiHints": {
+            "qualifyingProfiles": [
+              {
+                "profileId": 14713,
+                "userTypeId": 2,
+                "nameEn": "AKB News Arabia"
+              },
+              {
+                "profileId": 14718,
+                "userTypeId": 2,
+                "nameEn": "Gulf Tech Insights"
+              },
+              {
+                "profileId": 14721,
+                "userTypeId": 2,
+                "nameEn": "Middle East Startup Hub"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2315-license-under-review",
+      "serviceId": "2315",
+      "serviceName": "Service Entry Gate Under Review",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2315,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "IN_PROGRESS_APPLICATION"
+          },
+          "documentInfo": {
+            "identifierLabel": "License Number",
+            "identifierValue": "ML-02-03-599120",
+            "detailRoute": "/my-requests/detail?id=71241"
+          },
+          "applicationId": 71241
+        }
+      }
+    },
+    {
+      "scenario": "2316-license-suspended",
+      "serviceId": "2316",
+      "serviceName": "Service Entry Gate Suspended License",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2316,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "SUSPENDED_DOCUMENT_EXISTS"
+          },
+          "documentInfo": {
+            "identifierLabel": "License Number",
+            "identifierValue": "ML-02-03-599120",
+            "detailRoute": "/permits-license?search=ML-02-03-599120"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2317-license-expired-grace",
+      "serviceId": "2317",
+      "serviceName": "Service Entry Gate Expired Grace",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2317,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "DOCUMENT_STATUS_INVALID",
+            "targetServiceId": 2057,
+            "targetServiceCode": "1201"
+          },
+          "documentInfo": {
+            "identifierLabel": "License Number",
+            "identifierValue": "ML-02-03-599120",
+            "expiryDate": "2026-04-10",
+            "expiredState": "grace",
+            "graceDays": 12
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2318-license-expired-penalty",
+      "serviceId": "2318",
+      "serviceName": "Service Entry Gate Expired Penalty",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2318,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "DOCUMENT_STATUS_INVALID",
+            "targetServiceId": 2057,
+            "targetServiceCode": "1201"
+          },
+          "documentInfo": {
+            "identifierLabel": "License Number",
+            "identifierValue": "ML-02-03-599120",
+            "expiryDate": "2026-03-01",
+            "expiredState": "penalty",
+            "graceDays": 0
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2319-license-existing",
+      "serviceId": "2319",
+      "serviceName": "Service Entry Gate Existing License",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2319,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Block",
+            "promptCode": "EXISTING_VALID_DOCUMENT"
+          },
+          "documentInfo": {
+            "identifierLabel": "License Number",
+            "identifierValue": "ML-02-03-599120",
+            "issueDate": "2025-11-18",
+            "detailRoute": "/permits-license?search=ML-02-03-599120"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2320-both-add-personal",
+      "serviceId": "2320",
+      "serviceName": "Service Entry Gate Both Add Personal",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2320,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "profileState": "missing"
+          },
+          "decision": {
+            "finalAction": "Allow",
+            "requiredApplicantType": "Either"
+          },
+          "uiHints": {
+            "applicantMode": "Both",
+            "variant": "both-add-personal"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2321-both-complete-personal",
+      "serviceId": "2321",
+      "serviceName": "Service Entry Gate Both Complete Personal",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2321,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "applicant": {
+            "profileState": "incomplete"
+          },
+          "decision": {
+            "finalAction": "Allow",
+            "requiredApplicantType": "Either"
+          },
+          "uiHints": {
+            "applicantMode": "Both",
+            "variant": "both-complete-personal"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2322-both-add-required-establishment",
+      "serviceId": "2322",
+      "serviceName": "Service Entry Gate Both Add Required Establishment",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2322,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Allow",
+            "requiredApplicantType": "Either"
+          },
+          "uiHints": {
+            "applicantMode": "Both",
+            "variant": "both-add-required-establishment",
+            "establishmentTypes": [
+              "Commercial Entity",
+              "Government Entity"
+            ],
+            "qualifyingProfiles": []
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2323-both-switch-establishment-single",
+      "serviceId": "2323",
+      "serviceName": "Service Entry Gate Both Switch Establishment",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2323,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Allow",
+            "requiredApplicantType": "Either"
+          },
+          "uiHints": {
+            "applicantMode": "Both",
+            "variant": "both-switch-establishment",
+            "qualifyingProfiles": [
+              {
+                "profileId": 14713,
+                "userTypeId": 2,
+                "nameEn": "AKB News Arabia"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2324-both-switch-establishment-selector",
+      "serviceId": "2324",
+      "serviceName": "Service Entry Gate Both Establishment Selector",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2324,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "Allow",
+            "requiredApplicantType": "Either"
+          },
+          "uiHints": {
+            "applicantMode": "Both",
+            "variant": "both-switch-establishment",
+            "qualifyingProfiles": [
+              {
+                "profileId": 14713,
+                "userTypeId": 2,
+                "nameEn": "AKB News Arabia"
+              },
+              {
+                "profileId": 14718,
+                "userTypeId": 2,
+                "nameEn": "Gulf Tech Insights"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": "2325-envelope-unsuccessful",
+      "serviceId": "2325",
+      "serviceName": "Service Entry Gate Envelope Unsuccessful",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": false,
+        "statusCode": 200,
+        "message": "Mock unsuccessful envelope",
+        "data": null
+      }
+    },
+    {
+      "scenario": "2326-unknown-final-action",
+      "serviceId": "2326",
+      "serviceName": "Service Entry Gate Unknown Final Action",
+      "statusCode": 200,
+      "body": {
+        "isSuccess": true,
+        "statusCode": 200,
+        "message": "Request successful",
+        "data": {
+          "serviceId": 2326,
+          "serviceCode": "901",
+          "serviceType": "NEW",
+          "documentType": "LICENSE",
+          "decision": {
+            "finalAction": "UnexpectedAction"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+@import "@/styles/variables.less";
+
+.emirates-id-registered-wrap {
+  .ant-modal-mask {
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+  }
+
+  .ant-modal {
+    padding-bottom: 0;
+  }
+}
+
+.emirates-id-registered-modal {
+  max-width: calc(100vw - 32px);
+
+  .ant-modal-content {
+    padding: 0;
+    border-radius: 20px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow:
+      0 6px 16px 0 rgba(0, 0, 0, 0.08),
+      0 3px 6px -4px rgba(0, 0, 0, 0.12),
+      0 9px 28px 8px rgba(0, 0, 0, 0.05);
+  }
+
+
+  .emirates-id-registered-modal__title-placeholder {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+    position: absolute;
+    clip: rect(0, 0, 0, 0);
+  }
+
+  .ant-modal-body {
+    padding: 84px 48px 48px;
+  }
+}
+
+.emirates-id-registered__body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.emirates-id-registered__icon-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+.emirates-id-registered__icon-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 2px solid @primary-color;
+  box-sizing: border-box;
+  background: transparent;
+}
+
+.emirates-id-registered__check {
+  font-size: 26px;
+  color: @primary-color;
+}
+
+.emirates-id-registered__titles {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 480px;
+  margin-bottom: 28px;
+}
+
+.emirates-id-registered__title {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 28px;
+  color: @primary-fontColor;
+}
+
+.emirates-id-registered__description {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 22px;
+  color: #5f646d;
+}
+
+.emirates-id-registered__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.emirates-id-registered__btn.custom-button-large {
+  min-height: 48px !important;
+  padding-left: 20px !important;
+  padding-right: 20px !important;
+  font-weight: 600 !important;
+  border-radius: 8px;
+}

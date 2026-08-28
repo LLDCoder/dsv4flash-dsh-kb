@@ -1,0 +1,63 @@
+{
+  "title": "الإقرار والتعهد",
+  "logoAlt": "مجلس الإمارات للإعلام",
+  "sections": {
+    "contactPersonInformation": "معلومات الشخص المسؤول",
+    "declarationAcknowledgement": "الإقرار والتعهد"
+  },
+  "fields": {
+    "fullName": "الاسم الكامل",
+    "position": "المنصب",
+    "mobileNumber": "رقم الهاتف المتحرك",
+    "emailAddress": "البريد الإلكتروني",
+    "eid": "الهوية الإماراتية",
+    "eidAttachment": "مرفق الهوية الإماراتية",
+    "downloadFile": "تنزيل الملف",
+    "uploadSignedFile": "تحميل الملف الموقّع"
+  },
+  "placeholders": {
+    "fullName": "يرجى إدخال الاسم الكامل",
+    "position": "يرجى إدخال المنصب",
+    "mobilePhone": "يرجى إدخال رقم الهاتف المتحرك",
+    "emailAddress": "يرجى إدخال البريد الإلكتروني",
+    "eid": "يرجى إدخال رقم الهوية الإماراتية"
+  },
+  "tooltips": {
+    "eidAttachment": "حمّل نسخة من الهوية الإماراتية بصيغة PDF. الحد الأقصى للحجم 5 ميجابايت.",
+    "downloadFile": "نزّل ملف الإقرار ووقّعه، ثم حمّل النسخة الموقّعة.",
+    "signedFile": "حمّل الإقرار الموقّع بصيغة PDF. الحد الأقصى للحجم 5 ميجابايت."
+  },
+  "notices": {
+    "downloadAndSign": "يرجى تنزيل ملف الإقرار وتوقيعه، ثم تحميل النسخة الموقّعة أدناه."
+  },
+  "actions": {
+    "uploadFile": "تحميل الملف",
+    "submit": "إرسال"
+  },
+  "fileActions": {
+    "preview": "معاينة",
+    "download": "تنزيل",
+    "delete": "حذف",
+    "viewAria": "معاينة {{fileName}}",
+    "downloadAria": "تنزيل {{fileName}}",
+    "deleteAria": "حذف {{fileName}}"
+  },
+  "validation": {
+    "required": "هذا الحقل مطلوب",
+    "invalidEmail": "يرجى إدخال بريد إلكتروني صالح",
+    "invalidEidFormat": "يجب أن يتكون رقم الهوية الإماراتية من 15 رقماً ويبدأ بـ 784",
+    "pdfOnly": "يُسمح فقط بملفات PDF",
+    "fileSizeExceeded": "يجب ألا يتجاوز حجم الملف {{maxSize}} ميجابايت",
+    "uploadLimitOne": "يمكن تحميل ملف واحد فقط. احذف الملف الحالي أولاً."
+  },
+  "feedback": {
+    "uploadFailed": "فشل تحميل الملف. يرجى المحاولة مرة أخرى.",
+    "downloadFailed": "فشل تنزيل الملف. يرجى المحاولة مرة أخرى.",
+    "fileUnavailable": "هذا الملف غير متاح للمعاينة.",
+    "submissionFailed": "فشل الإرسال. يرجى المحاولة مرة أخرى."
+  },
+  "status": {
+    "submittedTitle": "تم إرسال الإقرار بالفعل",
+    "notFoundTitle": "انتهت صلاحية الرابط"
+  }
+}

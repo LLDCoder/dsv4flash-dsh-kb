@@ -1,0 +1,145 @@
+{
+  "personalProfilePage": {
+    "alerts": {
+      "completeProfile": "يرجى إكمال المعلومات المطلوبة وتحميل المستندات أدناه لإرسال ملفك للاعتماد.",
+      "expiringSoon_today": "تنتهي صلاحية وثيقة الهوية اليوم. يُرجى رفع الوثيقة المجددة لتفادي انقطاع الخدمة.",
+      "expiringSoon_oneDay": "ستنتهي صلاحية وثيقة الهوية خلال يوم واحد. يُرجى رفع الوثيقة المجددة لتفادي انقطاع الخدمة.",
+      "expiringSoon_twoDays": "ستنتهي صلاحية وثيقة الهوية خلال يومين. يُرجى رفع الوثيقة المجددة لتفادي انقطاع الخدمة.",
+      "expiringSoon_fewDays": "ستنتهي صلاحية وثيقة الهوية خلال {{count}} أيام. يُرجى رفع الوثيقة المجددة لتفادي انقطاع الخدمة.",
+      "expiringSoon_manyDays": "ستنتهي صلاحية وثيقة الهوية خلال {{count}} يومًا. يُرجى رفع الوثيقة المجددة لتفادي انقطاع الخدمة.",
+      "expired": "انتهت صلاحية وثيقة الهوية منذ {{count}} يوم/أيام. يُرجى رفع الوثيقة المجددة للتقديم على الخدمات.",
+      "expired_oneDay": "انتهت صلاحية وثيقة الهوية منذ يوم واحد. يُرجى رفع الوثيقة المجددة للتقديم على الخدمات.",
+      "expired_twoDays": "انتهت صلاحية وثيقة الهوية منذ يومين. يُرجى رفع الوثيقة المجددة للتقديم على الخدمات.",
+      "expired_fewDays": "انتهت صلاحية وثيقة الهوية منذ {{count}} أيام. يُرجى رفع الوثيقة المجددة للتقديم على الخدمات.",
+      "expired_manyDays": "انتهت صلاحية وثيقة الهوية منذ {{count}} يومًا. يُرجى رفع الوثيقة المجددة للتقديم على الخدمات.",
+      "verificationFailed": "فشل التحقق"
+    },
+    "sections": {
+      "personalInformation": "المعلومات الشخصية",
+      "personalDocuments": "المستندات الشخصية",
+      "addressInformation": "معلومات العنوان"
+    },
+    "verify": {
+      "howToVerify": "كيف تود التحقق من هويتك؟",
+      "emiratesId": "هوية الإمارات",
+      "uid": "الرقم الموحد لدولة الإمارات (UID)",
+      "passport": "جواز السفر"
+    },
+    "uidTooltip": {
+      "whereFind": "أين يمكنني العثور عليه؟",
+      "findOnVisa": "يمكن العثور عليه في تأشيرة الزيارة أو",
+      "online": "عبر الإنترنت"
+    },
+    "fields": {
+      "dateOfBirth": "تاريخ الميلاد",
+      "emiratesId": "هوية الإمارات",
+      "uid": "الرقم الموحد لدولة الإمارات (UID)",
+      "passportNumber": "رقم جواز السفر",
+      "fullNameArabic": "الاسم الكامل باللغة العربية",
+      "fullNameEnglish": "الاسم الكامل باللغة الإنجليزية",
+      "nationality": "الجنسية",
+      "gender": "الجنس",
+      "passportExpiryDate": "تاريخ انتهاء جواز السفر",
+      "expiryDate": "تاريخ الانتهاء",
+      "emiratesIdExpiryDate": "تاريخ الانتهاء",
+      "visaExpiryDate": "تاريخ انتهاء التأشيرة",
+      "occupation": "المهنة",
+      "personalPhoto": "الصورة الشخصية",
+      "passport": "جواز السفر",
+      "passportScan": "نسخة جواز السفر",
+      "emiratesIdCopy": "هوية الإمارات",
+      "visa": "التأشيرة",
+      "emirate": "الإمارة",
+      "region": "المنطقة",
+      "area": "المنطقة الفرعية",
+      "street": "الشارع",
+      "mapHint": "انقر على الخريطة لتحديد موقع العنوان."
+    },
+    "placeholders": {
+      "datePicker": "يوم/شهر/سنة",
+      "emiratesIdMask": "784-9999-9999999-9",
+      "enterUid": "أدخل الرقم الموحد",
+      "enterPassport": "أدخل رقم جواز السفر",
+      "enterNameArabic": "أدخل الاسم الكامل باللغة العربية",
+      "enterFullName": "أدخل اسمك الكامل",
+      "selectNationality": "اختر الجنسية",
+      "selectGender": "اختر الجنس",
+      "enterOccupation": "أدخل المهنة",
+      "selectEmirate": "اختر الإمارة",
+      "selectRegion": "اختر المنطقة",
+      "selectArea": "اختر المنطقة الفرعية",
+      "enterStreet": "أدخل الشارع"
+    },
+    "gender": {
+      "male": "ذكر",
+      "female": "أنثى"
+    },
+    "personalPhotoTooltip": {
+      "line1": "1. يجب أن تكون الصورة حديثة وملونة وذات خلفية بيضاء.",
+      "line2": "2. يجب أن يكون الوجه كاملًا وفي منتصف الصورة، وأن يشغل حوالي 50% منها.",
+      "line3": "3. يجب أن تكون ملامح الوجه محايدة مع فتح العينين."
+    },
+    "uploadTips": {
+      "photoFiles": "الحد الأقصى للحجم: 5 ميجابايت. أنواع الملفات: jpg وjpeg وpng.",
+      "pdfOnly": "الحد الأقصى للحجم: 5 ميجابايت. نوع الملف: PDF"
+    },
+    "documentHelp": {
+      "expired": "منتهية.",
+      "expiringIn": "تنتهي خلال {{count}} أيام."
+    },
+    "validation": {
+      "dateOfBirthRequired": "يرجى إدخال تاريخ الميلاد",
+      "emiratesIdRequired": "يرجى إدخال هوية الإمارات",
+      "emiratesIdPrefix": "يجب أن تبدأ هوية الإمارات بـ 784",
+      "emiratesIdLength": "يجب أن تتكون هوية الإمارات من 15 رقمًا",
+      "icpVerificationFailed": "فشل التحقق من الهوية. يرجى التحقق من بياناتك والمحاولة مرة أخرى.",
+      "uidRequired": "يرجى إدخال الرقم الموحد",
+      "passportRequired": "يرجى إدخال رقم جواز السفر",
+      "nameArabicRequired": "يرجى إدخال الاسم باللغة العربية",
+      "nameEnglishRequired": "يرجى إدخال الاسم باللغة الإنجليزية",
+      "nationalityRequired": "يرجى اختيار الجنسية",
+      "genderRequired": "يرجى اختيار الجنس",
+      "passportExpiryRequired": "يرجى اختيار تاريخ انتهاء جواز السفر",
+      "passportExpiryPast": "يجب أن يكون تاريخ انتهاء جواز السفر اليوم أو بعده.",
+      "emiratesExpiryRequired": "يرجى إدخال تاريخ الانتهاء",
+      "visaExpiryRequired": "يرجى اختيار تاريخ انتهاء التأشيرة",
+      "occupationRequired": "يرجى إدخال المهنة",
+      "personalPhotoRequired": "يرجى رفع الصورة الشخصية",
+      "passportUploadRequired": "يرجى رفع جواز السفر",
+      "passportScanRequired": "يرجى رفع نسخة جواز السفر",
+      "emiratesUploadRequired": "يرجى رفع هوية الإمارات",
+      "visaUploadRequired": "يرجى رفع التأشيرة",
+      "emirateRequired": "يرجى اختيار الإمارة",
+      "regionRequired": "يرجى اختيار المنطقة",
+      "areaRequired": "يرجى اختيار المنطقة الفرعية",
+      "streetRequired": "يرجى إدخال الشارع"
+    },
+    "actions": {
+      "edit": "تعديل",
+      "cancel": "إلغاء",
+      "save": "حفظ",
+      "submit": "إرسال",
+      "close": "إغلاق",
+      "confirm": "تأكيد"
+    },
+    "fileNames": {
+      "personalPhoto": "الصورة الشخصية",
+      "idDocument": "وثيقة الهوية"
+    },
+    "modals": {
+      "underReviewTitle": "ملفك قيد المراجعة!",
+      "underReviewContent": "بعد الاعتماد، يمكنك الوصول إلى جميع الخدمات الشخصية بهذا الملف.",
+      "switchVerifyTitle": "تغيير طريقة التحقق؟",
+      "switchVerifyContent": "لقد أدخلت بالفعل بيانات [هوية الإمارات / الرقم الموحد / جواز السفر]. سيؤدي التغيير إلى مسح هذه البيانات. هل تريد المتابعة؟"
+    },
+    "alt": {
+      "edit": "تعديل",
+      "type": "النوع",
+      "id": "الهوية",
+      "location": "الموقع",
+      "license": "الرخصة",
+      "avatar": "الصورة",
+      "empty": "فارغ"
+    }
+  }
+}

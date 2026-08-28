@@ -1,0 +1,125 @@
+.account-suspended-modal-wrap {
+  .ant-modal {
+    padding-bottom: 0;
+  }
+}
+
+.account-suspended-modal {
+  max-width: calc(100vw - 32px);
+
+  .ant-modal-content {
+    border-radius: 20px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  // Native antd header kept (empty title): fixed 64px height, no divider line.
+  .ant-modal-header {
+    height: 64px;
+    padding: 0 40px;
+    box-sizing: border-box;
+    border: none;
+    border-radius: 20px 20px 0 0;
+  }
+
+  .account-suspended__header-title {
+    height: 0;
+  }
+
+  // Reset the global .ant-modal-close-x offsets defined in src/App.less.
+  .ant-modal-close {
+    top: 0;
+    inset-inline-end: 0;
+    padding: 0;
+  }
+
+  .ant-modal-close-x {
+    width: 24px;
+    height: 24px;
+    line-height: 24px;
+    margin-top: 20px;
+    margin-inline-end: 40px;
+    font-size: 24px;
+    color: #361e12;
+  }
+
+  .ant-modal-close-icon {
+    font-size: 24px;
+  }
+
+  .ant-modal-body {
+    padding: 0 40px 40px 40px;
+  }
+}
+
+.account-suspended {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.account-suspended__icon {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 24px;
+  object-fit: contain;
+}
+
+.account-suspended__title {
+  margin: 0 0 8px;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: normal;
+  color: #361e12;
+}
+
+.account-suspended__description {
+  margin: 0 0 24px;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  color: #5f646d;
+}
+
+.account-suspended__confirm {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  height: 48px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: #ea4f49;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  color: #fff;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+
+  &:hover {
+    opacity: 0.9;
+  }
+
+  &:active {
+    opacity: 0.82;
+  }
+}
+
+@media (max-width: 768px) {
+  .account-suspended-modal {
+    .ant-modal-body {
+      padding: 0 24px 32px 24px;
+    }
+  }
+
+  .account-suspended__title {
+    font-size: 22px;
+  }
+
+  .account-suspended__confirm {
+    width: 100%;
+  }
+}

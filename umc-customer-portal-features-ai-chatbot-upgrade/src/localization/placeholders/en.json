@@ -1,0 +1,176 @@
+{
+  "common": {
+    "search": "Search",
+    "select": "Please select",
+    "uploadFile": "Upload file",
+    "password": "Password",
+    "enterFirstName": "Enter first name",
+    "enterLastName": "Enter last name",
+    "enterName": "Enter name",
+    "enterEmail": "Enter email",
+    "enterMobileNumber": "Enter mobile phone",
+    "enterPhoneNumber": "Enter phone number",
+    "enterStreet": "Enter street",
+    "selectEmirate": "Select emirate",
+    "selectRegion": "Select region",
+    "selectArea": "Select area",
+    "selectAuthority": "Select licensing authority",
+    "selectSubType": "Select establishment sub-types",
+    "startDate": "Start date",
+    "endDate": "End date",
+    "startTime": "Start time",
+    "endTime": "End time",
+    "allStatuses": "All Statuses",
+    "allTypes": "All Types",
+    "provideRequestDetails": "Provide any additional details about your request",
+    "leaveSupportMessage": "If you need help or have an update, please leave a message for our support team.",
+    "ddmmyyyy": "DD/MM/YYYY"
+  },
+  "components": {
+    "individualIdentityForm": {
+      "emiratesIdMask": "784-XXXX-XXXXXXX-X",
+      "enterUid": "Enter UID",
+      "enterPassportNumber": "Enter passport number",
+      "enterOccupation": "Enter your occupation",
+      "enterFullNameArabic": "Enter full name in Arabic",
+      "enterFullNameEnglish": "Enter your full name in English",
+      "selectNationality": "Select nationality",
+      "selectGender": "Select gender"
+    },
+    "nmaCredentialsForm": {
+      "email": "Your email",
+      "password": "Your password"
+    }
+  },
+  "pages": {
+    "establishmentProfile": {
+      "enterNameArabic": "Enter establishment name in Arabic",
+      "enterNameEnglish": "Enter establishment name in English",
+      "info": {
+        "enterLicenseNumber": "Enter license number",
+        "selectLicenseExpiryDate": "Select license expiry date",
+        "selectTenancyContractEndDate": "Select tenancy contract end date",
+        "enterEntityEstablishmentNameArabic": "Enter entity/establishment name in Arabic",
+        "enterEntityEstablishmentNameEnglish": "Enter entity/establishment name in English"
+      },
+      "partner": {
+        "selectPartnerType": "Select partner type",
+        "selectNationality": "Select nationality"
+      },
+      "emailModal": {
+        "enterVerificationCode": "Enter verification code"
+      }
+    },
+    "login": {
+      "newPassword": {
+        "password": "Enter your new password",
+        "confirmPassword": "Re-enter your password"
+      }
+    },
+    "myRequests": {
+      "filters": {
+        "requestTypes": "All Request Types"
+      }
+    },
+    "myAccount": {
+      "enterCode": "Enter code",
+      "mobileNumberModal": {
+        "enterCurrentMobileNumber": "Enter current mobile number",
+        "enterMobileNumber": "Enter Mobile Number"
+      },
+      "emailModal": {
+        "enterNewEmail": "Enter New Email"
+      },
+      "changePassword": {
+        "enterCurrentPassword": "Enter current password",
+        "enterNewPassword": "Enter new password",
+        "confirmPassword": "Enter confirm password"
+      }
+    },
+    "signUp": {
+      "password": "Password",
+      "confirmPassword": "Confirm password",
+      "enterMobilePhone": "Enter mobile phone"
+    },
+    "payFines": {
+      "individual": {
+        "selectMethod": "Select Method",
+        "enterEmiratesId": "784-XXXX-XXXXXXX-X",
+        "enterEmail": "Enter your email"
+      },
+      "establishment": {
+        "enterLicenseNumber": "Enter your commercial license number",
+        "enterEmirate": "Enter your emirate"
+      },
+      "fineNumber": {
+        "enterFineNumber": "Enter Fine Number"
+      },
+      "detail": {
+        "mostFrequentReasons": "Most frequent reasons"
+      }
+    },
+    "complaints": {
+      "list": {
+        "enquiryTypes": "All Enquiry Type"
+      },
+      "addModal": {
+        "enquiryTypePlaceholder": "Please select enquiry type",
+        "applicationPlaceholder": "Select application number",
+        "servicePlaceholder": "Please select service"
+      },
+      "reopenModal": {
+        "reasonPlaceholder": "Enter reason for reopening"
+      }
+    },
+    "refund": {
+      "list": {
+        "categories": "All Categories",
+        "status": "All Status"
+      },
+      "requestModal": {
+        "enterFineNumber": "Enter Violation Number",
+        "enterApplicationNumber": "Enter Application Number",
+        "amountAuto": "Automatically generated",
+        "selectReason": "Select refund reason",
+        "notesPlaceholder": "Provide any additional details about your refund request...",
+        "referenceRequired": "Enter Violation Number / Application Number"
+      }
+    },
+    "violationsFines": {
+      "violations": {
+        "types": "All Violation Types"
+      },
+      "appeals": {
+        "reasons": "All appeal reasons"
+      },
+      "submitAppeal": {
+        "selectCasePlaceholder": "Select case",
+        "appealReasonPlaceholder": "Select appeal reason"
+      }
+    },
+    "services": {
+      "filters": {
+        "userType": "Select User Type"
+      }
+    },
+    "trackApplication": {
+      "enterReference": "Enter Reference Number"
+    },
+    "payments": {
+      "recharge": {
+        "customAmount": "Custom Amount"
+      }
+    },
+    "home": {
+      "loginAs": {
+        "search": "Type to search"
+      }
+    },
+    "detail": {
+      "enterNotes": "Enter notes"
+    },
+    "mediaLicense": {
+      "selectActivities": "Select activities"
+    }
+  }
+}

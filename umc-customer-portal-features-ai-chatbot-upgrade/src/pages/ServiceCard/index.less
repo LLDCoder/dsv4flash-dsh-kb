@@ -1,0 +1,409 @@
+@import "@/styles/variables.less";
+
+@media (max-width: 1023px) {
+  .service-detail-page {
+    .service-detail-content {
+      flex-direction: column;
+    }
+    .right {
+      flex: none;
+      width: 100%;
+      height: auto;
+    }
+    .steps-bar {
+      width: 100%;
+      overflow-x: auto;
+    }
+  }
+}
+
+.service-detail-page {
+  .ant-collapse-header {
+    height: 86px;
+    line-height: 86px;
+    display: flex;
+    align-items: center !important;
+  }
+  .service-detail-content {
+    display: flex;
+    gap: 24px;
+  }
+
+  .left {
+    flex: 1 1 auto;
+    // Allow the column to shrink below its content width — without this the
+    // steps row dictates the page width and the Key Information card gets
+    // pushed out instead of the steps scrolling.
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .right {
+    flex: 0 0 360px;
+    height: 692px;
+    width: 408px;
+  }
+
+  .steps-card {
+    background: #fff;
+    border-radius: 20px;
+    padding: 24px;
+
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    &-title {
+      // Mobile-only (shown in the ≤768px block): desktop shows the service
+      // name in the page header instead.
+      display: none;
+      font-size: 24px;
+      color: @text-color;
+      font-weight: 700;
+    }
+  }
+
+  .steps-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    // Steps keep their size and scroll horizontally when the card is
+    // narrower than the six steps; on wide screens space-around spreads them.
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  .step-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 170px;
+    &-box {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    &-right-arrow-box {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      height: 72px;
+      margin-bottom: 24px;
+    }
+    .right-arrow {
+      margin-inline-start: 50px;
+    }
+    &-icon-box {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    &-icon {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f8f7f4;
+      img {
+        width: 32px;
+        height: 32px;
+      }
+    }
+    &-text {
+      font-size: 14px;
+      font-weight: 500;
+      color: @text-color;
+    }
+  }
+
+  .service-sections {
+    background: #fff;
+    border-radius: 20px;
+    padding: 0 24px;
+    overflow: hidden;
+
+    .ant-collapse {
+      border: none;
+      background: transparent;
+    }
+
+    .ant-collapse-item {
+      border-bottom: 1px solid #e1e3e5;
+
+      &:last-child {
+        border-bottom: none;
+      }
+    }
+
+    .ant-collapse-header {
+      padding: 18px 0 !important;
+      font-size: 16px;
+      font-weight: 600;
+      color: @text-color;
+    }
+
+    .ant-collapse-content-box {
+      padding: 0 0 24px 0;
+      font-size: 14px;
+      color: #5f646d;
+    }
+
+    .highlight-box {
+      margin-top: 16px;
+      border-radius: 16px;
+
+      .highlight-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #361e12;
+        margin-bottom: 8px;
+      }
+
+      ul {
+        margin: 0;
+        padding-left: 18px;
+
+        li {
+          font-size: 14px;
+          color: #5f646d;
+          line-height: 1.6;
+        }
+      }
+    }
+
+    .service-detail-rich-text,
+    .service-detail-static-content {
+      color: #5f646d;
+      line-height: 1.7;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+
+      p {
+        margin: 0 0 12px;
+
+        &:last-child {
+          margin-bottom: 0;
+        }
+      }
+
+      ul,
+      ol {
+        margin: 0 0 12px;
+        padding-inline-start: 20px;
+      }
+
+      img,
+      table {
+        max-width: 100%;
+      }
+    }
+
+    .related-services-grid {
+      display: grid;
+      grid-template-columns: ~"repeat(auto-fill, minmax(max(306px, calc((100% - 32px) / 3)), 1fr))";
+      gap: 16px;
+      align-items: stretch;
+    }
+  }
+
+  .info-card {
+    background: #ffffff;
+    border-radius: 20px;
+    padding: 24px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+
+    h3 {
+      font-size: 20px;
+      font-weight: 600;
+      color: @text-color;
+      margin: 0 0 16px 0;
+    }
+
+    .info-item {
+      padding: 24px 48px 24px 24px;
+      border-bottom: 1px solid #e1e3e5;
+      width: 344px;
+      min-height: 112px;
+      background: linear-gradient(to right, #f7f6f3, #f6f6f5, #f7f2eb);
+      border-radius: 10px;
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      flex-direction: column;
+      position: relative;
+
+      &-img {
+        width: 80px;
+        height: 80px;
+        position: absolute;
+        right: 24px;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      &:last-child {
+        border-bottom: none;
+      }
+
+      .info-label {
+        font-size: 18px;
+        font-weight: 500;
+        color: @text-color;
+        margin-bottom: 4px;
+      }
+
+      .info-value {
+        font-size: 16px;
+        font-weight: 500;
+        color: @primary-color;
+      }
+    }
+  }
+}
+
+// ─── Below 1280px: single-column form fields ─────────────────────────────────
+// At 1280px+ the schema-designed grid columns apply untouched.
+
+@media (max-width: 1279px) {
+  .service-detail-page .service-sections {
+    // Formily FormGrid uses inline style for grid-template-columns — must use !important
+    .ant-formily-grid-layout {
+      grid-template-columns: 1fr !important;
+    }
+    // Ant Design Row/Col used in custom form components
+    .ant-col-12,
+    .ant-col-md-12,
+    .ant-col-lg-12,
+    .ant-col-xl-12,
+    .ant-col-xxl-12 {
+      flex: 0 0 100% !important;
+      max-width: 100% !important;
+    }
+  }
+}
+
+// ─── Tablet (≤1023px) ────────────────────────────────────────────────────────
+
+@media (max-width: 1023px) {
+  .service-detail-page {
+    .service-detail-content {
+      flex-direction: column;
+    }
+    .right {
+      flex: none;
+      width: 100%;
+      height: auto;
+    }
+    .steps-bar {
+      width: 100%;
+      overflow-x: auto;
+    }
+    .info-card .info-item {
+      width: 100%;
+    }
+  }
+}
+
+// ─── Mobile (≤768px) ─────────────────────────────────────────────────────────
+
+@media (max-width: 768px) {
+  .service-detail-page {
+    .steps-card {
+      padding: 16px;
+
+      &-title {
+        display: block;
+      }
+    }
+
+    // Stack steps vertically: icon left, label right, down-arrow below icon.
+    .steps-bar {
+      flex-direction: column;
+      align-items: stretch;
+      margin-top: 16px;
+      overflow-x: visible;
+    }
+
+    .step-item-box {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .step-item {
+      flex: none;
+      flex-direction: row;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 16px;
+      width: 100%;
+
+      &-icon {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+
+        img {
+          width: 16px;
+          height: 16px;
+        }
+      }
+
+      &-text {
+        font-size: 16px;
+        font-weight: 500;
+      }
+    }
+
+    // Down-arrow connector between steps, centered under the 32px icon column.
+    .step-item-right-arrow-box {
+      width: 32px;
+      height: auto;
+      margin: 4px 0;
+      display: flex;
+      justify-content: center;
+
+      .right-arrow {
+        margin-left: 0;
+        width: 10px;
+        transform: rotate(90deg);
+      }
+    }
+
+    .service-sections {
+      padding: 0 16px;
+    }
+
+    .info-card {
+      padding: 16px;
+
+      .info-item {
+        padding: 16px;
+
+        &-img {
+          right: 16px;
+        }
+      }
+    }
+  }
+}
+
+@media (max-width: 360px) {
+  .service-detail-page {
+    .service-sections {
+      .related-services-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "emailRequiredMessage": "هذا الحقل مطلوب",
+  "emailPatternMessage": "يرجى إدخال بريد إلكتروني صالح",
+  "passwordRequiredMessage": "هذا الحقل مطلوب"
+}

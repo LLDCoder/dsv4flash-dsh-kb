@@ -1,0 +1,465 @@
+@import "@/styles/variables.less";
+
+.formily-control-typography-rules() {
+  .ant-input,
+  .ant-input-number-input,
+  .ant-picker-input > input,
+  .ant-select-selection-item,
+  .ant-radio-wrapper,
+  .ant-radio-wrapper span {
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .ant-radio {
+    font-size: 14px;
+  }
+
+  .ant-radio-input {
+    width: 14px;
+    height: 14px;
+  }
+
+  .ant-radio-inner {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.formily-control-typography {
+  .formily-control-typography-rules();
+}
+
+.formily-control-dropdown {
+  .ant-select-item-option-content {
+    font-size: 14px;
+    font-weight: 500;
+  }
+}
+
+.FormliyView {
+  .ant-table-cell {
+    font-size: 16px !important;
+  }
+  .action-edit {
+    color: #92722a;
+    cursor: pointer;
+    font-weight: 500;
+
+    &:hover {
+      color: #b8860b;
+    }
+  }
+  .action-view {
+    color: #92722a;
+    cursor: pointer;
+    font-weight: 500;
+
+    &:hover {
+      color: #b8860b;
+    }
+  }
+
+  .action-delete {
+    color: #92722a;
+    cursor: pointer;
+    font-weight: 500;
+
+    &:hover {
+      color: #b8860b;
+    }
+  }
+  .Media_Activity_Card {
+    .ant-card-body {
+      gap: 0px !important;
+    }
+  }
+  .ant-formily-item-error-help {
+    font-size: 14px;
+  }
+  .select-table-custom-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .ant-select-selection-search-input {
+    height: 100% !important;
+  }
+  .ant-formily-radio {
+    height: 48px;
+    display: flex;
+    align-items: center;
+  }
+  .antformbody {
+    > .ant-formily-layout > form {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .formtitle {
+      font-family: Inter;
+      font-weight: 500;
+      font-style: Medium;
+      font-size: 14px;
+      line-height: 20px;
+      margin-bottom: 8px;
+    }
+    .ant-picker {
+      height: 48px;
+    }
+    .ant-radio-wrapper {
+      span {
+        font-size: 14px;
+      }
+    }
+    .ant-formily-item,
+    .Formily-container,
+    .formliy-container {
+      margin-bottom: 0;
+    }
+    .ant-input-affix-wrapper,
+    .ant-select-selector {
+      border: 1px solid #d9d9d9;
+      // margin-bottom: 0px;
+    }
+    .ant-formily-item-control-content-component {
+      // min-height: 48px!important;
+      // height: 48px;
+      // height: 48px;
+      line-height: 1 !important;
+      .ant-picker-input {
+        input::placeholder {
+          font-size: 16px;
+          font-weight: 400;
+          font-family: Inter;
+          color: @text-color-table-header;
+        }
+      }
+      .ant-input {
+        // height: 48px ;
+      }
+      .ant-input {
+        &::placeholder {
+          font-size: 16px;
+          font-weight: 400;
+          font-family: Inter;
+          color: @text-color-table-header;
+        }
+      }
+      .ant-select {
+        // height: 100%;
+        .ant-select-selector {
+          height: 100%;
+        }
+      }
+      .ant-select-selector {
+        padding: 0 11px;
+      }
+      .ant-formily-upload {
+        .ant-upload {
+          .ant-input,
+          .ant-input {
+            height: 100% !important;
+          }
+        }
+      }
+    }
+    .ant-card-body {
+      padding: 0;
+    }
+    .ant-col {
+      min-width: 0;
+    }
+    .ant-formily-grid-layout > * {
+      min-width: 0;
+      overflow: hidden;
+    }
+    .ant-formily-item-asterisk {
+      font-size: 14px;
+    }
+    .ant-formily-grid-layout {
+      gap: 16px 24px !important;
+    }
+
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    // Below 1280px the detail/service left column is too narrow for the
+    // multi-column layouts, so stack everything full-width. This covers both
+    // formily FormGrid layouts and the custom form-card components
+    // (ScriptPublicationForm, PublicationForm, FilmTrailerForm, …) that
+    // hard-code columns with `Col span={12}`. At 1280px+ the designed grid
+    // from the form schema applies untouched. Modals render in portals
+    // outside this scope and keep their own layouts.
+    @media (max-width: 1279px) {
+      .ant-formily-grid-layout {
+        grid-template-columns: 1fr !important;
+        > * { grid-column: 1 / -1 !important; }
+      }
+      .ant-row > .ant-col-6,
+      .ant-row > .ant-col-8,
+      .ant-row > .ant-col-12 {
+        flex: 0 0 100%;
+        max-width: 100%;
+      }
+    }
+    .ant-select-selection-item {
+      // height: 48px;
+      display: flex;
+      align-items: center;
+      height: 100%;
+      overflow: visible;
+    }
+    .formily-control-typography-rules();
+    .ant-select-selection-item {
+      .country-dropdown-selected-tag,
+      .country-dropdown-option {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+      }
+    }
+    .ant-select-arrow {
+      right: 11px;
+      svg {
+        font-size: 10px;
+        color: #361e12;
+      }
+    }
+    .ant-formily-item-label {
+      min-height: 28px;
+      height: auto;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .ant-formily-item-label-content {
+      line-height: 20px;
+      span {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        label {
+          font-size: 14px;
+          font-weight: 500;
+          line-height: 20px;
+          color: @text-color;
+          // margin-bottom: 8px;
+        }
+      }
+    }
+    .license-info-form-label,
+    .beneficiary-type-label,
+    .guardian-consent-details-label,
+    .script-pub-label,
+    .transfer-info-label,
+    .profile-form-label,
+    .newpaper-magazine-circulation-label,
+    .license-transfer-form-label,
+    .game-form-label,
+    .film-screening-form-label,
+    .movie-package-form-label,
+    .fp-form-label,
+    .film-form-label,
+    .film-trailer-form-label,
+    .trade-license-details-label,
+    .idselector-label,
+    .filming-locations-label,
+    .data-form-label,
+    .acq-form-label,
+    .video-field-label,
+    .poster-trailer-permit__label,
+    .smm-label,
+    .partner-form-label,
+    .document-label,
+    .address-picker-label {
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .ant-formily-item-label-tooltip-icon{
+      margin-left: 0px!important;
+    }
+    .ant-formily-item-colon {
+      display: none;
+    }
+    .ant-card {
+      border-radius: 20px;
+      padding: 24px 24px !important;
+      .ant-card-head {
+        border-bottom: 0;
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        margin-bottom: 24px;
+        line-height: 1.2!important;
+      }
+      .ant-card-extra {
+        padding: 0;
+
+        .ant-btn {
+          display: flex;
+          height: 32px;
+          min-width: 104px;
+          padding: 6px 12px;
+          justify-content: center;
+          align-items: center;
+        }
+
+        .ant-btn-primary:not(:disabled):not(.ant-btn-disabled),
+        .ant-btn-primary:hover:not(:disabled):not(.ant-btn-disabled),
+        .ant-btn-primary:focus:not(:disabled):not(.ant-btn-disabled),
+        .ant-btn-primary:active:not(:disabled):not(.ant-btn-disabled) {
+          background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+          border: none;
+          color: #fff;
+        }
+      }
+      .ant-card-head-title {
+        padding: 0;
+        font-weight: 600;
+        font-size: 20px;
+        color: @text-color;
+      }
+    }
+    .ant-card.training-program-card {
+      padding: 24px !important;
+      border-radius: 20px;
+      background: #fff;
+
+      .ant-card-head {
+        margin-bottom: 24px;
+      }
+
+      .ant-card-head-title {
+        line-height: 24px;
+      }
+
+      .ant-card-body,
+      .ant-formily-item-control-content-component {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+
+        &::before,
+        &::after {
+          display: none;
+        }
+      }
+
+      .ant-formily-item-control-content-component {
+        min-height: 0 !important;
+      }
+
+      .ant-formily-item {
+        margin-bottom: 0;
+      }
+
+      .video-watching-hint {
+        display: none;
+      }
+
+      .information-container {
+        margin-bottom: 0;
+      }
+
+      .video-field-container {
+        background: transparent;
+        border-radius: 0;
+      }
+
+      .video-preview-container {
+        aspect-ratio: 1067 / 600;
+      }
+    }
+  }
+  .Formily-container,
+  .formliy-container {
+    .ant-card-body {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+
+      &::before,
+      &::after {
+        display: none;
+      }
+    }
+
+    .ant-formily-grid-layout > div:has(> .ant-formily-item) {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+  }
+  textarea {
+    border-radius: 8px;
+  }
+  textarea:hover {
+    border-color: #cba344 !important;
+  }
+  textarea:focus {
+    box-shadow: none;
+  }
+}
+.formily-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #e8e8e8;
+
+  .custom-button {
+    min-width: 128px;
+    white-space: nowrap;
+  }
+}
+
+.Formily-Modal-Form {
+  .formily-control-typography-rules();
+
+  .ant-formily-item-error-help {
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .ant-upload {
+    .upload-input {
+      input {
+        min-height: auto !important;
+      }
+    }
+  }
+  .ant-picker {
+    height: 48px;
+  }
+  input {
+    min-height: 48px;
+    border-radius: 8px;
+    height: 48px;
+  }
+  input:hover {
+    border-color: #cba344 !important;
+  }
+  input:focus {
+    box-shadow: none;
+  }
+  input::placeholder {
+    font-size: 16px;
+    font-weight: 400;
+    font-family: Inter;
+    color: @text-color-table-header;
+  }
+}
+.Formily-save-btn {
+  background: linear-gradient(to right, #8a6530, #a87f45);
+}
+.Formily-save-btn:focus {
+  background: linear-gradient(to right, #8a6530, #a87f45);
+}

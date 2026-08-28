@@ -1,0 +1,97 @@
+{
+  "individualIdentity": {
+    "verify": {
+      "howToVerify": "كيف تود التحقق من هويتك؟",
+      "verificationMethod": "طريقة التحقق",
+      "emiratesId": "هوية الإمارات",
+      "uid": "الرقم الموحد لدولة الإمارات (UID)",
+      "passport": "جواز السفر"
+    },
+    "uidTooltip": {
+      "whereFind": "أين يمكنني العثور عليه؟",
+      "findOnVisa": "يمكن العثور عليه في تأشيرة الزيارة أو",
+      "online": "عبر الإنترنت"
+    },
+    "fields": {
+      "dateOfBirth": "تاريخ الميلاد",
+      "emiratesId": "هوية الإمارات",
+      "uid": "الرقم الموحد لدولة الإمارات (UID)",
+      "passportNumber": "رقم جواز السفر",
+      "fullNameArabic": "الاسم الكامل باللغة العربية",
+      "fullNameEnglish": "الاسم الكامل باللغة الإنجليزية",
+      "nationality": "الجنسية",
+      "gender": "الجنس",
+      "passportExpiryDate": "تاريخ انتهاء جواز السفر",
+      "emiratesIdExpiryDate": "تاريخ الانتهاء",
+      "visaExpiryDate": "تاريخ انتهاء التأشيرة",
+      "occupation": "المهنة",
+      "personalPhoto": "الصورة الشخصية",
+      "passport": "جواز السفر",
+      "passportScan": "نسخة جواز السفر",
+      "emiratesIdCopy": "هوية الإمارات",
+      "visa": "التأشيرة"
+    },
+    "placeholders": {
+      "datePicker": "يوم/شهر/سنة",
+      "emiratesIdMask": "784-XXXX-XXXXXXX-X",
+      "enterUid": "أدخل الأرقام فقط (مثال: 22449922)",
+      "enterPassport": "أدخل رقم جواز السفر",
+      "enterNameArabic": "أدخل الاسم الكامل باللغة العربية",
+      "enterFullName": "أدخل اسمك الكامل باللغة الإنجليزية",
+      "selectNationality": "اختر الجنسية",
+      "selectGender": "اختر الجنس",
+      "enterOccupation": "أدخل مهنتك"
+    },
+    "gender": {
+      "male": "ذكر",
+      "female": "أنثى"
+    },
+    "personalPhotoTooltip": {
+      "line1": "1. يجب أن تكون الصورة حديثة وملونة وذات خلفية بيضاء.",
+      "line2": "2. يجب أن يكون الوجه كاملًا وفي منتصف الصورة، وأن يشغل حوالي 50% منها.",
+      "line3": "3. يجب أن تكون ملامح الوجه محايدة مع فتح العينين.",
+      "line4": "4. الحد الأقصى للحجم: 5 ميجابايت. أنواع الملفات: jpg وjpeg وpng."
+    },
+    "uploadTips": {
+      "photoFiles": "الحد الأقصى للحجم: 5 ميجابايت. أنواع الملفات: jpg وjpeg وpng.",
+      "pdfOnly": "الحد الأقصى للحجم: 5 ميجابايت. نوع الملف: PDF",
+      "emiratesIdTooltip": "الحد الأقصى للحجم: 5 ميجابايت. نوع الملف: PDF",
+      "image": "الحد الأقصى للحجم: 5 ميجابايت. أنواع الملفات: jpg وjpeg وpng.",
+      "pdf": "الحد الأقصى للحجم: 5 ميجابايت. نوع الملف: PDF"
+    },
+    "validation": {
+      "selectVerificationMethod": "يرجى اختيار طريقة التحقق",
+      "dateOfBirthRequired": "يرجى إدخال تاريخ الميلاد",
+      "emiratesIdRequired": "يرجى إدخال هوية الإمارات",
+      "emiratesIdPrefix": "يجب أن تبدأ هوية الإمارات بـ 784",
+      "emiratesIdLength": "يجب أن تتكون هوية الإمارات من 15 رقمًا",
+      "emiratesIdAlreadyLinked": "هذه الهوية الإماراتية مرتبطة بالفعل بحساب آخر.",
+      "icpVerificationFailed": "فشل التحقق من الهوية. يرجى التحقق من بياناتك والمحاولة مرة أخرى.",
+      "uidRequired": "يرجى إدخال الرقم الموحد (UID)",
+      "uidDigits": "يجب أن يتكون الرقم الموحد (UID) من 1 إلى 15 رقمًا",
+      "passportRequired": "يرجى إدخال رقم جواز السفر",
+      "passportFormat": "يجب أن يتكون رقم جواز السفر من 6 إلى 9 أحرف وأرقام",
+      "nameArabicRequired": "يرجى إدخال الاسم باللغة العربية",
+      "arabicOnly": "يرجى إدخال الأحرف العربية فقط",
+      "nameEnglishRequired": "يرجى إدخال الاسم باللغة الإنجليزية",
+      "englishOnly": "يرجى إدخال الأحرف الإنجليزية فقط",
+      "nationalityRequired": "يرجى اختيار الجنسية",
+      "genderRequired": "يرجى اختيار الجنس",
+      "passportExpiryRequired": "يرجى اختيار تاريخ انتهاء جواز السفر",
+      "emiratesExpiryRequired": "يرجى اختيار تاريخ الانتهاء",
+      "visaExpiryRequired": "يرجى اختيار تاريخ انتهاء التأشيرة",
+      "occupationRequired": "يرجى إدخال المهنة",
+      "occupationTooShort": "يجب أن تتكون المهنة من حرفين على الأقل",
+      "occupationTooLong": "يجب ألا تتجاوز المهنة {{max}} حرفًا",
+      "nameTooLong": "الحد الأقصى {{max}} حرفًا",
+      "personalPhotoRequired": "يرجى رفع الصورة الشخصية",
+      "passportUploadRequired": "يرجى رفع جواز السفر",
+      "passportScanRequired": "يرجى رفع نسخة جواز السفر",
+      "emiratesUploadRequired": "يرجى رفع هوية الإمارات",
+      "visaUploadRequired": "يرجى رفع التأشيرة",
+      "validPdf": "يرجى رفع ملف PDF صالح",
+      "validImage": "يرجى رفع صورة صالحة",
+      "fileSizeLessThan5Mb": "يجب أن يكون حجم الملف أقل من 5 ميجابايت"
+    }
+  }
+}

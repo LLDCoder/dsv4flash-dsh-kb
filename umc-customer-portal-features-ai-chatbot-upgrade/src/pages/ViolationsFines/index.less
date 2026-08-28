@@ -1,0 +1,906 @@
+@import "./components/PageShared.less";
+@import "@/styles/variables.less";
+
+.violations-fines-more-button {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: @primary-color;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: rgba(189, 148, 55, 0.1);
+  }
+
+  &:disabled {
+    color: #d5d8dd;
+    cursor: not-allowed;
+  }
+
+  @media (max-width: 768px) {
+    width: 48px;
+    height: 48px;
+    border-radius: 8px;
+    font-size: 20px;
+  }
+}
+
+.violations-fines-section-title {
+  color: @text-color;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+  margin: 0;
+}
+
+.violations-fines-action-section {
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 24px;
+  width: 100%;
+}
+
+.violations-fines-panel {
+  background: #ffffff;
+  border-radius: 20px;
+  overflow: hidden;
+  padding: 0 24px 8px;
+  width: 100%;
+}
+
+.violations-fines-action-section__header,
+.violations-fines-panel__header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.violations-fines-action-section__header {
+  margin-bottom: 16px;
+}
+
+.violations-fines-action-section__toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.violations-fines-scroll-arrow,
+.violations-fines-module-tabs__button {
+  background: transparent;
+  border: 0;
+}
+
+.violations-fines-scroll-arrow {
+  align-items: center;
+  background: #f8f7f4;
+  border-radius: 999px;
+  color: #bfc3c8;
+  cursor: pointer;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  transition: all 0.2s ease;
+  width: 32px;
+}
+
+.violations-fines-scroll-arrow:not(:disabled) {
+  color: #797e86;
+}
+
+.violations-fines-scroll-arrow:not(:disabled):hover {
+  background: #f0ede6;
+  color: @text-color;
+}
+
+.violations-fines-scroll-arrow:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.violations-fines-action-list {
+  padding-bottom: 12px;
+  scroll-behavior: smooth;
+}
+
+.violations-fines-action-list .simplebar-content-wrapper {
+  overflow-y: hidden !important;
+}
+
+.violations-fines-action-list__content {
+  display: flex;
+  gap: 16px;
+  min-width: 100%;
+}
+
+.violations-fines-fine-card {
+  background: linear-gradient(90deg, #f7f6f3 0%, #f6f6f5 56.25%, #f7f2eb 100%);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 212px;
+  overflow: hidden;
+  padding: 20px;
+  position: relative;
+}
+
+.violations-fines-fine-card--action-needed {
+  background: linear-gradient(90deg, #f6f2f2 0%, #ffeaea 100%);
+  flex: 0 0 376px;
+  height: 180px;
+  min-height: 180px;
+}
+
+.violations-fines-fine-card__body,
+.violations-fines-fine-card__footer {
+  position: relative;
+  z-index: 1;
+}
+
+.violations-fines-fine-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.violations-fines-fine-card__topline {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-start;
+}
+
+.violations-fines-fine-card__number {
+  color: #5f646d;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.violations-fines-fine-card__title {
+  color: @text-color;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 24px;
+  min-height: 48px;
+  word-break: break-word;
+}
+
+.violations-fines-fine-card__dates {
+  align-items: center;
+  color: #797e86;
+  display: flex;
+  font-size: 16px;
+  gap: 6px;
+  line-height: 24px;
+}
+
+.violations-fines-fine-card__footer {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding-top: 12px;
+}
+
+.violations-fines-fine-card__actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.violations-fines-fine-card__amount {
+  align-items: center;
+  color: #ea4f49;
+  display: flex;
+  font-size: 18px;
+  font-weight: 600;
+  gap: 1px;
+  line-height: 22px;
+}
+
+.violations-fines-fine-card__amount-icon {
+  display: block;
+  flex: 0 0 auto;
+  height: 13px;
+  width: 15px;
+}
+
+.violations-fines-table__amount-title,
+.violations-fines-table__amount-currency {
+  align-items: center;
+  display: inline-flex;
+}
+
+.violations-fines-table__amount-title {
+  gap: 4px;
+}
+
+.violations-fines-table__amount-currency {
+  gap: 1px;
+}
+
+.violations-fines-table__amount-currency img {
+  display: block;
+  height: 11px;
+  width: 13px;
+}
+
+.violations-fines-table .ant-table-selection-column {
+  padding-left: 16px;
+  padding-right: 8px;
+  width: 52px;
+}
+
+.violations-fines-table .ant-table-placeholder > td {
+  padding: 40px 0 !important;
+}
+
+.violations-fines-table__empty-state {
+  min-height: 135px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.violations-fines-table__empty-box {
+  .empty-icon {
+    width: 120px;
+    height: 120px;
+    margin-bottom: 8px;
+  }
+
+  .empty-text {
+    margin-bottom: 0;
+  }
+}
+
+.violations-fines-table .ant-table-tbody > tr.ant-table-row-selected > td {
+  background: #ffffff;
+}
+
+.violations-fines-table .ant-table-tbody > tr.ant-table-row-selected:hover > td {
+  background: #fffcf5;
+}
+
+.violations-fines-table .ant-checkbox-inner {
+  border-color: #d9d9d9;
+  border-radius: 2px;
+  height: 16px;
+  width: 16px;
+}
+
+.violations-fines-table .ant-checkbox-wrapper:hover .ant-checkbox-inner,
+.violations-fines-table .ant-checkbox:hover .ant-checkbox-inner,
+.violations-fines-table .ant-checkbox-input:focus + .ant-checkbox-inner {
+  border-color: #92722a;
+}
+
+.violations-fines-table .ant-checkbox-checked .ant-checkbox-inner,
+.violations-fines-table .ant-checkbox-indeterminate .ant-checkbox-inner {
+  background-color: #92722a;
+  border-color: #92722a;
+}
+
+.violations-fines-table .ant-checkbox-checked::after {
+  border-color: #92722a;
+}
+
+.violations-fines-table .ant-checkbox-disabled .ant-checkbox-inner {
+  background-color: #f5f5f5;
+  border-color: #d9d9d9;
+}
+
+.violations-fines-module-tabs {
+  align-items: flex-end;
+  background: #ffffff;
+  border-bottom: 1px solid #e1e3e5;
+  border-radius: 0;
+  display: flex;
+  gap: 32px;
+  padding: 0;
+  width: 100%;
+}
+
+.violations-fines-module-tabs__button {
+  align-items: center;
+  border-bottom: 2px solid transparent;
+  color: #361e12;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 18px;
+  font-weight: 600;
+  height: 72px;
+  justify-content: center;
+  line-height: 24px;
+  margin-bottom: -1px;
+  padding: 24px 0 16px;
+}
+
+.violations-fines-module-tabs__button:first-child {
+  border-inline-end: 0;
+  margin-inline-end: 0;
+  padding-inline-end: 0;
+}
+
+.violations-fines-module-tabs__button.is-active {
+  border-bottom-color: #92722a;
+  color: #92722a;
+}
+
+.violations-fines-module-tabs__button:hover {
+  color: #92722a;
+}
+
+.violations-fines-pending-payments {
+  padding-top: 20px;
+}
+
+.violations-fines-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin: 24px 0 16px;
+}
+
+.violations-fines-toolbar__filters {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  gap: 12px;
+  min-width: 0;
+
+  .mobile-filter-trigger {
+    margin-inline-start: auto;
+  }
+}
+
+// Full-layout controls squeeze only down to their design floors so
+// useFilterOverflow can see when they stop fitting; compact-mode rules
+// let the remaining search shrink freely.
+.violations-fines-toolbar:not(.violations-fines-toolbar--compact) {
+  .violations-fines-control--search,
+  .violations-fines-control--range {
+    min-width: 260px;
+  }
+
+  .violations-fines-control--select {
+    min-width: 240px;
+  }
+}
+
+.violations-fines-toolbar__action {
+  flex: 0 0 auto;
+}
+
+.violations-fines-batch-toolbar {
+  align-items: center;
+  background: linear-gradient(90deg, #f8f7f4 0%, #f6f6f5 56.25%, #f7f2eb 100%);
+  border-radius: 8px;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  margin: 0 0 20px;
+  min-height: 72px;
+  padding: 12px 16px;
+}
+
+.violations-fines-batch-toolbar__selection,
+.violations-fines-batch-toolbar__amount {
+  color: #361e12;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 48px;
+}
+
+.violations-fines-batch-toolbar__selection {
+  min-width: 150px;
+}
+
+.violations-fines-batch-toolbar__label {
+  color: #92722a;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.violations-fines-batch-toolbar__selection strong {
+  color: #361e12;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 24px;
+}
+
+.violations-fines-batch-toolbar__payment {
+  align-items: center;
+  display: flex;
+  gap: 64px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.violations-fines-batch-toolbar__summary {
+  min-width: 138px;
+}
+
+.violations-fines-batch-toolbar__amount {
+  white-space: nowrap;
+}
+
+.violations-fines-batch-toolbar__amount strong {
+  align-items: center;
+  color: #361e12;
+  display: inline-flex;
+  font-size: 16px;
+  font-weight: 700;
+  gap: 4px;
+  line-height: 24px;
+}
+
+.violations-fines-batch-toolbar__amount svg {
+  height: 16px;
+  width: 18px;
+}
+
+.violations-fines-batch-toolbar__pay-button {
+  flex: 0 0 120px;
+  height: 36px;
+  width: 120px;
+}
+
+.violations-fines-batch-toolbar__pay-button .custom-button-content,
+.violations-fines-batch-toolbar__pay-button .custom-button-contentWithIcon {
+  font-size: 14px;
+  font-weight: 600;
+  justify-content: center;
+  line-height: 20px;
+}
+
+@media (max-width: 768px) {
+  .violations-fines-batch-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+  }
+
+  .violations-fines-batch-toolbar__selection {
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .violations-fines-batch-toolbar__payment {
+    align-items: center;
+    gap: 12px;
+    justify-content: space-between;
+  }
+
+  .violations-fines-batch-toolbar__summary {
+    min-width: 0;
+  }
+
+  .violations-fines-batch-toolbar__amount {
+    min-height: 0;
+  }
+
+  .violations-fines-batch-toolbar__pay-button {
+    flex: 0 0 auto;
+  }
+}
+
+.violations-fines-control {
+  height: 48px;
+}
+
+.violations-fines-control--search,
+.violations-fines-control--range {
+  width: 360px;
+}
+
+.violations-fines-control--select {
+  width: 240px;
+}
+
+.violations-fines-control.ant-input-affix-wrapper,
+.violations-fines-control.ant-picker,
+.violations-fines-control.ant-select:not(.ant-select-customize-input)
+  .ant-select-selector {
+  border-color: #d9dce1;
+  border-radius: 10px;
+  box-shadow: none;
+  height: 48px;
+  min-height: 48px;
+  padding: 0 16px;
+}
+
+.violations-fines-control.ant-input-affix-wrapper .ant-input-prefix {
+  margin-right: 8px;
+}
+
+.violations-fines-control.ant-input-affix-wrapper .anticon,
+.violations-fines-control.ant-picker .anticon {
+  color: #797e86;
+  font-size: 16px;
+}
+
+.violations-fines-control.ant-input-affix-wrapper input,
+.violations-fines-control .ant-picker-input input,
+.violations-fines-control.ant-select .ant-select-selection-item,
+.violations-fines-control.ant-select .ant-select-selection-placeholder {
+  font-size: 16px;
+  line-height: 46px;
+}
+
+.violations-fines-control.ant-select:not(.ant-select-customize-input)
+  .ant-select-selector {
+  align-items: center;
+  display: flex;
+  padding: 0 16px;
+}
+
+.violations-fines-appeal-stats {
+  align-items: center;
+  background: #f8f7f4;
+  border-radius: 10px;
+  display: flex;
+  height: auto;
+  margin: 0 0 16px;
+  min-height: 48px;
+}
+
+.violations-fines-appeal-stats__item {
+  align-items: center;
+  border-right: 1px solid #e1e3e5;
+  display: flex;
+  flex: 1;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+
+.violations-fines-appeal-stats__label,
+.violations-fines-appeal-stats__value {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.violations-fines-appeal-stats__label {
+  font-weight: 500;
+}
+
+.violations-fines-appeal-stats__value {
+  font-weight: 600;
+}
+
+@media (max-width: 1023px) {
+  .violations-fines-toolbar {
+    flex-wrap: nowrap;
+  }
+  .violations-fines-toolbar__filters {
+    flex: 1;
+    width: auto;
+  }
+  .violations-fines-toolbar__action {
+    width: auto;
+    flex: 0 0 auto;
+
+    > * {
+      width: auto;
+    }
+  }
+  .violations-fines-toolbar--compact .violations-fines-control--search {
+    flex: 1;
+    width: 0;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .violations-fines-module-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+    gap: 16px;
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  .violations-fines-toolbar {
+    flex-wrap: nowrap;
+  }
+  .violations-fines-toolbar__filters {
+    flex: 1;
+    width: auto;
+  }
+  .violations-fines-toolbar__action {
+    width: auto;
+    flex: 0 0 auto;
+
+    > * {
+      width: auto;
+    }
+  }
+}
+
+.violations-fines-floating-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: fixed;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 15;
+}
+
+.violations-fines-floating-assistant__orb,
+.violations-fines-floating-assistant__pulse {
+  align-items: center;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 4px 10px rgba(54, 28, 123, 0.1);
+  display: flex;
+  height: 64px;
+  justify-content: center;
+  width: 64px;
+}
+
+.violations-fines-floating-assistant__orb {
+  background: linear-gradient(
+    90deg,
+    #00bbe0 0%,
+    #8e6bff 24%,
+    #f349ff 50%,
+    #ff7c30 77%,
+    #ffbd14 100%
+  );
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.violations-fines-floating-assistant__pulse::before {
+  background: #92722a;
+  border-radius: 999px;
+  content: "";
+  height: 2px;
+  width: 28px;
+}
+
+.violations-fines-actions-dropdown {
+  .ant-dropdown-menu {
+    min-width: 200px;
+    padding: 4px 0;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow:
+      0 3px 6px -4px rgba(0, 0, 0, 0.12),
+      0 6px 16px 0 rgba(0, 0, 0, 0.08),
+      0 9px 28px 8px rgba(0, 0, 0, 0.05);
+  }
+
+  .ant-dropdown-menu-item {
+    min-height: 40px;
+    padding: 10px 16px;
+    color: @text-color;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    border-radius: 0;
+
+    &:hover,
+    &.ant-dropdown-menu-item-active {
+      background: #f8f7f4;
+    }
+  }
+}
+
+.violations-fines-batch-result-modal .ant-modal-content {
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.violations-fines-batch-result-modal .ant-modal-body {
+  padding: 0;
+}
+
+.violations-fines-batch-result-modal .ant-modal-close {
+  height: 24px;
+  right: 40px;
+  top: 20px;
+  width: 24px;
+}
+
+.violations-fines-batch-result-modal .ant-modal-close-x {
+  color: #5f646d;
+  font-size: 18px;
+  height: 24px;
+  line-height: 24px;
+  width: 24px;
+}
+
+.violations-fines-batch-result-modal__body {
+  width: 100%;
+}
+
+.violations-fines-batch-result-modal__body > .payment-success-feedback {
+  padding-bottom: 47px;
+}
+
+.violations-fines-batch-result-modal__content {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 64px 40px 40px;
+  text-align: center;
+}
+
+.violations-fines-batch-result-modal__copy {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.violations-fines-batch-result-modal__copy h2 {
+  color: #361e12;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  margin: 0;
+}
+
+.violations-fines-batch-result-modal__copy p {
+  color: #5f646d;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  margin: 0;
+  max-width: 480px;
+}
+
+.violations-fines-batch-result-modal__icon {
+  align-items: center;
+  border-radius: 50%;
+  display: flex;
+  height: 72px;
+  justify-content: center;
+  width: 72px;
+}
+
+.violations-fines-batch-result-modal__icon .anticon {
+  align-items: center;
+  border: 3px solid currentColor;
+  border-radius: 50%;
+  display: inline-flex;
+  font-size: 28px;
+  height: 48px;
+  justify-content: center;
+  width: 48px;
+}
+
+.violations-fines-batch-result-modal__icon--success {
+  background: #f9f7ed;
+  color: #c9a03f;
+}
+
+.violations-fines-batch-result-modal__icon--failed {
+  background: #fef2f2;
+  color: #ea4f49;
+}
+
+.violations-fines-batch-result-modal__amount {
+  align-items: center;
+  background: linear-gradient(90deg, #f7f6f3 0%, #f6f6f5 56.25%, #f7f2eb 100%);
+  border-radius: 12px;
+  color: #361e12;
+  display: flex;
+  font-size: 16px;
+  gap: 8px;
+  justify-content: center;
+  line-height: 24px;
+  min-height: 56px;
+  padding: 16px 24px;
+  width: 100%;
+}
+
+.violations-fines-batch-result-modal__amount strong {
+  align-items: center;
+  display: inline-flex;
+  font-size: 18px;
+  font-weight: 600;
+  gap: 4px;
+  line-height: 22px;
+}
+
+.violations-fines-batch-result-modal__amount svg {
+  height: 16px;
+  width: 18px;
+}
+
+.violations-fines-batch-result-modal__amount--success strong {
+  color: #92722a;
+}
+
+.violations-fines-batch-result-modal__amount--failed strong {
+  color: #ea4f49;
+}
+
+.violations-fines-batch-result-modal__alert {
+  align-items: center;
+  background: #fef2f2;
+  border-radius: 12px;
+  color: #361e12;
+  display: flex;
+  font-size: 14px;
+  font-weight: 500;
+  gap: 12px;
+  line-height: 20px;
+  min-height: 54px;
+  padding: 16px 24px;
+  text-align: left;
+  width: 100%;
+}
+
+.violations-fines-batch-result-modal__alert .anticon {
+  color: #ea4f49;
+  flex: 0 0 20px;
+  font-size: 16px;
+}
+
+.violations-fines-batch-result-modal__actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  padding-top: 12px;
+  width: 100%;
+}
+
+.violations-fines-batch-result-modal__action {
+  height: 48px;
+  width: 200px;
+}
+
+.violations-fines-batch-result-modal__action .custom-button-content,
+.violations-fines-batch-result-modal__action .custom-button-contentWithIcon {
+  font-size: 16px;
+  font-weight: 600;
+  justify-content: center;
+  line-height: 24px;
+}
+
+.violations-fines-batch-result-modal__action--secondary {
+  width: 160px;
+}
+
+.violations-fines-batch-result-modal__action--secondary
+  .custom-button-content,
+.violations-fines-batch-result-modal__action--secondary
+  .custom-button-contentWithIcon {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.violations-fines-batch-result-modal__action.custom-button-primary,
+.violations-fines-batch-result-modal__action.custom-button-primary:hover,
+.violations-fines-batch-result-modal__action.custom-button-primary:focus {
+  background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+  color: #ffffff;
+}
+
+.violations-fines-batch-result-modal__action--secondary.custom-button-outline,
+.violations-fines-batch-result-modal__action--secondary.custom-button-outline:hover,
+.violations-fines-batch-result-modal__action--secondary.custom-button-outline:focus {
+  background: #ffffff;
+  border: 1px solid #92722a;
+  color: #92722a;
+}

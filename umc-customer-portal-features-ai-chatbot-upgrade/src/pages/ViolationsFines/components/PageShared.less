@@ -1,0 +1,784 @@
+@import "@/styles/variables.less";
+
+.violations-fines-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  // padding-bottom: 96px;
+}
+
+.violations-fines-fine-card .custom-status-tag,
+.violations-fines-table .custom-status-tag,
+.violations-fines-summary-card .custom-status-tag,
+.violations-fines-side-card .custom-status-tag {
+  align-items: center;
+  border-radius: 6px;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 500;
+  height: auto;
+  justify-content: center;
+  line-height: 20px;
+  min-height: 26px;
+  padding: 3px 8px;
+  width: fit-content;
+}
+
+.violations-fines-fine-card .custom-status-tag--alert {
+  background: #ea4f49;
+  color: #ffffff;
+}
+
+.violations-fines-table {
+  background: transparent;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.violations-fines-table .ant-table-container {
+  border-radius: 8px 8px 0 0;
+  overflow: hidden;
+}
+
+.violations-fines-table .ant-table-thead > tr > th {
+  background: #f8f7f4;
+  border-bottom: 1px solid #eceef1;
+  color: @text-color-table-header;
+  font-size: 16px;
+  font-weight: 400;
+  height: auto;
+  line-height: 24px;
+  padding: 12px 16px;
+}
+
+.violations-fines-table .ant-table-tbody > tr > td {
+  background: #ffffff;
+  border-bottom: 1px solid #eceef1;
+  color: @text-color;
+  font-size: 16px;
+  height: auto;
+  line-height: 24px;
+  padding: 14px 16px;
+  vertical-align: middle;
+}
+
+.violations-fines-table .ant-table-tbody > tr:hover > td {
+  background: #fffcf5;
+}
+
+.violations-fines-table .ant-table-content {
+  overflow-x: auto !important;
+  overflow-y: hidden;
+  scrollbar-color: rgba(146, 114, 42, 0.35) transparent;
+  scrollbar-width: thin;
+}
+
+.violations-fines-table .ant-table-content::-webkit-scrollbar {
+  height: 8px;
+}
+
+.violations-fines-table .ant-table-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.violations-fines-table .ant-table-content::-webkit-scrollbar-thumb {
+  background: rgba(146, 114, 42, 0.35);
+  border-radius: 999px;
+}
+
+.violations-fines-table-actions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.violations-fines-link-button {
+  background: transparent;
+  border: 0;
+  color: @primary-color;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  padding: 0;
+}
+
+.violations-fines-link-button:hover {
+  color: @ant-hover-color;
+}
+
+.violations-fines-link-button--solid {
+  background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+  border-radius: 8px;
+  color: #ffffff;
+  height: 36px;
+  min-width: 88px;
+  padding: 0 12px;
+}
+
+.violations-fines-link-button--solid:hover {
+  color: #ffffff;
+}
+
+.violations-fines-summary-card {
+  background: #ffffff;
+  border-radius: 20px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(4, minmax(max-content, 1fr));
+  padding: 32px 24px;
+  overflow-x: auto;
+}
+
+.violations-fines-summary-card--appeal {
+  grid-template-columns: repeat(3, minmax(max-content, 1fr));
+}
+
+.violations-fines-summary-card__item {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  min-height: 40px;
+  // Keep each card readable; the strip scrolls horizontally when they
+  // don't fit (overflow-x: auto on the container).
+  min-width: 280px;
+  padding: 0;
+}
+
+.violations-fines-summary-card__content {
+  min-width: 0;
+}
+
+.violations-fines-summary-card__icon {
+  align-items: center;
+  background: rgba(182, 138, 53, 0.1);
+  border-radius: 50%;
+  color: #92722a;
+  display: flex;
+  flex: 0 0 40px;
+  font-size: 20px;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+.violations-fines-summary-card__icon-image {
+  display: block;
+  height: 20px;
+  width: 20px;
+}
+
+.violations-fines-summary-card__label {
+  color: @text-color-table-header;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.violations-fines-summary-card__value {
+  align-items: center;
+  color: @text-color;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  margin-top: 4px;
+  min-height: 24px;
+  word-break: break-word;
+}
+
+.violations-fines-summary-card__value .custom-status-tag {
+  font-weight: 600;
+}
+
+.violations-fines-summary-card__skeleton {
+  flex: 1;
+  min-width: 0;
+}
+
+.violations-fines-summary-card__skeleton .ant-skeleton {
+  display: block;
+}
+
+.violations-fines-summary-card__skeleton .ant-skeleton + .ant-skeleton {
+  margin-top: 6px;
+}
+
+.violations-fines-summary-card__skeleton .ant-skeleton-title {
+  margin: 0;
+}
+
+.violations-fines-detail-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 408px;
+}
+
+.violations-fines-detail-layout--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.violations-fines-detail-layout__main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.violations-fines-detail-layout__side {
+  min-width: 0;
+}
+
+.violations-fines-detail-card,
+.violations-fines-side-card {
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 24px;
+}
+
+.violations-fines-detail-card--reported,
+.violations-fines-detail-card--fine {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.violations-fines-detail-card__header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.violations-fines-detail-card--reported .violations-fines-detail-card__header {
+  margin-bottom: 0;
+}
+
+.violations-fines-detail-card__header--button {
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
+  cursor: pointer;
+  min-height: 88px;
+  margin-bottom: 0;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.violations-fines-detail-card__title,
+.violations-fines-side-card__title {
+  color: @text-color;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 24px;
+  margin: 0;
+}
+
+.violations-fines-detail-card__verified {
+  background: #f3faf4;
+  border-radius: 4px;
+  color: #4a9d5c;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 3px 8px;
+}
+
+.violations-fines-file-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 0;
+  width: 100%;
+}
+
+.violations-fines-file-grid--messages {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  max-width: 520px;
+}
+
+@media (max-width: 1440px) {
+  .violations-fines-file-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .violations-fines-file-grid--messages {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .violations-fines-file-grid {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+  }
+}
+
+.violations-fines-attachment-viewer .document-file {
+  height: 48px;
+  min-height: 48px;
+  padding: 8px 16px;
+}
+
+.violations-fines-attachment-viewer .document-file .file-info {
+  gap: 8px;
+}
+
+.violations-fines-attachment-viewer .document-file .file-info .file-icon {
+  height: 32px;
+  width: 32px;
+}
+
+.violations-fines-attachment-viewer .document-file .file-info .file-name {
+  color: #21252e;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.violations-fines-attachment-viewer .document-file .file-actions {
+  gap: 12px;
+}
+
+.violations-fines-attachment-viewer .document-file .file-actions .action-icon {
+  opacity: 1;
+}
+
+.violations-fines-side-card__panel {
+  background: linear-gradient(90deg, #f7f6f3 0%, #f6f6f5 56%, #f7f2eb 100%);
+  border-radius: 10px;
+  margin-top: 24px;
+  padding: 20px;
+}
+
+.violations-fines-side-card__heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.violations-fines-side-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.violations-fines-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.violations-fines-field--wide {
+  grid-column: 1 / -1;
+}
+
+.violations-fines-field__label {
+  color: @text-color-table-header;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.violations-fines-field__value {
+  color: @text-color;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.violations-fines-outline-small {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #92722a;
+  border-radius: 8px;
+  color: #92722a;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 600;
+  gap: 8px;
+  height: 36px;
+  justify-content: center;
+  padding: 0 16px;
+}
+
+.violations-fines-outline-small--with-icon img {
+  height: 16px;
+  width: 16px;
+}
+
+.violations-fines-outline-small--with-icon {
+  padding: 0 13px;
+}
+
+.violations-fines-submit-modal .ant-modal-content,
+.violations-fines-attachment-modal .ant-modal-content {
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.violations-fines-attachment-modal .ant-modal-header {
+  border-bottom: 1px solid #e1e3e5;
+  padding: 28px 40px;
+}
+
+.violations-fines-attachment-modal .ant-modal-title {
+  color: @text-color;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 36px;
+}
+
+.violations-fines-submit-modal .ant-modal,
+.violations-fines-attachment-modal .ant-modal {
+  max-width: calc(100vw - 64px);
+  width: 960px !important;
+}
+
+.violations-fines-submit-modal .ant-modal-header {
+  border-bottom: 1px solid #e1e3e5;
+  padding: 32px 40px;
+}
+
+.violations-fines-submit-modal .ant-modal-title {
+  color: #361e12;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 40px;
+}
+
+.violations-fines-submit-modal .ant-modal-body {
+  padding: 0;
+}
+
+.violations-fines-attachment-modal .ant-modal-body {
+  padding: 32px 40px 40px;
+}
+
+.violations-fines-attachment-list {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 328px;
+}
+
+.violations-fines-attachment-list__column {
+  min-width: 0;
+}
+
+.violations-fines-attachment-list__title {
+  color: #361e12;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  margin: 0 0 16px;
+}
+
+.violations-fines-submit-form__body {
+  display: grid;
+  align-items: start;
+  gap: 24px;
+  grid-template-columns: repeat(2, 428px);
+  padding: 32px 40px;
+}
+
+.violations-fines-submit-form__body .ant-form-item {
+  margin-bottom: 0;
+}
+
+.violations-fines-submit-form__body .ant-form-item-label {
+  line-height: 20px;
+  padding: 0 0 8px;
+}
+
+.violations-fines-submit-form__body .ant-form-item-label > label {
+  color: #2a2a46;
+  font-size: 14px;
+  font-weight: 500;
+  height: auto;
+  line-height: 20px;
+}
+
+.violations-fines-submit-form__body .ant-form-item-label > label::after {
+  display: none;
+}
+
+.violations-fines-submit-form__body
+  .ant-select:not(.ant-select-customize-input)
+  .ant-select-selector {
+  border-color: #d9dde3;
+  border-radius: 8px;
+  min-height: 48px;
+}
+
+.violations-fines-submit-form__body .ant-select-selection-item,
+.violations-fines-submit-form__body .ant-select-selection-placeholder {
+  color: @text-color;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.violations-fines-submit-form__body
+  .ant-select:not(.ant-select-customize-input)
+  .ant-select-selector {
+  align-items: center;
+  display: flex;
+  padding: 0 16px;
+}
+
+.violations-fines-submit-form__body
+  .ant-select-single:not(.ant-select-customize-input)
+  .ant-select-selector {
+  height: 48px;
+}
+
+.violations-fines-submit-form__body .ant-select-selection-placeholder {
+  color: #9ea2a9;
+}
+
+.violations-fines-submit-form__select.ant-select-focused:not(
+    .ant-select-disabled
+  ).ant-select:not(.ant-select-customize-input)
+  .ant-select-selector,
+.violations-fines-submit-form__select.ant-select-open:not(
+    .ant-select-disabled
+  ).ant-select:not(.ant-select-customize-input)
+  .ant-select-selector {
+  border-color: @primary-color;
+  box-shadow: none;
+}
+
+.violations-fines-submit-form__select.ant-select-single
+  .ant-select-selector
+  .ant-select-selection-search {
+  left: 16px;
+  right: 40px;
+}
+
+.violations-fines-submit-form__select.ant-select-single
+  .ant-select-selector
+  .ant-select-selection-search-input {
+  color: @text-color;
+  font-size: 14px;
+  font-weight: 500;
+  height: 46px;
+  line-height: 20px;
+}
+
+.violations-fines-submit-form__select.ant-select-single
+  .ant-select-selector
+  .ant-select-selection-item,
+.violations-fines-submit-form__select.ant-select-single
+  .ant-select-selector
+  .ant-select-selection-placeholder {
+  align-items: center;
+  display: flex;
+  padding-right: 24px;
+}
+
+.violations-fines-submit-form__item--notes {
+  padding-bottom: 20px;
+}
+
+.violations-fines-submit-form__item--notes .ant-input-textarea-show-count {
+  position: relative;
+}
+
+.violations-fines-submit-form__notes textarea.ant-input {
+  border-color: #e1e3e5;
+  border-radius: 8px;
+  box-shadow: none;
+  color: #361e12;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  min-height: 96px;
+  padding: 10px 12px 6px;
+  resize: none;
+}
+
+.violations-fines-submit-form__notes textarea.ant-input::placeholder {
+  color: #797e86;
+  font-weight: 400;
+  opacity: 1;
+}
+
+.violations-fines-submit-form__item--notes
+  .ant-input-textarea-show-count::after,
+.violations-fines-submit-form__item--notes
+  .ant-input-textarea-show-count.ant-input-textarea-in-form-item::after {
+  bottom: auto;
+  top: 100%;
+  color: #797e86;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  margin-top: 4px;
+  margin-bottom: 0;
+  position: absolute;
+  right: 0;
+  text-align: right;
+}
+
+.violations-fines-submit-form__label {
+  align-items: center;
+  color: #2a2a46;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 500;
+  gap: 4px;
+  line-height: 20px;
+}
+
+.violations-fines-submit-form__required {
+  color: #ea4f49;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.violations-fines-submit-form__help {
+  align-items: center;
+  border: 1px solid #9ea2a9;
+  border-radius: 50%;
+  color: #797e86;
+  display: inline-flex;
+  font-size: 11px;
+  height: 16px;
+  justify-content: center;
+  line-height: 14px;
+  width: 16px;
+}
+
+.violations-fines-submit-form__footer {
+  align-items: center;
+  border-top: 1px solid #e1e3e5;
+  display: flex;
+  gap: 16px;
+  justify-content: flex-end;
+  padding: 24px 40px;
+}
+
+.violations-fines-submit-form__button {
+  min-width: 140px;
+}
+
+.violations-fines-submit-form__button--submit.custom-button-primary[disabled],
+.violations-fines-submit-form__button--submit.custom-button-primary[disabled]:hover,
+.violations-fines-submit-form__button--submit.custom-button-primary[disabled]:focus {
+  background: #d9dde3;
+  border-color: #d9dde3;
+  color: #9ea2a9;
+}
+
+.violations-fines-submit-form__tooltip .ant-tooltip-inner {
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.violations-fines-select-case-dropdown {
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  padding: 4px 0;
+}
+
+.violations-fines-select-case-dropdown .ant-select-item {
+  color: @text-color;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  min-height: 40px;
+  padding: 10px 16px;
+}
+
+.violations-fines-select-case-dropdown
+  .ant-select-item-option-active:not(.ant-select-item-option-disabled),
+.violations-fines-select-case-dropdown
+  .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background: #f8f7f4;
+  color: @text-color;
+}
+
+.violations-fines-select-case-dropdown .rc-virtual-list-scrollbar-thumb {
+  background: #c3c6cc !important;
+  border-radius: 999px;
+}
+
+@media (max-width: 768px) {
+  .violations-fines-submit-modal .ant-modal,
+  .violations-fines-attachment-modal .ant-modal {
+    max-width: calc(100vw - 32px);
+  }
+
+  .violations-fines-submit-modal .ant-modal-content {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 32px);
+    overflow: hidden;
+  }
+
+  .violations-fines-submit-modal .ant-modal-header {
+    flex: 0 0 auto;
+    padding: 20px;
+  }
+
+  .violations-fines-submit-modal .ant-modal-title {
+    font-size: 22px;
+    line-height: 28px;
+  }
+
+  .violations-fines-submit-modal .ant-modal-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .violations-fines-submit-form {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .violations-fines-submit-form__body {
+    flex: 1;
+    grid-template-columns: 1fr;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 20px;
+    gap: 16px;
+  }
+
+  .violations-fines-submit-form__footer {
+    flex: 0 0 auto;
+    flex-direction: column;
+    padding: 16px 20px;
+
+    .violations-fines-submit-form__button {
+      min-width: unset;
+      width: 100%;
+    }
+  }
+
+  .violations-fines-summary-card {
+    grid-template-columns: 1fr;
+    padding: 20px;
+  }
+
+  .violations-fines-summary-card--appeal {
+    grid-template-columns: 1fr;
+  }
+
+  .violations-fines-detail-layout {
+    grid-template-columns: 1fr;
+  }
+}

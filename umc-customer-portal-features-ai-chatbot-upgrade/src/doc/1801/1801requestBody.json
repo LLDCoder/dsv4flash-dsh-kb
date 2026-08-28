@@ -1,0 +1,22 @@
+[
+    {
+        "stepNameEn": "Activity Details",
+        "stepNameAr": "Activity Details",
+        "formData": "{\"form\":{\"labelCol\":6,\"wrapperCol\":12,\"layout\":\"vertical\"},\"formValues\":{\"SelectTableSingle\":{\"selectedKey\":[2035],\"tableData\":[]},\"MediaType\":\"Magazine\",\"UploadMaterial\":\"2026/04/10/0906210868/Test.pdf\"},\"fileList\":[]}"
+    },
+    {
+        "stepNameEn": "Foreign Entity Details",
+        "stepNameAr": "Foreign Entity Details",
+        "formData": "{\"form\":{\"labelCol\":6,\"wrapperCol\":12,\"layout\":\"vertical\"},\"formValues\":{\"EstablishmentNameEnglish\":\"English Entity\",\"EstablishmentNameArabic\":\"مرحبًا\",\"EntityHQCountry\":\"AE\",\"Website\":\"https://www.google.com\",\"Email\":\"google@google.com\",\"PhoneNumber\":\"12121212121\",\"socialMediaAccounts\":[{\"id\":\"1775812050633-936f00ab45c5d8\",\"accountUrl\":\"https://www.google.com\",\"mediaCategory\":\"social\",\"mediaSubCategories\":[\"Social\"],\"accountType\":\"facebook\",\"accountTitle\":\"12\",\"screenshot\":\"2026/04/10/0907290166/Test.pdf\"}]},\"fileList\":[]}"
+    },
+    {
+        "stepNameEn": "Personal Information",
+        "stepNameAr": "Personal Information",
+        "formData": "{\"form\":{\"labelCol\":6,\"wrapperCol\":12,\"layout\":\"vertical\"},\"formValues\":{\"EstablishmentNameEnglish\":\"English Full\",\"EstablishmentNameArabic\":\"مرحبًا\",\"DateOfBirth\":\"2026-04-10\",\"Gender\":\"Male\",\"Email\":\"email@email.com\",\"PhoneNumber\":\"23232323232\",\"Nationality\":\"AE\",\"PreviousJob\":\"job\",\"OccupationinEnglish\":\"Occupation\",\"OccupationinArabic\":\"مرحبًا\",\"TwitterAccount\":\"Twitter\",\"AcademicQualification\":\"2026/04/10/0908308335/Test.pdf\",\"PassportCopy\":\"2026/04/10/0908327715/Test.pdf\",\"PersonalPhoto\":\"2026/04/10/0908352483/Logo.png\"},\"fileList\":[]}"
+    },
+    {
+        "stepNameEn": "Acquaintance Form",
+        "stepNameAr": "Acquaintance Form",
+        "formData": "{\"form\":{\"labelCol\":6,\"wrapperCol\":12,\"layout\":\"vertical\"},\"formValues\":{\"acquaintanceForm\":{\"hasChildren\":\"No\",\"children\":[\"N/A\"],\"workedInMilitary\":\"No\",\"militaryCountry\":\"N/A\",\"militaryDecorations\":\"N/A\",\"militaryRank\":\"N/A\",\"previousEmploymentInUae\":\"N/A\",\"fullName\":\"Name\",\"fullNameArabic\":\"مرحبًا\",\"surname\":\"Surname\",\"surnameArabic\":\"مرحبًا\",\"placeOfBirth\":\"Place Birth\",\"dateOfBirth\":\"1990-02-01\",\"currentNationality\":\"AE\",\"previousNationality\":\"AE\",\"religion\":\"ISLAM\",\"sect\":\"ISLAM_SUNNI\",\"profession\":\"Profession\",\"maritalStatus\":\"SINGLE\",\"entryDateToUae\":\"2026-04-10\",\"portOfEntry\":\"1\",\"sponsorUponEntry\":\"Sponsor Entry\",\"arrivingFrom\":\"AE\",\"languages\":[1,2],\"educationalQualification\":\"UNIVERSITY\",\"spouseNationality\":\"AE\",\"spouseName\":\"Husband\",\"spouseProfession\":\"HusbandProfession\",\"countriesVisited\":[\"AE\",\"IN\"],\"fatherName\":\"Fathers\",\"fatherNationality\":\"AE\",\"fatherProfession\":\"Profession\",\"fatherEmployer\":\"Employer\",\"fatherPlaceOfBirth\":\"Place\",\"fatherDateOfBirth\":\"2026-04-09\",\"motherName\":\"Mother\",\"motherNationality\":\"AE\",\"motherProfession\":\"Profession\",\"motherEmployer\":\"Employer\",\"motherPlaceOfBirth\":\"Place\",\"motherDateOfBirth\":\"2026-04-02\",\"motherWorkPhone\":\"232323\",\"relatives\":[{\"name\":\"NameRelatives\",\"employer\":\"NameEmployer\"}],\"friends\":[{\"name\":\"NameFriends\",\"employer\":\"NameEmployer\"}],\"residenceFlatHouseNumber\":\"2323\",\"residenceStreet\":\"Street\",\"residenceEmirateId\":1,\"residenceRegionId\":2,\"residenceAreaId\":1,\"residenceTelephone\":\"232323\",\"passportNumber\":\"232323\",\"passportPlaceOfIssue\":\"asdf\",\"passportDateOfIssue\":\"2026-04-01\",\"passportExpiryDate\":\"2026-04-30\",\"residencyNumber\":\"Period\",\"residencyPlaceOfIssue\":\"Profession\",\"residencyDateOfIssue\":\"2026-04-01\",\"residencyExpiryDate\":\"2026-04-30\",\"sponsorFullName\":\"Name\",\"sponsorAddress\":\"Address\",\"sponsorProfession\":\"Profession\",\"sponsorPlaceOfEmployment\":\"Employment\",\"sponsorWorkPhone\":\"2323\",\"declarationName\":\"Name\",\"declarationDate\":\"2026-04-10\"}},\"fileList\":[]}"
+    }
+]

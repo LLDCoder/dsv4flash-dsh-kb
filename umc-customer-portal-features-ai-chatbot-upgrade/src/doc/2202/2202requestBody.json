@@ -1,0 +1,7 @@
+[
+  {
+    "stepNameEn": "Activity Details",
+    "stepNameAr": "Activity Details",
+    "formData": "{\"form\":{\"labelCol\":6,\"wrapperCol\":12,\"layout\":\"vertical\"},\"formValues\":{\"SelectTableSingle\":{\"selectedKey\":[2079],\"tableData\":[{\"Number\":1,\"Activity\":\"Permit for age classification of video games\",\"money\":1000,\"Id\":2079,\"ActivityAr\":\"Permit for age classification of video games\",\"ActivityEn\":\"Permit for age classification of video games\"}]},\"FilmTrailerForm\":{\"title\":\"Comes Home 2\",\"category\":\"Comedy\",\"languages\":\"English\",\"originCountry\":\"USA\",\"copyrightsType\":\"Cinema Distribution\",\"permitValidityPeriod\":[\"2026-05-31\",\"2026-06-30\"],\"movieMaterialContent\":\"https://example.com/game-content\"}},\"fileList\":[]}"
+  }
+]

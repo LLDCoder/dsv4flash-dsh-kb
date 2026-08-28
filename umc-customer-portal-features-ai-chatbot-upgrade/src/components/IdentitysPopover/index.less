@@ -1,0 +1,351 @@
+@import "@/styles/variables.less";
+
+// Expired profile (UserProfile.Status "5") in the switch list: dimmed and tagged, but still
+// switchable so the owner can open it and renew the documents/licence that expired it.
+// Mixed into each list block so it keeps the specificity of the rules it overrides.
+.expired-profile-item() {
+  .profile-item--expired {
+    img {
+      filter: grayscale(1);
+      opacity: 0.55;
+    }
+    .item-name {
+      color: #9AA0A6;
+    }
+    .expired-tag {
+      margin-inline-start: auto;
+      flex: none;
+      height: 26px;
+      padding: 2px 6px;
+      font-weight: 400;
+      font-size: 11px;
+      line-height: 22px;
+      color: #6C757D;
+      background-color: #F1F2F4;
+      border-radius: 4px;
+    }
+    // The tag already claims the trailing space, so the pending badge sits next to it.
+    .expired-tag + .pengding-num {
+      margin-inline-start: 6px;
+    }
+  }
+  .active-item.profile-item--expired .item-name {
+    color: #9AA0A6;
+  }
+}
+
+.identity-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 999;
+  animation: fadeIn 0.2s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.identity-popover {
+  position: absolute;
+  top: 96px;
+  inset-inline-end: 40px;
+  width: 420px;
+  height: min(550px, calc(100vh - 120px));
+  max-height: calc(100vh - 120px);
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  overflow: hidden;
+  animation: slideDown 0.3s ease-out;
+  transform-origin: top right;
+
+  @media (max-width: 768px) {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    top: 72px;
+  }
+}
+
+.identity-popover[dir="rtl"] {
+  transform-origin: top left;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes slideInItem {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.identity-popover {
+    padding-bottom: 8px;
+    .search-box{
+        padding: 16px;
+        .filter-search-bar{
+            font-size: 16px;
+            color: #797E86; 
+        }
+    }
+
+  .global-view-profile {
+    padding: 0 16px;
+    flex: 0 0 auto;
+
+    .identity-list {
+      .identity-item {
+        cursor: pointer;
+        height: 44px;
+        margin-inline: -7px;
+        padding: 10px 8px;
+        display: flex;
+        align-items: center;
+
+        &:hover {
+          background-color: #F9F7ED;
+          border-radius: 8px;
+        }
+      }
+
+      .active-item {
+        background-color: #F9F7ED;
+        border-radius: 8px;
+
+        .item-name {
+          color: #CBA344;
+        }
+      }
+    }
+
+    .global-view-icon {
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+
+      img {
+        width: 24px;
+        height: 24px;
+        display: block;
+      }
+    }
+
+    .item-name {
+      flex: 1;
+      min-width: 0;
+      margin-inline-start: 10px;
+      color: #343A40;
+      font-weight: 400;
+      font-size: 14px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .identity-item--switching {
+      cursor: not-allowed;
+      opacity: 0.6;
+      pointer-events: none;
+    }
+  }
+
+  .identity-profile{
+    padding: 0 16px;
+    flex: 0 0 auto;
+    .identity-header{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 0;
+        .profile-title{
+            font-weight: 500;
+            font-size: 14px;
+            color: #5F646D;
+        }
+        .add-profile-btn{
+            width: 103px;
+            height: 36px;
+            background-color: @primary-bgColor-strong;
+            border: none;
+        }
+    }
+    .identity-list{
+        .identity-item{
+            cursor: pointer;
+            height: 44px;
+            margin-inline: -7px;
+            padding: 10px 8px;
+            display: flex;
+            img{
+                width: 24px;
+                height: 24px;
+                border-radius: 50%;
+            }
+            .item-name{
+                margin-inline-start: 10px;
+                color: #343A40;
+                font-weight: 400;
+                font-size: 14px;
+            }
+          .pengding-num{
+                  margin-inline-start: auto;
+                  height: 26px;
+                  padding: 2px 6px;
+                  font-weight: 400;
+                  font-size: 11px;
+                  color: #F29F0E;
+                  background-color: #F8F7F4;
+                  span{
+                    display: none;
+                  }
+                }
+                &:hover{
+                  background-color: #F9F7ED;
+                  border-radius: 8px;
+                  .pengding-num{
+                    span{
+                      display: inline;
+                    }
+                  }
+                }
+        }
+        .active-item{
+          background-color: #F9F7ED;
+          border-radius: 8px;
+          .item-name{
+            color: #CBA344;
+          }
+        }
+        .identity-item--switching {
+          cursor: not-allowed;
+          opacity: 0.6;
+          pointer-events: none;
+        }
+        .expired-profile-item();
+    }
+  }
+    .dividing-line{
+        margin: 8px 0;
+        border-bottom: 1px solid #E1E3E5;
+    }
+    .establishment-profile{
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        .establishment-header{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-height: 32px;
+            padding: 0 16px 9px 16px;
+            .profile-title{
+                font-weight: 500;
+                font-size: 14px;
+                color: #5F646D;
+            }
+            .add-profile-btn{
+                width: 104px;
+                height: 32px;
+                background-color: @primary-bgColor-strong;
+                border: none;
+            }
+        }
+        .establishment-list{
+            flex: 1;
+            min-height: 0;
+            .simplebar-content-wrapper{
+              overscroll-behavior-y: contain;
+            }
+            .simplebar-content{
+              padding: 0 16px 6px !important;
+            }
+            .establishment-item{
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                height: 44px;
+                margin-inline: -7px;
+                padding: 10px 8px;
+                img{
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 50%;
+                }
+                .item-name{
+                  flex: 1;
+                  max-width: 325px;
+                  text-wrap: nowrap;
+                  overflow: hidden;
+                  text-overflow: ellipsis;
+                  margin-inline-start: 10px;
+                  color: #343A40;
+                  font-weight: 400;
+                  font-size: 14px;
+                }
+                .pengding-num{
+                  margin-inline-start: auto;
+                  height: 26px;
+                  padding: 2px 6px;
+                  font-weight: 400;
+                  font-size: 11px;
+                  color: #F29F0E;
+                  background-color: #F8F7F4;
+                  span{
+                    display: none;
+                  }
+                }
+                &:hover{
+                  background-color: #F9F7ED;
+                  border-radius: 8px;
+                  .pengding-num{
+                    span{
+                      display: inline;
+                    }
+                  }
+                }
+            }
+            .active-item{
+              background-color: #F9F7ED;
+              border-radius: 8px;
+              .item-name{
+                color: #CBA344;
+              }
+            }
+            .establishment-item--switching {
+              cursor: not-allowed;
+              opacity: 0.6;
+              pointer-events: none;
+            }
+            .expired-profile-item();
+        }
+    }
+}

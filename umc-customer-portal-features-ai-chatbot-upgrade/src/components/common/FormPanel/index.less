@@ -1,0 +1,75 @@
+@import "@/styles/variables.less";
+
+.form-panel {
+  border-radius: 16px;
+  background-color: #fff;
+  padding: 24px 32px;
+  margin-bottom: 24px;
+  .ant-form-item-control-input-content {
+    height: auto;
+    .ant-picker {
+      height: 3rem;
+    }
+  }
+
+  &-header {
+    margin-bottom: 24px;
+  }
+
+  &-title {
+    color: @text-color;
+    margin-bottom: 8px;
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 24px;
+  }
+
+  &-description {
+    font-size: 14px;
+    color: @text-color;
+  }
+
+  &-grid {
+    display: grid;
+    width: 100%;
+    gap: 24px;
+  }
+
+  &-item {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &-item-label {
+    font-size: 14px;
+    color: @text-color;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  &-item-label-text {
+    line-height: 1.4;
+    font-size: 14px;
+    color: #797e86;
+    height: auto;
+    font-weight: 500;
+  }
+
+  &-item-content {
+    font-size: 16px;
+    color: @text-color;
+    font-weight: 500;
+    margin-top: 8px;
+  }
+}
+
+@media (max-width: 768px) {
+  .form-panel-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .form-panel-item {
+    grid-column: auto !important;
+  }
+}

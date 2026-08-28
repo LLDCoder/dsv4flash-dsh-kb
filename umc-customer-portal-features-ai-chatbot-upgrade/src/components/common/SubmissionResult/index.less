@@ -1,0 +1,256 @@
+@import "@/styles/variables.less";
+
+.submission-result {
+  // min-height: 100vh;
+  display: flex;
+  // align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  // padding: 440px 146px;
+  width: 100%;
+  min-height: 709px;
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 146.5px 440px;
+  .share {
+    font-family: Inter;
+    font-weight: 700;
+    font-size: 20px;
+    line-height: 24px;
+    color: #343a40;
+    margin-bottom: 16px;
+  }
+  .stars {
+    display: flex;
+    justify-content: center;
+    width: 462px;
+    max-width: 100%;
+    margin: 16px 0 0;
+
+    .custom-rate.ant-rate {
+      display: flex;
+      justify-content: space-between;
+      width: 100%;
+      font-size: 32px;
+      line-height: 1;
+      color: #986f2f;
+
+      .ant-rate-star {
+        margin-right: 0;
+      }
+
+      .ant-rate-star-zero .anticon svg {
+        fill: transparent;
+        stroke: #986f2f;
+        stroke-width: 48px;
+      }
+
+      .ant-rate-star-full .anticon svg {
+        fill: #986f2f;
+        stroke: none;
+        stroke-width: 0;
+      }
+
+      .ant-rate-star > div:hover .anticon svg {
+        stroke: none;
+        stroke-width: 0;
+      }
+    }
+  }
+  .result-content {
+    border-radius: 24px;
+    width: 800px;
+    text-align: center;
+
+    .result-icon {
+      margin-bottom: 24px;
+      img {
+        width: 72px;
+        height: 72px;
+      }
+
+      .anticon {
+        font-size: 80px;
+        color: @primary-color;
+      }
+    }
+
+    .result-title {
+      font-size: 40px;
+      font-weight: bold;
+      color: @text-color;
+      margin-bottom: 24px;
+      line-height: 1.3;
+    }
+
+    .result-description {
+      font-size: 16px;
+      color: #5f646d;
+      line-height: 1.6;
+      margin-bottom: 32px;
+      width: 800px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .result-number-box {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 20px 32px;
+      height: 72px;
+      background: linear-gradient(to right, #f7f6f3, #f6f6f5, #f7f2eb);
+      border-radius: 12px;
+      margin-bottom: 48px;
+
+      .number-label {
+        font-size: 16px;
+        font-weight: 600;
+        color: @text-color;
+      }
+
+      .number-value {
+        font-size: 20px;
+        font-weight: bold;
+        color: @text-color;
+        letter-spacing: 0.5px;
+      }
+
+      .copy-icon {
+        width: 20px;
+        height: 20px;
+        color: @primary-color;
+        cursor: pointer;
+        transition: all 0.3s;
+
+        &:hover {
+          transform: scale(1.1);
+          opacity: 0.8;
+        }
+      }
+    }
+
+    .result-actions {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+
+      button {
+        width: 160px;
+        height: 48px;
+      }
+    }
+
+    .rating-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      margin-top: 48px;
+      padding: 36px 40px 40px;
+      border-top: 1px dashed #e1e3e5;
+      box-sizing: border-box;
+
+      .share {
+        margin-bottom: 0;
+      }
+
+      .stars {
+        margin-top: 16px;
+      }
+
+      .rating-labels {
+        display: flex;
+        justify-content: space-between;
+        width: 462px;
+        max-width: 100%;
+        margin-top: 10px;
+        margin-bottom: 0;
+        color: #797e86;
+        font-family: Inter;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 16px;
+      }
+
+      .rating-submit.custom-button {
+        width: 120px;
+        height: 40px;
+        margin-top: 20px;
+
+        .custom-button-content,
+        .custom-button-contentWithIcon {
+          justify-content: center;
+        }
+
+        &:disabled {
+          border-color: #e1e3e5;
+          background: #e1e3e5;
+          color: #9ea2a9;
+        }
+      }
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .submission-result {
+    width: 100%;
+    min-height: unset;
+    padding: 32px 24px;
+    border-radius: 16px;
+
+    .result-content {
+      width: 100%;
+
+      .result-title {
+        font-size: 24px;
+      }
+
+      .result-description {
+        width: 100%;
+        font-size: 14px;
+      }
+
+      .result-number-box {
+        flex-direction: column;
+        height: auto;
+        gap: 6px;
+        padding: 16px;
+        text-align: center;
+      }
+
+      .result-actions {
+        flex-direction: column;
+
+        button {
+          width: 100%;
+        }
+      }
+
+      .rating-section {
+        margin-top: 32px;
+        padding-right: 0;
+        padding-left: 0;
+
+        .stars {
+          width: 100%;
+          max-width: 320px;
+        }
+
+        .rating-labels {
+          gap: 16px;
+          width: 100%;
+          max-width: 320px;
+          font-size: 12px;
+          line-height: 16px;
+        }
+
+        .rating-submit.custom-button {
+          width: 100%;
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,106 @@
+@import "@/styles/variables.less";
+
+.related-info-card {
+  background: #fff;
+  border-radius: 20px;
+  padding: 24px;
+
+  .related-info-card__title {
+    color: @text-color;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 24px;
+    margin: 0;
+  }
+
+  .related-info-card__panel {
+    background: linear-gradient(
+      90deg,
+      #f7f6f3 0%,
+      #f6f6f5 56.253%,
+      #f7f2eb 100%
+    );
+    border-radius: 10px;
+    margin-top: 24px;
+    padding: 20px;
+  }
+  .related-info-card__panel + .related-info-card__panel {
+    margin-top: 16px;
+  }
+
+  .related-info-card__header {
+    align-items: center;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 16px;
+    justify-content: space-between;
+
+    .related-info-card__status-pill {
+      flex-shrink: 0;
+    }
+  }
+  .related-info-card__status {
+    flex-shrink: 0;
+  }
+
+  .related-info-card__number {
+    color: @text-color;
+    flex: 0 0 max-content;
+    font-size: 18px;
+    font-weight: 600;
+    hyphens: none;
+    line-height: 22px;
+    min-width: max-content;
+    white-space: nowrap;
+    word-break: keep-all;
+  }
+
+  .related-info-card__action {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 20px;
+  }
+
+  .related-info-card__action-button {
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    height: 36px;
+    line-height: 20px;
+    min-width: 104px;
+  }
+
+  .related-info-card__status-pill {
+    align-items: center;
+    border-radius: 4px;
+    display: inline-flex;
+    font-size: 14px;
+    font-weight: 500;
+    height: 26px;
+    justify-content: center;
+    line-height: 20px;
+    padding: 2px 6px;
+    white-space: nowrap;
+  }
+
+  .related-info-card__status-pill--success {
+    background: #f3faf4;
+    color: #4a9d5c;
+  }
+
+  .related-info-card__status-pill--warn {
+    background: #fffbeb;
+    color: #f29f0e;
+  }
+
+  .related-info-card__status-pill--error {
+    background: #fef2f2;
+    color: #ea4f49;
+  }
+
+  .related-info-card__status-pill--cancelled,
+  .related-info-card__status-pill--neutral {
+    background: #f7f7f7;
+    color: #797e86;
+  }
+}

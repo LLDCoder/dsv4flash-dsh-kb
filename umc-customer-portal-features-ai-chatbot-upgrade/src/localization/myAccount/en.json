@@ -1,0 +1,158 @@
+{
+  "myAccountPage": {
+    "emiratesIdRegistered": {
+      "title": "Emirates ID Already Registered",
+      "description": "This Emirates ID is already registered. Continue with another identity type.",
+      "continueOtherId": "Continue with Other ID Type"
+    },
+    "sections": {
+      "accountInformation": "Account Information",
+      "personalProfile": "Personal Profile",
+      "establishmentProfile": "Establishment Profile",
+      "loginSettings": "Login Settings"
+    },
+    "fields": {
+      "firstName": "First Name",
+      "lastName": "Last Name",
+      "email": "Email",
+      "mobileNumber": "Mobile Number"
+    },
+    "profileTypes": {
+      "individual": "Individual"
+    },
+    "actions": {
+      "details": "Details",
+      "addEntityEstablishment": "Add Entity/Establishment",
+      "changePassword": "Change Password"
+    },
+    "searchPlaceholder": "Search",
+    "loading": "Loading...",
+    "failed": "The operation could not be completed. Please try again.",
+    "emptyPersonalTitle": "You haven't added a personal profile yet.",
+    "emptyPersonalButton": "Add Personal Profile",
+    "emptyEstablishmentTitle": "You haven't added any entity/establishment yet.",
+    "emptyEstablishmentSearchTitle": "No establishments found matching your search.",
+    "emptySearchClear": "Clear Search",
+    "loginSettings": {
+      "twoFactorTitle": "Enable Two-Factor Authentication",
+      "twoFactorDescription": "Add an extra layer of security to protect your account",
+      "lastLoginTitle": "Last Login Date"
+    },
+    "twoFactor": {
+      "enabledToast": "Two-factor authentication enabled",
+      "disabledToast": "Two-factor authentication disabled",
+      "updateError": "Failed to update two-factor authentication. Please try again."
+    },
+    "establishmentStatus": {
+      "underReview": "Under Review",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "expired": "Expired",
+      "pending": "Pending",
+      "pendingCompletion": "Pending Completion",
+      "suspended": "Suspended"
+    },
+    "personalStatus": {
+      "underReview": "Under Review",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "expired": "Expired",
+      "pendingCompletion": "Pending Completion",
+      "suspended": "Suspended"
+    },
+    "entityTypes": {
+      "commercial": "Commercial",
+      "government": "Government",
+      "individual": "Individual"
+    },
+    "alt": {
+      "edit": "Edit"
+    },
+    "personalPhoto": {
+      "changeAlt": "Change photo",
+      "uploadSuccess": "Profile photo updated successfully.",
+      "uploadFailed": "Failed to update profile photo. Please try again.",
+      "invalidFileType": "Only JPG, JPEG, and PNG files are supported.",
+      "fileTooLarge": "Profile photo must be {{size}} MB or smaller."
+    },
+    "changePasswordModal": {
+      "title": "Change Password",
+      "emailStepBanner": "A verification code will be sent to your registered email address to change your password.",
+      "verificationTitle": "Enter Your Code",
+      "verificationDesc": "We've sent a verification code to {{email}}",
+      "notReceived": "Didn't receive it?",
+      "resend": "Resend",
+      "confirm": "Confirm",
+      "verifyCode": "Verify Code",
+      "newPasswordBanner": "Please set your new password.",
+      "passwordStepBannerLoggedIn": "Please enter your current password and set your new password.",
+      "currentPassword": "Current Password",
+      "enterCurrentPassword": "Enter current password",
+      "currentPasswordIncorrect": "Current password is incorrect",
+      "sameAsCurrentPassword": "New password must be different from your current password.",
+      "newPassword": "New Password",
+      "confirmPasswordLabel": "Confirm Password",
+      "enterNewPassword": "Enter new password",
+      "reEnterPassword": "Enter confirm password",
+      "reqLength": "At least 8 characters",
+      "reqLower": "1 lowercase letter",
+      "reqNumber": "1 number letter",
+      "reqUpper": "1 uppercase letter",
+      "reqSpecial": "1 special character (!@#$_.)",
+      "invalidCode": "Invalid verification code. Please try again.",
+      "verificationFailed": "Unable to verify the code. Please try again.",
+      "sendCodeFailed": "Unable to send the verification code. Please try again.",
+      "resendCodeFailed": "Unable to resend the verification code. Please try again.",
+      "success": "Password updated successfully. Please sign in again.",
+      "failed": "Operation failed. Please try again."
+    },
+    "mobileNumberModal": {
+      "addTitle": "Add Mobile Number",
+      "editTitle": "Edit Mobile Number",
+      "verifyCurrentMobileNumber": "Verify Current Mobile Number",
+      "verifyNewMobileNumber": "Verify New Mobile Number",
+      "currentMobileNumber": "Current Mobile Number",
+      "newMobileNumber": "New Mobile Number",
+      "verificationCode": "Verification Code",
+      "enterVerificationCode": "Enter code",
+      "enterCurrentMobileNumber": "Enter current mobile number",
+      "enterMobileNumber": "Enter Mobile Number",
+      "mobileAddedTitle": "Mobile Number Added Successfully",
+      "mobileAddedDescription": "We'll use this number for your account from now on.",
+      "mobileUpdatedTitle": "Mobile Number Updated Successfully",
+      "mobileUpdatedDescription": "You can use your new mobile number to log in from now on.",
+      "send": "Send",
+      "resend": "Resend",
+      "sendWithCountdown": "Send ({{countdown}})",
+      "sendCodeFailed": "Failed to send verification code. Please try again.",
+      "next": "Next",
+      "countries": {
+        "uae": "(+971) UAE",
+        "usa": "(+1) USA",
+        "uk": "(+44) UK",
+        "ksa": "(+966) KSA"
+      }
+    },
+    "emailModal": {
+      "title": "Edit Email",
+      "verifyCurrentEmail": "Verify Current Email",
+      "verifyNewEmail": "Verify New Email",
+      "currentEmail": "Current Email",
+      "newEmail": "New Email",
+      "verificationCode": "Verification Code",
+      "enterVerificationCode": "Enter code",
+      "enterNewEmail": "Enter New Email",
+      "emailUpdatedTitle": "Email Updated Successfully",
+      "emailUpdatedDescription": "We'll use this email for your account from now on.",
+      "send": "Send",
+      "resend": "Resend",
+      "sendWithCountdown": "Send ({{countdown}})",
+      "next": "Next",
+      "invalidVerificationCode": "Invalid verification code. Please try again.",
+      "sendCodeFailed": "Unable to send the verification code. Please try again.",
+      "verificationFailed": "Unable to verify the code. Please try again.",
+      "invalidEmail": "Please enter a valid email address",
+      "differentFromCurrentEmail": "New email must be different from current email"
+    }
+  }
+}

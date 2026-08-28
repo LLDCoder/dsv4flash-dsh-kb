@@ -1,0 +1,869 @@
+.pay-fines-page-scroll {
+  width: 100vw;
+  height: 100vh;
+}
+
+.public-layout.pay-fines-public-layout {
+  box-sizing: border-box;
+  min-height: 100vh;
+  height: auto;
+  overflow: visible;
+  padding-bottom: 24px;
+  background-size: cover;
+  background-position: center top;
+}
+
+.pay-fines {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  max-width: 1280px;
+  background-color: #fff;
+  margin: 0 auto 24px;
+  border-radius: 40px;
+  overflow: hidden;
+
+  .pay-fines-back {
+    display: flex;
+    align-items: center;
+    line-height: 39px;
+    column-gap: 16px;
+    margin-bottom: 32px;
+
+    .go-back {
+      color: #361e12;
+      font-size: 24px;
+      cursor: pointer;
+    }
+
+    .pay-fines-title {
+      font-family: Inter;
+      font-weight: 800;
+      font-size: 32px;
+      color: #361e12;
+    }
+  }
+
+  .ant-form-item-row {
+    width: 100%;
+  }
+
+  .pay-fines-form {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 24px;
+    column-gap: 24px;
+    border-bottom: 1px solid #e1e3e5;
+    border-left: 1px solid #e1e3e5;
+    border-right: 1px solid #e1e3e5;
+    border-bottom-left-radius: 10px;
+    border-bottom-right-radius: 10px;
+
+    .ant-form-item-row {
+      width: 524px;
+    }
+
+    .ant-form-item {
+      margin-bottom: 0;
+    }
+
+    > .pay-fines-tabs-btn-search {
+      align-self: flex-start;
+      margin-top: 48px;
+    }
+  }
+}
+
+.pay-fines__content {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 32px 80px;
+  display: flex;
+  flex-direction: column;
+}
+
+.pay-fines--locked {
+  .pay-fines-tabs-content {
+    .ant-input-affix-wrapper {
+      border-color: #ff4d4f !important;
+    }
+
+    .pay-fines-tabs-btn-search:disabled,
+    .pay-fines-tabs-btn-search.disabled {
+      background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+      color: #ffffff;
+    }
+  }
+}
+
+.pay-fines-tabs {
+  padding: 12px 124px 0;
+  display: flex;
+  column-gap: 16px;
+  align-items: flex-end;
+  border: 1px solid #e1e3e5;
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+
+  .pay-fines-tab {
+    position: relative;
+    font-family: Inter;
+    font-weight: 500;
+    font-size: 16px;
+    color: #5f646d;
+    width: 280px;
+    height: 88px;
+    cursor: pointer;
+    border: 0;
+    background: transparent;
+    padding: 0;
+  }
+
+  .pay-fines-tab.active {
+    color: #92722a;
+  }
+
+  .pay-fines-tab.active::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80px;
+    height: 4px;
+    background-color: #b68a35;
+  }
+
+  .pay-fines-tabs-icon {
+    text-align: center;
+    font-size: 24px;
+    color: #5f646d;
+  }
+
+  .pay-fines-tabs-txt {
+    text-align: center;
+  }
+
+  .pay-fines-tab.active .pay-fines-tabs-icon {
+    color: #92722a;
+  }
+}
+
+.pay-fines-tabs-content {
+  min-width: 0;
+  margin-bottom: 32px;
+}
+
+.pay-fines-form,
+.individual-fines-form {
+  .ant-input-affix-wrapper,
+  .ant-input,
+  .ant-select-single:not(.ant-select-customize-input) .ant-select-selector {
+    height: 48px;
+  }
+
+  .ant-input-affix-wrapper {
+    display: flex;
+    align-items: center;
+
+    > .ant-input {
+      height: auto;
+    }
+  }
+
+  .ant-select-single:not(.ant-select-customize-input) .ant-select-selector {
+    display: flex;
+    align-items: center;
+  }
+
+  .ant-select-single .ant-select-selector .ant-select-selection-search-input {
+    height: 46px;
+  }
+}
+
+.pay-fines-tabs-btn-search {
+  min-width: 120px;
+  height: 48px;
+  border: 0;
+  border-radius: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 16px;
+  color: #fff;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pay-fines-tabs-btn-search:disabled,
+.pay-fines-tabs-btn-search.disabled {
+  background: #e1e3e5;
+  color: #9ea2a9;
+  cursor: not-allowed;
+}
+
+.pay-fines-tabs-btns {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.individual-fines {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 16px;
+  width: 100%;
+  border-bottom: 1px solid #e1e3e5;
+  border-left: 1px solid #e1e3e5;
+  border-right: 1px solid #e1e3e5;
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+
+  .ant-form-item {
+    margin-bottom: 24px;
+  }
+}
+
+.individual-fines-method {
+  width: 100%;
+}
+
+.individual-fines-input {
+  display: flex;
+  column-gap: 16px;
+
+  > div {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+.pay-fines-results {
+  min-width: 0;
+  width: 100%;
+  min-height: 340px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.pay-fines-results__alert {
+  margin-bottom: 16px;
+}
+
+.pay-fines-results__state {
+  padding: 160px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Inter;
+  font-weight: 400;
+  font-size: 18px;
+  line-height: 22px;
+  text-align: center;
+  color: #797e86;
+}
+
+.pay-fines-results__lock {
+  min-height: 481px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Inter;
+  font-weight: 400;
+  font-size: 20px;
+  line-height: 28px;
+  text-align: center;
+  color: #ff4d4f;
+}
+
+.pay-fines-results__table-wrapper {
+  min-width: 0;
+  border-radius: 10px;
+  border: 1px solid #e1e3e5;
+  overflow: hidden;
+  min-height: 431px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.pay-fines-results__table {
+  padding: 16px;
+
+  .ant-table-row {
+    height: 52px;
+  }
+
+  .ant-table-thead > tr > th {
+    height: 46px;
+    background: #f8f7f4;
+    color: #797e86;
+    font-family: Inter;
+    font-weight: 400;
+    font-size: 14px;
+    line-height: 20px;
+    border-bottom: 0;
+  }
+
+  .ant-table-tbody > tr {
+    cursor: pointer;
+    height: 52px;
+    transition: background 0.2s;
+
+    > td {
+      height: 52px;
+    }
+  }
+
+  .ant-table-tbody > tr:hover > td {
+    background: #fffaf0;
+  }
+
+  .ant-table-tbody > tr.ant-table-row-selected > td {
+    background-color: #fff;
+  }
+
+  .ant-table-tbody > tr.ant-table-row-selected:hover > td {
+    background-color: #fffaf0;
+  }
+
+  .ant-table-tbody > tr.pay-fines-results__row--disabled {
+    cursor: default;
+  }
+
+  .ant-checkbox-wrapper:hover .ant-checkbox-inner,
+  .ant-checkbox:hover .ant-checkbox-inner,
+  .ant-checkbox-input:focus + .ant-checkbox-inner {
+    border-color: #92722a;
+  }
+
+  .ant-checkbox-checked .ant-checkbox-inner,
+  .ant-checkbox-indeterminate .ant-checkbox-inner {
+    background-color: #92722a;
+    border-color: #92722a;
+  }
+
+  .ant-checkbox-checked::after {
+    border-color: #92722a;
+  }
+}
+
+.pay-fines-results__amount-title {
+  display: flex;
+  align-items: center;
+  width: 150px;
+}
+
+.pay-fines-results__selection-cell {
+  display: inline-flex;
+}
+
+.pay-fines-results__footer {
+  margin-top: auto;
+  border-top: 1px solid #e1e3e5;
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pay-fines-results__total {
+  display: flex;
+  flex-direction: column;
+  row-gap: 4px;
+}
+
+.pay-fines-results__total-label {
+  font-family: Inter;
+  font-weight: 500;
+  font-size: 14px;
+  min-height: 20px;
+  color: #5f646d;
+
+  > span {
+    margin-left: 4px;
+    font-family: Inter;
+    font-weight: 400;
+    font-size: 14px;
+    color: #797e86;
+  }
+}
+
+.pay-fines-results__total-value {
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 20px;
+  color: #92722a;
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  column-gap: 4px;
+}
+
+.pay-fines-results__pay-now {
+  width: 128px;
+  height: 48px;
+  border: 0;
+  border-radius: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 16px;
+  color: #fff;
+  background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pay-fines-results__pay-now:disabled {
+  background: #e1e3e5;
+  color: #9ea2a9;
+  cursor: not-allowed;
+}
+
+.pay-fines-results__pay-now--inactive:not(:disabled) {
+  background: #e1e3e5;
+  color: #9ea2a9;
+  cursor: pointer;
+}
+
+.pay-fines-payment-modal {
+  width: 720px !important;
+  max-width: calc(100vw - 32px);
+
+  .ant-modal-content {
+    border-radius: 20px;
+    overflow: hidden;
+  }
+
+  .ant-modal-body {
+    padding: 64px 40px 48px;
+  }
+}
+
+.pay-fines-payment-modal--failed {
+  width: 750px !important;
+}
+
+.pay-fines-payment-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.pay-fines-payment-result__icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #f9f7ed;
+  color: #cba344;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+
+  img {
+    display: block;
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+  }
+}
+
+.pay-fines-payment-result__icon--failed {
+  background: #fef2f2;
+  color: #ea4f49;
+
+  .anticon {
+    width: 48px;
+    height: 48px;
+    border: 3px solid currentColor;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+  }
+}
+
+.pay-fines-payment-result__icon--processing,
+.pay-fines-payment-result__icon--unknown {
+  background: #fffbeb;
+  color: #f29f0e;
+  font-size: 40px;
+}
+
+.pay-fines-payment-result__title {
+  margin-top: 24px;
+  font-family: Inter;
+  font-weight: 700;
+  font-size: 26px;
+  line-height: 31px;
+  color: #361e12;
+}
+
+.pay-fines-payment-result__description {
+  margin-top: 8px;
+  font-family: Inter;
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 24px;
+  color: #5f646d;
+}
+
+.pay-fines-payment-result__amount {
+  margin-top: 24px;
+  width: 640px;
+  height: 56px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f7f6f3 0%, #f6f6f5 56.25%, #f7f2eb 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  column-gap: 12px;
+  font-family: Inter;
+  color: #361e12;
+
+  span {
+    font-weight: 400;
+    font-size: 16px;
+    line-height: 22px;
+  }
+
+  strong {
+    display: flex;
+    align-items: center;
+    column-gap: 4px;
+    font-weight: 700;
+    font-size: 18px;
+    line-height: 24px;
+    color: #a8792a;
+  }
+}
+
+.pay-fines-payment-result--failed .pay-fines-payment-result__amount strong {
+  color: #ea4f49;
+}
+
+.pay-fines-payment-result--failed .pay-fines-payment-result__amount {
+  width: 100%;
+}
+
+.pay-fines-payment-result__meta {
+  margin-top: 20px;
+  width: 100%;
+  min-height: 52px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f7f6f3 0%, #f6f6f5 56.25%, #f7f2eb 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  column-gap: 8px;
+  padding: 8px 16px;
+  font-family: Inter;
+  color: #361e12;
+
+  span {
+    font-weight: 400;
+    font-size: 14px;
+  }
+
+  strong {
+    font-weight: 600;
+    font-size: 16px;
+  }
+}
+
+.pay-fines-payment-result__receipts {
+  margin-top: 16px;
+  width: 100%;
+  display: none;
+  flex-direction: column;
+  row-gap: 8px;
+}
+
+.pay-fines-payment-result__receipt {
+  min-height: 48px;
+  border: 1px solid #e8e2d8;
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  column-gap: 16px;
+  color: #361e12;
+  font-family: Inter;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: start;
+}
+
+.pay-fines-payment-result__receipt-button {
+  min-width: 132px;
+  height: 32px;
+  border: 1px solid #92722a;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #92722a;
+  cursor: pointer;
+  font-family: Inter;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pay-fines-payment-result__receipt-button:disabled {
+  border-color: #d1d5db;
+  color: #9ea2a9;
+  cursor: not-allowed;
+}
+
+.pay-fines-payment-result__note {
+  margin-top: 16px;
+  width: 100%;
+  min-height: 54px;
+  border-radius: 12px;
+  background: #fef2f2;
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: Inter;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 20px;
+  color: #361e12;
+  text-align: start;
+
+  .anticon {
+    flex: 0 0 20px;
+    color: #ea4f49;
+    font-size: 16px;
+  }
+}
+
+.pay-fines-payment-result > .payment-success-feedback {
+  margin-top: 40px;
+  width: calc(100% + 80px);
+}
+
+.pay-fines-payment-result__actions {
+  margin-top: 32px;
+  display: flex;
+  justify-content: center;
+  column-gap: 16px;
+  width: 100%;
+}
+
+.pay-fines-payment-result__actions--success {
+  margin-top: 36px;
+}
+
+.pay-fines-payment-result__button {
+  min-width: 140px;
+  height: 48px;
+  border-radius: 8px;
+  border: 1px solid #92722a;
+  background-color: #ffffff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  font-family: Inter;
+  font-weight: 600;
+  font-size: 14px;
+  color: #92722a;
+}
+
+.pay-fines-payment-result__actions--success .pay-fines-payment-result__button {
+  min-width: 160px;
+}
+
+.pay-fines-payment-result--failed .pay-fines-payment-result__button {
+  min-width: 168px;
+}
+
+.pay-fines-payment-result__button--primary {
+  border: 0;
+  color: #ffffff;
+  background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+}
+
+.pay-fines-payment-result__button:disabled {
+  background: #e1e3e5;
+  color: #9ea2a9;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1023px) {
+  .pay-fines {
+    border-radius: 20px;
+  }
+
+  .pay-fines__content {
+    padding: 24px;
+  }
+
+  .pay-fines-tabs {
+    padding: 12px 16px 0;
+    flex-wrap: wrap;
+
+    .pay-fines-tab {
+      width: auto;
+      flex: 1 1 120px;
+      height: auto;
+      min-height: 72px;
+    }
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1023px) {
+  .pay-fines .pay-fines-form {
+    .ant-form-item {
+      flex: 0 1 524px;
+      min-width: 0;
+    }
+
+    .ant-form-item-row {
+      width: 100%;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .pay-fines {
+    border-radius: 12px;
+
+    .pay-fines-back {
+      margin-bottom: 24px;
+    }
+
+    .pay-fines-form {
+      flex-direction: column;
+      align-items: stretch;
+      row-gap: 16px;
+      padding: 16px;
+
+      .ant-form-item-row {
+        width: 100%;
+      }
+
+      > .pay-fines-tabs-btn-search {
+        align-self: flex-end;
+        margin-top: 0;
+      }
+    }
+  }
+
+  .pay-fines__content {
+    padding: 16px;
+  }
+
+  .pay-fines-tabs {
+    padding: 8px 0 0;
+    flex-wrap: nowrap;
+
+    .pay-fines-tab {
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      padding: 0 6px;
+      font-size: 14px;
+      line-height: 20px;
+    }
+  }
+
+  .individual-fines-input {
+    flex-direction: column;
+  }
+
+  .pay-fines-results__table {
+    padding: 12px;
+  }
+
+  .pay-fines-payment-modal {
+    .ant-modal-body {
+      padding: 56px 24px 32px;
+    }
+  }
+
+  .pay-fines-payment-result__amount {
+    width: 100%;
+  }
+
+  .pay-fines-payment-result--failed .pay-fines-payment-result__button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 576px) {
+  .pay-fines {
+    .pay-fines-back {
+      column-gap: 12px;
+
+      .pay-fines-title {
+        font-size: 26px;
+      }
+    }
+  }
+
+  .pay-fines-tabs-content {
+    margin-bottom: 24px;
+  }
+
+  .pay-fines-results__footer {
+    align-items: stretch;
+    flex-direction: column;
+    row-gap: 16px;
+  }
+
+  .pay-fines-results__pay-now {
+    width: 100%;
+  }
+
+  .pay-fines-payment-result__receipt {
+    align-items: stretch;
+    flex-direction: column;
+    row-gap: 8px;
+  }
+
+  .pay-fines-payment-result__receipt-button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 376px) {
+  .pay-fines-tabs {
+    column-gap: 8px;
+
+    .pay-fines-tab {
+      padding: 0;
+      font-size: 12px;
+      line-height: 18px;
+    }
+  }
+
+  .pay-fines-payment-modal {
+    .ant-modal-body {
+      padding: 40px 16px 24px;
+    }
+  }
+
+  .pay-fines-payment-result__note {
+    padding: 12px 16px;
+  }
+}
+
+
+// RTL: mirror the back arrow so it points to the right in Arabic.
+html[dir="rtl"] .pay-fines .pay-fines-back .go-back {
+  transform: scaleX(-1);
+}

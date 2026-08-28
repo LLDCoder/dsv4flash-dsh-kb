@@ -1,0 +1,4 @@
+interface:
+  display_name: "AntD 4 Compatibility"
+  short_description: "Review and fix Ant Design 4.22 API compatibility risks."
+  default_prompt: "Use this project skill to scan the changed UI code for Ant Design 5-style APIs, verify against the installed AntD 4.22 types, and apply minimal safe compatibility fixes."

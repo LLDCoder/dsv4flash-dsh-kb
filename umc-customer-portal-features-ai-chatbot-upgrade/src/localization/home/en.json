@@ -1,0 +1,390 @@
+{
+  "loginAs": {
+    "title": "Sign In As",
+    "desc": "Choose an account to continue. You can switch accounts after signing in.",
+    "search": "Type to search",
+    "individualProfile": "Individual Profile",
+    "companyProfile": "Establishment Profile",
+    "pendingActions": "{{num}} Pending Actions",
+    "expireIn3Days": "Expires in 3 Days",
+    "newspaperMediaLicense": "Newspaper Media License",
+    "cancel": "Cancel",
+    "renew": "Renew",
+    "pendingFine": "Pending Fine",
+    "publishingMisleadingNews": "Publishing Misleading News",
+    "payFine": "Pay Fines",
+    "issueLicense": "Issuing a Magazine/Newspaper License",
+    "establishmentProfile": "Establishment Profile",
+    "noPendingActions": "No Pending Actions",
+    "rejected": "Rejected",
+    "payNow": "Pay Now",
+    "edit": "Edit",
+    "detail": "Detail",
+    "details": "Details",
+    "delete": "Delete",
+    "cancelComplaintTitle": "Cancel Complaint",
+    "cancelComplaintContent": "Are you sure you want to cancel this complaint? This action cannot be undone.",
+    "cancelSuccess": "Cancelled successfully"
+  },
+  "matchedAccountLink": {
+    "title": "Account Already Exists",
+    "subtitle": "An NMA account already exists with your UAE PASS email address.",
+    "emailLabel": "Matched Account Email",
+    "linkCta": "Link with Existing Account",
+    "footerNote": "Your UAE PASS must be linked to the matched existing NMA account. After linking, the Personal Profile under this account will be updated using your UAE PASS details."
+  },
+  "accountMergeConfirm": {
+    "email": {
+      "title": "UAE PASS - NMA Linking",
+      "subtitle": "Do you have an online account with NMA?",
+      "optionExisting": "If Yes, your UAE PASS account will be linked to your existing NMA account"
+    },
+    "optionNew": "If No, your NMA personal profile will be established based on the UAE PASS account",
+    "yes": "Yes",
+    "no": "No",
+    "note": "This is a one time process, your future logins through UAE PASS will be seamless."
+  },
+  "accountLinkSuccess": {
+    "title": "Account Linked Successfully!",
+    "subtitle": "Your UAE PASS has been linked to your existing NMA account.",
+    "loginEmail": "Login Email",
+    "emiratesId": "Emirates ID",
+    "fullName": "Full Name",
+    "loginMethods": "Available Login Methods",
+    "continueCta": "Continue to Homepage",
+    "footerNote": "You can now login using either UAE PASS or Email & Password.",
+    "demoEmiratesId": "784-1990-*******-1",
+    "demoFullName": "John Michael Doe",
+    "methodsEmailUaePass": "Email, UAE PASS"
+  },
+  "accountLinkFailure": {
+    "title": "Unable to Link Account",
+    "continueWithoutLinking": "Continue Without Linking",
+    "blocked": {
+      "alreadyLinked": "This account is already linked to another UAE PASS account.",
+      "alreadyMerged": "This account has already been merged with another account.",
+      "identityMismatch": "The Emirates ID on this account does not match your UAE PASS identity.",
+      "hasData": "This account contains data that cannot be transferred safely.",
+      "notEligible": "This account is not eligible for linking.",
+      "generic": "This account cannot be linked safely at this time.",
+      "guidance": "You can continue with your current account. If you still need help, contact NMA support.",
+      "useOriginalAccount": "Continue Without Linking"
+    },
+    "nmaAccount": {
+      "subtitle": "This account cannot be linked to your UAE PASS.",
+      "reasonsIntro": "This may be because:",
+      "reason1": "- The account is registered under a different Emirates ID",
+      "reason2": "- The account already has active data (applications, profiles, or wallet)",
+      "tryDifferentEmail": "Try a Different Email Account"
+    }
+  },
+  "nmaLinking": {
+    "title": "UAE PASS - NMA Linking",
+    "subtitle": "Enter your NMA account credentials to link it with UAE PASS",
+    "email": "Email",
+    "emailPlaceholder": "Your email",
+    "password": "Password",
+    "passwordPlaceholder": "Your password",
+    "forgotPassword": "Forgot password?",
+    "linkButton": "Verify This Account",
+    "createAccount": "Create Account?",
+    "signUp": "Sign Up",
+    "note": "After linking, the account email will be updated to the email registered in your UAE PASS, if different. The Personal Profile information will be updated using your UAE PASS details. If this NMA account was previously linked with another UAE PASS, the previous UAE PASS link will be replaced.",
+    "currentUserMissing": "Current session is missing user information. Please sign in again.",
+    "twoFactorRequired": "This account has two-factor authentication enabled. Please complete linking from the full sign-in page.",
+    "missingTargetUserId": "Could not get the target account. Please try again.",
+    "mergeSuccess": "Accounts linked successfully."
+  },
+  "processModal": {
+    "title": "Your Personal Service Advisor",
+    "subtitle": "Get started quickly and find the required license or permit for your activities.",
+    "steps": {
+      "whatYouDo": "What You Do",
+      "whatYouNeed": "What You Need",
+      "applicationPath": "Application Path"
+    },
+    "helpPrefix": "Need help?",
+    "helpLink": "Chat with AI",
+    "buttons": {
+      "skip": "Skip",
+      "close": "Close",
+      "next": "Next",
+      "back": "Back",
+      "viewAllServices": "View All Services",
+      "startService": "Start Service"
+    },
+    "prerequisites": "Prerequisites",
+    "prerequisiteItems": {
+      "mediaActivityLicense": "Media Activity License",
+      "ipCertificate": "Intellectual Property Certificate from Ministry of Economy"
+    },
+    "services": {
+      "broadcasting": {
+        "title": "Broadcasting Operations",
+        "desc": "Operate radio stations or TV channels"
+      },
+      "publishing": {
+        "title": "Publishing Business",
+        "desc": "Newspaper and magazine publishing or distribution"
+      },
+      "filmProduction": {
+        "title": "Film Production & Screening",
+        "desc": "Film production, cinema operations, content approval"
+      },
+      "digitalMedia": {
+        "title": "Digital Media Platforms",
+        "desc": "Social media, websites, digital content platforms"
+      },
+      "journalism": {
+        "title": "Journalism Services",
+        "desc": "Press cards, correspondents, news coverage"
+      },
+      "photography": {
+        "title": "Photography Services",
+        "desc": "Ground, marine, aerial photography permits"
+      },
+      "gaming": {
+        "title": "Gaming & Entertainment",
+        "desc": "Video game trading, age rating"
+      },
+      "mediaOffice": {
+        "title": "Media Office Operations",
+        "desc": "Foreign media offices, commercial media activities"
+      }
+    },
+    "specific": {
+      "filmCategory": {
+        "title": "Film Production & Screening",
+        "items": {
+          "filmScreeningBundle": {
+            "title": "Film Screening Bundle",
+            "desc": "Complete package: poster, trailer, age rating and screening"
+          },
+          "tempCinema": {
+            "title": "Temporary Cinema License",
+            "desc": "Complete package: poster, trailer, age rating and screening"
+          },
+          "localProduction": {
+            "title": "Local Film Production"
+          },
+          "oneDayEvent": {
+            "title": "One-Day Cinema Event"
+          }
+        }
+      },
+      "photoCategory": {
+        "title": "Photography Services",
+        "items": {
+          "groundPermit": {
+            "title": "Ground Photography Permit",
+            "desc": "Ground filming permit"
+          },
+          "aerialPermit": {
+            "title": "Aerial Photography Permit"
+          },
+          "marinePermit": {
+            "title": "Marine Photography Permit"
+          }
+        }
+      }
+    },
+    "entry": {
+      "filmBundleHeadline": "Film Production & Screening / Film Screening Bundle",
+      "groundPhotoHeadline": "Photography Services / Ground Photography Permit",
+      "filmScreeningPermit": "Film Screening Permit"
+    }
+  },
+  "homeInitialization": {
+    "learnMore": "Learn More",
+    "startService": "Start Service",
+    "noData": "No data",
+    "servicesTitle": "Services",
+    "serviceAdvisorTitle": "Service Advisor",
+    "advisorTitle": "Your Personal Service Advisor",
+    "advisorContent": "AI-powered guidance to find the right license or permit for your media activities.",
+    "getStarted": "Get Started",
+    "featureInDevelopment": "This feature is under development.",
+    "profileTitle": "Profile",
+    "completeProfileTitle": "Complete Your Profile",
+    "completeProfileContent": "Upload essential documents to unlock all features and speed up applications.",
+    "continueSetup": "Continue Setup",
+    "myWallet": "My Wallet",
+    "transactionsTitle": "Transactions",
+    "walletId": "ID: {{id}}",
+    "walletNotActivatedTip": "Your wallet is not activated yet. Activate it to start using payment services.",
+    "activateWallet": "Activate Wallet",
+    "walletBottomText": "Fast and secure payment solution. Top up your balance and manage all NMA payments in one place.",
+    "walletBalance": "Wallet Balance",
+    "recharge": "Recharge",
+    "knowledgeCenterTitle": "Knowledge Center",
+    "rechargeSuccessTitle": "Recharge Successful",
+    "rechargeSuccessContent": "Your wallet has been recharged successfully",
+    "close": "Close",
+    "downloadReceipt": "Download Receipt"
+  },
+  "homeAction": {
+    "tabs": {
+      "allActions": "All Actions",
+      "pendingFines": "Pending Fines",
+      "renewal": "Renewal",
+      "pendingRequests": "Pending Requests",
+      "drafts": "Drafts"
+    },
+    "whatDoYouWantToday": "What do you want to do today?",
+    "newRequest": "New Request",
+    "recentRequests": "Recent Requests",
+    "permitsAndLicense": "Licenses & Permits",
+    "top": "Top",
+    "more": "More",
+    "columns": {
+      "requestNo": "Request No.",
+      "service": "Service",
+      "submissionDate": "Submission Date",
+      "status": "Status"
+    },
+    "details": "Details",
+    "download": "Download",
+    "payFine": "Pay Fines",
+    "downloadDocumentTitle": "PDF Access Code",
+    "downloadDocumentSubtitle": "Use the access code below to open your downloaded PDF file.",
+    "downloadDocumentNote": "Copy and keep this access code. You will need it to open the PDF file after downloading.",
+    "licensePermitNoLabel": "License/Permit No.: {{no}}",
+    "documentPreviewUnavailable": "Document preview is not available for this record.",
+    "documentDownloadFailed": "Failed to download the document. Please try again.",
+    "permitStatus": {
+      "ACTIVE": "Active",
+      "EXPIRE_SOON": "Expiring Soon",
+      "EXPIRED": "Expired",
+      "SUSPENDED": "Suspended",
+      "CANCELLED": "Cancelled"
+    }
+  },
+  "knowledgeCenterDetail": {
+    "steps": {
+      "locateFine": {
+        "title": "Locate Your Fine Number",
+        "content": "A fine number is a unique identifier starting with 'F-' followed by 7 digits (e.g., F-4515255).",
+        "emailNotification": "Email Notification: Check your registered email for notifications from the National Media Authority.",
+        "dashboard": "Dashboard: Sign in and go to the Violations & Fines section."
+      },
+      "findViolations": {
+        "title": "Find the Violations & Fines Page",
+        "content": "Open the Violations & Fines section from the top navigation bar to view all your violations."
+      },
+      "viewFine": {
+        "title": "Enter the Fine Number and View Details",
+        "content": "Enter the fine number to retrieve and view its details."
+      },
+      "pay": {
+        "title": "Pay",
+        "content": "Select Pay next to the fine you want to settle."
+      }
+    },
+    "details": {
+      "profiles": {
+        "title": "Getting Started with Profiles",
+        "intro": "Before you can apply for a service, you need the right profile. This guide explains how profiles work in the National Media Authority portal.",
+        "sections": {
+          "whatIsProfile": {
+            "title": "What is a profile?",
+            "content": "A profile represents who you are applying as. Your account can hold profiles in two main categories:",
+            "individual": {
+              "title": "Individual",
+              "description": "For applying as a person, using your personal profile."
+            },
+            "establishment": {
+              "title": "Establishment",
+              "description": "For applying on behalf of a company or organization."
+            }
+          },
+          "establishmentSubtypes": {
+            "title": "Establishment sub-types",
+            "content": "An Establishment profile has a sub-type that reflects your organization, such as Commercial Entity, Government Entity, Advertising/Talent Management Agency, Free Zone, Shipping Company, Embassy, Consulate, or Cultural Club. The available sub-types depend on your organization and are set when the profile is created."
+          },
+          "choosingProfile": {
+            "title": "Choosing the right profile for a service",
+            "content": "Each service defines which profiles may apply for it. A service may be open to Individual profiles, to specific Establishment sub-types, or to more than one profile type. You must apply using a profile that matches the service's requirements."
+          },
+          "multipleProfiles": {
+            "title": "One account, multiple profiles",
+            "content": "A single account can hold one Individual profile and one or more Establishment profiles. When you apply for a service, the application is tied to the profile you select — either your personal profile or one of your registered establishments."
+          },
+          "addOrSwitch": {
+            "title": "Add or switch profiles as needed",
+            "addProfile": "If your account has no profile that meets a service's requirements, add a new profile with the required category or establishment sub-type.",
+            "switchProfile": "If you already have a qualifying profile but it is not the one currently in use, switch to it before applying."
+          },
+          "verification": {
+            "title": "Verification and approval",
+            "content": "A newly created profile must be verified and approved before it can be used. While a profile is still under review, it cannot be used to apply for services. Once approved, the profile is ready and you can start submitting service requests."
+          }
+        },
+        "guidance": "This page is for guidance only. Actual profile creation, switching, and approval follow the portal's profile management and service eligibility rules."
+      },
+      "serviceRequest": {
+        "title": "How to Submit a Service Request",
+        "intro": "Follow these steps to apply for a service in the portal.",
+        "sections": {
+          "signIn": {
+            "title": "Sign in and check your profile",
+            "content": "Log in to your account and make sure you have a verified and approved profile that matches the service you want to apply for. If you don't have one yet, add the required profile first."
+          },
+          "selectService": {
+            "title": "Select the service",
+            "content": "Browse the service list and choose the service you want to apply for."
+          },
+          "confirmProfile": {
+            "title": "Confirm the right profile",
+            "content": "The system checks whether your current profile type is eligible for the selected service. If it isn't, you'll be prompted to add a new profile or switch to a qualifying one before continuing."
+          },
+          "completeApplication": {
+            "title": "Complete the application form",
+            "content": "Fill in the required details and upload any supporting documents the service requires."
+          },
+          "payment": {
+            "title": "Payment",
+            "content": "Some services are free and some are paid. For paid services, the timing of payment depends on the service:",
+            "payFirst": {
+              "title": "Pay first, then review",
+              "description": "For some services you complete the payment when you submit, and the review begins afterwards."
+            },
+            "reviewFirst": {
+              "title": "Review first, then pay",
+              "description": "For other services the application is reviewed first, and payment is only required after it is approved"
+            },
+            "timing": "The portal will guide you on which applies and when payment is due for your selected service."
+          },
+          "submitAndTrack": {
+            "title": "Submit and track",
+            "content": "Once submitted, your application enters the review process. You can follow its status at any time under My Requests."
+          }
+        },
+        "guidance": "This page is for guidance only. The actual application flow, eligibility checks, and payment timing follow each service's own rules."
+      },
+      "refundRequest": {
+        "title": "How to Submit a Refund Request",
+        "intro": "If you are eligible for a refund, you can request it in one of two ways.",
+        "sections": {
+          "paymentsOption": {
+            "title": "Option A — From the Payments page",
+            "signIn": "Sign in and go to the Payments page.",
+            "findPayment": "Find the payment record that is eligible for a refund.",
+            "selectRefund": "Click Refund on that record.",
+            "submit": "Fill in the required details, such as the reason for the refund, and submit."
+          },
+          "refundMenuOption": {
+            "title": "Option B — From the Refund menu",
+            "signIn": "Sign in and open the Refund menu.",
+            "addRequest": "Click Add Refund Request.",
+            "submit": "Enter the required details, such as the payment/reference number and the reason for the refund, then submit."
+          },
+          "track": {
+            "title": "Track your request",
+            "content": "After submitting, your refund request is received and reviewed. You can follow its status at any time on the Refund page. Once approved, the refund is processed according to the original payment method and the applicable refund rules."
+          }
+        },
+        "guidance": "This page is for guidance only. Actual refund eligibility, channels, and timelines follow the applicable refund rules."
+      }
+    }
+  }
+}

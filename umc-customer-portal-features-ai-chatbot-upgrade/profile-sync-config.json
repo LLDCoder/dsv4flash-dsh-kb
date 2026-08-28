@@ -1,0 +1,10 @@
+{
+  "signalr": {
+    "hubUrl": "/chatHub"
+  },
+  "ffAi": {
+    "apiBaseUrl": "/api/platform",
+    "workflowAppId": "a1c9027a-25c3-4aea-9212-7ca94352ec39",
+    "cardAllowedExternalHosts": ["nma.gov.ae", "www.nma.gov.ae"]
+  }
+}

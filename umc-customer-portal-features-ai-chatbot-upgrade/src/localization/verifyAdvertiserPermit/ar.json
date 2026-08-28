@@ -1,0 +1,29 @@
+{
+  "title": "التحقق من تصريح المعلن",
+  "searchBy": "البحث حسب",
+  "accountName": "اسم الحساب",
+  "permitNumber": "رقم التصريح",
+  "platform": "المنصة",
+  "all": "الكل",
+  "enterAccountName": "أدخل اسم حساب التواصل الاجتماعي",
+  "enterPermitNumber": "أدخل رقم التصريح",
+  "search": "بحث",
+  "queryRequired": "يرجى إدخال قيمة للبحث.",
+  "verified": "تم التحقق من التصريح",
+  "accountNotVerified": "لم يتم التحقق من الحساب",
+  "permitNotVerified": "لم يتم التحقق من التصريح",
+  "associatedAccounts": "حسابات التواصل الاجتماعي المرتبطة",
+  "matchedAccounts": "حسابات التواصل الاجتماعي المطابقة",
+  "searchError": "تعذر التحقق من التصريح. يرجى المحاولة مرة أخرى لاحقًا.",
+  "validUntil": "صالح حتى {{date}}",
+  "platforms": {
+    "Facebook": "فيسبوك",
+    "X": "X",
+    "Instagram": "إنستغرام",
+    "YouTube": "يوتيوب",
+    "Snapchat": "سناب شات",
+    "LinkedIn": "لينكد إن",
+    "TikTok": "تيك توك",
+    "Other": "أخرى"
+  }
+}

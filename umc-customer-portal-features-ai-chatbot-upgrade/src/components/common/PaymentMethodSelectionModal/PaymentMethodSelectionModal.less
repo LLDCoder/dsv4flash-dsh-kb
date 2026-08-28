@@ -1,0 +1,293 @@
+.payment-method-selection-modal-root {
+  .payment-method-selection-modal {
+    width: 720px !important;
+    max-width: calc(100vw - 32px);
+
+    .custom-simplebar .simplebar-track.simplebar-vertical {
+      right: 0 !important;
+      left: auto !important;
+    }
+
+    .ant-modal-content {
+      display: flex;
+      flex-direction: column;
+      max-height: 85vh;
+      overflow: hidden;
+      border-radius: 20px;
+    }
+
+    .ant-modal-body {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+      padding: 0;
+    }
+
+    .ant-modal-footer {
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 24px 40px;
+      border-top: 1px solid #e1e3e5;
+    }
+  }
+}
+
+.payment-method-selection-modal__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 32px 40px;
+  border-bottom: 1px solid #e1e3e5;
+}
+
+.payment-method-selection-modal__title {
+  color: #361e12;
+  font-family: Inter;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.payment-method-selection-modal__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #361e12;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.payment-method-selection-modal__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.payment-method-selection-modal__content {
+  min-height: 400px;
+  padding: 32px 40px 40px;
+}
+
+.payment-method-selection-modal__content--single {
+  padding-bottom: 80px;
+}
+
+.payment-method-selection-modal__items {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.payment-method-selection-modal__item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e1e3e5;
+}
+
+.payment-method-selection-modal__item-index {
+  display: inline-flex;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #e1e3e5;
+  color: #361e12;
+  font-family: Roboto;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.payment-method-selection-modal__item-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.payment-method-selection-modal__item-title {
+  color: #361e12;
+  font-family: Inter;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.payment-method-selection-modal__item-reference {
+  margin-top: 4px;
+  color: #797e86;
+  font-family: Inter;
+  font-size: 14px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.payment-method-selection-modal__item-amount,
+.payment-method-selection-modal__amount-row > span:last-child {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  color: #361e12;
+  font-family: Inter;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+.payment-method-selection-modal__amount-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #361e12;
+  font-family: Inter;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.payment-method-selection-modal__amount-row--total {
+  margin-top: 16px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.payment-method-selection-modal__amount-row--total > span:last-child {
+  color: #92722a;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.payment-method-selection-modal__footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 16px;
+
+  // antd v4 ships `.ant-modal-footer .ant-btn + .ant-btn:not(.ant-dropdown-trigger)`
+  // with a higher specificity than our button class, so its 8px margin-left survives
+  // and knocks the stacked buttons out of alignment on small screens. Spacing is
+  // handled by `gap`, so neutralize it (logical props keep RTL correct).
+  .ant-btn + .ant-btn:not(.ant-dropdown-trigger) {
+    margin-inline-start: 0;
+    margin-left: 0;
+  }
+}
+
+.payment-method-selection-modal__footer-button {
+  min-width: 140px;
+}
+
+html[dir="rtl"] .payment-method-selection-modal-root .payment-method-selection-modal .custom-simplebar .simplebar-track.simplebar-vertical {
+  right: auto !important;
+  left: 0 !important;
+}
+
+// Tablet / narrow desktop: the fixed 720px shell no longer fits.
+@media (max-width: 1023px) {
+  .payment-method-selection-modal-root .payment-method-selection-modal {
+    width: calc(100vw - 48px) !important;
+    max-width: calc(100vw - 48px);
+  }
+
+  .payment-method-selection-modal__header {
+    padding: 24px 32px;
+  }
+
+  .payment-method-selection-modal__title {
+    font-size: 22px;
+  }
+
+  .payment-method-selection-modal__content {
+    padding: 24px 32px 32px;
+    min-height: 0;
+  }
+
+  .payment-method-selection-modal__content--single {
+    padding-bottom: 40px;
+  }
+
+  .payment-method-selection-modal-root .payment-method-selection-modal .ant-modal-footer {
+    padding: 20px 32px;
+  }
+}
+
+@media (max-width: 768px) {
+  .payment-method-selection-modal-root .payment-method-selection-modal {
+    width: calc(100vw - 32px) !important;
+    max-width: calc(100vw - 32px);
+    margin: 0 auto;
+
+    .ant-modal-content {
+      max-height: calc(100vh - 32px);
+      border-radius: 16px;
+    }
+  }
+
+  .payment-method-selection-modal__header,
+  .payment-method-selection-modal__content {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+
+  .payment-method-selection-modal__header {
+    gap: 12px;
+    padding-top: 24px;
+    padding-bottom: 24px;
+  }
+
+  .payment-method-selection-modal__title {
+    font-size: 20px;
+  }
+
+  .payment-method-selection-modal__content {
+    padding-top: 24px;
+    padding-bottom: 24px;
+    min-height: 0;
+  }
+
+  .payment-method-selection-modal__content--single {
+    padding-bottom: 24px;
+  }
+
+  .payment-method-selection-modal__item {
+    gap: 12px;
+  }
+
+  .payment-method-selection-modal__item-title,
+  .payment-method-selection-modal__item-amount,
+  .payment-method-selection-modal__amount-row > span:last-child {
+    font-size: 16px;
+  }
+
+  .payment-method-selection-modal__amount-row--total,
+  .payment-method-selection-modal__amount-row--total > span:last-child {
+    font-size: 18px;
+  }
+
+  .payment-method-selection-modal-root .payment-method-selection-modal .ant-modal-footer {
+    padding: 16px 20px;
+  }
+
+  .payment-method-selection-modal__footer-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .payment-method-selection-modal__footer-button {
+    width: 100%;
+    min-width: 0;
+  }
+}

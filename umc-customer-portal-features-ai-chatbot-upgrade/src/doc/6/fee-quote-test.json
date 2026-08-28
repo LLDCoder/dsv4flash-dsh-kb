@@ -1,0 +1,36 @@
+{
+  "serviceId": 6,
+  "status": "failed",
+  "config": {
+    "serviceId": 6,
+    "expectedFeeVersion": "6.1.0",
+    "kind": "service6"
+  },
+  "inputSource": {
+    "type": "mock",
+    "path": "src/doc/6/6mock.json"
+  },
+  "request": {
+    "serviceId": 6,
+    "enginePayload": {
+      "actionType": 1,
+      "expectedFeeVersion": "6.1.0",
+      "request": {
+        "serviceId": 6,
+        "correlationId": "fee-quote-6-1777443671837",
+        "applicant": {
+          "userId": "9210",
+          "userTypeCode": "2",
+          "establishmentId": "14713"
+        },
+        "requestTime": "2026-04-29T06:21:11.837Z"
+      }
+    }
+  },
+  "response": null,
+  "responseMeta": {
+    "status": 401,
+    "statusText": "Unauthorized"
+  },
+  "error": "Fee Quote API failed with HTTP 401 Unauthorized"
+}

@@ -1,0 +1,134 @@
+@import "@/styles/variables.less";
+
+.table-panel {
+  width: 100%;
+  border-radius: 16px;
+  background-color: #fff;
+
+  .stats-row {
+    margin-bottom: 20px;
+    height: 25px;
+    background-color: #f8f7f4;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+
+    .stat-item {
+      padding: 0 16px;
+      flex: 1;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      justify-content: space-between;
+      border-right: 1px solid #e1e3e5;
+
+      &:last-child {
+        border-right: none;
+      }
+
+      .stat-label {
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .stat-count {
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      &.stat-default {
+        span {
+          color: #797e86;
+        }
+      }
+
+      &.stat-success {
+        span {
+          color: #4a9d5c;
+        }
+      }
+
+      &.stat-warning {
+        span {
+          color: #f29f0e;
+        }
+      }
+
+      &.stat-error {
+        span {
+          color: #ea4f49;
+        }
+      }
+
+      &.stat-default {
+        span {
+          color: #797e86;
+        }
+      }
+    }
+  }
+
+  .ant-table {
+    .ant-table-column-sorter-up,
+    .ant-table-column-sorter-down {
+      font-size: 16px;
+    }
+
+    .ant-table-container table > thead > tr:first-child th:first-child {
+      border-top-left-radius: 8px;
+      border-bottom-left-radius: 8px;
+    }
+
+    .ant-table-container table > thead > tr:last-child th:last-child {
+      border-top-right-radius: 8px;
+      border-bottom-right-radius: 8px;
+    }
+  }
+}
+
+.table-panel-body {
+  margin-top: 8px;
+  overflow-x: auto;
+}
+
+.table-panel-body .ant-table {
+  background-color: transparent;
+}
+
+.table-panel-body .ant-table-thead > tr > th {
+  background-color: #fdf6eb;
+  border-bottom: none;
+  font-weight: 500;
+  .ant-table-column-sorters {
+    justify-content: flex-start;
+  }
+  .ant-table-column-sorter {
+    margin-left: 4px;
+    margin-right: 0;
+  }
+  .ant-table-column-title {
+    margin-right: 4px;
+    flex: none;
+  }
+}
+
+.table-panel-body .ant-table-tbody > tr > td {
+  border-bottom: 1px solid #f0f0f0;
+}
+.ant-table-empty .ant-table-tbody > tr > td {
+  border-bottom: none !important;
+}
+
+.table-panel-body .ant-table-tbody > tr:hover > td {
+  background-color: #fffaf0;
+}
+
+.table-panel__pagination-total {
+  align-items: center;
+  column-gap: 24px;
+  display: flex;
+}
+
+.table-panel__pagination-total-count {
+  white-space: nowrap;
+}

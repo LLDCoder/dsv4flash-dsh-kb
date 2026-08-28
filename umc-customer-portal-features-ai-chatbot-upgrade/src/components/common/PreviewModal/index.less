@@ -1,0 +1,29 @@
+.pdf-preview-modal--fullscreen {
+  position: absolute;
+  width: 100vw !important;
+  height: 100vh !important;
+  background-color: #fff;
+  top: 0 !important;
+  left: 0 !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+
+  .ant-modal-content {
+    height: 100% !important;
+    border-radius: 0 !important;
+  }
+
+  .ant-modal-header,
+  .ant-modal-body {
+    border-radius: 0 !important;
+  }
+
+  .ant-modal-body {
+    height: calc(100% - 64px) !important;
+  }
+
+  .pdf-preview-modal__scroll-container {
+    max-height: calc(100vh - 96px);
+  }
+}

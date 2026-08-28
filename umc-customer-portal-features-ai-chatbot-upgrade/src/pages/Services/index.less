@@ -1,0 +1,540 @@
+@import '@/styles/variables.less';
+
+.services-container {
+  // min-height: 100vh;
+
+  .breadcrumb-section {
+    margin-bottom: 16px;
+
+    .ant-breadcrumb {
+      font-size: 14px;
+
+      a {
+        color: @text-color-secondary;
+        
+        &:hover {
+          color: @primary-color;
+        }
+      }
+
+      .ant-breadcrumb-separator {
+        color: @text-color-secondary;
+      }
+
+      li:last-child {
+        color: @text-color;
+        font-weight: 500;
+      }
+    }
+  }
+
+  .page-title {
+    font-size: 48px;
+    font-weight: 700;
+    color: #FFFFFF;
+    margin: 0 0 32px 0;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  .services-content {
+    background: #FFFFFF;
+    border-radius: 20px;
+    padding: 24px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+
+    .category-tabs {
+      margin-bottom: 0;
+
+      .ant-tabs-nav {
+        margin-bottom: 0;
+
+        &::before {
+          border-bottom: 2px solid #F0F0F0;
+        }
+      }
+
+      .ant-tabs-tab + .ant-tabs-tab{
+        margin: 0 0 0 24px;
+      }
+      .ant-tabs-tab {
+        font-size: 18px;
+        font-weight: 500;
+        padding: 16px 0px;
+        height: 55px;
+        color: @text-color-secondary;
+
+        &:hover {
+          color: @primary-color;
+        }
+
+        &.ant-tabs-tab-active {
+          .ant-tabs-tab-btn {
+            color: @primary-color;
+            font-weight: 600;
+          }
+        }
+      }
+
+      .ant-tabs-ink-bar {
+        background: @primary-color;
+        height: 3px;
+      }
+    }
+
+    .services-category-tabs {
+      padding-bottom: 12px;
+      margin-bottom: 8px;
+    }
+
+    .services-category-tabs .simplebar-content-wrapper {
+      overflow-y: hidden !important;
+    }
+
+    .services-category-tabs__content {
+      min-width: 100%;
+    }
+
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 30px;
+      height: 48px;
+      // Keep natural widths so useFilterOverflow can measure how wide the
+      // full layout wants to be; only the search may squeeze, down to its
+      // design floor.
+      &:not(.filter-bar--compact) > * {
+        flex-shrink: 0;
+      }
+      &:not(.filter-bar--compact) > .search-input {
+        flex-shrink: 1;
+        min-width: 260px;
+      }
+      .ant-select-selector{
+        height: 100%;
+      }
+      .ant-select-clear {
+        right: 24px;
+      }
+      .services-user-type-select {
+        width: 330px;
+        height: 48px;
+
+        .ant-select-selector {
+          align-items: center;
+          // border-color: #c9a961;
+          border-radius: 10px !important;
+          padding-inline: 12px 44px;
+        }
+
+        .ant-select-selection-overflow {
+          flex-wrap: nowrap;
+          overflow: hidden;
+        }
+
+        .ant-select-selection-overflow-item {
+          flex: none;
+          max-width: 100%;
+        }
+
+        .ant-select-selection-item {
+          height: 28px;
+          margin-block: 0;
+          padding-inline: 8px 22px;
+          background: #f7f7f7;
+          border: 0;
+          border-radius: 3px;
+          line-height: 28px;
+        }
+
+        .ant-select-selection-item-content {
+          max-width: 110px;
+        }
+
+        .ant-select-selection-item-remove {
+          inset-inline-end: 6px;
+          color: #9ea2a9;
+        }
+
+        .ant-select-arrow,
+        .ant-select-clear {
+          right: unset;
+          inset-inline-end: 16px;
+          color: #361e12;
+        }
+
+        &.ant-select-open .ant-select-selector,
+        &.ant-select-focused .ant-select-selector {
+          border-color: #92722a !important;
+        }
+      }
+      .search-input {
+        width: 320px;
+        height: 48px;
+        border-radius: 24px;
+        border: 1px solid #E8E8E8;
+        padding: 0 20px;
+
+        .ant-input {
+          font-size: 14px;
+        }
+
+        .anticon-search {
+          color: @text-color-secondary;
+          font-size: 16px;
+        }
+
+        &:hover,
+        &:focus,
+        &.ant-input-affix-wrapper-focused {
+          border-color: @primary-color;
+          box-shadow: 0 0 0 2px rgba(146, 114, 42, 0.1);
+        }
+      }
+
+      .filter-buttons {
+        display: flex;
+        height: 48px;
+        gap: 16px;
+        .featured-btn{
+          background: #fff !important;
+          border: 1px solid #92722a !important;
+          color: #92722a !important;
+
+          &:hover,
+          &:focus,
+          &:active {
+            background: #fff !important;
+            border-color: #92722a !important;
+            color: #92722a !important;
+          }
+        }
+        .featured_active, .favorite_active{
+          background: rgba(242, 236, 207, 1) !important;
+          border-color: #92722a !important;
+          color: #92722a !important;
+
+          &:hover,
+          &:focus,
+          &:active {
+            background: rgba(242, 236, 207, 1) !important;
+            border-color: #92722a !important;
+            color: #92722a !important;
+          }
+        }
+        .filter-btn {
+          height: 48px;
+          padding: 0 20px;
+          border-radius: 20px;
+          border: 1px solid #E8E8E8;
+          background: #FFFFFF;
+          color: @text-color;
+          font-weight: 500;
+          transition: all 0.3s;
+
+          &:hover {
+            border-color: @primary-color;
+            color: @primary-color;
+          }
+
+          &.active {
+            background: @primary-color;
+            border-color: @primary-color;
+            color: #FFFFFF;
+          }
+
+          .anticon {
+            font-size: 14px;
+          }
+        }
+      }
+    }
+
+    .services-results {
+      position: relative;
+    }
+
+    .empty-box-wrapper {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 400px;
+      padding: 40px 0;
+    }
+
+    .loading-wrapper {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 400px;
+      padding: 40px 0;
+
+      .loading-spinner {
+        font-size: 16px;
+        color: @text-color-secondary;
+      }
+    }
+
+    .services-loading-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      background: transparent;
+      border-radius: 16px;
+    }
+
+    .services-grid {
+      display: grid;
+      // Design: cards never go below 306px wide. Each column is at least
+      // 1/3 of the row (32px = 2 gaps), so wide screens cap at 3 columns;
+      // once a third of the row drops under 306px the grid reflows to
+      // 2 columns, then 1, instead of shrinking the cards.
+      grid-template-columns: ~"repeat(auto-fill, minmax(max(306px, calc((100% - 32px) / 3)), 1fr))";
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .service-card-motion-item {
+      min-width: 0;
+      height: 100%;
+    }
+
+    .pagination-wrapper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding-top: 20px;
+
+      .ant-pagination {
+        .ant-pagination-item {
+          border-radius: 8px;
+          border: 1px solid #E8E8E8;
+          
+          &:hover {
+            border-color: @primary-color;
+            
+            a {
+              color: @primary-color;
+            }
+          }
+
+          &.ant-pagination-item-active {
+            background:#EEE3CC;
+            
+            a {
+              color: #92722A;
+            }
+          }
+        }
+
+        .ant-pagination-prev,
+        .ant-pagination-next {
+          .ant-pagination-item-link {
+            border-radius: 8px;
+            border: 1px solid #E8E8E8;
+
+            &:hover {
+              border-color: @primary-color;
+              color: @primary-color;
+            }
+          }
+        }
+
+        .ant-pagination-total-text {
+          color: @text-color-secondary;
+          font-size: 14px;
+        }
+
+        .services-page-total-wrapper {
+          display: flex;
+          align-items: center;
+          gap: 16px;
+        }
+
+        .services-page-total {
+          color: @text-color;
+        }
+      }
+    }
+  }
+}
+
+.services-user-type-tag-wrapper {
+  display: inline-flex;
+  max-width: 100%;
+  margin-inline-end: 4px;
+
+  .services-user-type-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    margin: 0;
+    color: #21252e;
+    border: 0;
+    background: transparent;
+
+    > span:not(.ant-checkbox-wrapper) {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+
+  .services-user-type-tag-checkbox.ant-checkbox-wrapper-disabled {
+    cursor: default;
+  }
+
+  .services-user-type-tag-checkbox {
+    pointer-events: none;
+
+    .ant-checkbox-disabled.ant-checkbox-checked .ant-checkbox-inner {
+      background-color: #92722a;
+      border-color: #92722a !important;
+    }
+
+    .ant-checkbox-disabled.ant-checkbox-checked .ant-checkbox-inner::after {
+      border-color: #ffffff;
+    }
+  }
+}
+
+.services-user-type-dropdown {
+  padding-block: 0;
+  border-radius: 4px;
+
+  .services-user-type-dropdown-search {
+    padding: 12px;
+    border-bottom: 1px solid #f0f0f0;
+
+    .ant-input-affix-wrapper {
+      height: 40px;
+      border-radius: 6px;
+    }
+
+    .anticon-search {
+      color: #9ea2a9;
+    }
+  }
+
+  .services-user-type-select-all {
+    display: flex;
+    align-items: center;
+    min-height: 40px;
+    padding-inline: 12px;
+    border-bottom: 1px solid #f0f0f0;
+
+    .ant-checkbox-wrapper:hover .ant-checkbox-inner,
+    .ant-checkbox:hover .ant-checkbox-inner,
+    .ant-checkbox-input:focus + .ant-checkbox-inner {
+      border-color: #92722a;
+    }
+
+    .ant-checkbox-indeterminate .ant-checkbox-inner,
+    .ant-checkbox-checked .ant-checkbox-inner {
+      background-color: #92722a;
+      border-color: #92722a;
+    }
+
+    .ant-checkbox-indeterminate .ant-checkbox-inner::after {
+      background-color: #ffffff;
+    }
+  }
+
+  .ant-select-item-option {
+    min-height: 40px;
+    padding-inline: 12px;
+  }
+
+  .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+    font-weight: 600;
+    background-color: #f8f4eb;
+  }
+
+  .ant-select-item-option-active:not(.ant-select-item-option-disabled) {
+    .services-user-type-option-checkbox .ant-checkbox-inner {
+      border-color: #92722a !important;
+    }
+  }
+
+  .ant-select-item-option-state {
+    color: #c9a961;
+  }
+
+  .services-user-type-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .services-user-type-option-checkbox {
+    flex: 0 0 auto;
+    pointer-events: none;
+
+    .ant-checkbox-inner {
+      background-color: #ffffff;
+      border-color: #c3c6cb !important;
+    }
+
+    .ant-checkbox-checked .ant-checkbox-inner {
+      background-color: #92722a;
+      border-color: #92722a !important;
+    }
+
+    .ant-checkbox-checked .ant-checkbox-inner::after {
+      border-color: #ffffff;
+    }
+  }
+
+  .services-user-type-option-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 1023px) {
+  .services-container {
+    .services-content {
+      .filter-bar {
+        flex-wrap: nowrap;
+        height: 48px;
+        .search-input {
+          flex: 1;
+          width: 0;
+          min-width: 0;
+        }
+        // Full layout may still squeeze here, but only down to the search's
+        // design floor so useFilterOverflow can see when it stops fitting;
+        // the compact search above may shrink freely.
+        &:not(.filter-bar--compact) .search-input {
+          flex: 1 1 260px;
+          min-width: 260px;
+        }
+      }
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .services-container {
+    .services-content {
+      padding: 16px;
+    }
+  }
+}
+
+// Below ~338px viewport even a single 306px column can't fit; let the
+// lone card take the full row instead of overflowing.
+@media (max-width: 360px) {
+  .services-container {
+    .services-content {
+      .services-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  }
+}

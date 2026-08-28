@@ -1,0 +1,126 @@
+.identity-ocr-modal-root {
+  .identity-ocr-modal__scene--entry {
+    padding: 0 40px 52px 52px;
+  }
+
+  .identity-ocr-modal__intro {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+
+  .identity-ocr-modal__document-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    margin-top: 32px;
+  }
+
+  .identity-ocr-modal__document-preview-image {
+    display: block;
+    width: 270px;
+    max-width: 100%;
+    aspect-ratio: 270 / 176;
+    height: auto;
+    object-fit: contain;
+  }
+
+  .identity-ocr-modal__actions--entry {
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    margin-top: 32px;
+  }
+
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button {
+    width: 100%;
+    max-width: 270px;
+  }
+
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--outline {
+    background: #ffffff;
+    border-color: #92722a;
+    color: #92722a;
+  }
+
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--outline:hover:not(:disabled),
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--outline:focus:not(:disabled),
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--outline:focus-visible:not(:disabled) {
+    background: #ffffff;
+    border-color: #92722a;
+    color: #92722a !important;
+  }
+
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--outline.ant-btn[disabled],
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--outline.ant-btn[disabled]:hover,
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--outline.ant-btn[disabled]:focus {
+    background: #ffffff;
+    border-color: #92722a;
+    color: #92722a;
+  }
+
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--primary {
+    background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+    border: none;
+    color: #ffffff;
+  }
+
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--primary:hover:not(:disabled),
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--primary:focus:not(:disabled),
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--primary:focus-visible:not(:disabled) {
+    background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+    border: none;
+    color: #ffffff !important;
+  }
+
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--primary.ant-btn[disabled],
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--primary.ant-btn[disabled]:hover,
+  .identity-ocr-modal__actions--entry .identity-ocr-modal__action-button--primary.ant-btn[disabled]:focus {
+    background: linear-gradient(90deg, #9e7538 0%, #c19453 100%);
+    border: none;
+    color: #ffffff;
+  }
+
+  .identity-ocr-modal__divider {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    color: #6b7280;
+    font-size: 16px;
+    line-height: 24px;
+  }
+
+  .identity-ocr-modal__divider::before,
+  .identity-ocr-modal__divider::after {
+    flex: 1 1 auto;
+    height: 1px;
+    background: #d9dee8;
+    content: "";
+  }
+
+  .identity-ocr-modal__footer-note {
+    color: #8c93a1;
+    font-size: 14px;
+    line-height: 22px;
+    text-align: center;
+  }
+}
+
+@media (max-width: 1023px) {
+  .identity-ocr-modal-root {
+    .identity-ocr-modal__scene--entry {
+      padding: 0 36px 28px 36px;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .identity-ocr-modal-root {
+    .identity-ocr-modal__scene--entry {
+      padding: 0 32px 20px 20px 20px;
+    }
+  }
+}

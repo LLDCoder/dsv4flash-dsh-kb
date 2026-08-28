@@ -1,0 +1,84 @@
+{
+  "serviceId": 13,
+  "status": "failed",
+  "inputSource": {
+    "type": "mockData",
+    "path": "src/pages/MediaLicense/mockData/13mock.json"
+  },
+  "request": {
+    "serviceId": 13,
+    "enginePayload": {
+      "actionType": 1,
+      "request": {
+        "serviceId": 13,
+        "applicant": {
+          "userId": "9210",
+          "userTypeCode": "2",
+          "establishmentId": "9210"
+        },
+        "form": {
+          "purpose": "Purpose Of Entries",
+          "arrivalDate": "2026-07-31T00:00:00",
+          "emirateId": 7,
+          "portId": 3,
+          "requestUrl": "2026/04/14/1238227175/Test.pdf",
+          "purposeUrl": "2026/04/14/1238237527/Test.pdf",
+          "termsAccepted": true,
+          "equipments": [
+            {
+              "photoEquipmentId": 1,
+              "photoEquipmentNameEn": "Camera",
+              "number": 12
+            },
+            {
+              "photoEquipmentId": 2,
+              "photoEquipmentNameEn": "Tripod",
+              "number": 22
+            },
+            {
+              "photoEquipmentId": 12,
+              "photoEquipmentNameEn": "Other",
+              "otherText": "sdfs",
+              "number": 12
+            }
+          ],
+          "members": [
+            {
+              "person": {
+                "emiratesId": "784-1231-2312312-3",
+                "name": "Rajesh Kumar",
+                "title": "Network Technician",
+                "countryId": 95,
+                "photoUrl": "2026/04/14/1238490978/Logo.png"
+              }
+            }
+          ]
+        },
+        "submissionMode": "submit",
+        "requestTime": "2026-04-29T06:17:15.990Z"
+      }
+    }
+  },
+  "response": {
+    "isSuccess": false,
+    "statusCode": 500,
+    "message": "External policy service error",
+    "data": {
+      "type": "https://businessrulevalidation.dev/problems/external-policy-error",
+      "detail": null,
+      "traceId": "0HNL5A6SMS325:00000005",
+      "extensions": {
+        "isSuccess": false,
+        "statusCode": 500,
+        "message": "Invalid object name 'EngineFactDebug.Service13PortCatalog'.",
+        "data": null,
+        "traceId": "0HNL5A6SMS325:00000005"
+      }
+    }
+  },
+  "responseMeta": {
+    "status": 500,
+    "statusText": "Internal Server Error"
+  },
+  "error": "External policy service error"
+}

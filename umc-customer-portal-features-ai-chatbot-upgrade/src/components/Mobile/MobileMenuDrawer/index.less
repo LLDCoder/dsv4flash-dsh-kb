@@ -1,0 +1,149 @@
+
+
+.mobile-menu-drawer{
+    width: 100vw;
+    height: 100vh;
+    .ant-drawer-header{
+        display: none;
+    }
+    .ant-drawer-content-wrapper{
+        height: 100% !important;
+    }
+    .ant-drawer-body{
+        padding: 0;
+    }
+    .mobile-menu-drawer-content{
+        width: 100%;
+        height: 100%;
+        background: #0d0a04 url(/src/assets/images/mobile-menu-bg.png) no-repeat center top;
+        background-size: cover;
+        overflow-y: scroll;
+        .mobile-menu-drawer-header{
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            .mobile-menu-drawer-header-logo{
+                width: 176px;
+            }
+            .mobile-menu-drawer-header-close{
+                width: 26px;
+                height: 26px;
+            }
+        }
+        .mobile-menu-drawer-body{
+            .mobile-menu-drawer-list{
+                padding: 0;
+                .mobile-menu-drawer-li{
+                    width: 100%;
+                    height: 64px;
+                    display: flex;
+                    align-items: center;
+                    column-gap: 12px;
+                    padding: 0 20px;
+                    position: relative;
+                    .mobile-menu-drawer-li-icon{
+                        font-size: 0;
+                        svg{
+                            font-size: 28px;
+                            color: #9EA2A9;
+                        }
+                    }
+                    .mobile-menu-drawer-li-title{
+                        color: #9EA2A9;
+                        font-size: 18px;
+                        line-height: 22px;
+                    }
+                }
+                > a + a .mobile-menu-drawer-li::before{
+                    content: "";
+                    position: absolute;
+                    inset-inline: 16px;
+                    top: 0;
+                    height: 1px;
+                    background-color: #f2eccf14;
+                }
+                .mobile-menu-drawer-li-active{
+                    column-gap: 8px;
+                    .mobile-menu-drawer-li-icon{
+                        svg{
+                            color: #9E7538;
+                        }
+                    }
+                    .mobile-menu-drawer-li-title{
+                        color: #CBA344;
+                    }
+                }
+            }
+            .mobile-menu-drawer-user{
+                padding: 0 8px;
+                position: relative;
+                .mobile-menu-drawer-user-item{
+                    display: flex;
+                    align-items: center;
+                    column-gap: 12px;
+                    height: 44px;
+                    width: 230px;
+                    padding: 0 16px;
+                    .mobile-menu-drawer-user-icon{
+                        width: 24px;
+                        height: 24px;
+                    }
+                    .mobile-menu-drawer-user-text{
+                        color: #9EA2A9;
+                    }
+                }
+                &::before,
+                &::after{
+                    content: "";
+                    position: absolute;
+                    inset-inline: 16px;
+                    height: 1px;
+                    background-color: #f2eccf14;
+                }
+                &::before{
+                    top: 0;
+                }
+                &::after{
+                    bottom: 0;
+                }
+            }
+        }
+        .mobile-menu-drawer-footer{
+            padding: 0 16px;
+            margin-top: 24px;
+            padding-bottom: 38px;
+            .mobile-menu-drawer-footer-btns{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                border: 1px solid #F2ECCF1A;
+                padding: 2px;
+                height: 36px;
+                border-radius: 40px;
+                .mobile-menu-drawer-footer-btn{
+                    width: 50%;
+                    height: 100%;
+                    border-radius: 40px;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    color: #E6D7A2;
+                    column-gap: 8px;
+                }
+                .mobile-menu-drawer-footer-btn-active{
+                    background: linear-gradient(90deg, #9E7538 0%, #C19453 100%);
+                    color: #fff;
+                }
+            }
+        }
+    }
+}
+
+html[dir="rtl"] .mobile-menu-drawer {
+    .mobile-menu-drawer-li-icon svg,
+    .mobile-menu-drawer-user-icon img {
+        transform: scaleX(-1);
+        transform-origin: center;
+    }
+}

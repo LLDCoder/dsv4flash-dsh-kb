@@ -1,0 +1,438 @@
+@import "@/styles/variables.less";
+
+// Refund "Add Request" modal — shared by the Refund list, Payments and TransactionDetail.
+// Desktop design width is 960px; it narrows through the 1279 / 1023 / 768 / 480 ladder.
+// Every rule stays scoped under `.service-modal` so the modal never leaks styles
+// (`.warn-box`, `.file-list`, `.upload-input`, `.upload-tip`) into the rest of the app.
+.service-modal {
+    .ant-modal {
+        width: 960px !important;
+        max-width: calc(100vw - 32px);
+    }
+
+    .ant-modal-content {
+        border-radius: 20px;
+        // The modal is `centered`; cap its height and let the body scroll so short
+        // viewports (laptops, landscape phones) never push the footer off screen.
+        display: flex;
+        flex-direction: column;
+        max-height: calc(100vh - 48px);
+        overflow: hidden;
+
+        .ant-modal-header {
+            border-radius: 20px 20px 0 0;
+            flex: 0 0 auto;
+            padding: 32px 40px;
+            .ant-modal-title {
+                font-size: 32px;
+                font-weight: 700;
+                line-height: 40px;
+                color: @text-color;
+                // Keep long titles clear of the absolutely positioned close button.
+                padding-inline-end: 56px;
+            }
+        }
+
+        // antd v4 pins the close button to `top: 0; right: 0` with a fixed 54x54 box, so its
+        // center never follows the header padding / title line-height, and the gap grows as the
+        // breakpoints shrink them. Re-anchor it on the header padding and center it on the
+        // title's line box instead. `inset-inline-end` keeps it correct in the Arabic (RTL) layout.
+        .ant-modal-close {
+            top: 32px;
+            right: auto;
+            left: auto;
+            inset-inline-end: 40px;
+            width: 40px;
+            height: 40px;
+
+            .ant-modal-close-x {
+                width: 40px;
+                height: 40px;
+                line-height: 40px;
+                font-size: 18px;
+                // App.less ships a global `.ant-modal-close-x` margin (40px inline-end /
+                // 35.5px top). It stacks on top of the positioning above and pushes the
+                // icon further off-center the smaller the header padding gets.
+                margin: 0;
+            }
+        }
+
+        .ant-modal-body {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 0 0 32px;
+        }
+
+        .ant-modal-footer {
+            flex: 0 0 auto;
+            padding: 24px 40px;
+            border-top: 1px solid #e1e3e5;
+        }
+    }
+
+    .warn-box {
+        background-color: #fffbeb;
+        border-radius: 8px;
+        padding: 16px 40px;
+        display: flex;
+        align-items: flex-start;
+        img {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .warn-content {
+            margin-inline-start: 8px;
+            min-width: 0;
+            h2 {
+                color: #b2550b;
+                font-weight: 700;
+                font-size: 16px;
+            }
+            .warn-text {
+                font-size: 14px;
+                color: #d67909;
+            }
+        }
+    }
+
+    .form-box {
+        padding: 24px 40px 0;
+        .bottom-border-box > .ant-row .ant-form-item {
+            margin-bottom: 0;
+        }
+        .notes-item {
+            margin-bottom: 0;
+        }
+        .area-count {
+            text-align: end;
+            font-size: 12px;
+            color: #797e86;
+            margin-top: 8px;
+        }
+        .tips {
+            font-size: 12px;
+            font-weight: 400;
+            color: #797e86;
+        }
+        .ant-upload {
+            width: 100%;
+        }
+        .custom-radio {
+            box-shadow: @primary-color;
+            .ant-radio-inner {
+                border-color: @primary-color;
+                &::after {
+                    background-color: @primary-color;
+                }
+            }
+        }
+        .ant-radio-group {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px 0;
+        }
+        .custorm-form .ant-select-single {
+            min-height: 54px;
+        }
+        .no-bottom {
+            margin-bottom: 0;
+        }
+        .bottom-border-box {
+            display: flex;
+            flex-direction: column;
+            row-gap: 24px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid #e1e3e5;
+            margin-bottom: 24px;
+        }
+        .form-columns {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            column-gap: 16px;
+
+            .form-column {
+                min-width: 0;
+                display: flex;
+                flex-direction: column;
+                row-gap: 24px;
+            }
+
+            .ant-form-item {
+                margin-bottom: 0;
+            }
+        }
+        // Fields and their AntD controls must shrink with the modal, never overflow it.
+        .ant-col {
+            min-width: 0;
+        }
+        .ant-select,
+        .ant-input,
+        .ant-input-affix-wrapper,
+        textarea.ant-input {
+            width: 100%;
+        }
+        .file-list .file-item,
+        .file-single .file-item {
+            width: 100%;
+        }
+    }
+
+    .select-icon {
+        margin-top: 16px;
+    }
+
+    .refund-add-modal__footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+    }
+    .refund-add-modal__amount {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+    .refund-add-modal__amount-label {
+        color: #5f646d;
+        font-family: Inter;
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 20px;
+    }
+    .refund-add-modal__amount-field-label {
+        align-items: center;
+        color: @text-color;
+        display: inline-flex;
+        font-family: Inter;
+        font-size: 14px;
+        font-weight: 500;
+        gap: 4px;
+        line-height: 20px;
+    }
+    .refund-add-modal__amount-field-currency {
+        align-items: center;
+        display: inline-flex;
+        gap: 1px;
+    }
+    .refund-add-modal__amount-field-currency svg {
+        color: currentColor;
+        height: 11px;
+        width: 12px;
+    }
+    .refund-add-modal__amount-value {
+        display: inline-flex;
+        align-items: center;
+        gap: 1px;
+        color: #92722a;
+        font-family: Inter;
+        font-size: 20px;
+        font-weight: 600;
+        line-height: 24px;
+        .refund-add-modal__amount-icon {
+            display: inline-flex;
+        }
+        .refund-add-modal__amount-icon svg {
+            width: 17px;
+            height: 15px;
+        }
+    }
+    .refund-add-modal__footer-actions {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-inline-start: auto;
+    }
+}
+
+// Narrow desktop: shrink the horizontal chrome, keep the two-column form.
+@media (max-width: 1279px) {
+    .service-modal {
+        .ant-modal {
+            max-width: calc(100vw - 48px);
+        }
+
+        .ant-modal-content .ant-modal-header {
+            padding: 28px 32px;
+
+            .ant-modal-title {
+                font-size: 28px;
+                line-height: 36px;
+                padding-inline-end: 48px;
+            }
+        }
+
+        // Match the close box to the title's line box so both share a center line.
+        .ant-modal-content .ant-modal-close {
+            top: 28px;
+            inset-inline-end: 32px;
+            width: 36px;
+            height: 36px;
+
+            .ant-modal-close-x {
+                width: 36px;
+                height: 36px;
+                line-height: 36px;
+            }
+        }
+
+        .ant-modal-content .ant-modal-footer {
+            padding: 24px 32px;
+        }
+
+        .warn-box {
+            padding: 16px 32px;
+        }
+
+        .form-box {
+            padding: 24px 32px 0;
+        }
+    }
+}
+
+// Tablet: the form stacks to a single column.
+@media (max-width: 1023px) {
+    .service-modal {
+        .ant-modal-content .ant-modal-header .ant-modal-title {
+            font-size: 24px;
+            line-height: 32px;
+            padding-inline-end: 44px;
+        }
+
+        .ant-modal-content .ant-modal-close {
+            width: 32px;
+            height: 32px;
+
+            .ant-modal-close-x {
+                width: 32px;
+                height: 32px;
+                line-height: 32px;
+            }
+        }
+
+        .form-box {
+            .form-columns {
+                grid-template-columns: minmax(0, 1fr);
+                row-gap: 24px;
+            }
+
+            // Row children stack, so they need their own vertical rhythm back.
+            .ant-col-12 {
+                flex: 0 0 100%;
+                max-width: 100%;
+                width: 100%;
+            }
+
+            .bottom-border-box > .ant-row > .ant-col-12:not(:last-child) .ant-form-item {
+                margin-bottom: 24px;
+            }
+        }
+    }
+}
+
+// Mobile.
+@media (max-width: 768px) {
+    .service-modal {
+        .ant-modal {
+            max-width: calc(100vw - 32px);
+            width: calc(100vw - 32px) !important;
+        }
+
+        .ant-modal-content {
+            max-height: calc(100vh - 32px);
+        }
+
+        .ant-modal-content .ant-modal-header {
+            padding: 20px;
+
+            .ant-modal-title {
+                font-size: 20px;
+                line-height: 28px;
+                padding-inline-end: 36px;
+            }
+        }
+
+        .ant-modal-content .ant-modal-close {
+            top: 20px;
+            inset-inline-end: 20px;
+            width: 28px;
+            height: 28px;
+
+            .ant-modal-close-x {
+                width: 28px;
+                height: 28px;
+                line-height: 28px;
+                font-size: 16px;
+            }
+        }
+
+        .ant-modal-content .ant-modal-body {
+            padding-bottom: 16px;
+        }
+
+        .ant-modal-content .ant-modal-footer {
+            padding: 20px;
+        }
+
+        .warn-box {
+            padding: 16px 20px;
+        }
+
+        .form-box {
+            padding: 20px 20px 0;
+        }
+
+        .refund-add-modal__footer {
+            align-items: flex-end;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .refund-add-modal__amount {
+            width: 100%;
+        }
+
+        .refund-add-modal__footer-actions {
+            width: 100%;
+            flex: 1;
+            gap: 8px;
+            margin-inline-start: 0;
+            // Same antd v4 footer sibling-margin override: `gap` already spaces these.
+            .ant-btn + .ant-btn:not(.ant-dropdown-trigger) {
+                margin-inline-start: 0;
+                margin-left: 0;
+            }
+            .custom-button {
+                flex: 1;
+                min-width: 0;
+            }
+        }
+    }
+}
+
+// Small phones: the radio pair and the footer amount get their own rows.
+@media (max-width: 480px) {
+    .service-modal {
+        .form-box .ant-radio-group {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 12px;
+
+            .custom-radio {
+                margin-inline-end: 0;
+            }
+        }
+
+        .refund-add-modal__amount-value {
+            font-size: 18px;
+        }
+    }
+}
+
+.custorm-form.ant-form .ant-form-item .ant-form-item-label {
+    min-height: 0;
+}

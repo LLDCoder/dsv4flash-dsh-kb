@@ -1,0 +1,44 @@
+{
+  "layoutContent": {
+    "greeting": "Welcome back, {{name}}",
+    "firstLoginPrompt": "Ready to begin? Start your application now!",
+    "pendingActions": "You've got <highlight>{{count}} pending actions</highlight> to complete!",
+    "allSet": "You're all set, <highlight>no actions required!</highlight>"
+  },
+  "header": {
+    "menu": {
+      "profile": "Profile",
+      "myAccount": "My Account",
+      "accessibility": "Accessibility",
+      "logOut": "Log Out"
+    },
+    "search": {
+      "minLengthHint": "Minimum 3 characters required"
+    },
+    "aria": {
+      "logo": "Logo",
+      "avatar": "User avatar",
+      "profileMenu": "Profile",
+      "accessibilityMenu": "Accessibility",
+      "logOutMenu": "Log out"
+    }
+  },
+  "footer": {
+    "links": {
+      "faqs": "FAQs",
+      "privacyPolicy": "Privacy Policy",
+      "termsAndConditions": "Terms and Conditions",
+      "customerHappiness": "Customer Happiness",
+      "accessibility": "Accessibility"
+    },
+    "copyright": "Copyright © {{year}} {{organization}}",
+    "organization": "National Media Authority",
+    "social": {
+      "facebook": "Facebook",
+      "instagram": "Instagram",
+      "linkedin": "LinkedIn",
+      "twitter": "X",
+      "youtube": "YouTube"
+    }
+  }
+}
