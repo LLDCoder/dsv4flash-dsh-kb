@@ -10,12 +10,13 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Requ
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from .config import config_catalog, get_settings
 from .customer_documents import CustomerDocumentNotConfigured
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
-from .schemas import ConfigPatch, ConversationCreate, MessageCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
+from .schemas import ConfigPatch, ConversationCreate, MessageCreate, SkillCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
 from .umc_auth import UMCAuthError
@@ -138,6 +139,10 @@ def make_router(service: DSHService) -> APIRouter:
                     data = event.get("data") or {}
                     if event_type == "assistant.chunk":
                         yield f"event: token\ndata: {data.get('content', '')}\n\n"
+                    elif event_type == "assistant.status":
+                        # Additive, safe progress event for SSE clients. It
+                        # contains no prompts, tool arguments, or raw reasoning.
+                        yield f"event: status\ndata: {json.dumps({'phase': data.get('phase'), 'state': data.get('state'), 'message': data.get('message')}, ensure_ascii=False)}\n\n"
                     elif event_type == "runtime.error":
                         yield f"event: error\ndata: {json.dumps({'detail': data.get('error', 'runtime error')}, ensure_ascii=False)}\n\n"
                         yield "event: end\ndata: [DONE]\n\n"
@@ -435,6 +440,21 @@ def make_router(service: DSHService) -> APIRouter:
             query = query.where(Skill.scope == scope)
         result = await db.execute(query)
         return {"items": [{"skillId": item.skill_id, "name": item.name, "version": item.version, "source": item.source, "status": item.status, "scope": item.scope, "enabled": item.enabled, "allowedTools": item.allowed_tools, "dependencies": item.dependencies, "content": item.content, "updatedBy": item.updated_by} for item in result.scalars().all()]}
+
+    @router.post("/skills", status_code=201)
+    async def create_skill(payload: SkillCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+        result = await db.execute(select(Skill).where(Skill.skill_id == payload.skill_id, Skill.version == payload.version))
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail=f"skill {payload.skill_id} v{payload.version} already exists")
+        values = payload.model_dump(exclude={"skill_id"})
+        item = Skill(skill_id=payload.skill_id, updated_by=principal.user_id, **values)
+        db.add(item)
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail=f"skill {payload.skill_id} v{payload.version} already exists") from exc
+        return {"skillId": item.skill_id, "version": item.version, "status": item.status, "enabled": item.enabled}
 
     @router.put("/skills/{skill_id}")
     async def upsert_skill(skill_id: str, payload: SkillUpsert, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):

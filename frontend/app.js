@@ -1,4 +1,4 @@
-const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, attachment: null, umcToken: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditLoaded: false, auditConversationId: null, auditItems: [] };
+const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, skillDialogMode: "edit", attachment: null, umcToken: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditLoaded: false, auditConversationId: null, auditItems: [] };
 const $ = (id) => document.getElementById(id);
 
 function containsArabic(text) {
@@ -34,6 +34,30 @@ function addEvent(type, content, meta = "") {
   $("events").appendChild(row);
   $("events").scrollTop = $("events").scrollHeight;
   return row.querySelector(".event-body");
+}
+
+function clearAssistantStatus() {
+  const row = state.statusNode?.closest(".event");
+  if (row) row.remove();
+  state.statusNode = null;
+}
+
+function showAssistantStatus(data, meta = "") {
+  if (!state.statusNode) {
+    state.statusNode = addEvent("assistant.status", "", meta);
+    const row = state.statusNode.closest(".event");
+    row.classList.add("status-event");
+    row.setAttribute("role", "status");
+    row.setAttribute("aria-live", "polite");
+  }
+  const row = state.statusNode.closest(".event");
+  renderLocalizedContent(state.statusNode, data.message || data.content || "Working…");
+  const metaNode = row.querySelector(".event-meta small");
+  if (metaNode) metaNode.textContent = [data.phase || "working", meta].filter(Boolean).join(" · ");
+  // Keep the live progress card at the end of the timeline so the newest
+  // waiting state remains visible below any route/tool events.
+  $("events").appendChild(row);
+  $("events").scrollTop = $("events").scrollHeight;
 }
 
 async function api(path, options = {}) {
@@ -234,31 +258,71 @@ async function loadSkills() {
 function openSkillEditor(skillId) {
   const item = state.skills.find((skill) => skill.skillId === skillId);
   if (!item) return;
+  state.skillDialogMode = "edit";
   state.editingSkillId = skillId;
   $("skillDialogTitle").textContent = `编辑 ${item.name || item.skillId}`;
   $("skillDialogMeta").textContent = `${item.skillId} · v${item.version || 1} · ${item.source || "ops"} / ${item.scope || "system"}`;
+  $("skillIdInput").value = item.skillId || "";
+  $("skillIdInput").disabled = true;
   $("skillNameInput").value = item.name || "";
   $("skillStatusInput").value = item.status || "DRAFT";
   $("skillEnabledInput").checked = Boolean(item.enabled);
   $("skillAllowedToolsInput").value = splitSkillValues(item.allowedTools);
   $("skillDependenciesInput").value = splitSkillValues(item.dependencies);
   $("skillContentInput").value = item.content || "";
+  $("saveSkillBtn").textContent = "保存 Skill";
   $("skillDialog").showModal();
   $("skillNameInput").focus();
+}
+
+function openNewSkillEditor() {
+  state.skillDialogMode = "create";
+  state.editingSkillId = null;
+  $("skillDialogTitle").textContent = "新增 Skill";
+  $("skillDialogMeta").textContent = "创建后默认为 system 作用域、v1、DRAFT 且停用";
+  $("skillIdInput").value = "";
+  $("skillIdInput").disabled = false;
+  $("skillNameInput").value = "";
+  $("skillStatusInput").value = "DRAFT";
+  $("skillEnabledInput").checked = false;
+  $("skillAllowedToolsInput").value = "";
+  $("skillDependenciesInput").value = "";
+  $("skillContentInput").value = "";
+  $("saveSkillBtn").textContent = "创建 Skill";
+  $("skillDialog").showModal();
+  $("skillIdInput").focus();
 }
 
 function closeSkillEditor() {
   const dialog = $("skillDialog");
   if (dialog.open) dialog.close();
   state.editingSkillId = null;
+  state.skillDialogMode = "edit";
+  $("skillIdInput").disabled = false;
 }
 
 async function saveSkillEditor(event) {
   event.preventDefault();
-  const skillId = state.editingSkillId;
+  const isCreating = state.skillDialogMode === "create";
+  const skillId = $("skillIdInput").value.trim();
   const item = state.skills.find((skill) => skill.skillId === skillId);
-  if (!item) {
+  if (!isCreating && (!state.editingSkillId || !item)) {
     closeSkillEditor();
+    return;
+  }
+  if (!skillId) {
+    $("skillIdInput").focus();
+    $("skillsStatus").textContent = "Skill ID 不能为空。";
+    return;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(skillId)) {
+    $("skillIdInput").focus();
+    $("skillsStatus").textContent = "Skill ID 只能包含字母、数字、点、下划线和短横线，且必须以字母或数字开头。";
+    return;
+  }
+  if (isCreating && state.skills.some((skill) => skill.skillId === skillId)) {
+    $("skillIdInput").focus();
+    $("skillsStatus").textContent = `${skillId} 已存在，请使用其他 Skill ID。`;
     return;
   }
   const name = $("skillNameInput").value.trim();
@@ -268,23 +332,28 @@ async function saveSkillEditor(event) {
     return;
   }
   $("saveSkillBtn").disabled = true;
-  $("skillsStatus").textContent = `正在保存 ${skillId}…`;
+  $("skillsStatus").textContent = `${isCreating ? "正在创建" : "正在保存"} ${skillId}…`;
   try {
     const payload = {
       name,
-      version: Number(item.version || 1),
-      source: item.source || "ops",
+      version: Number(item?.version || 1),
+      source: item?.source || "ops",
       status: $("skillStatusInput").value,
-      scope: item.scope || "system",
+      scope: item?.scope || "system",
       enabled: $("skillEnabledInput").checked,
       allowedTools: parseSkillValues($("skillAllowedToolsInput").value),
       dependencies: parseSkillValues($("skillDependenciesInput").value),
       content: $("skillContentInput").value,
     };
-    await api(`/api/v1/skills/${encodeURIComponent(skillId)}`, { method: "PUT", body: JSON.stringify(payload) });
+    if (isCreating) {
+      payload.skillId = skillId;
+      await api("/api/v1/skills", { method: "POST", body: JSON.stringify(payload) });
+    } else {
+      await api(`/api/v1/skills/${encodeURIComponent(state.editingSkillId)}`, { method: "PUT", body: JSON.stringify(payload) });
+    }
     await loadSkills();
     closeSkillEditor();
-    $("skillsStatus").textContent = "Skill 已保存；后续请求会使用已发布且启用的 Skill 内容。";
+    $("skillsStatus").textContent = isCreating ? "Skill 已创建；后续请求会使用已发布且启用的 Skill 内容。" : "Skill 已保存；后续请求会使用已发布且启用的 Skill 内容。";
   } catch (error) {
     $("skillsStatus").textContent = `保存 Skill 失败：${error.message}`;
   } finally {
@@ -312,6 +381,7 @@ function auditRecordSummary(item) {
   switch (item.recordType) {
     case "user.message": return content ? `用户：${content.slice(0, 180)}` : "用户提交消息";
     case "assistant.message": return content ? `助手：${content.slice(0, 180)}` : "助手返回消息";
+    case "assistant.status": return payload.message || "处理中…";
     case "assistant.chunk": return content ? `流式片段：${content.slice(0, 180)}` : "流式回答片段";
     case "assistant.welcome": return "初始化欢迎语";
     case "skill.route": return `Skill：${payload.skillId || payload.skill_id || "未标识"} · 模式：${payload.mode || "answer"}`;
@@ -689,6 +759,7 @@ async function createConversation() {
   state.seq = 0;
   state.assistantNode = null;
   state.assistantContent = "";
+  state.statusNode = null;
   $("conversationId").value = state.conversationId;
   $("runtimeId").textContent = data.runtimeId || "等待首条消息";
   $("lastSeq").textContent = data.lastSeq;
@@ -735,26 +806,33 @@ async function connect() {
     const data = packet.data || {};
     if (packet.eventType === "assistant.welcome") {
       addEvent("assistant.welcome", data.content || "", `seq ${packet.seq}`);
+    } else if (packet.eventType === "assistant.status") {
+      showAssistantStatus(data, `seq ${packet.seq}`);
     } else if (packet.eventType === "assistant.chunk") {
+      clearAssistantStatus();
       if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", "", `seq ${packet.seq}`);
       state.assistantContent += data.content || "";
       renderLocalizedContent(state.assistantNode, state.assistantContent);
       $("events").scrollTop = $("events").scrollHeight;
     } else if (packet.eventType === "assistant.message") {
+      clearAssistantStatus();
       state.assistantContent = data.content || state.assistantContent;
       if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", state.assistantContent, `seq ${packet.seq}`);
       else renderLocalizedContent(state.assistantNode, state.assistantContent);
     } else if (packet.eventType === "user.message") {
+      clearAssistantStatus();
       const attachmentNote = data.attachment ? `附件：${data.attachment.fileName || "未命名文件"}` : "";
       addEvent("user.message", data.content || attachmentNote, `seq ${packet.seq}`);
       state.assistantNode = null;
       state.assistantContent = "";
     } else if (packet.eventType === "turn.completed") {
+      clearAssistantStatus();
       addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
       if (document.querySelector("#auditPanel.active") && state.auditConversationId === state.conversationId) {
         void loadAuditDetail(state.conversationId);
       }
     } else {
+      if (packet.eventType === "runtime.error" || packet.eventType === "turn.cancelled") clearAssistantStatus();
       addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
     }
   };
@@ -765,6 +843,7 @@ $("connectBtn").addEventListener("click", () => { void connect(); });
 document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
 $("reloadConfigBtn").addEventListener("click", loadConfig);
 $("saveConfigBtn").addEventListener("click", saveConfig);
+$("newSkillBtn").addEventListener("click", openNewSkillEditor);
 $("reloadSkillsBtn").addEventListener("click", loadSkills);
 $("reloadAuditBtn").addEventListener("click", loadAuditConversations);
 $("auditCategoryFilter").addEventListener("change", () => loadAuditDetail(state.auditConversationId));

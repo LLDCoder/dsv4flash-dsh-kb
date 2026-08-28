@@ -72,6 +72,10 @@ class SkillUpsert(APIModel):
     content: str = ""
 
 
+class SkillCreate(SkillUpsert):
+    skill_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("skillId", "skill_id"))
+
+
 class WSMessage(APIModel):
     type: Literal["auth", "subscribe", "message", "resume", "ack", "cancel"]
     conversation_id: str | None = Field(default=None, validation_alias=AliasChoices("conversationId", "conversation_id"))

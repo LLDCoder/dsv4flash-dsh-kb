@@ -20,7 +20,7 @@
 
 ## 链路审计与数据留存
 
-Backend 会把每轮用户/助手对话、Skill 路由、DSH Tool 调用与结果、LLM 请求元数据、流式回答和可用的 `reasoning_content` 写入 PostgreSQL 的 `audit_record` 表。审计记录按 `requestId`、`runtimeId`、会话和类别建立索引，Token、密码、Authorization、API Key 等凭据形态字段会在审计副本中脱敏；原始 UMC Token 不写入数据库。Backend 后台清理任务按运行配置 `AUDIT_RETENTION_DAYS`（默认 30 天）和 `AUDIT_CLEANUP_INTERVAL_SECONDS`（默认 3600 秒）周期删除过期审计记录，用户可在控制台“运行配置 → 链路审计”热更新这两个值；该策略只清理审计表，不删除用户可见的会话历史。
+Backend 会把每轮用户/助手对话、Skill 路由、DSH Tool 调用与结果、LLM 请求元数据、流式回答和可用的 `reasoning_content` 写入 PostgreSQL 的 `audit_record` 表。审计记录按 `requestId`、`runtimeId`、会话和类别建立索引，Token、密码、Authorization、API Key 等凭据形态字段会在审计副本中脱敏；原始 UMC Token 不写入数据库。Backend 后台清理任务按运行配置 `AUDIT_RETENTION_DAYS`（默认 30 天）和 `AUDIT_CLEANUP_INTERVAL_SECONDS`（默认 3600 秒）周期删除过期审计记录，用户可在控制台“运行配置 → 链路审计”热更新这两个值；该策略只清理审计表，不删除用户可见的会话历史。为降低长首 token 等待期间的空白感，WS 还会发送 `assistant.status` 安全进度事件（路由、知识检索、OCR、UMC 查询、整理和生成回答）；这些事件只包含阶段和本地化短提示，不包含原始 LLM reasoning、系统提示词或敏感参数。
 
 测试控制台的“对话审计”页调用 `GET /api/v1/conversations/{conversationId}/audit`。左侧列出当前用户可访问的会话摘要和执行状态，点击会话后右侧按时间顺序显示完整执行链路；每条记录可展开查看 Payload，包含用户/助手内容、Skill 路由、Tool 参数与结果、LLM 请求/思考/回答和异常信息。审计接口沿用会话所有权校验，只能查看当前用户和租户的记录。
 
@@ -186,7 +186,7 @@ docker compose up -d
 
 - 测试控制台：http://localhost:18080（可用 `FRONTEND_PORT` 覆盖）
 - 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL、Tool 开关和可编辑的全局系统提示词；系统提示词会追加到每轮请求，但内置语言、安全和证据规则仍优先。UMC 会话由 Backend 使用环境变量中的既有测试账号自动获取，页面只显示脱敏状态，不提供手工 Token 输入。API Key/DB/Redis 只显示配置状态，不回显密文。
-- Skills 配置：在控制台“Skills 配置”页以列表查看 system Skill，点击“编辑”后在弹窗中修改名称、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。
+- Skills 配置：在控制台“Skills 配置”页以列表查看 system Skill，可点击“新增 Skill”创建或点击“编辑”修改名称、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。
 - 多语言业务测试：在控制台“多语言业务测试”页从 `/umc` 知识库目录生成 English/العربية 测试集，并执行 DSH 端到端路由、检索、Tool 和 5 分制评分。
 - DSH API Swagger：http://localhost:8000/docs
 - DSH OpenAPI JSON：http://localhost:8000/openapi.json
@@ -205,7 +205,7 @@ docker compose down
 页面使用以下开发接口，均经过 DSH Principal 边界：
 
 - `GET/PATCH /api/v1/config?scope=system`：读取或保存运行配置；敏感值由服务端遮罩，空白 Secret 不会覆盖原值。
-- `GET /api/v1/skills?scope=system`、`PUT /api/v1/skills/{skill_id}`：读取或编辑 system Skill；Skill 内容在运行时按路由、版本、`PUBLISHED` 状态和启用开关加载。
+- `GET /api/v1/skills?scope=system`、`POST /api/v1/skills`、`PUT /api/v1/skills/{skill_id}`：读取、新增或编辑 system Skill；Skill 内容在运行时按路由、版本、`PUBLISHED` 状态和启用开关加载。
 - `POST /api/v1/test-cases/generate`：从实时知识库目录生成 English/阿语跨业务用例，默认 `top_k=32`、`bm25,graph,vector`。
 - `POST /api/v1/test-cases/run`：并发执行最多 40 条用例，返回路由、工具、完成状态、回答和 5 分制评分。
 
@@ -231,6 +231,6 @@ DB/Redis URL 只作为部署参数保存，修改后需要重新创建 backend �
 ## 首期验收路径（G1/G2）
 
 1. 打开测试对话台并连接 WS。
-2. 新建会话，发送一条消息，观察 `user.message`、`turn.started`、`assistant.chunk`、`assistant.message` 和 `turn.completed`。
+2. 新建会话，发送一条消息，观察 `user.message`、`turn.started`、`assistant.status`、`assistant.chunk`、`assistant.message` 和 `turn.completed`。`assistant.status` 会在外部 Tool 或 LLM 等待期间提供可安全展示的进度提示。
 3. 刷新或通过 `afterSeq`/`resume` 重放历史事件。
 4. 使用相同 `clientMessageId` 重复提交，确认服务返回 `duplicate: true` 且不会新增用户事件。

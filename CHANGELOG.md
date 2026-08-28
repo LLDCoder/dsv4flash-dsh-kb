@@ -4,6 +4,12 @@
 
 ## 2026-08-28
 
+### WS 安全进度提示
+
+- 新增 `assistant.status` WebSocket 会话事件，在 Skill 路由、知识库检索、OCR、UMC 查询、结果整理和回答生成阶段发送本地化短提示。
+- 测试对话台将进度事件合并为单个状态卡片，首个提示在 LLM 请求前发送，收到回答首片段后自动移除，降低长 TTFT 带来的持续 loading 感。
+- 状态事件不暴露系统提示词、工具参数或原始 LLM reasoning；原始 reasoning 仍仅保留在受权限保护的链路审计中。
+
 ### 对话审计查看
 
 - 测试控制台新增“对话审计”功能切换：先按会话查看内容摘要、运行状态和 DSH Session 信息，再进入对应会话的完整执行链路。
@@ -21,6 +27,7 @@
 - 对话测试页新增附件区域，选择本地 PDF/图片后自动调用 UMC `POST /api/Document/Upload`（multipart `file`），解析 URL/对象 key 返回值，并发送不带问题文本的仅附件消息。
 - DSH 每轮请求按路由加载最高版本、`PUBLISHED` 且启用的 Skill 内容，注入系统提示词，保存后无需重启即可对新请求生效。
 - 前端 Skill 表单通过既有 `/api/v1/skills` 接口保存，继续沿用 Principal 所有权边界。
+- Skills 配置新增“新增 Skill”入口，可创建新的 system Skill 并填写 Skill ID、名称、Tools、依赖条件、状态、启用开关和行为指令。
 
 ### Docker Release 离线分发
 

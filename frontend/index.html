@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH UMC 测试控制台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-audit1" />
+    <link rel="stylesheet" href="/styles.css?v=20260828-status2" />
   </head>
   <body>
     <main class="shell">
@@ -85,9 +85,9 @@
         <section class="card panel-head">
           <div>
             <h2>Skills 配置</h2>
-            <p class="muted">以列表查看 DSH 路由 Skills；点击“编辑”后在弹窗中修改名称、状态、Tool、依赖条件和行为指令。</p>
+            <p class="muted">以列表查看 DSH 路由 Skills；可新增 Skill，或点击“编辑”后在弹窗中修改名称、状态、Tool、依赖条件和行为指令。</p>
           </div>
-          <div class="panel-actions"><button id="reloadSkillsBtn" class="secondary">重新读取</button></div>
+          <div class="panel-actions"><button id="newSkillBtn">新增 Skill</button><button id="reloadSkillsBtn" class="secondary">重新读取</button></div>
         </section>
         <section id="skillsList" class="skill-list card">
           <div class="table-scroll">
@@ -137,6 +137,7 @@
             <button id="closeSkillDialogBtn" type="button" class="dialog-close" aria-label="关闭">×</button>
           </div>
           <div class="skill-dialog-fields">
+            <label>Skill ID<input id="skillIdInput" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" title="只允许字母、数字、点、下划线和短横线，且必须以字母或数字开头" /></label>
             <label>名称<input id="skillNameInput" required /></label>
             <label>状态<select id="skillStatusInput"><option value="DRAFT">DRAFT</option><option value="PUBLISHED">PUBLISHED</option><option value="DISABLED">DISABLED</option></select></label>
             <label class="skill-dialog-toggle">启用<input id="skillEnabledInput" type="checkbox" /></label>
@@ -167,6 +168,6 @@
         <pre id="testLog" class="test-log card"></pre>
       </section>
     </main>
-    <script src="/app.js?v=20260828-audit1" type="module"></script>
+    <script src="/app.js?v=20260828-status2" type="module"></script>
   </body>
 </html>

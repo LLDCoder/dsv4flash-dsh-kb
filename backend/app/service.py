@@ -281,6 +281,71 @@ class DSHService:
         return result
 
     @staticmethod
+    def status_phase_for_tool(tool_name: str) -> str:
+        """Map an internal tool to a safe, customer-facing progress phase."""
+
+        if tool_name == "ocr.layout_parsing":
+            return "document"
+        if tool_name == "knowledge.search":
+            return "knowledge"
+        if tool_name.startswith("umc."):
+            return "umc"
+        return "service"
+
+    @staticmethod
+    def status_message(language: str, phase: str) -> str:
+        """Return a short progress message without exposing prompts or reasoning."""
+
+        messages = {
+            "en": {
+                "routing": "I’m reviewing your request and selecting the right NMA service…",
+                "knowledge": "I’m checking the relevant NMA guidance…",
+                "document": "I’m analyzing the attached document…",
+                "umc": "I’m checking your NMA service information…",
+                "service": "I’m checking the requested NMA service…",
+                "preparing": "I’m organizing the results into a clear answer…",
+                "drafting": "I’m drafting your answer…",
+                "fallback": "I’m preparing a response with the information currently available…",
+            },
+            "ar": {
+                "routing": "أراجع طلبك وأحدد خدمة الهيئة الوطنية للإعلام المناسبة…",
+                "knowledge": "أتحقق من إرشادات الهيئة الوطنية للإعلام ذات الصلة…",
+                "document": "أحلل المستند المرفق…",
+                "umc": "أتحقق من معلومات خدمة الهيئة الوطنية للإعلام الخاصة بك…",
+                "service": "أتحقق من خدمة الهيئة المطلوبة…",
+                "preparing": "أنظم النتائج في إجابة واضحة…",
+                "drafting": "أصيغ إجابتك الآن…",
+                "fallback": "أُعد إجابة بالمعلومات المتاحة حالياً…",
+            },
+        }
+        language_messages = messages.get(language, messages["en"])
+        return language_messages.get(phase, language_messages["preparing"])
+
+    async def append_status(
+        self,
+        db: AsyncSession,
+        conversation: Conversation,
+        phase: str,
+        language: str,
+        *,
+        request_id: str,
+    ) -> None:
+        """Publish a safe progress update; never include model reasoning or prompts."""
+
+        await self.append_event(
+            db,
+            conversation,
+            "assistant.status",
+            {
+                "phase": phase,
+                "state": "running",
+                "message": self.status_message(language, phase),
+                "requestId": request_id,
+                "runtimeId": conversation.runtime_id,
+            },
+        )
+
+    @staticmethod
     def audit_category(record_type: str) -> str:
         if record_type.startswith("llm."):
             return "llm"
@@ -387,6 +452,15 @@ class DSHService:
                     raw_attachment = latest_user.event_json.get("attachment") if latest_user else None
                     latest_attachment = raw_attachment if isinstance(raw_attachment, dict) else None
                     response_language = response_language_for(latest_content)
+                    # Send a first visible update before deterministic routing,
+                    # external calls, or the LLM request can spend time waiting.
+                    await self.append_status(
+                        db,
+                        conversation,
+                        "routing",
+                        response_language,
+                        request_id=principal.request_id,
+                    )
                     route = resolve_skill(latest_content)
                     tool_request = (
                         ("ocr.layout_parsing", {
@@ -437,6 +511,22 @@ class DSHService:
                             "requestId": principal.request_id,
                         },
                     )
+                    if tool_request:
+                        await self.append_status(
+                            db,
+                            conversation,
+                            self.status_phase_for_tool(tool_request[0]),
+                            response_language,
+                            request_id=principal.request_id,
+                        )
+                    else:
+                        await self.append_status(
+                            db,
+                            conversation,
+                            "preparing",
+                            response_language,
+                            request_id=principal.request_id,
+                        )
                     selected_skill_result = await db.execute(
                         select(Skill)
                         .where(
@@ -515,6 +605,13 @@ class DSHService:
                         if isinstance(result_for_event.get("result"), dict):
                             result_for_event["result"] = json.dumps(result_for_event["result"], ensure_ascii=False)[:20_000]
                         await self.append_event(db, conversation, "tool.result", result_for_event)
+                        await self.append_status(
+                            db,
+                            conversation,
+                            "fallback" if not tool_result.get("ok") else "preparing",
+                            response_language,
+                            request_id=principal.request_id,
+                        )
                         if latest_attachment and not tool_result.get("ok"):
                             document_failure_message = (
                                 "تعذر علي قراءة الملف المرفق لأن خدمة تحليل المستندات غير متاحة حالياً. "
@@ -532,6 +629,13 @@ class DSHService:
                     if document_failure_message:
                         await self.append_event(db, conversation, "assistant.message", {"content": document_failure_message, "requestId": principal.request_id})
                     else:
+                        await self.append_status(
+                            db,
+                            conversation,
+                            "drafting",
+                            response_language,
+                            request_id=principal.request_id,
+                        )
                         llm_started = time.perf_counter()
                         await self.append_audit(
                             db,
