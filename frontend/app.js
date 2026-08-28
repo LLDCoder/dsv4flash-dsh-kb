@@ -114,11 +114,21 @@ function renderConfig(items) {
     groupItems.forEach((item) => {
       const label = document.createElement("label");
       label.className = "config-field";
-      const inputType = item.secret ? "password" : item.key.includes("timeout") || item.key.includes("top_k") ? "number" : "text";
+      const options = Array.isArray(item.options) ? item.options : [];
+      const inputType = item.secret ? "password" : /timeout|seconds|days|top_k/.test(item.key) ? "number" : "text";
       const configured = item.configured ? "已配置" : "未配置";
       label.innerHTML = `<span>${item.label}<small>${item.env || ""} · ${configured}${item.restartRequired ? " · 重启生效" : " · 可热更新"}</small></span>`;
-      const input = item.multiline ? document.createElement("textarea") : document.createElement("input");
-      if (!item.multiline) input.type = inputType;
+      const input = item.multiline ? document.createElement("textarea") : options.length ? document.createElement("select") : document.createElement("input");
+      if (options.length) {
+        options.forEach((option) => {
+          const optionNode = document.createElement("option");
+          optionNode.value = option;
+          optionNode.textContent = option;
+          input.appendChild(optionNode);
+        });
+      } else if (!item.multiline) {
+        input.type = inputType;
+      }
       input.dataset.key = item.key;
       input.dataset.secret = item.secret ? "1" : "0";
       input.dataset.multiline = item.multiline ? "1" : "0";
@@ -129,6 +139,8 @@ function renderConfig(items) {
         input.placeholder = item.description || "输入要追加到每轮系统提示词的全局指令";
       }
       if (inputType === "number") input.step = item.key.includes("timeout") ? "1" : "1";
+      if (item.key === "audit_retention_days") input.min = "1";
+      if (item.key === "audit_cleanup_interval_seconds") input.min = "60";
       label.appendChild(input);
       if (item.description) {
         const description = document.createElement("small");
@@ -337,7 +349,7 @@ function extractUploadReference(value, depth = 0) {
 async function postAttachment(file, token, fieldName) {
   const formData = new FormData();
   formData.append(fieldName, file, file.name);
-  const response = await fetch("/umc-api/Document/Upload", {
+  const response = await fetch("/api/v1/umc/documents/upload", {
     method: "POST",
     headers: { Authorization: token.toLowerCase().startsWith("bearer ") ? token : `Bearer ${token}` },
     body: formData,

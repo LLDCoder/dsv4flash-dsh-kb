@@ -2,15 +2,16 @@ import asyncio
 import httpx
 import json
 import re
+import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .db import ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill
+from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill
 from .customer_documents import CustomerDocumentClient
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
@@ -95,8 +96,19 @@ class DSHService:
             "platform_timeout_seconds": float,
             "ocr_timeout_seconds": float,
             "umc_document_timeout_seconds": float,
+            "audit_retention_days": int,
+            "audit_cleanup_interval_seconds": int,
         }
         bool_keys = {"external_tools_enabled"}
+        umc_auth_keys = {
+            "umc_portal",
+            "umc_customer_base_url",
+            "umc_admin_base_url",
+            "umc_login_url",
+            "umc_login_email",
+            "umc_login_password",
+        }
+        umc_auth_changed = False
         for item in entries:
             key = item.key
             if key in restart_only or not hasattr(self.settings, key):
@@ -109,8 +121,14 @@ class DSHService:
                     value = numeric[key](value)
                 elif key in bool_keys and isinstance(value, str):
                     value = value.strip().lower() in {"1", "true", "yes", "on", "是"}
+                elif key == "umc_portal":
+                    value = str(value).strip().lower()
+                    if value not in {"customer", "admin", "public"}:
+                        continue
             except (TypeError, ValueError):
                 continue
+            if key in umc_auth_keys and getattr(self.settings, key) != value:
+                umc_auth_changed = True
             setattr(self.settings, key, value)
 
         # Keep the already-instantiated gateway clients aligned with the
@@ -125,8 +143,10 @@ class DSHService:
         platform.timeout = self.settings.platform_timeout_seconds
         self.ocr.base_url = self.settings.ocr_gateway_url.rstrip("/")
         self.ocr.timeout = self.settings.ocr_timeout_seconds
-        self.documents.base_url = self.settings.umc_document_base_url.rstrip("/")
+        self.documents.base_url = self.settings.umc_document_service_base_url.rstrip("/")
         self.documents.timeout = self.settings.umc_document_timeout_seconds
+        if umc_auth_changed:
+            self.umc_auth.invalidate()
 
     async def parse_document(self, file: str, file_type: int | None, options: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self.ocr.layout_parsing(file, file_type=file_type, options=options)
@@ -199,6 +219,7 @@ class DSHService:
             )
         )
         await db.execute(delete(SessionEvent).where(SessionEvent.conversation_id == conversation_id))
+        await db.execute(delete(AuditRecord).where(AuditRecord.conversation_id == conversation_id))
         await db.delete(conversation)
         await db.commit()
 
@@ -238,10 +259,84 @@ class DSHService:
             event_json=payload,
         )
         db.add(event)
+        request_id = str(payload.get("requestId") or "")[:128] or None
+        runtime_id = str(payload.get("runtimeId") or "")[:128] or None
+        db.add(
+            AuditRecord(
+                tenant_id=conversation.tenant_id,
+                user_id=conversation.user_id,
+                conversation_id=conversation.conversation_id,
+                dsh_session_id=conversation.dsh_session_id,
+                request_id=request_id,
+                runtime_id=runtime_id,
+                category=self.audit_category(event_type),
+                record_type=event_type,
+                payload=self.audit_payload(payload),
+            )
+        )
         await db.commit()
         result = {"seq": event.seq, "eventType": event.event_type, "data": event.event_json, "createdAt": datetime.now(timezone.utc).isoformat()}
         await self.broker.publish(conversation.conversation_id, result)
         return result
+
+    @staticmethod
+    def audit_category(record_type: str) -> str:
+        if record_type.startswith("llm."):
+            return "llm"
+        if record_type in {"skill.route", "tool.call", "tool.result", "turn.started", "turn.completed", "runtime.error", "turn.cancelled"}:
+            return "dsh"
+        if record_type.startswith("user.") or record_type.startswith("assistant."):
+            return "conversation"
+        return "runtime"
+
+    @classmethod
+    def audit_payload(cls, value: Any, depth: int = 0) -> Any:
+        """Redact credential-shaped fields while keeping content auditable."""
+
+        if depth > 8:
+            return "[max-depth]"
+        if isinstance(value, dict):
+            sensitive = {"token", "access_token", "umc_token", "authorization", "password", "api_key", "providerkey", "provider_key"}
+            return {
+                str(key): "[redacted]" if str(key).lower() in sensitive else cls.audit_payload(item, depth + 1)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls.audit_payload(item, depth + 1) for item in value]
+        return value
+
+    async def append_audit(
+        self,
+        db: AsyncSession,
+        conversation: Conversation,
+        record_type: str,
+        payload: dict[str, Any],
+        *,
+        request_id: str | None = None,
+        runtime_id: str | None = None,
+    ) -> None:
+        db.add(
+            AuditRecord(
+                tenant_id=conversation.tenant_id,
+                user_id=conversation.user_id,
+                conversation_id=conversation.conversation_id,
+                dsh_session_id=conversation.dsh_session_id,
+                request_id=(request_id or str(payload.get("requestId") or ""))[:128] or None,
+                runtime_id=(runtime_id or str(payload.get("runtimeId") or ""))[:128] or None,
+                category=self.audit_category(record_type),
+                record_type=record_type,
+                payload=self.audit_payload(payload),
+            )
+        )
+        await db.commit()
+
+    async def purge_expired_audit(self) -> int:
+        retention_days = max(1, int(self.settings.audit_retention_days))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        async with SessionLocal() as db:
+            result = await db.execute(delete(AuditRecord).where(AuditRecord.created_at < cutoff))
+            await db.commit()
+            return int(result.rowcount or 0)
 
     async def submit_message(
         self,
@@ -436,11 +531,74 @@ class DSHService:
                     if document_failure_message:
                         await self.append_event(db, conversation, "assistant.message", {"content": document_failure_message, "requestId": principal.request_id})
                     else:
+                        llm_started = time.perf_counter()
+                        await self.append_audit(
+                            db,
+                            conversation,
+                            "llm.request",
+                            {
+                                "requestId": principal.request_id,
+                                "runtimeId": conversation.runtime_id,
+                                "model": self.settings.llm_model,
+                                "baseUrl": self.settings.llm_base_url,
+                                "stream": True,
+                                "messages": messages,
+                            },
+                            request_id=principal.request_id,
+                            runtime_id=conversation.runtime_id,
+                        )
                         chunks: list[str] = []
-                        async for token in self.llm.stream(messages):
-                            chunks.append(token)
-                            await self.append_event(db, conversation, "assistant.chunk", {"content": token, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
-                        await self.append_event(db, conversation, "assistant.message", {"content": "".join(chunks), "requestId": principal.request_id})
+                        reasoning_chunks: list[str] = []
+
+                        async def capture_reasoning(value: str) -> None:
+                            reasoning_chunks.append(value)
+
+                        try:
+                            async for token in self.llm.stream(messages, on_reasoning=capture_reasoning):
+                                chunks.append(token)
+                                await self.append_event(db, conversation, "assistant.chunk", {"content": token, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
+                        except Exception as exc:
+                            await self.append_audit(
+                                db,
+                                conversation,
+                                "llm.error",
+                                {
+                                    "requestId": principal.request_id,
+                                    "runtimeId": conversation.runtime_id,
+                                    "error": str(exc)[:500],
+                                    "durationMs": round((time.perf_counter() - llm_started) * 1000, 1),
+                                },
+                                request_id=principal.request_id,
+                                runtime_id=conversation.runtime_id,
+                            )
+                            raise
+                        content = "".join(chunks)
+                        reasoning = "".join(reasoning_chunks)
+                        await self.append_audit(
+                            db,
+                            conversation,
+                            "llm.response",
+                            {
+                                "requestId": principal.request_id,
+                                "runtimeId": conversation.runtime_id,
+                                "model": self.settings.llm_model,
+                                "content": content,
+                                "reasoning": reasoning,
+                                "durationMs": round((time.perf_counter() - llm_started) * 1000, 1),
+                            },
+                            request_id=principal.request_id,
+                            runtime_id=conversation.runtime_id,
+                        )
+                        if reasoning:
+                            await self.append_audit(
+                                db,
+                                conversation,
+                                "llm.thought",
+                                {"requestId": principal.request_id, "runtimeId": conversation.runtime_id, "content": reasoning},
+                                request_id=principal.request_id,
+                                runtime_id=conversation.runtime_id,
+                            )
+                        await self.append_event(db, conversation, "assistant.message", {"content": content, "requestId": principal.request_id})
                     await self.append_event(db, conversation, "turn.completed", {"requestId": principal.request_id, "runtimeId": conversation.runtime_id})
                     conversation.status = "READY"
                     conversation.last_activity_at = datetime.now(timezone.utc)

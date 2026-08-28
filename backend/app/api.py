@@ -6,12 +6,13 @@ from uuid import uuid4
 
 import httpx
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import config_catalog, get_settings
+from .customer_documents import CustomerDocumentNotConfigured
 from .db import ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .schemas import ConfigPatch, ConversationCreate, MessageCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
@@ -169,6 +170,31 @@ def make_router(service: DSHService) -> APIRouter:
         except UMCAuthError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    @router.post("/umc/documents/upload")
+    async def upload_umc_document(file: UploadFile = File(...), principal: Principal = Depends(get_principal)):
+        """Proxy attachment uploads through the selected UMC portal backend."""
+
+        if not principal.umc_token:
+            raise HTTPException(status_code=401, detail="UMC authentication is required to upload a document")
+        try:
+            content = await file.read()
+            status_code, payload = await service.documents.upload(
+                file.filename or "attachment",
+                content,
+                mime_type=file.content_type,
+                umc_token=principal.umc_token,
+            )
+        except CustomerDocumentNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"UMC upload failed: {exc.__class__.__name__}") from exc
+        if status_code >= 400:
+            detail = payload if isinstance(payload, (dict, list, str)) else "UMC upload failed"
+            raise HTTPException(status_code=status_code, detail=detail)
+        return payload if isinstance(payload, (dict, list)) else {"data": payload}
+
     @router.get("/conversations")
     async def list_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
         conversations = await service.list_owned_conversations(db, principal)
@@ -277,6 +303,7 @@ def make_router(service: DSHService) -> APIRouter:
                     "env": spec.get("env"),
                     "secret": secret,
                     "multiline": bool(spec.get("multiline")),
+                    "options": list(spec.get("options", [])),
                     "description": spec.get("description"),
                     "restartRequired": bool(spec.get("restartRequired")),
                     "configured": configured,

@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import httpx
 
@@ -10,7 +10,7 @@ class LLMAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(self, messages: list[dict[str, str]], *, on_reasoning: Callable[[str], Awaitable[None]] | None = None) -> AsyncIterator[str]:
         if not self.settings.llm_base_url or not self.settings.llm_api_key:
             latest = messages[-1]["content"] if messages else ""
             response = f"收到你的消息：{latest}\n\n当前为 Docker MVP。已完成事件持久化，并会按 conversation 维度维护运行租约。"
@@ -32,9 +32,12 @@ class LLMAdapter:
                         break
                     try:
                         chunk = json.loads(data)
-                        text = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                        if reasoning and on_reasoning:
+                            await on_reasoning(str(reasoning))
+                        text = delta.get("content")
                         if text:
                             yield text
                     except json.JSONDecodeError:
                         continue
-

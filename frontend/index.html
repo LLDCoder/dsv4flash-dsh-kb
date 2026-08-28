@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">DSH · UMC EXTERNAL SERVICE</p>
           <h1>测试控制台</h1>
-        <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证；UMC 会话由服务端自动获取，仅按请求透传。</p>
+          <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证；UMC Portal 由后端环境开关选择，登录与附件接口自动使用对应地址。</p>
         </div>
         <span id="connection" class="pill offline">未连接</span>
       </header>
@@ -39,7 +39,7 @@
         <div class="attachment-head">
           <div>
             <h3>附件（可仅提交附件）</h3>
-          <p class="muted">选择 PDF / 图片后会自动调用 UMC 上传接口；上传完成即可发送，问题内容可以留空。</p>
+          <p class="muted">选择 PDF / 图片后会自动通过当前 UMC Portal 上传；上传完成即可发送，问题内容可以留空。</p>
           </div>
           <button id="clearAttachmentBtn" type="button" class="secondary">清除附件</button>
         </div>
@@ -72,7 +72,7 @@
         <section class="card panel-head">
           <div>
             <h2>内部参数与外部 Tool</h2>
-            <p class="muted">敏感项只显示配置状态；UMC 会话使用服务端配置账号自动获取，不写入配置页或会话事件；Database/Redis URL 修改后需要重启 Docker 容器。</p>
+            <p class="muted">敏感项只显示配置状态；UMC 会话使用服务端配置账号自动获取，不写入配置页或会话事件。链路审计会记录对话、LLM 调用/思考和 DSH Tool 链路，并按留存配置周期清理；Database/Redis URL 修改后需要重启 Docker 容器。</p>
           </div>
           <div class="panel-actions"><button id="reloadConfigBtn" class="secondary">重新读取</button><button id="saveConfigBtn">保存配置</button></div>
         </section>
@@ -140,6 +140,6 @@
         <pre id="testLog" class="test-log card"></pre>
       </section>
     </main>
-    <script src="/app.js?v=20260828-umc-login1" type="module"></script>
+    <script src="/app.js?v=20260828-umc-portal1" type="module"></script>
   </body>
 </html>

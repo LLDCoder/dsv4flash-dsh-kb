@@ -42,12 +42,26 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(30)
             await runtime_manager.sweep()
 
+    async def audit_sweeper() -> None:
+        while not stop.is_set():
+            with suppress(Exception):
+                await service.purge_expired_audit()
+            interval = max(60, int(service.settings.audit_cleanup_interval_seconds))
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+
     task = asyncio.create_task(sweeper())
+    audit_task = asyncio.create_task(audit_sweeper())
     yield
     stop.set()
     task.cancel()
+    audit_task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+    with suppress(asyncio.CancelledError):
+        await audit_task
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
@@ -57,7 +71,19 @@ app.include_router(make_router(service))
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok", "service": settings.app_name, "runtimeMode": "embedded-lease-mvp", "ocrGateway": settings.ocr_gateway_url, "knowledgeGateway": settings.knowledge_gateway_url, "platformGateway": settings.platform_gateway_url}
+    umc_portal = (settings.umc_portal or "customer").strip().lower()
+    if umc_portal not in {"customer", "admin", "public"}:
+        umc_portal = "customer"
+    return {
+        "status": "ok",
+        "service": settings.app_name,
+        "runtimeMode": "embedded-lease-mvp",
+        "umcPortal": umc_portal,
+        "umcBaseUrl": settings.umc_base_url,
+        "ocrGateway": settings.ocr_gateway_url,
+        "knowledgeGateway": settings.knowledge_gateway_url,
+        "platformGateway": settings.platform_gateway_url,
+    }
 
 
 @app.get("/")
