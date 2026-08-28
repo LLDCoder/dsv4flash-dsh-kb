@@ -4,6 +4,18 @@
 
 ## 2026-08-28
 
+### 用户端 Token 与测试控制台认证解耦
+
+- 修复用户端在未登录测试控制台时访问 DSH 对话接口返回 401 的问题。用户端携带 UMC Bearer Token 后可直接访问 `/api/v1/conversations*`，不再依赖测试控制台 Cookie。
+- WebSocket `/api/v1/ws` 不再在握手阶段强制要求控制台 Cookie，浏览器连接后通过首个 `auth` 消息传递 UMC Token 并完成会话认证。
+- 配置、Skills、测试用例和 UMC 管理代理等测试控制台管理接口继续由控制台 Cookie 保护。
+
+### 77 public 知识库 503 修复
+
+- Knowledge Gateway 改为直接调用当前匿名只读接口 `/public/knowledge/search`，不再预先调用已失效的 `/api/ai/knowledge/datasets/{id}` 获取版本。
+- 匿名 public 请求不再生成空的 `Authorization: Bearer ` 请求头，修复 `httpx` 在请求发出前报非法 Header、DSH 最终显示 `knowledge.search status=503` 的问题。
+- 目录树、文件列表和分页文件接口同步切换到 `/public/knowledge/*`，分页参数现在会真实转发给 77；检索继续传递 `bm25,graph,vector` 兼容提示并以 77 返回的 `completed_channels` 为实际完成通道。
+
 ### 控制台 WebSocket 对话链路修复
 
 - 修复浏览器 WebSocket 认证后将租户强制改写为 `umc:global:<UserID>`，导致 REST 创建的 `demo-tenant` 会话无法订阅、消息被静默丢弃的问题。

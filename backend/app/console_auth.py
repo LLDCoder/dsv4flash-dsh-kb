@@ -71,6 +71,23 @@ def cookie_value(headers: list[tuple[bytes, bytes]]) -> str | None:
     return None
 
 
+def has_bearer_authorization(headers: list[tuple[bytes, bytes]]) -> bool:
+    """Return whether the request carries a non-empty Bearer credential.
+
+    The customer-facing chatbot uses the UMC access token rather than the
+    test-console session cookie.  This check only decides whether the request
+    may reach the route; the route's own Principal/auth-frame validation still
+    remains authoritative.
+    """
+
+    for key, value in headers:
+        if key.lower() != b"authorization":
+            continue
+        scheme, separator, credential = value.decode("latin-1").partition(" ")
+        return scheme.lower() == "bearer" and bool(separator and credential.strip())
+    return False
+
+
 def requires_console_auth(path: str) -> bool:
     """Return whether a path belongs to the Docker test console API."""
 
@@ -83,6 +100,27 @@ def requires_console_auth(path: str) -> bool:
         "/api/v1/ws",
     )
     return path.startswith(protected_prefixes)
+
+
+def allows_customer_auth(
+    scope: dict[str, Any],
+    path: str,
+    headers: list[tuple[bytes, bytes]],
+) -> bool:
+    """Allow the customer chatbot to share the conversation transport.
+
+    REST calls carry the UMC token in ``Authorization``.  Browser WebSockets
+    cannot set that header, so the endpoint must be reachable before it can
+    validate the token sent in the first application frame.
+    """
+
+    if scope.get("type") == "websocket" and path == "/api/v1/ws":
+        return True
+    return (
+        scope.get("type") == "http"
+        and path.startswith("/api/v1/conversations")
+        and has_bearer_authorization(headers)
+    )
 
 
 class ConsoleAuthMiddleware:
@@ -104,8 +142,17 @@ class ConsoleAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        token = cookie_value(scope.get("headers") or [])
+        headers = scope.get("headers") or []
+        token = cookie_value(headers)
         if verify_session(token, self.get_password()):
+            await self.app(scope, receive, send)
+            return
+
+        # The customer portal does not have the operator's console cookie.
+        # Let its bearer-authenticated conversation requests (and the WS
+        # handshake that will authenticate in its first frame) reach the
+        # normal route-level Principal checks.
+        if allows_customer_auth(scope, path, headers):
             await self.app(scope, receive, send)
             return
 
