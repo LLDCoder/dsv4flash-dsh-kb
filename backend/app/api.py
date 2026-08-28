@@ -1,14 +1,18 @@
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+import httpx
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import config_catalog, get_settings
-from .db import ConfigEntry, Skill, get_db
+from .db import ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .schemas import ConfigPatch, ConversationCreate, MessageCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
@@ -24,6 +28,128 @@ def make_router(service: DSHService) -> APIRouter:
         if isinstance(value, dict) and "value" in value and len(value) == 1:
             return value["value"]
         return value
+
+    async def chat_principal(
+        request: Request,
+        x_user_id: str | None = Header(default=None),
+        x_tenant_id: str | None = Header(default=None),
+        x_request_id: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> Principal:
+        """Compatibility identity for the 18085 customer chatbot contract.
+
+        The gateway normally injects X-User-Id.  The browser chatbot only has
+        the UMC bearer token, so derive a stable user id from its JWT claims
+        when the trusted header is absent.  The token itself is still kept
+        request-scoped and forwarded to UMC tools by DSHService.
+        """
+        user_id = x_user_id
+        raw = _bearer_token(authorization)
+        if not user_id and raw:
+            try:
+                part = raw.split(".")[1]
+                part += "=" * (-len(part) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(part).decode("utf-8"))
+                user_id = claims.get("umc_user_id") or claims.get("user_id") or claims.get("UserID") or claims.get("sub")
+            except (ValueError, KeyError, IndexError, UnicodeDecodeError, json.JSONDecodeError):
+                user_id = None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="missing chatbot session token")
+        return Principal(
+            user_id=str(user_id),
+            tenant_id=x_tenant_id or f"umc:global:{user_id}",
+            request_id=x_request_id or str(uuid4()),
+            token_ref=_token_reference(authorization),
+            umc_token=raw,
+        )
+
+    @router.get("/ai-chat/config", tags=["Chatbot compatibility"])
+    async def ai_chat_config(principal: Principal = Depends(chat_principal)):
+        return {
+            "enabled": True,
+            "streaming": True,
+            "name": "NMA Assistant",
+            "description": "National Media Authority assistant",
+            "suggested_questions": [],
+        }
+
+    @router.get("/ai-chat/conversations", tags=["Chatbot compatibility"])
+    async def ai_chat_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
+        result = await db.execute(select(Conversation).where(Conversation.tenant_id == principal.tenant_id, Conversation.user_id == principal.user_id).order_by(Conversation.last_activity_at.desc()))
+        return {"conversations": [service.conversation_json(item) for item in result.scalars().all()]}
+
+    @router.get("/ai-chat/conversations/{conversation_id}/messages", tags=["Chatbot compatibility"])
+    async def ai_chat_messages(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
+        try:
+            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        events = await service.list_events(db, conversation, after_seq=0)
+        messages = []
+        for event in events:
+            if event.event_type not in {"user.message", "assistant.message"}:
+                continue
+            messages.append({"id": f"{conversation_id}:{event.seq}", "role": "user" if event.event_type == "user.message" else "assistant", "content": event.event_json.get("content", ""), "created_at": event.created_at.isoformat() if event.created_at else None})
+        return {"conversation_id": conversation_id, "messages": messages}
+
+    @router.delete("/ai-chat/conversations/{conversation_id}", tags=["Chatbot compatibility"])
+    async def ai_chat_delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
+        try:
+            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        await db.execute(delete(SessionEvent).where(SessionEvent.conversation_id == conversation_id))
+        await db.execute(delete(MessageIdempotency).where(MessageIdempotency.conversation_id == conversation_id))
+        await db.delete(conversation)
+        await db.commit()
+        return {"deleted": True, "conversation_id": conversation_id}
+
+    @router.post("/ai-chat/messages/stream", tags=["Chatbot compatibility"])
+    async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
+        payload = await request.json()
+        content = str(payload.get("message") or "").strip()
+        if not content:
+            raise HTTPException(status_code=422, detail="message is required")
+        conversation_id = request.headers.get("X-FF-Conversation-ID") or payload.get("conversation_id")
+        if conversation_id:
+            try:
+                conversation = await service.get_owned_conversation(db, principal, str(conversation_id))
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+        else:
+            conversation = await service.create_conversation(db, principal, "default", "default", "default")
+            conversation_id = conversation.conversation_id
+        client_message_id = str(payload.get("request_id") or uuid4())
+        queue = service.broker.subscribe(str(conversation_id))
+        try:
+            accepted = await service.submit_message(principal, str(conversation_id), content, client_message_id)
+        except LookupError as exc:
+            service.broker.unsubscribe(str(conversation_id), queue)
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        async def stream() -> AsyncIterator[str]:
+            yield f"event: accepted\ndata: {json.dumps(accepted, ensure_ascii=False)}\n\n"
+            try:
+                while True:
+                    event = await asyncio.wait_for(queue.get(), timeout=max(120.0, service.settings.llm_timeout_seconds + 30.0))
+                    event_type = event.get("eventType")
+                    data = event.get("data") or {}
+                    if event_type == "assistant.chunk":
+                        yield f"event: token\ndata: {data.get('content', '')}\n\n"
+                    elif event_type == "runtime.error":
+                        yield f"event: error\ndata: {json.dumps({'detail': data.get('error', 'runtime error')}, ensure_ascii=False)}\n\n"
+                        yield "event: end\ndata: [DONE]\n\n"
+                        break
+                    elif event_type in {"turn.completed", "turn.cancelled"}:
+                        yield "event: end\ndata: [DONE]\n\n"
+                        break
+            except asyncio.TimeoutError:
+                yield "event: error\ndata: {\"detail\":\"chat response timed out\"}\n\n"
+                yield "event: end\ndata: [DONE]\n\n"
+            finally:
+                service.broker.unsubscribe(str(conversation_id), queue)
+
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "X-FF-Conversation-ID": str(conversation_id)})
 
     @router.post("/conversations")
     async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
@@ -229,15 +355,12 @@ def make_router(service: DSHService) -> APIRouter:
     @router.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()
-        user_id = websocket.headers.get("x-user-id")
-        if not user_id and get_settings().environment == "development":
-            user_id = websocket.query_params.get("userId")
-        if not user_id:
-            await websocket.close(code=4401, reason="missing X-User-Id")
-            return
+        user_id = websocket.headers.get("x-user-id") or ""
+        # Browser WebSockets cannot set trusted identity headers. Keep a
+        # provisional principal until the UMC token is validated server-side.
         principal = Principal(
-            user_id=user_id,
-            tenant_id=websocket.headers.get("x-tenant-id") or (websocket.query_params.get("tenantId") if get_settings().environment == "development" else None) or "default",
+            user_id=user_id or "",
+            tenant_id=websocket.headers.get("x-tenant-id") or "default",
             request_id=websocket.headers.get("x-request-id", "ws"),
             token_ref=None,
             umc_token=_bearer_token(websocket.headers.get("authorization")),
@@ -268,9 +391,40 @@ def make_router(service: DSHService) -> APIRouter:
                     if not token:
                         await send({"type": "error", "code": "umc_token_required"})
                         continue
+                    claims_user_id = None
+                    if not claims_user_id:
+                        settings = get_settings()
+                        base_url = (settings.umc_document_base_url or settings.umc_login_url.rsplit("/api/", 1)[0]).rstrip("/")
+                        try:
+                            async with httpx.AsyncClient(timeout=settings.umc_login_timeout_seconds) as client:
+                                response = await client.post(f"{base_url}/api/User/GetUserInfo", headers={"Authorization": f"Bearer {token}"}, json={})
+                            payload = response.json()
+                            def find_user_id(value):
+                                if isinstance(value, dict):
+                                    for key in ("UserID", "UserId", "userId", "userID", "id"):
+                                        candidate = value.get(key)
+                                        if isinstance(candidate, (str, int)) and str(candidate).strip():
+                                            return str(candidate)
+                                    for child in value.values():
+                                        found = find_user_id(child)
+                                        if found: return found
+                                elif isinstance(value, list):
+                                    for child in value:
+                                        found = find_user_id(child)
+                                        if found: return found
+                                return None
+                            claims_user_id = find_user_id(payload)
+                        except (httpx.HTTPError, ValueError, TypeError):
+                            claims_user_id = None
+                    if not claims_user_id:
+                        await send({"type": "error", "code": "missing_user_identity"})
+                        continue
+                    if principal.user_id and str(claims_user_id) != str(principal.user_id):
+                        await send({"type": "error", "code": "identity_mismatch"})
+                        continue
                     principal = Principal(
-                        user_id=principal.user_id,
-                        tenant_id=principal.tenant_id,
+                        user_id=str(claims_user_id),
+                        tenant_id=f"umc:global:{claims_user_id}",
                         request_id=principal.request_id,
                         token_ref=_token_reference(f"Bearer {token}"),
                         umc_token=token,

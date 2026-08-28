@@ -5,9 +5,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
-OCR_VL_URL = os.getenv("OCR_VL_URL", "http://ocr-vl-api:8080").rstrip("/")
+OCR_VL_URL = os.getenv("OCR_VL_URL", "http://ocr-cpu:8080").rstrip("/")
 OCR_TIMEOUT = float(os.getenv("OCR_TIMEOUT_SECONDS", "300"))
-OCR_MODEL_NAME = os.getenv("OCR_MODEL_NAME", "PaddleOCR-VL-1.6-0.9B")
+OCR_MODEL_NAME = os.getenv("OCR_MODEL_NAME", "PP-OCRv4")
+OCR_PROVIDER = os.getenv("OCR_PROVIDER", "PaddleOCR-CPU")
 
 
 class LayoutParsingRequest(BaseModel):
@@ -25,7 +26,7 @@ app = FastAPI(title="DSH OCR Gateway", version="0.1.0")
 async def healthz():
     return {
         "status": "ok",
-        "provider": "PaddleOCR-VL-1.6",
+        "provider": OCR_PROVIDER,
         "model": OCR_MODEL_NAME,
         "upstream": OCR_VL_URL,
     }
@@ -37,16 +38,16 @@ async def readyz():
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(f"{OCR_VL_URL}/health")
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail=f"PaddleOCR-VL unavailable: {exc}") from exc
+        raise HTTPException(status_code=503, detail=f"OCR unavailable: {exc}") from exc
 
     if response.status_code >= 400:
         raise HTTPException(
             status_code=503,
-            detail=f"PaddleOCR-VL health check returned {response.status_code}",
+            detail=f"OCR health check returned {response.status_code}",
         )
     return {
         "status": "ready",
-        "provider": "PaddleOCR-VL-1.6",
+        "provider": OCR_PROVIDER,
         "model": OCR_MODEL_NAME,
         "upstream": OCR_VL_URL,
     }
@@ -59,7 +60,7 @@ async def layout_parsing(payload: LayoutParsingRequest):
         try:
             response = await client.post(f"{OCR_VL_URL}/layout-parsing", json=body)
         except httpx.HTTPError as exc:
-            raise HTTPException(status_code=503, detail=f"PaddleOCR-VL unavailable: {exc}") from exc
+            raise HTTPException(status_code=503, detail=f"OCR unavailable: {exc}") from exc
     if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"PaddleOCR-VL returned {response.status_code}: {response.text[:500]}")
+        raise HTTPException(status_code=502, detail=f"OCR returned {response.status_code}: {response.text[:500]}")
     return response.json()
