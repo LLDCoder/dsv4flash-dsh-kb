@@ -30,11 +30,11 @@ services:
     build:
       context: ./ocr-gateway
     environment:
-      OCR_VL_URL: ${OCR_VL_URL:-http://ocr-vl-api:8080}
+      OCR_VL_URL: ${OCR_VL_URL:-http://ocr-cpu:8080}
       OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
-      OCR_MODEL_NAME: ${OCR_MODEL_NAME:-PaddleOCR-VL-1.6-0.9B}
+      OCR_MODEL_NAME: ${OCR_MODEL_NAME:-PP-OCRv4}
     depends_on:
-      ocr-vl-api:
+      ocr-cpu:
         condition: service_healthy
     expose:
       - "8100"
@@ -45,15 +45,40 @@ services:
       timeout: 5s
       retries: 10
 
+  ocr-cpu:
+    build:
+      context: ./ocr-cpu
+    environment:
+      OCR_MODEL_NAME: ${OCR_MODEL_NAME:-PP-OCRv4}
+      OCR_LANG: ${OCR_LANG:-en}
+    expose:
+      - "8080"
+    command: uvicorn app:app --host 0.0.0.0 --port 8080
+    restart: unless-stopped
+    cpus: "2.0"
+    mem_limit: 8g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
   knowledge-gateway:
     build:
       context: ./knowledge-gateway
     environment:
       KNOWLEDGE_BASE_URL: ${KNOWLEDGE_BASE_URL:-http://77.242.240.158:18085/api/platform/api/v1}
+      KNOWLEDGE_SERVICE_TOKEN: ${KNOWLEDGE_SERVICE_TOKEN:-}
+      KNOWLEDGE_TENANT_ID: ${KNOWLEDGE_TENANT_ID:-b33d7e8a-d0df-4a20-94d7-6a596522bcb8}
+      KNOWLEDGE_SUBJECT_ID: ${KNOWLEDGE_SUBJECT_ID:-dsh-external-service}
       KNOWLEDGE_TIMEOUT_SECONDS: ${KNOWLEDGE_TIMEOUT_SECONDS:-30}
       KNOWLEDGE_RETRY_ATTEMPTS: ${KNOWLEDGE_RETRY_ATTEMPTS:-3}
       KNOWLEDGE_UPSTREAM_MAX_TOP_K: ${KNOWLEDGE_UPSTREAM_MAX_TOP_K:-20}
       KNOWLEDGE_RETRIEVAL_MODES: ${KNOWLEDGE_RETRIEVAL_MODES:-bm25,graph,vector}
+    networks:
+      - default
+      - ff-platform
     expose:
       - "8101"
     command: uvicorn app:app --host 0.0.0.0 --port 8101
@@ -141,6 +166,7 @@ services:
   # Official PaddleOCR-VL-1.6 production API and VLM inference services.
   # The model is pinned explicitly so image defaults cannot select another VLM.
   ocr-vl-api:
+    profiles: ["gpu"]
     image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-vl:${OCR_API_IMAGE_TAG_SUFFIX:-latest-nvidia-gpu-offline}
     expose:
       - "8080"
@@ -168,12 +194,8 @@ services:
       start_period: 300s
 
   ocr-vlm-server:
+    profiles: ["gpu"]
     image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-${OCR_VLM_BACKEND:-vllm}-server:${OCR_VLM_IMAGE_TAG_SUFFIX:-latest-nvidia-gpu-offline}
-    networks:
-      default:
-        aliases:
-          # The official pipeline_config_vllm.yaml resolves this hostname.
-          - paddleocr-vlm-server
     deploy:
       resources:
         reservations:
@@ -200,3 +222,8 @@ services:
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  ff-platform:
+    external: true
+    name: ff-ai-platform-server_default
