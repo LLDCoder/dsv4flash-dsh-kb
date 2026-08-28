@@ -7,7 +7,8 @@
 ### 可编辑系统提示词与 Skill 配置
 
 - 运行配置新增多行系统提示词字段，支持通过页面保存全局追加指令并热更新后续请求；内置语言、安全和知识证据规则保持更高优先级。
-- 新增独立“Skill 配置”页签，暴露 system Skill 的名称、Tool、依赖、发布状态、启用开关和行为指令。
+- 新增独立“Skills 配置”页签，以列表暴露 system Skill 的名称、Tool、依赖、发布状态和启用状态；点击列表操作可在弹窗中编辑并保存行为指令。
+- 对话测试页新增附件区域，选择本地 PDF/图片后自动调用 UMC `POST /api/Document/Upload`（multipart `file`），解析 URL/对象 key 返回值，并发送不带问题文本的仅附件消息。
 - DSH 每轮请求按路由加载最高版本、`PUBLISHED` 且启用的 Skill 内容，注入系统提示词，保存后无需重启即可对新请求生效。
 - 前端 Skill 表单通过既有 `/api/v1/skills` 接口保存，继续沿用 Principal 所有权边界。
 
@@ -87,3 +88,6 @@
 - 建立 LLM、OCR、Knowledge、Platform Tool Gateway 边界和配置/Skill API。
 - 建立英文/阿语业务测试生成、批量运行和 5 分制评分能力。
 - 纳入首批 Term1 图片、工作流用例及 38 题三路检索测试记录。
+- 自动获取 UMC 会话：Backend 使用客户门户 `POST /api/User/Login` 的 AES 加密登录格式，以本机 Docker `.env` 中的既有测试账号获取并缓存短期 Token；对话页移除手工 Token 输入，附件上传和 WebSocket 自动复用内存会话，密码/原始 Token 不落库。
+- 兼容 77 测试门户当前上传行为：`Document/Upload` 按文档先使用 `file`，若 200 响应没有对象引用则自动回退历史前端使用的 `files` 字段。
+- 修复 PaddleOCR-VL-1.6 附件 502：UMC 下载内容改为纯 Base64 传给官方 serving API，避免 `data:image/...;base64,` 前缀被错误解码。

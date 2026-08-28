@@ -13,6 +13,7 @@ from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .schemas import ConfigPatch, ConversationCreate, MessageCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
+from .umc_auth import UMCAuthError
 
 
 def make_router(service: DSHService) -> APIRouter:
@@ -28,6 +29,19 @@ def make_router(service: DSHService) -> APIRouter:
     async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
         conversation = await service.create_conversation(db, principal, payload.workspace, payload.skill_profile, payload.runtime_profile)
         return service.conversation_json(conversation)
+
+    @router.post("/umc/session")
+    async def get_umc_session(refresh: bool = Query(default=False), principal: Principal = Depends(get_principal)):
+        """Return a cached UMC token for the configured service account.
+
+        The raw token is necessary for the browser WebSocket and upload proxy,
+        but it is held only in the page and backend memory; it is not stored in
+        conversation events or returned by the configuration API.
+        """
+        try:
+            return await service.umc_auth.get_session(force_refresh=refresh)
+        except UMCAuthError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @router.get("/conversations")
     async def list_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):

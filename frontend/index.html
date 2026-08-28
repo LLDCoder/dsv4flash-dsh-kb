@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH UMC 测试控制台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-skill2" />
+    <link rel="stylesheet" href="/styles.css?v=20260828-umc-login1" />
   </head>
   <body>
     <main class="shell">
@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">DSH · UMC EXTERNAL SERVICE</p>
           <h1>测试控制台</h1>
-          <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证；UMC Token 按请求透传，不落库。</p>
+        <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证；UMC 会话由服务端自动获取，仅按请求透传。</p>
         </div>
         <span id="connection" class="pill offline">未连接</span>
       </header>
@@ -21,17 +21,36 @@
         <button class="tab active" data-tab="chatPanel">对话测试</button>
         <button class="tab" data-tab="configPanel">运行配置</button>
         <button class="tab" data-tab="testPanel">多语言业务测试</button>
-        <button class="tab" data-tab="skillPanel">Skill 配置</button>
+        <button class="tab" data-tab="skillPanel">Skills 配置</button>
       </nav>
 
       <section id="chatPanel" class="tab-panel active">
       <section class="toolbar card">
         <label>用户 ID<input id="userId" value="demo-user" /></label>
         <label>租户 ID<input id="tenantId" value="demo-tenant" /></label>
-        <label>UMC Token<input id="umcToken" type="password" autocomplete="off" placeholder="先调用 /api/User/Login 获取，再粘贴 Token" /></label>
+        <label>UMC 会话<input id="umcSessionStatus" value="正在自动获取…" readonly /></label>
+        <input id="umcToken" type="hidden" autocomplete="off" />
         <label>会话 ID<input id="conversationId" placeholder="新建后自动填充" /></label>
         <button id="createBtn" class="secondary">新建会话</button>
         <button id="connectBtn">连接 WS</button>
+      </section>
+
+      <section class="attachment-box card">
+        <div class="attachment-head">
+          <div>
+            <h3>附件（可仅提交附件）</h3>
+          <p class="muted">选择 PDF / 图片后会自动调用 UMC 上传接口；上传完成即可发送，问题内容可以留空。</p>
+          </div>
+          <button id="clearAttachmentBtn" type="button" class="secondary">清除附件</button>
+        </div>
+        <div class="attachment-fields">
+          <label>选择附件（自动上传）<input id="attachmentPicker" type="file" accept=".pdf,image/*" /></label>
+          <input id="attachmentRef" type="hidden" />
+          <label>文件名<input id="attachmentName" placeholder="上传后自动填充" readonly /></label>
+          <label>MIME 类型<input id="attachmentMime" placeholder="上传后自动填充" readonly /></label>
+          <label>文件类型<select id="attachmentType"><option value="0">PDF（fileType=0）</option><option value="1">图片（fileType=1）</option></select></label>
+        </div>
+        <div id="attachmentStatus" class="notice"></div>
       </section>
 
       <section class="chat card">
@@ -53,7 +72,7 @@
         <section class="card panel-head">
           <div>
             <h2>内部参数与外部 Tool</h2>
-            <p class="muted">敏感项只显示配置状态；UMC Token 在对话栏按会话输入，不写入配置；Database/Redis URL 修改后需要重启 Docker 容器。</p>
+            <p class="muted">敏感项只显示配置状态；UMC 会话使用服务端配置账号自动获取，不写入配置页或会话事件；Database/Redis URL 修改后需要重启 Docker 容器。</p>
           </div>
           <div class="panel-actions"><button id="reloadConfigBtn" class="secondary">重新读取</button><button id="saveConfigBtn">保存配置</button></div>
         </section>
@@ -64,14 +83,43 @@
       <section id="skillPanel" class="tab-panel">
         <section class="card panel-head">
           <div>
-            <h2>Skill 配置</h2>
-            <p class="muted">编辑 DSH 路由 Skill 的名称、允许调用的 Tool、依赖条件和行为指令。只有状态为 PUBLISHED 且已启用的 Skill 会注入对应请求。</p>
+            <h2>Skills 配置</h2>
+            <p class="muted">以列表查看 DSH 路由 Skills；点击“编辑”后在弹窗中修改名称、状态、Tool、依赖条件和行为指令。</p>
           </div>
-          <div class="panel-actions"><button id="reloadSkillsBtn" class="secondary">重新读取</button><button id="saveSkillsBtn">保存 Skills</button></div>
+          <div class="panel-actions"><button id="reloadSkillsBtn" class="secondary">重新读取</button></div>
         </section>
-        <section id="skillsForm" class="skills-grid"><div class="empty">切换到本页后读取 Skill…</div></section>
+        <section id="skillsList" class="skill-list card">
+          <div class="table-scroll">
+            <table id="skillsTable" class="skills-table">
+              <thead><tr><th>Skill ID</th><th>名称</th><th>版本</th><th>来源 / 作用域</th><th>状态</th><th>启用</th><th>操作</th></tr></thead>
+              <tbody><tr><td colspan="7" class="empty">切换到本页后读取 Skills…</td></tr></tbody>
+            </table>
+          </div>
+        </section>
         <div id="skillsStatus" class="notice"></div>
       </section>
+
+      <dialog id="skillDialog" class="skill-dialog" aria-labelledby="skillDialogTitle">
+        <form id="skillEditForm">
+          <div class="skill-dialog-head">
+            <div>
+              <p class="eyebrow">SKILL EDITOR</p>
+              <h2 id="skillDialogTitle">编辑 Skill</h2>
+              <small id="skillDialogMeta" class="muted"></small>
+            </div>
+            <button id="closeSkillDialogBtn" type="button" class="dialog-close" aria-label="关闭">×</button>
+          </div>
+          <div class="skill-dialog-fields">
+            <label>名称<input id="skillNameInput" required /></label>
+            <label>状态<select id="skillStatusInput"><option value="DRAFT">DRAFT</option><option value="PUBLISHED">PUBLISHED</option><option value="DISABLED">DISABLED</option></select></label>
+            <label class="skill-dialog-toggle">启用<input id="skillEnabledInput" type="checkbox" /></label>
+            <label>允许调用的 Tools（逗号分隔）<input id="skillAllowedToolsInput" /></label>
+            <label>依赖条件（逗号分隔）<input id="skillDependenciesInput" /></label>
+            <label class="wide">Skill 内容 / 行为指令<textarea id="skillContentInput" rows="10"></textarea></label>
+          </div>
+          <div class="dialog-actions"><button id="cancelSkillBtn" type="button" class="secondary">取消</button><button id="saveSkillBtn" type="submit">保存 Skill</button></div>
+        </form>
+      </dialog>
 
       <section id="testPanel" class="tab-panel">
         <section class="card panel-head">
@@ -92,6 +140,6 @@
         <pre id="testLog" class="test-log card"></pre>
       </section>
     </main>
-    <script src="/app.js?v=20260828-skill2" type="module"></script>
+    <script src="/app.js?v=20260828-umc-login1" type="module"></script>
   </body>
 </html>

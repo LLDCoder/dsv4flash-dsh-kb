@@ -27,6 +27,7 @@ from .skills import (
     response_language_for,
 )
 from .tool_gateway import ToolGateway, parse_tool_request
+from .umc_auth import UMCAuthClient
 
 
 WELCOME_MESSAGE = """Hello! 👋 I’m your AI assistant for the National Media Authority (NMA). Tell me about your work or publishing needs, and I’ll help you find the right services.
@@ -65,6 +66,7 @@ class DSHService:
         from .config import get_settings
         self.settings = get_settings()
         self.documents = CustomerDocumentClient(self.settings)
+        self.umc_auth = UMCAuthClient(self.settings)
         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
         self._writer_locks: dict[str, asyncio.Lock] = {}
 
@@ -391,7 +393,7 @@ class DSHService:
                             tool_result = {"ok": False, "code": "external_tools_disabled", "toolName": tool_name}
                         elif isinstance(attachment_argument, dict):
                             try:
-                                document_data_url = await self.documents.as_data_url(
+                                document_base64 = await self.documents.as_base64(
                                     str(attachment_argument.get("fileRef", "")),
                                     mime_type=str(attachment_argument.get("mimeType", "")),
                                     umc_token=principal.umc_token,
@@ -400,7 +402,7 @@ class DSHService:
                                     principal,
                                     tool_name,
                                     {
-                                        "file": document_data_url,
+                                        "file": document_base64,
                                         "fileType": attachment_argument.get("fileType"),
                                     },
                                 )

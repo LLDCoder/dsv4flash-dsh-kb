@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     ocr_timeout_seconds: float = 300.0
     umc_document_base_url: str = ""
     umc_document_timeout_seconds: float = 60.0
+    # The local test console obtains a short-lived UMC customer token through
+    # the real portal login endpoint. Credentials are injected by Docker env
+    # and never sent to the browser or persisted in the database.
+    umc_login_url: str = "http://77.242.240.158:18085/api/User/Login"
+    umc_login_email: str = ""
+    umc_login_password: str = ""
+    umc_login_timeout_seconds: float = 30.0
     knowledge_gateway_url: str = "http://knowledge-gateway:8101"
     knowledge_timeout_seconds: float = 30.0
     knowledge_retry_attempts: int = 2

@@ -116,7 +116,7 @@ curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/message
 - 兼容应用分页：`POST /api/MyRequest/ApplicationPage`，请求体 `{"pageIndex":1,"pageSize":100}`；如启用，仍只转发当前请求的 UMC Token。
 - 更新版 Data Access 工具见上节；申请详情、ISBN 和新增草稿使用 `umc.application_detail`、`umc.book_by_isbn`、`umc.add_application`，不会配置固定平台 Token。
 
-新的 UMC 代理不要求 DSH 配置平台 Token、Data Gateway Token 或固定账号。前端登录后获得的 `umctoken` 必须在每次 HTTP 请求的 `Authorization` 头中传入；浏览器 WebSocket 则在连接后发送一次 `{"type":"auth","umctoken":"..."}`。本地没有可用的 UMC Token 时，DSH 只返回“需要认证”，不生成个人账户结果。
+新的 UMC 代理不要求 DSH 配置平台 Token 或 Data Gateway Token。生产调用方可在登录后将 `umctoken` 在每次 HTTP 请求的 `Authorization` 头中传入；浏览器 WebSocket 则在连接后发送一次 `{"type":"auth","umctoken":"..."}`。本地 Docker 测试控制台会使用 `.env` 中的既有测试账号自动完成客户门户登录，再按同样方式透传短期 Token；未配置账号时，DSH 只返回“需要认证”，不生成个人账户结果。
 
 ## 启动
 
@@ -136,6 +136,8 @@ docker compose --env-file .env.lite -f docker-compose.lite.yml up --build -d
 该模式使用 `.env.lite` 中配置的远程 PostgreSQL，启动前端、Backend、Redis、Platform Gateway 和 Knowledge Gateway。Knowledge Gateway 复用 `.env.example` 的 `KNOWLEDGE_*` 配置，连接既有远端 UMC 知识库；它不运行本地知识库数据库。该模式不会声明或拉取 `ocr-gateway`、`ocr-vl-api`、`ocr-vlm-server` 或本地 PostgreSQL，因此 OCR Tool 会返回不可用，普通聊天、会话历史、LLM、知识库检索和 UMC 平台接口仍可使用。默认 `.env.lite` 使用 `18180`，避免占用常见的本地 `18080` 端口。
 
 客户门户附件上传后，DSH 使用 `UMC_DOCUMENT_BASE_URL` 和当前回合的 UMC Bearer Token 从 `/api/Document/Dowload` 读取文件，再交给内部 OCR。Token 不写入会话事件；事件仅保存文件引用、文件名、MIME 类型和 PDF/图片类型。轻量模式不启动 OCR，因此附件消息会明确提示文档解析尚不可用，而不会生成脱离附件内容的回答。
+
+测试控制台的对话页提供“附件（可仅提交附件）”区域：页面打开时，Backend 使用 `.env` 中配置的既有 UMC 测试账号调用真实 `POST http://77.242.240.158:18085/api/User/Login`，按客户门户格式加密密码并在内存缓存短期 Token；前端只显示脱敏账号和状态，不要求手工粘贴 Token。选择本地 PDF/图片后，前端通过同源 Nginx 代理自动调用 `POST http://77.242.240.158:18085/api/Document/Upload`（优先 multipart 字段 `file`；针对当前 77 门户返回 `data=[]` 的兼容情况自动回退 `files`），使用当前内存会话；上传返回的对象引用会自动放入附件消息，问题文本可以留空后发送。Backend 下载对象后向 PaddleOCR-VL 传纯 Base64（不带 data URL 前缀）和 `fileType`，符合官方 serving API 的解码方式。密码和原始 Token 不写入前端构建产物、会话事件或普通日志。
 
 轻量和全量模式使用同一个 Compose 项目名与数据卷，因此会话历史可在两种模式间保留。若此前已运行全量模式，切换前先停止不需要的服务：
 
@@ -165,8 +167,8 @@ docker compose up -d
 访问：
 
 - 测试控制台：http://localhost:18080（可用 `FRONTEND_PORT` 覆盖）
-- 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL、Tool 开关和可编辑的全局系统提示词；系统提示词会追加到每轮请求，但内置语言、安全和证据规则仍优先。UMC Token 可先通过客户门户 `/api/User/Login` 获取，再在对话测试栏按当前会话输入，不保存到配置页。API Key/DB/Redis 只显示配置状态，不回显密文。
-- Skill 配置：在控制台“Skill 配置”页查看和编辑 system Skill 的名称、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。
+- 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL、Tool 开关和可编辑的全局系统提示词；系统提示词会追加到每轮请求，但内置语言、安全和证据规则仍优先。UMC 会话由 Backend 使用环境变量中的既有测试账号自动获取，页面只显示脱敏状态，不提供手工 Token 输入。API Key/DB/Redis 只显示配置状态，不回显密文。
+- Skills 配置：在控制台“Skills 配置”页以列表查看 system Skill，点击“编辑”后在弹窗中修改名称、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。
 - 多语言业务测试：在控制台“多语言业务测试”页从 `/umc` 知识库目录生成 English/العربية 测试集，并执行 DSH 端到端路由、检索、Tool 和 5 分制评分。
 - DSH API Swagger：http://localhost:8000/docs
 - DSH OpenAPI JSON：http://localhost:8000/openapi.json

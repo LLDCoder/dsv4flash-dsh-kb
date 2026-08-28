@@ -1,4 +1,4 @@
-const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", configItems: [], skills: [], skillsLoaded: false, testCases: [], testResults: [] };
+const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, attachment: null, umcToken: "", umcTokenPromise: null, testCases: [], testResults: [] };
 const $ = (id) => document.getElementById(id);
 
 function containsArabic(text) {
@@ -37,12 +37,52 @@ function addEvent(type, content, meta = "") {
 }
 
 async function api(path, options = {}) {
-  const rawToken = $("umcToken")?.value.trim() || "";
+  const rawToken = state.umcToken || $("umcToken")?.value.trim() || "";
   const headers = { "Content-Type": "application/json", "X-User-Id": $("userId").value, "X-Tenant-Id": $("tenantId").value, ...(options.headers || {}) };
   if (rawToken && !headers.Authorization) headers.Authorization = rawToken.toLowerCase().startsWith("bearer ") ? rawToken : `Bearer ${rawToken}`;
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
+}
+
+function setUmcSessionStatus(text, online = false) {
+  const field = $("umcSessionStatus");
+  if (!field) return;
+  field.value = text;
+  field.classList.toggle("session-ready", online);
+  field.classList.toggle("session-error", !online && /失败|未配置|无法|要求/.test(text));
+}
+
+async function loadUmcToken(force = false) {
+  if (!force && state.umcToken) return { token: state.umcToken };
+  if (!state.umcTokenPromise || force) {
+    state.umcTokenPromise = (async () => {
+      setUmcSessionStatus("正在自动获取…");
+      try {
+        const data = await api(`/api/v1/umc/session${force ? "?refresh=true" : ""}`, { method: "POST", body: "{}" });
+        const token = String(data.token || "").trim();
+        if (!token) throw new Error("UMC 登录响应未返回 Token");
+        state.umcToken = token;
+        // Keep this only in the current page memory. The hidden field exists
+        // solely for compatibility with the request header helper.
+        $("umcToken").value = token;
+        const minutes = Number(data.expiresInMinutes || 0);
+        const suffix = minutes > 0 ? `（约 ${minutes} 分钟有效）` : "";
+        setUmcSessionStatus(`已自动登录：${data.account || "UMC 账号"}${suffix}`, true);
+        return data;
+      } catch (error) {
+        state.umcToken = "";
+        $("umcToken").value = "";
+        setUmcSessionStatus(`自动登录失败：${error.message}`);
+        throw error;
+      }
+    })();
+  }
+  try {
+    return await state.umcTokenPromise;
+  } finally {
+    state.umcTokenPromise = null;
+  }
 }
 
 function setTab(tabId) {
@@ -123,78 +163,48 @@ function parseSkillValues(value) {
     .filter(Boolean);
 }
 
-function skillField(parent, labelText, value, options = {}) {
-  const label = document.createElement("label");
-  label.className = `skill-field${options.wide ? " wide" : ""}`;
-  const title = document.createElement("span");
-  title.textContent = labelText;
-  const control = options.textarea ? document.createElement("textarea") : document.createElement("input");
-  if (options.textarea) control.rows = options.rows || 7;
-  control.value = value || "";
-  if (options.field) control.dataset.field = options.field;
-  label.append(title, control);
-  parent.appendChild(label);
-  return control;
-}
-
 function renderSkills(items) {
   state.skills = items;
   state.skillsLoaded = true;
-  const form = $("skillsForm");
-  form.replaceChildren();
+  const body = $("skillsTable").querySelector("tbody");
+  body.replaceChildren();
   if (!items.length) {
-    form.innerHTML = '<div class="empty">暂未找到 system 作用域 Skill。</div>';
+    body.innerHTML = '<tr><td colspan="7" class="empty">暂未找到 system 作用域 Skill。</td></tr>';
     return;
   }
   items.forEach((item) => {
-    const card = document.createElement("article");
-    card.className = "skill-editor card";
-    card.dataset.skillId = item.skillId;
-    card.dataset.version = String(item.version || 1);
-    card.dataset.source = item.source || "ops";
-    card.dataset.scope = item.scope || "system";
-
-    const head = document.createElement("div");
-    head.className = "skill-editor-head";
-    const title = document.createElement("div");
+    const row = document.createElement("tr");
+    row.dataset.skillId = item.skillId;
+    const idCell = document.createElement("td");
     const id = document.createElement("code");
+    id.className = "skill-id";
     id.textContent = item.skillId;
-    const meta = document.createElement("small");
-    meta.textContent = `v${item.version || 1} · ${item.source || "ops"} · ${item.scope || "system"}`;
-    title.append(id, meta);
-    const controls = document.createElement("div");
-    controls.className = "skill-editor-controls";
-    const status = document.createElement("select");
-    status.dataset.field = "status";
-    ["DRAFT", "PUBLISHED", "DISABLED"].forEach((value) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = value;
-      option.selected = value === item.status;
-      status.appendChild(option);
-    });
-    const statusLabel = document.createElement("label");
-    statusLabel.className = "skill-status";
-    statusLabel.append("状态", status);
-    const enabled = document.createElement("input");
-    enabled.type = "checkbox";
-    enabled.dataset.field = "enabled";
-    enabled.checked = Boolean(item.enabled);
-    const enabledLabel = document.createElement("label");
-    enabledLabel.className = "skill-toggle";
-    enabledLabel.append(enabled, "启用");
-    controls.append(statusLabel, enabledLabel);
-    head.append(title, controls);
-    card.appendChild(head);
-
-    const fields = document.createElement("div");
-    fields.className = "skill-fields";
-    skillField(fields, "名称", item.name, { field: "name" });
-    skillField(fields, "允许调用的 Tools（逗号分隔）", splitSkillValues(item.allowedTools), { field: "allowedTools" });
-    skillField(fields, "依赖条件（逗号分隔）", splitSkillValues(item.dependencies), { field: "dependencies" });
-    skillField(fields, "Skill 内容 / 行为指令", item.content, { field: "content", textarea: true, wide: true });
-    card.appendChild(fields);
-    form.appendChild(card);
+    idCell.appendChild(id);
+    const nameCell = document.createElement("td");
+    nameCell.className = "skill-name";
+    nameCell.textContent = item.name || "—";
+    const versionCell = document.createElement("td");
+    versionCell.textContent = `v${item.version || 1}`;
+    const sourceCell = document.createElement("td");
+    sourceCell.textContent = `${item.source || "ops"} / ${item.scope || "system"}`;
+    const statusCell = document.createElement("td");
+    const status = document.createElement("span");
+    status.className = `skill-badge skill-status-${String(item.status || "DRAFT").toLowerCase()}`;
+    status.textContent = item.status || "DRAFT";
+    statusCell.appendChild(status);
+    const enabledCell = document.createElement("td");
+    enabledCell.textContent = item.enabled ? "启用" : "停用";
+    enabledCell.className = item.enabled ? "skill-enabled" : "skill-disabled";
+    const actionCell = document.createElement("td");
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "secondary skill-edit-button";
+    editButton.dataset.action = "edit-skill";
+    editButton.dataset.skillId = item.skillId;
+    editButton.textContent = "编辑";
+    actionCell.appendChild(editButton);
+    row.append(idCell, nameCell, versionCell, sourceCell, statusCell, enabledCell, actionCell);
+    body.appendChild(row);
   });
 }
 
@@ -208,37 +218,64 @@ async function loadSkills() {
   }
 }
 
-async function saveSkills() {
-  const cards = [...document.querySelectorAll("#skillsForm .skill-editor")];
-  if (!cards.length) {
-    $("skillsStatus").textContent = "没有可保存的 Skill。";
+function openSkillEditor(skillId) {
+  const item = state.skills.find((skill) => skill.skillId === skillId);
+  if (!item) return;
+  state.editingSkillId = skillId;
+  $("skillDialogTitle").textContent = `编辑 ${item.name || item.skillId}`;
+  $("skillDialogMeta").textContent = `${item.skillId} · v${item.version || 1} · ${item.source || "ops"} / ${item.scope || "system"}`;
+  $("skillNameInput").value = item.name || "";
+  $("skillStatusInput").value = item.status || "DRAFT";
+  $("skillEnabledInput").checked = Boolean(item.enabled);
+  $("skillAllowedToolsInput").value = splitSkillValues(item.allowedTools);
+  $("skillDependenciesInput").value = splitSkillValues(item.dependencies);
+  $("skillContentInput").value = item.content || "";
+  $("skillDialog").showModal();
+  $("skillNameInput").focus();
+}
+
+function closeSkillEditor() {
+  const dialog = $("skillDialog");
+  if (dialog.open) dialog.close();
+  state.editingSkillId = null;
+}
+
+async function saveSkillEditor(event) {
+  event.preventDefault();
+  const skillId = state.editingSkillId;
+  const item = state.skills.find((skill) => skill.skillId === skillId);
+  if (!item) {
+    closeSkillEditor();
     return;
   }
-  $("saveSkillsBtn").disabled = true;
-  $("skillsStatus").textContent = `正在保存 ${cards.length} 个 Skill…`;
+  const name = $("skillNameInput").value.trim();
+  if (!name) {
+    $("skillNameInput").focus();
+    $("skillsStatus").textContent = `${skillId} 的名称不能为空。`;
+    return;
+  }
+  $("saveSkillBtn").disabled = true;
+  $("skillsStatus").textContent = `正在保存 ${skillId}…`;
   try {
-    for (const card of cards) {
-      const field = (name) => card.querySelector(`[data-field="${name}"]`);
-      const payload = {
-        name: field("name").value.trim(),
-        version: Number(card.dataset.version || 1),
-        source: card.dataset.source || "ops",
-        status: field("status").value,
-        scope: card.dataset.scope || "system",
-        enabled: field("enabled").checked,
-        allowedTools: parseSkillValues(field("allowedTools").value),
-        dependencies: parseSkillValues(field("dependencies").value),
-        content: field("content").value,
-      };
-      if (!payload.name) throw new Error(`${card.dataset.skillId} 的名称不能为空`);
-      await api(`/api/v1/skills/${encodeURIComponent(card.dataset.skillId)}`, { method: "PUT", body: JSON.stringify(payload) });
-    }
+    const payload = {
+      name,
+      version: Number(item.version || 1),
+      source: item.source || "ops",
+      status: $("skillStatusInput").value,
+      scope: item.scope || "system",
+      enabled: $("skillEnabledInput").checked,
+      allowedTools: parseSkillValues($("skillAllowedToolsInput").value),
+      dependencies: parseSkillValues($("skillDependenciesInput").value),
+      content: $("skillContentInput").value,
+    };
+    await api(`/api/v1/skills/${encodeURIComponent(skillId)}`, { method: "PUT", body: JSON.stringify(payload) });
     await loadSkills();
-    $("skillsStatus").textContent = "Skills 已保存；新建会话后的后续请求会使用已发布且启用的 Skill 内容。";
+    closeSkillEditor();
+    $("skillsStatus").textContent = "Skill 已保存；后续请求会使用已发布且启用的 Skill 内容。";
   } catch (error) {
-    $("skillsStatus").textContent = `保存 Skills 失败：${error.message}`;
+    $("skillsStatus").textContent = `保存 Skill 失败：${error.message}`;
   } finally {
-    $("saveSkillsBtn").disabled = false;
+    $("saveSkillBtn").disabled = false;
   }
 }
 
@@ -260,6 +297,112 @@ async function saveConfig() {
   } catch (error) {
     $("configStatus").textContent = `保存配置失败：${error.message}`;
   }
+}
+
+function inferMimeType(fileName) {
+  const name = String(fileName || "").toLowerCase();
+  if (name.endsWith(".pdf")) return "application/pdf";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".webp")) return "image/webp";
+  return "application/octet-stream";
+}
+
+function readAttachment() {
+  const uploaded = state.attachment;
+  const selectedFile = $("attachmentPicker").files?.[0];
+  if (!uploaded) {
+    if (selectedFile) throw new Error("附件正在上传或上传失败，请等待上传完成后再发送。");
+    return null;
+  }
+  const fileRef = uploaded.fileRef;
+  const fileName = $("attachmentName").value.trim() || uploaded.fileName;
+  const mimeType = $("attachmentMime").value.trim() || uploaded.mimeType || inferMimeType(fileName);
+  if (!fileName || !mimeType) throw new Error("附件文件名和 MIME 类型不能为空。");
+  return { fileRef, fileName, mimeType, fileType: Number($("attachmentType").value) };
+}
+
+function extractUploadReference(value, depth = 0) {
+  if (depth > 6 || value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  if (Array.isArray(value)) return value.map((item) => extractUploadReference(item, depth + 1)).find(Boolean) || "";
+  if (typeof value !== "object") return "";
+  for (const key of ["url", "fileUrl", "filePath", "fileRef", "key", "objectKey", "objectName", "path", "data"]) {
+    const reference = extractUploadReference(value[key], depth + 1);
+    if (reference) return reference;
+  }
+  return "";
+}
+
+async function postAttachment(file, token, fieldName) {
+  const formData = new FormData();
+  formData.append(fieldName, file, file.name);
+  const response = await fetch("/umc-api/Document/Upload", {
+    method: "POST",
+    headers: { Authorization: token.toLowerCase().startsWith("bearer ") ? token : `Bearer ${token}` },
+    body: formData,
+  });
+  const rawBody = await response.text();
+  let payload = rawBody;
+  try { payload = rawBody ? JSON.parse(rawBody) : rawBody; } catch { /* UMC may return a plain object key. */ }
+  return { response, payload, fileRef: response.ok ? extractUploadReference(payload) : "" };
+}
+
+async function uploadAttachment(file) {
+  try {
+    await loadUmcToken();
+  } catch {
+    $("attachmentStatus").textContent = "UMC 自动登录失败，附件未上传。";
+    $("attachmentPicker").value = "";
+    return;
+  }
+  const rawToken = state.umcToken;
+  state.attachment = null;
+  $("attachmentRef").value = "";
+  $("attachmentName").value = file.name;
+  $("attachmentMime").value = file.type || inferMimeType(file.name);
+  $("attachmentType").value = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf") ? "0" : "1";
+  $("attachmentStatus").textContent = `正在上传 ${file.name}…`;
+  try {
+    let result = await postAttachment(file, rawToken, "file");
+    // The documented field is singular, but the current 77 portal build has
+    // a compatibility quirk: it may answer 200/data=[] for `file` and return
+    // the object reference only for the frontend's historical `files` field.
+    if (result.response.status === 401) {
+      state.umcToken = "";
+      $("umcToken").value = "";
+      await loadUmcToken(true);
+      result = await postAttachment(file, state.umcToken, "file");
+    }
+    if (!result.fileRef && result.response.status !== 401) result = await postAttachment(file, state.umcToken, "files");
+    const { response, payload, fileRef } = result;
+    if (!response.ok) throw new Error(typeof payload === "string" ? payload || `HTTP ${response.status}` : JSON.stringify(payload));
+    if (!fileRef) throw new Error("上传成功但 UMC 响应中没有文件对象引用。");
+    state.attachment = { fileRef, fileName: file.name, mimeType: file.type || inferMimeType(file.name) };
+    $("attachmentRef").value = fileRef;
+    $("attachmentStatus").textContent = `上传成功：${file.name}；现在可以发送问题或仅提交附件。`;
+  } catch (error) {
+    state.attachment = null;
+    $("attachmentRef").value = "";
+    $("attachmentPicker").value = "";
+    $("attachmentStatus").textContent = `附件上传失败：${error.message}`;
+  }
+}
+
+function clearAttachment() {
+  $("attachmentPicker").value = "";
+  $("attachmentRef").value = "";
+  $("attachmentName").value = "";
+  $("attachmentMime").value = "";
+  $("attachmentType").value = "0";
+  state.attachment = null;
+  $("attachmentStatus").textContent = "附件已清除。";
+}
+
+function onAttachmentPicked(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  uploadAttachment(file);
 }
 
 function renderTestTable() {
@@ -351,13 +494,19 @@ async function createConversation() {
   return data;
 }
 
-function connect() {
+async function connect() {
+  try {
+    await loadUmcToken();
+  } catch {
+    setConnection("UMC 未登录", false);
+    return;
+  }
   if (state.ws && state.ws.readyState <= 1) state.ws.close();
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   state.ws = new WebSocket(`${protocol}://${location.host}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
   state.ws.onopen = async () => {
     setConnection("已连接", true);
-    const umcToken = $("umcToken")?.value.trim() || "";
+    const umcToken = state.umcToken || $("umcToken")?.value.trim() || "";
     if (umcToken) state.ws.send(JSON.stringify({ type: "auth", umctoken: umcToken }));
     if (!state.conversationId && !$("conversationId").value) {
       await createConversation();
@@ -390,7 +539,8 @@ function connect() {
       if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", state.assistantContent, `seq ${packet.seq}`);
       else renderLocalizedContent(state.assistantNode, state.assistantContent);
     } else if (packet.eventType === "user.message") {
-      addEvent("user.message", data.content || "", `seq ${packet.seq}`);
+      const attachmentNote = data.attachment ? `附件：${data.attachment.fileName || "未命名文件"}` : "";
+      addEvent("user.message", data.content || attachmentNote, `seq ${packet.seq}`);
       state.assistantNode = null;
       state.assistantContent = "";
     } else {
@@ -400,22 +550,49 @@ function connect() {
 }
 
 $("createBtn").addEventListener("click", async () => { try { await createConversation(); } catch (error) { addEvent("system.error", error.message); } });
-$("connectBtn").addEventListener("click", connect);
+$("connectBtn").addEventListener("click", () => { void connect(); });
 document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
 $("reloadConfigBtn").addEventListener("click", loadConfig);
 $("saveConfigBtn").addEventListener("click", saveConfig);
 $("reloadSkillsBtn").addEventListener("click", loadSkills);
-$("saveSkillsBtn").addEventListener("click", saveSkills);
+$("skillsTable").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-action=edit-skill]");
+  if (button) openSkillEditor(button.dataset.skillId);
+});
+$("skillEditForm").addEventListener("submit", saveSkillEditor);
+$("cancelSkillBtn").addEventListener("click", closeSkillEditor);
+$("closeSkillDialogBtn").addEventListener("click", closeSkillEditor);
+$("skillDialog").addEventListener("click", (event) => {
+  if (event.target === $("skillDialog")) closeSkillEditor();
+});
+$("attachmentPicker").addEventListener("change", onAttachmentPicked);
+$("clearAttachmentBtn").addEventListener("click", clearAttachment);
 $("generateTestsBtn").addEventListener("click", generateTests);
 $("runTestsBtn").addEventListener("click", runTests);
 $("selectAllTests").addEventListener("change", (event) => document.querySelectorAll(".case-check").forEach((node) => { node.checked = event.target.checked; }));
 $("messageForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const content = $("message").value.trim();
-  if (!content) return;
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) connect();
+  let attachment = null;
+  try {
+    attachment = readAttachment();
+  } catch (error) {
+    $("attachmentStatus").textContent = error.message;
+    return;
+  }
+  if (!content && !attachment) return;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) await connect();
   await new Promise((resolve) => setTimeout(resolve, 50));
   state.conversationId = state.conversationId || $("conversationId").value;
-  state.ws.send(JSON.stringify({ type: "message", conversationId: state.conversationId, content, clientMessageId: crypto.randomUUID() }));
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    $("attachmentStatus").textContent = "WebSocket 尚未连接，请先点击“连接 WS”。";
+    return;
+  }
+  state.ws.send(JSON.stringify({ type: "message", conversationId: state.conversationId, content, attachment, clientMessageId: crypto.randomUUID() }));
   $("message").value = "";
+  if (attachment) $("attachmentStatus").textContent = `已发送附件：${attachment.fileName}`;
 });
+
+// Obtain the configured account's UMC session as soon as the console opens;
+// operators should never need to paste a token before uploading or connecting.
+void loadUmcToken().catch(() => {});
