@@ -32,6 +32,12 @@ class UMCAuthClient:
         self._expires_at = 0.0
         self._lock = asyncio.Lock()
 
+    def invalidate(self) -> None:
+        """Drop the in-memory token when the selected portal changes."""
+
+        self._token = ""
+        self._expires_at = 0.0
+
     @classmethod
     def _encrypt_password(cls, password: str) -> str:
         # CryptoJS's Pkcs7 padding is equivalent to the 16-byte block padding
@@ -93,7 +99,7 @@ class UMCAuthClient:
                 }
             email = (self.settings.umc_login_email or "").strip().lower()
             password = self.settings.umc_login_password or ""
-            url = (self.settings.umc_login_url or "").strip()
+            url = self.settings.umc_login_endpoint
             if not email or not password or not url:
                 raise UMCAuthError("UMC 自动登录未配置账号、密码或登录地址")
             request_body = {

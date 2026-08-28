@@ -26,15 +26,29 @@ class Settings(BaseSettings):
     external_tools_enabled: bool = True
     ocr_gateway_url: str = "http://ocr-gateway:8100"
     ocr_timeout_seconds: float = 300.0
+    # UMC ships separate customer, public and admin portals. Keep the selected
+    # portal in one environment switch so every backend call uses the same
+    # upstream base URL. A base URL may include the customer portal's `/login`
+    # frontend route; the helper below strips that route before appending API
+    # paths.
+    umc_portal: str = "customer"
+    umc_customer_base_url: str = "https://umc-customerportal.sol.daypop.ai"
+    umc_admin_base_url: str = "https://umc-adminportal.sol.daypop.ai"
+    # Optional legacy overrides. Leave blank to derive the endpoints from the
+    # selected portal base URL.
     umc_document_base_url: str = ""
     umc_document_timeout_seconds: float = 60.0
     # The local test console obtains a short-lived UMC customer token through
     # the real portal login endpoint. Credentials are injected by Docker env
     # and never sent to the browser or persisted in the database.
-    umc_login_url: str = "http://77.242.240.158:18085/api/User/Login"
+    umc_login_url: str = ""
     umc_login_email: str = ""
     umc_login_password: str = ""
     umc_login_timeout_seconds: float = 30.0
+    # Audit records are retained independently from user-visible conversation
+    # history. The sweeper runs periodically and removes expired audit rows.
+    audit_retention_days: int = 30
+    audit_cleanup_interval_seconds: int = 3600
     knowledge_gateway_url: str = "http://knowledge-gateway:8101"
     knowledge_timeout_seconds: float = 30.0
     knowledge_retry_attempts: int = 2
@@ -42,6 +56,31 @@ class Settings(BaseSettings):
     knowledge_top_k: int = 32
     platform_gateway_url: str = "http://platform-gateway:8102"
     platform_timeout_seconds: float = 30.0
+
+    @staticmethod
+    def _portal_base(value: str) -> str:
+        base = (value or "").strip().rstrip("/")
+        if base.lower().endswith("/login"):
+            base = base[:-len("/login")].rstrip("/")
+        return base
+
+    @property
+    def umc_base_url(self) -> str:
+        portal = (self.umc_portal or "customer").strip().lower()
+        if portal not in {"customer", "admin", "public"}:
+            portal = "customer"
+        selected = self.umc_admin_base_url if portal == "admin" else self.umc_customer_base_url
+        return self._portal_base(selected)
+
+    @property
+    def umc_login_endpoint(self) -> str:
+        override = (self.umc_login_url or "").strip().rstrip("/")
+        return override or f"{self.umc_base_url}/api/User/Login"
+
+    @property
+    def umc_document_service_base_url(self) -> str:
+        override = (self.umc_document_base_url or "").strip().rstrip("/")
+        return override or self.umc_base_url
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
@@ -74,8 +113,13 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "platform_gateway_url", "label": "Swagger Tool URL", "env": "PLATFORM_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "platform_timeout_seconds", "label": "Swagger 超时（秒）", "env": "PLATFORM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "ocr_gateway_url", "label": "OCR Tool URL", "env": "OCR_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
+    {"key": "umc_portal", "label": "UMC Portal 环境", "env": "UMC_PORTAL", "secret": False, "restartRequired": False, "options": ["customer", "admin", "public"], "description": "customer、admin 或 public；public 复用 Customer Portal 地址。切换后新的登录、上传和下载请求使用对应 Portal。", "group": "UMC Portal"},
+    {"key": "umc_customer_base_url", "label": "Customer Portal Base URL", "env": "UMC_CUSTOMER_BASE_URL", "secret": False, "restartRequired": False, "group": "UMC Portal"},
+    {"key": "umc_admin_base_url", "label": "Admin Portal Base URL", "env": "UMC_ADMIN_BASE_URL", "secret": False, "restartRequired": False, "group": "UMC Portal"},
     {"key": "umc_document_base_url", "label": "UMC Document URL", "env": "UMC_DOCUMENT_BASE_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "external_tools_enabled", "label": "启用外部 Tools", "env": "EXTERNAL_TOOLS_ENABLED", "secret": False, "restartRequired": False, "group": "外部 Tool"},
+    {"key": "audit_retention_days", "label": "链路审计留存天数", "env": "AUDIT_RETENTION_DAYS", "secret": False, "restartRequired": False, "description": "审计表保留最近 N 天；会话历史不受此项影响。", "group": "链路审计"},
+    {"key": "audit_cleanup_interval_seconds", "label": "审计清理周期（秒）", "env": "AUDIT_CLEANUP_INTERVAL_SECONDS", "secret": False, "restartRequired": False, "description": "后台周期清理审计过期记录，最短按 60 秒执行。", "group": "链路审计"},
 )
 
 

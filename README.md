@@ -18,6 +18,10 @@
 - Knowledge Tool Gateway：只由 DSH Runtime 调用的内部知识库工具服务，转发到 77 服务器 `18085` 的 `public/knowledge` 匿名只读接口；目录、文件和检索请求不向上游携带 Authorization。DSH 逻辑默认 `top_k=32`，向上游传递 BM25、图谱和向量三路检索模式；当前 77 代理对单次 `top_k` 的校验上限为 20，因此网关仅将线路参数安全截断到 `KNOWLEDGE_UPSTREAM_MAX_TOP_K=20`，避免上游 422；不开放上传、解析、删除、移动或原文件下载。
 - Platform Data Access Gateway：只由 DSH Runtime 调用的内部平台接口服务，连接同一台 77 服务器的 UMC Data Access 根地址；仅转发申请详情、ISBN 查询和受控新增草稿三个已发布端点，调用必须携带当前请求的 UMC Token。正式提交 `type=1` 在网关层拒绝。
 
+## 链路审计与数据留存
+
+Backend 会把每轮用户/助手对话、Skill 路由、DSH Tool 调用与结果、LLM 请求元数据、流式回答和可用的 `reasoning_content` 写入 PostgreSQL 的 `audit_record` 表。审计记录按 `requestId`、`runtimeId`、会话和类别建立索引，Token、密码、Authorization、API Key 等凭据形态字段会在审计副本中脱敏；原始 UMC Token 不写入数据库。Backend 后台清理任务按运行配置 `AUDIT_RETENTION_DAYS`（默认 30 天）和 `AUDIT_CLEANUP_INTERVAL_SECONDS`（默认 3600 秒）周期删除过期审计记录，用户可在控制台“运行配置 → 链路审计”热更新这两个值；该策略只清理审计表，不删除用户可见的会话历史。
+
 当前 MVP 的运行面使用后端容器内的逻辑 Runtime Lease，接口已将实例管理边界独立出来；后续可以把 `RuntimeManager` 的启动/清理实现替换为 Docker/Kubernetes 动态容器调度，而不改变会话、事件和 WebSocket 契约。
 
 ## 对话语言与欢迎语
@@ -83,9 +87,21 @@ curl -X POST http://localhost:8000/api/v1/conversations/{conversationId}/message
 
 上游统一地址：`http://77.242.240.158:18085/api/platform/api/v1/public/data-access`。它是匿名 Backend 代理，但调用方必须携带自己的 UMC Bearer Token；DSH 不再配置或转发其他平台 Token。
 
+### UMC Portal 环境切换
+
+客户门户和后台门户是两套前后端系统，DSH 通过 Backend 环境变量统一选择上游 Base URL：
+
+```dotenv
+UMC_PORTAL=customer
+UMC_CUSTOMER_BASE_URL=https://umc-customerportal.sol.daypop.ai
+UMC_ADMIN_BASE_URL=https://umc-adminportal.sol.daypop.ai
+```
+
+将 `UMC_PORTAL` 改为 `admin` 并重建 Backend，即切换到 Admin Portal；`customer` 使用 Customer Portal；`public` 也使用 Customer Portal Base URL，供公开入口场景标识。Customer URL 可以写成带 `/login` 的页面地址，DSH 会自动去掉该后缀，再拼接 `/api/User/Login`、`/api/Document/Upload` 和 `/api/Document/Dowload`。`UMC_LOGIN_URL`、`UMC_DOCUMENT_BASE_URL` 仍可作为兼容旧环境的显式覆盖项，留空时完全由上述开关决定。运行配置页会显示当前开关和两套 Base URL，并提供 `customer`、`admin`、`public` 三个选项。
+
 ### UMC 客户登录 Token
 
-客户门户获取 UMC Token 使用：`POST http://77.242.240.158:18085/api/User/Login`。请求体由客户门户前端组装，字段为 `loginProvider`（邮箱）、`providerKey`（前端加密后的密码）和 `loginType`（PC 端为 `2`）；登录成功后从响应中的 `token` 获取 UMC Bearer Token。密码不应以明文 `providerKey` 发送，也不应写入 DSH 配置或日志。
+当前选定门户获取 UMC Token 使用：`POST <UMC_BASE_URL>/api/User/Login`。请求体由对应门户前端组装，字段为 `loginProvider`（邮箱）、`providerKey`（前端加密后的密码）和 `loginType`（PC 端为 `2`）；登录成功后从响应中的 `token` 获取 UMC Bearer Token。密码不应以明文 `providerKey` 发送，也不应写入 DSH 配置或日志。
 
 `/api/v1/login/umc/access-token` 是 FF AI 平台的会话交换接口，不是客户门户登录接口，DSH 不调用该接口。拿到客户门户 Token 后，按请求放入 `Authorization: Bearer <UMC_TOKEN>`，由 DSH 透传给知识库和 UMC Data Access 代理。
 
@@ -135,9 +151,9 @@ docker compose --env-file .env.lite -f docker-compose.lite.yml up --build -d
 
 该模式使用 `.env.lite` 中配置的远程 PostgreSQL，启动前端、Backend、Redis、Platform Gateway 和 Knowledge Gateway。Knowledge Gateway 复用 `.env.example` 的 `KNOWLEDGE_*` 配置，连接既有远端 UMC 知识库；它不运行本地知识库数据库。该模式不会声明或拉取 `ocr-gateway`、`ocr-vl-api`、`ocr-vlm-server` 或本地 PostgreSQL，因此 OCR Tool 会返回不可用，普通聊天、会话历史、LLM、知识库检索和 UMC 平台接口仍可使用。默认 `.env.lite` 使用 `18180`，避免占用常见的本地 `18080` 端口。
 
-客户门户附件上传后，DSH 使用 `UMC_DOCUMENT_BASE_URL` 和当前回合的 UMC Bearer Token 从 `/api/Document/Dowload` 读取文件，再交给内部 OCR。Token 不写入会话事件；事件仅保存文件引用、文件名、MIME 类型和 PDF/图片类型。轻量模式不启动 OCR，因此附件消息会明确提示文档解析尚不可用，而不会生成脱离附件内容的回答。
+当前选定 UMC Portal 的附件上传后，DSH 使用对应 Base URL 和当前回合的 UMC Bearer Token 从 `/api/Document/Dowload` 读取文件，再交给内部 OCR。Token 不写入会话事件；事件仅保存文件引用、文件名、MIME 类型和 PDF/图片类型。轻量模式不启动 OCR，因此附件消息会明确提示文档解析尚不可用，而不会生成脱离附件内容的回答。
 
-测试控制台的对话页提供“附件（可仅提交附件）”区域：页面打开时，Backend 使用 `.env` 中配置的既有 UMC 测试账号调用真实 `POST http://77.242.240.158:18085/api/User/Login`，按客户门户格式加密密码并在内存缓存短期 Token；前端只显示脱敏账号和状态，不要求手工粘贴 Token。选择本地 PDF/图片后，前端通过同源 Nginx 代理自动调用 `POST http://77.242.240.158:18085/api/Document/Upload`（优先 multipart 字段 `file`；针对当前 77 门户返回 `data=[]` 的兼容情况自动回退 `files`），使用当前内存会话；上传返回的对象引用会自动放入附件消息，问题文本可以留空后发送。Backend 下载对象后向 PaddleOCR-VL 传纯 Base64（不带 data URL 前缀）和 `fileType`，符合官方 serving API 的解码方式。密码和原始 Token 不写入前端构建产物、会话事件或普通日志。
+测试控制台的对话页提供“附件（可仅提交附件）”区域：页面打开时，Backend 使用 `.env` 中配置的既有 UMC 测试账号调用当前选定门户的 `/api/User/Login`，按门户格式加密密码并在内存缓存短期 Token；前端只显示脱敏账号和状态，不要求手工粘贴 Token。选择本地 PDF/图片后，前端通过同源 Backend 自动调用 `/api/v1/umc/documents/upload`，由 Backend 转发至当前 Portal 的 `/api/Document/Upload`（优先 multipart 字段 `file`；兼容旧门户返回 `data=[]` 时自动回退 `files`），使用当前内存会话；上传返回的对象引用会自动放入附件消息，问题文本可以留空后发送。Backend 下载对象后向 PaddleOCR-VL 传纯 Base64（不带 data URL 前缀）和 `fileType`，符合官方 serving API 的解码方式。密码和原始 Token 不写入前端构建产物、会话事件或普通日志。
 
 轻量和全量模式使用同一个 Compose 项目名与数据卷，因此会话历史可在两种模式间保留。若此前已运行全量模式，切换前先停止不需要的服务：
 

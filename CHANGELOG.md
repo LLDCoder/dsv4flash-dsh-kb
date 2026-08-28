@@ -4,6 +4,11 @@
 
 ## 2026-08-28
 
+### UMC Portal 环境切换
+
+- 新增 `UMC_PORTAL=customer|admin|public` 环境开关及 Customer/Admin 两套 Base URL；`public` 复用 Customer Portal 地址，登录、附件上传和下载按所选 Portal 自动拼接后端 API 地址。
+- 附件上传统一经 DSH Backend 代理，不再由前端 Nginx 固定指向 77 测试服务器；保留旧门户 `file/files` 字段兼容逻辑。
+
 ### 可编辑系统提示词与 Skill 配置
 
 - 运行配置新增多行系统提示词字段，支持通过页面保存全局追加指令并热更新后续请求；内置语言、安全和知识证据规则保持更高优先级。
@@ -91,3 +96,4 @@
 - 自动获取 UMC 会话：Backend 使用客户门户 `POST /api/User/Login` 的 AES 加密登录格式，以本机 Docker `.env` 中的既有测试账号获取并缓存短期 Token；对话页移除手工 Token 输入，附件上传和 WebSocket 自动复用内存会话，密码/原始 Token 不落库。
 - 兼容 77 测试门户当前上传行为：`Document/Upload` 按文档先使用 `file`，若 200 响应没有对象引用则自动回退历史前端使用的 `files` 字段。
 - 修复 PaddleOCR-VL-1.6 附件 502：UMC 下载内容改为纯 Base64 传给官方 serving API，避免 `data:image/...;base64,` 前缀被错误解码。
+- 新增链路审计：会话内容、Skill/DSH Tool 路由与结果、LLM 请求/回答/可用 reasoning 内容写入 PostgreSQL `audit_record`，凭据字段脱敏；新增可热更新的审计留存天数与清理周期，后台周期任务自动删除过期审计记录。
