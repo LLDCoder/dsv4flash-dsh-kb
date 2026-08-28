@@ -104,6 +104,7 @@ class DSHService:
             "umc_portal",
             "umc_customer_base_url",
             "umc_admin_base_url",
+            "umc_public_base_url",
             "umc_login_url",
             "umc_login_email",
             "umc_login_password",

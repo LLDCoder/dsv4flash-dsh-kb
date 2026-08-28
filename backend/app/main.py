@@ -71,14 +71,11 @@ app.include_router(make_router(service))
 
 @app.get("/healthz")
 async def healthz():
-    umc_portal = (settings.umc_portal or "customer").strip().lower()
-    if umc_portal not in {"customer", "admin", "public"}:
-        umc_portal = "customer"
     return {
         "status": "ok",
         "service": settings.app_name,
         "runtimeMode": "embedded-lease-mvp",
-        "umcPortal": umc_portal,
+        "umcPortal": settings.umc_portal_name,
         "umcBaseUrl": settings.umc_base_url,
         "ocrGateway": settings.ocr_gateway_url,
         "knowledgeGateway": settings.knowledge_gateway_url,

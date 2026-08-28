@@ -121,6 +121,7 @@ services:
       UMC_PORTAL: ${UMC_PORTAL:-customer}
       UMC_CUSTOMER_BASE_URL: ${UMC_CUSTOMER_BASE_URL:-https://umc-customerportal.sol.daypop.ai}
       UMC_ADMIN_BASE_URL: ${UMC_ADMIN_BASE_URL:-https://umc-adminportal.sol.daypop.ai}
+      UMC_PUBLIC_BASE_URL: ${UMC_PUBLIC_BASE_URL:-}
       UMC_DOCUMENT_BASE_URL: ${UMC_DOCUMENT_BASE_URL:-}
       UMC_DOCUMENT_TIMEOUT_SECONDS: ${UMC_DOCUMENT_TIMEOUT_SECONDS:-60}
       UMC_LOGIN_URL: ${UMC_LOGIN_URL:-}

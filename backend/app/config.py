@@ -1,9 +1,11 @@
 from functools import lru_cache
+from typing import ClassVar
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    UMC_PORTALS: ClassVar[tuple[str, ...]] = ("customer", "admin", "public")
     app_name: str = "DSH External Service"
     environment: str = "development"
     database_url: str = "postgresql+asyncpg://dsh:dsh@postgres:5432/dsh"
@@ -34,6 +36,7 @@ class Settings(BaseSettings):
     umc_portal: str = "customer"
     umc_customer_base_url: str = "https://umc-customerportal.sol.daypop.ai"
     umc_admin_base_url: str = "https://umc-adminportal.sol.daypop.ai"
+    umc_public_base_url: str = ""
     # Optional legacy overrides. Leave blank to derive the endpoints from the
     # selected portal base URL.
     umc_document_base_url: str = ""
@@ -66,11 +69,23 @@ class Settings(BaseSettings):
 
     @property
     def umc_base_url(self) -> str:
+        return self.umc_portal_base_urls[self.umc_portal_name]
+
+    @property
+    def umc_portal_name(self) -> str:
         portal = (self.umc_portal or "customer").strip().lower()
-        if portal not in {"customer", "admin", "public"}:
-            portal = "customer"
-        selected = self.umc_admin_base_url if portal == "admin" else self.umc_customer_base_url
-        return self._portal_base(selected)
+        return portal if portal in self.UMC_PORTALS else "customer"
+
+    @property
+    def umc_portal_base_urls(self) -> dict[str, str]:
+        customer = self._portal_base(self.umc_customer_base_url)
+        return {
+            "customer": customer,
+            "admin": self._portal_base(self.umc_admin_base_url),
+            # Public can use its own host; blank keeps the existing deployment
+            # behavior and safely falls back to the Customer Portal.
+            "public": self._portal_base(self.umc_public_base_url) or customer,
+        }
 
     @property
     def umc_login_endpoint(self) -> str:
@@ -113,9 +128,10 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "platform_gateway_url", "label": "Swagger Tool URL", "env": "PLATFORM_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "platform_timeout_seconds", "label": "Swagger 超时（秒）", "env": "PLATFORM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "ocr_gateway_url", "label": "OCR Tool URL", "env": "OCR_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
-    {"key": "umc_portal", "label": "UMC Portal 环境", "env": "UMC_PORTAL", "secret": False, "restartRequired": False, "options": ["customer", "admin", "public"], "description": "customer、admin 或 public；public 复用 Customer Portal 地址。切换后新的登录、上传和下载请求使用对应 Portal。", "group": "UMC Portal"},
+    {"key": "umc_portal", "label": "UMC Portal 环境", "env": "UMC_PORTAL", "secret": False, "restartRequired": False, "options": ["customer", "admin", "public"], "description": "选择 customer、admin 或 public；切换后登录、用户信息、上传和下载请求统一使用对应 Portal。", "group": "UMC Portal"},
     {"key": "umc_customer_base_url", "label": "Customer Portal Base URL", "env": "UMC_CUSTOMER_BASE_URL", "secret": False, "restartRequired": False, "group": "UMC Portal"},
     {"key": "umc_admin_base_url", "label": "Admin Portal Base URL", "env": "UMC_ADMIN_BASE_URL", "secret": False, "restartRequired": False, "group": "UMC Portal"},
+    {"key": "umc_public_base_url", "label": "Public Portal Base URL", "env": "UMC_PUBLIC_BASE_URL", "secret": False, "restartRequired": False, "description": "留空时复用 Customer Portal 地址。", "group": "UMC Portal"},
     {"key": "umc_document_base_url", "label": "UMC Document URL", "env": "UMC_DOCUMENT_BASE_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "external_tools_enabled", "label": "启用外部 Tools", "env": "EXTERNAL_TOOLS_ENABLED", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "audit_retention_days", "label": "链路审计留存天数", "env": "AUDIT_RETENTION_DAYS", "secret": False, "restartRequired": False, "description": "审计表保留最近 N 天；会话历史不受此项影响。", "group": "链路审计"},
