@@ -3,6 +3,7 @@ import base64
 import hmac
 import json
 from collections.abc import AsyncIterator
+from urllib.parse import parse_qs
 from uuid import uuid4
 
 import httpx
@@ -550,12 +551,20 @@ def make_router(service: DSHService) -> APIRouter:
     @router.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()
-        user_id = websocket.headers.get("x-user-id") or ""
+        # Browser WebSockets cannot set the trusted identity headers used by
+        # REST requests.  The local test console therefore sends the same
+        # values in the query string.  Keep the query fallback aligned with
+        # the REST principal so a conversation created with e.g.
+        # ``tenantId=demo-tenant`` can be subscribed to on the socket.
+        query = parse_qs(websocket.scope.get("query_string", b"").decode("utf-8", "ignore"))
+        query_user_id = (query.get("userId") or [""])[0].strip()
+        query_tenant_id = (query.get("tenantId") or [""])[0].strip()
+        user_id = websocket.headers.get("x-user-id") or query_user_id
         # Browser WebSockets cannot set trusted identity headers. Keep a
         # provisional principal until the UMC token is validated server-side.
         principal = Principal(
             user_id=user_id or "",
-            tenant_id=websocket.headers.get("x-tenant-id") or "default",
+            tenant_id=websocket.headers.get("x-tenant-id") or query_tenant_id or "default",
             request_id=websocket.headers.get("x-request-id", "ws"),
             token_ref=None,
             umc_token=_bearer_token(websocket.headers.get("authorization")),
@@ -622,7 +631,12 @@ def make_router(service: DSHService) -> APIRouter:
                         continue
                     principal = Principal(
                         user_id=str(claims_user_id),
-                        tenant_id=f"umc:global:{claims_user_id}",
+                        # Preserve the tenant selected by the trusted gateway
+                        # or local console.  REST conversation creation uses
+                        # this same tenant value; replacing it with a global
+                        # UMC tenant made every browser subscription fail with
+                        # ``conversation_not_found``.
+                        tenant_id=principal.tenant_id or f"umc:global:{claims_user_id}",
                         request_id=principal.request_id,
                         token_ref=_token_reference(f"Bearer {token}"),
                         umc_token=token,

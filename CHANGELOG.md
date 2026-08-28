@@ -4,6 +4,13 @@
 
 ## 2026-08-28
 
+### 控制台 WebSocket 对话链路修复
+
+- 修复浏览器 WebSocket 认证后将租户强制改写为 `umc:global:<UserID>`，导致 REST 创建的 `demo-tenant` 会话无法订阅、消息被静默丢弃的问题。
+- WebSocket 现在解析测试控制台传入的 `userId`/`tenantId`，并与 REST 会话使用同一租户；前端自动从 UMC JWT 提取 UserID，避免 `demo-user` 占位身份与真实账号不一致。
+- 前端等待 WebSocket 真正完成建连后再发送消息，并将 `conversation_not_found`、身份不一致等错误显示在对话时间线中；同时更新资源版本号，避免浏览器继续使用旧缓存。
+- 扩展 `application_status` Skill 对 “What's my license status?” / 阿语许可状态表达的识别；无申请编号时自动调用当前 UMC 账号的申请列表，再由模型总结真实状态。
+
 ### WS 安全进度提示
 
 - 新增 `assistant.status` WebSocket 会话事件，在 Skill 路由、知识库检索、OCR、UMC 查询、结果整理和回答生成阶段发送本地化短提示。

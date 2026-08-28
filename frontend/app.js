@@ -1,4 +1,4 @@
-const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, skillDialogMode: "edit", attachment: null, umcToken: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationId: null, auditItems: [], consoleAuthenticated: false };
+const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, skillDialogMode: "edit", attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationId: null, auditItems: [], consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
 
 function containsArabic(text) {
@@ -120,6 +120,34 @@ async function loginConsole(event) {
   }
 }
 
+function tokenClaims(rawToken) {
+  try {
+    const segment = String(rawToken || "").split(".")[1];
+    if (!segment) return {};
+    const normalized = segment.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(segment.length / 4) * 4, "=");
+    const bytes = Uint8Array.from(atob(normalized), (value) => value.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return {};
+  }
+}
+
+function syncUmcIdentity(rawToken, session = {}) {
+  const claims = tokenClaims(rawToken);
+  const candidate = session.userId || session.userID || session.user_id || claims.UserID || claims.UserId || claims.userId || claims.userID || claims.sub;
+  const userId = String(candidate || "").trim();
+  if (!userId) return;
+  state.umcUserId = userId;
+  // The REST API and browser WebSocket must use the same validated UMC
+  // identity.  Keep the field visible for diagnostics, but remove the old
+  // demo-user placeholder automatically after service-account login.
+  const input = $("userId");
+  if (input && (!input.value.trim() || input.value.trim() === "demo-user" || input.dataset.umcAuto === "1")) {
+    input.value = userId;
+    input.dataset.umcAuto = "1";
+  }
+}
+
 async function logoutConsole() {
   await fetch("/api/v1/console/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
   state.consoleAuthenticated = false;
@@ -154,7 +182,10 @@ function setUmcSessionStatus(text, online = false) {
 }
 
 async function loadUmcToken(force = false) {
-  if (!force && state.umcToken) return { token: state.umcToken };
+  if (!force && state.umcToken) {
+    syncUmcIdentity(state.umcToken);
+    return { token: state.umcToken };
+  }
   if (!state.umcTokenPromise || force) {
     state.umcTokenPromise = (async () => {
       setUmcSessionStatus("正在自动获取…");
@@ -163,6 +194,7 @@ async function loadUmcToken(force = false) {
         const token = String(data.token || "").trim();
         if (!token) throw new Error("UMC 登录响应未返回 Token");
         state.umcToken = token;
+        syncUmcIdentity(token, data);
         // Keep this only in the current page memory. The hidden field exists
         // solely for compatibility with the request header helper.
         $("umcToken").value = token;
@@ -862,80 +894,125 @@ async function createConversation() {
 }
 
 async function connect() {
-  try {
+  if (state.ws?.readyState === WebSocket.OPEN) return state.ws;
+  if (state.connectPromise) return state.connectPromise;
+  state.connectPromise = (async () => {
     await loadUmcToken();
-  } catch {
-    setConnection("UMC 未登录", false);
-    return;
-  }
-  if (state.ws && state.ws.readyState <= 1) state.ws.close();
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-  state.ws = new WebSocket(`${protocol}://${location.host}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
-  state.ws.onopen = async () => {
-    setConnection("已连接", true);
-    const umcToken = state.umcToken || $("umcToken")?.value.trim() || "";
-    if (umcToken) state.ws.send(JSON.stringify({ type: "auth", umctoken: umcToken }));
-    if (!state.conversationId && !$("conversationId").value) {
-      await createConversation();
-    } else {
-      state.conversationId = state.conversationId || $("conversationId").value;
-      state.ws.send(JSON.stringify({ type: "subscribe", conversationId: state.conversationId, afterSeq: state.seq }));
-    }
-  };
-  state.ws.onclose = (event) => {
-    if (event.code === 4401) {
-      state.consoleAuthenticated = false;
-      showConsoleGate("控制台会话已过期，请重新输入密码。", true);
-    }
-    setConnection("已断开", false);
-  };
-  state.ws.onerror = () => setConnection("连接错误", false);
-  state.ws.onmessage = (message) => {
-    const packet = JSON.parse(message.data);
-    if (packet.type === "accepted") {
-      $("requestId").textContent = packet.requestId || "-";
-      $("runtimeId").textContent = packet.runtimeId || $("runtimeId").textContent;
-    }
-    if (packet.type !== "event") return;
-    state.seq = Math.max(state.seq, packet.seq || 0);
-    $("lastSeq").textContent = state.seq;
-    const data = packet.data || {};
-    if (packet.eventType === "assistant.welcome") {
-      addEvent("assistant.welcome", data.content || "", `seq ${packet.seq}`);
-    } else if (packet.eventType === "assistant.status") {
-      showAssistantStatus(data, `seq ${packet.seq}`);
-    } else if (packet.eventType === "assistant.chunk") {
-      clearAssistantStatus();
-      if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", "", `seq ${packet.seq}`);
-      state.assistantContent += data.content || "";
-      renderLocalizedContent(state.assistantNode, state.assistantContent);
-      $("events").scrollTop = $("events").scrollHeight;
-    } else if (packet.eventType === "assistant.message") {
-      clearAssistantStatus();
-      state.assistantContent = data.content || state.assistantContent;
-      if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", state.assistantContent, `seq ${packet.seq}`);
-      else renderLocalizedContent(state.assistantNode, state.assistantContent);
-    } else if (packet.eventType === "user.message") {
-      clearAssistantStatus();
-      const attachmentNote = data.attachment ? `附件：${data.attachment.fileName || "未命名文件"}` : "";
-      addEvent("user.message", data.content || attachmentNote, `seq ${packet.seq}`);
-      state.assistantNode = null;
-      state.assistantContent = "";
-    } else if (packet.eventType === "turn.completed") {
-      clearAssistantStatus();
-      addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
-      if (document.querySelector("#auditPanel.active") && state.auditConversationId === state.conversationId) {
-        void loadAuditDetail(state.conversationId);
-      }
-    } else {
-      if (packet.eventType === "runtime.error" || packet.eventType === "turn.cancelled") clearAssistantStatus();
-      addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
-    }
-  };
+    const previous = state.ws;
+    if (previous && previous.readyState <= 1) previous.close();
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${protocol}://${location.host}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
+    state.ws = ws;
+    const generation = ++state.wsGeneration;
+    const ready = new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (error) => {
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      };
+      ws.onopen = async () => {
+        try {
+          setConnection("已连接", true);
+          const umcToken = state.umcToken || $("umcToken")?.value.trim() || "";
+          if (umcToken) ws.send(JSON.stringify({ type: "auth", umctoken: umcToken }));
+          if (!state.conversationId && !$("conversationId").value) {
+            await createConversation();
+          } else {
+            state.conversationId = state.conversationId || $("conversationId").value;
+            ws.send(JSON.stringify({ type: "subscribe", conversationId: state.conversationId, afterSeq: state.seq }));
+          }
+          if (!settled) {
+            settled = true;
+            resolve(ws);
+          }
+        } catch (error) {
+          setConnection("连接错误", false);
+          fail(error);
+        }
+      };
+      ws.onclose = (event) => {
+        if (state.ws === ws && state.wsGeneration === generation) {
+          if (event.code === 4401) {
+            state.consoleAuthenticated = false;
+            showConsoleGate("控制台会话已过期，请重新输入密码。", true);
+          }
+          setConnection("已断开", false);
+        }
+        fail(new Error(event.code === 4401 ? "控制台会话已过期" : "WebSocket 已断开"));
+      };
+      ws.onerror = () => {
+        if (state.ws === ws && state.wsGeneration === generation) setConnection("连接错误", false);
+        fail(new Error("WebSocket 连接失败"));
+      };
+      ws.onmessage = (message) => {
+        let packet;
+        try {
+          packet = JSON.parse(message.data);
+        } catch {
+          addEvent("system.error", "收到无法解析的 WebSocket 消息。", "ws");
+          return;
+        }
+        if (packet.type === "accepted") {
+          $("requestId").textContent = packet.requestId || "-";
+          $("runtimeId").textContent = packet.runtimeId || $("runtimeId").textContent;
+        }
+        if (packet.type === "error") {
+          const messages = {
+            conversation_not_found: "会话不存在或当前 UMC 身份/租户无权访问。请新建会话后重试。",
+            identity_mismatch: "UMC 身份与当前用户 ID 不一致，请重新获取登录会话。",
+            umc_token_required: "UMC 会话尚未准备好，请稍后重试。",
+          };
+          addEvent("system.error", messages[packet.code] || packet.code || "WebSocket 请求失败。", packet.code || "ws");
+          return;
+        }
+        if (packet.type !== "event") return;
+        state.seq = Math.max(state.seq, packet.seq || 0);
+        $("lastSeq").textContent = state.seq;
+        const data = packet.data || {};
+        if (packet.eventType === "assistant.welcome") {
+          addEvent("assistant.welcome", data.content || "", `seq ${packet.seq}`);
+        } else if (packet.eventType === "assistant.status") {
+          showAssistantStatus(data, `seq ${packet.seq}`);
+        } else if (packet.eventType === "assistant.chunk") {
+          clearAssistantStatus();
+          if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", "", `seq ${packet.seq}`);
+          state.assistantContent += data.content || "";
+          renderLocalizedContent(state.assistantNode, state.assistantContent);
+          $("events").scrollTop = $("events").scrollHeight;
+        } else if (packet.eventType === "assistant.message") {
+          clearAssistantStatus();
+          state.assistantContent = data.content || state.assistantContent;
+          if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", state.assistantContent, `seq ${packet.seq}`);
+          else renderLocalizedContent(state.assistantNode, state.assistantContent);
+        } else if (packet.eventType === "user.message") {
+          clearAssistantStatus();
+          const attachmentNote = data.attachment ? `附件：${data.attachment.fileName || "未命名文件"}` : "";
+          addEvent("user.message", data.content || attachmentNote, `seq ${packet.seq}`);
+          state.assistantNode = null;
+          state.assistantContent = "";
+        } else if (packet.eventType === "turn.completed") {
+          clearAssistantStatus();
+          addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
+          if (document.querySelector("#auditPanel.active") && state.auditConversationId === state.conversationId) {
+            void loadAuditDetail(state.conversationId);
+          }
+        } else {
+          if (packet.eventType === "runtime.error" || packet.eventType === "turn.cancelled") clearAssistantStatus();
+          addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
+        }
+      };
+    });
+    return await ready;
+  })().finally(() => {
+    state.connectPromise = null;
+  });
+  return state.connectPromise;
 }
 
 $("createBtn").addEventListener("click", async () => { try { await createConversation(); } catch (error) { addEvent("system.error", error.message); } });
-$("connectBtn").addEventListener("click", () => { void connect(); });
+$("connectBtn").addEventListener("click", () => { void connect().catch((error) => addEvent("system.error", error.message)); });
 $("consoleAuthForm").addEventListener("submit", loginConsole);
 $("consoleLogoutBtn").addEventListener("click", () => { void logoutConsole(); });
 document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
@@ -975,8 +1052,14 @@ $("messageForm").addEventListener("submit", async (event) => {
     return;
   }
   if (!content && !attachment) return;
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) await connect();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    try {
+      await connect();
+    } catch (error) {
+      $("attachmentStatus").textContent = `连接失败：${error.message}`;
+      return;
+    }
+  }
   state.conversationId = state.conversationId || $("conversationId").value;
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     $("attachmentStatus").textContent = "WebSocket 尚未连接，请先点击“连接 WS”。";

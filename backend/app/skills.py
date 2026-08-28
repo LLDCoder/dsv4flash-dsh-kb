@@ -124,9 +124,9 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "skill_id": "application_status",
         "name": "Application status",
-        "allowed_tools": ["umc.application_detail"],
+        "allowed_tools": ["umc.applications", "umc.application_detail"],
         "dependencies": ["trusted_principal"],
-        "content": "返回最新申请必须给出申请编号、服务、创建时间和当前状态，并说明分页范围。",
+        "content": "优先查询当前账号的最新申请列表；返回申请编号、服务、创建时间和当前状态，并说明分页范围。用户提供申请编号时再查询详情。",
     },
     {
         "skill_id": "permit_download",
@@ -265,7 +265,7 @@ def resolve_skill(text: str) -> SkillRoute:
     # A status question must win over product/service keywords such as
     # "social media" or "license application" (for example, "What is the
     # status of my social media license?").
-    if _has(text, "latest status", "application status", "status of my", "what's the status", "open applications", "summarize my open", "申请状态", "状态", "حالة الطلب", "آخر حالة"):
+    if _has(text, "latest status", "application status", "status of my", "what's the status", "license status", "permit status", "status of my license", "what's my license status", "what is my license status", "open applications", "summarize my open", "申请状态", "状态", "حالة الطلب", "حالة رخصتي", "حالة التصريح", "آخر حالة"):
         return SkillRoute("application_status", "data_query", None, "answer")
     if _has(text, "which service should", "very specific media activity", "not listed", "media service comparison", "difference between a photography permit and an advertiser permit", "apply for a media service", "advertiser permit", "paid product reviews", "social media", "服务对比", "未列出", "选择哪项服务", "الخدمة المناسبة", "نشاطي التجاري"):
         return SkillRoute("service_discovery", "knowledge", "knowledge.search", "answer", ("account_type", "media_activity"))

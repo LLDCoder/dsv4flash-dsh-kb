@@ -557,6 +557,13 @@ class DSHService:
                         match = re.search(r"(?:application\s*(?:id|number)?|申请(?:详情|ID)?)[\s:#-]*(\d{1,12})\b", latest_content, re.IGNORECASE)
                         if match:
                             tool_request = ("umc.application_detail", {"applicationId": int(match.group(1))})
+                    elif not tool_request and route.skill_id == "application_status":
+                        # A natural-language status question normally omits an
+                        # application number. Query the caller's own latest
+                        # applications so the LLM can summarize real status
+                        # data instead of replying with an unrelated generic
+                        # licensing explanation.
+                        tool_request = ("umc.applications", {"page_index": 1, "page_size": 100})
                     elif not tool_request and route.tool_name == "umc.book_by_isbn":
                         match = re.search(r"\b(?:97[89][\d\s-]{9,20}|\d[\d\s-]{9,20})\b", latest_content)
                         if match:
