@@ -499,7 +499,10 @@ def make_router(service: DSHService) -> APIRouter:
                     claims_user_id = None
                     if not claims_user_id:
                         settings = get_settings()
-                        base_url = (settings.umc_document_base_url or settings.umc_login_url.rsplit("/api/", 1)[0]).rstrip("/")
+                        # Use the portal-aware derived URL. It honors an explicit
+                        # document-service override and otherwise falls back to
+                        # the selected customer/admin portal base URL.
+                        base_url = settings.umc_document_service_base_url.rstrip("/")
                         try:
                             async with httpx.AsyncClient(timeout=settings.umc_login_timeout_seconds) as client:
                                 response = await client.post(f"{base_url}/api/User/GetUserInfo", headers={"Authorization": f"Bearer {token}"}, json={})
