@@ -289,12 +289,13 @@ def make_router(service: DSHService) -> APIRouter:
                 "createdAt": record.created_at.isoformat() if record.created_at else None,
             }
 
-        items = [record_json(record) for record in result.scalars().all()]
+        audit_records = result.scalars().all()
+        items = [record_json(record) for record in audit_records]
         source = "audit_record"
         # Conversations created before chain-audit was enabled have no rows in
         # audit_record. Reuse their immutable session events so operators can
         # still inspect the historical dialogue and execution flow.
-        if not items:
+        if not audit_records:
             event_query = select(SessionEvent).where(
                 SessionEvent.conversation_id == conversation_id,
                 SessionEvent.tenant_id == principal.tenant_id,
