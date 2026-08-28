@@ -471,7 +471,7 @@ async function loadAuditConversations() {
   $("auditStatus").textContent = "正在读取会话列表…";
   try {
     const data = await api("/api/v1/conversations");
-    state.auditConversations = data.items || [];
+    state.auditConversations = data.conversations || data.items || [];
     state.auditLoaded = true;
     renderAuditConversationList();
     const current = state.auditConversations.find((item) => item.conversationId === state.auditConversationId)
