@@ -5,7 +5,7 @@
 ## 已实现的架构边界
 
 - API Gateway/BFF：Principal 由 `X-User-Id`、`X-Tenant-Id` 传入；前端获取的 `umctoken` 使用 `Authorization: Bearer <UMC_TOKEN>` 按请求透传，原始 Token 不写入 Session 或普通日志，仅保留短指纹引用。
-- Session Router：所有会话查询先校验 tenant/user 所有权。
+- Session Router：普通会话读写接口先校验 tenant/user 所有权；对话审计接口默认同样隔离，只有显式 allowlist 的管理员审计范围才可跨账号/租户读取。
 - Session Persistence：共享 PostgreSQL 的追加式 `session_event`，按 `conversation_id + seq` 回放。
 - WS 主通道：支持 `subscribe`、`resume`、`message`、`ack`、`cancel`；SSE 提供 `afterSeq` 重放和降级订阅。
 - 幂等：`clientMessageId` 有唯一约束，重复提交不会重复创建用户事件。
@@ -22,7 +22,23 @@
 
 Backend 会把每轮用户/助手对话、Skill 路由、DSH Tool 调用与结果、LLM 请求元数据、流式回答和可用的 `reasoning_content` 写入 PostgreSQL 的 `audit_record` 表。审计记录按 `requestId`、`runtimeId`、会话和类别建立索引，Token、密码、Authorization、API Key 等凭据形态字段会在审计副本中脱敏；原始 UMC Token 不写入数据库。Backend 后台清理任务按运行配置 `AUDIT_RETENTION_DAYS`（默认 30 天）和 `AUDIT_CLEANUP_INTERVAL_SECONDS`（默认 3600 秒）周期删除过期审计记录，用户可在控制台“运行配置 → 链路审计”热更新这两个值；该策略只清理审计表，不删除用户可见的会话历史。为降低长首 token 等待期间的空白感，WS 还会发送 `assistant.status` 安全进度事件（路由、知识检索、OCR、UMC 查询、整理和生成回答）；这些事件只包含阶段和本地化短提示，不包含原始 LLM reasoning、系统提示词或敏感参数。
 
-测试控制台的“对话审计”页调用 `GET /api/v1/conversations/{conversationId}/audit`。左侧列出当前用户可访问的会话摘要和执行状态，点击会话后右侧按时间顺序显示完整执行链路；每条记录可展开查看 Payload，包含用户/助手内容、Skill 路由、Tool 参数与结果、LLM 请求/思考/回答和异常信息。审计接口沿用会话所有权校验，只能查看当前用户和租户的记录。
+测试控制台的“对话审计”页调用 `GET /api/v1/conversations/{conversationId}/audit`。默认按会话所有权校验，普通账号只能查看自己的租户和账号记录；左侧列出可访问的会话摘要和执行状态，点击会话后右侧按时间顺序显示完整执行链路。每条记录可展开查看脱敏后的 Payload，包含用户/助手内容、Skill 路由、Tool 参数与结果、LLM 请求/思考/回答和异常信息。
+
+如果部署的是隔离的 Chatbot 管理员控制台，可通过运行环境显式开启全局审计范围：`AUDIT_ADMIN_ENABLED=true`，并将管理员的 UMC User ID 填入 `AUDIT_ADMIN_USER_IDS`（多个 ID 用逗号分隔）。仅命中 allowlist 的账号会收到 `scope=admin`，可查看任意账号和租户的审计；`*` 仅适用于已由网关隔离的管理员专用部署。部署环境中的管理员 allowlist 作为可信引导配置，优先于数据库里历史保存的关闭值，避免升级后因旧运行配置继续看不到记录。审计管理员开关和 allowlist 只能由已具备全局审计权限的管理员在控制台修改，默认关闭，不会因为选择 `admin` Portal 自动放大权限。未开启时接口返回 `scope=owner`。
+
+## 测试控制台密码
+
+测试控制台启动时会在 PostgreSQL `config_entry`（`scope=system`、`key=console_password`）中初始化固定控制台密码。页面登录成功后仅获得短期 HttpOnly Cookie；测试 API 和 WebSocket 均要求该 Cookie，密码不会回显到配置页、响应或普通日志。密码遗失时，使用受控的数据库管理员账号查询：
+
+```sql
+SELECT value->>'value' AS console_password
+FROM config_entry
+WHERE scope = 'system' AND key = 'console_password';
+```
+
+该字段按需求可恢复，但应限制 PostgreSQL 账号和备份的访问权限；不要把查询结果写入前端代码或提交到 Git。
+
+完整的控制台登录、接口保护和审计范围说明见 [`doc/console-permissions.md`](doc/console-permissions.md)。
 
 当前 MVP 的运行面使用后端容器内的逻辑 Runtime Lease，接口已将实例管理边界独立出来；后续可以把 `RuntimeManager` 的启动/清理实现替换为 Docker/Kubernetes 动态容器调度，而不改变会话、事件和 WebSocket 契约。
 

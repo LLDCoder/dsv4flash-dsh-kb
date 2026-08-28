@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hmac
 import json
 from collections.abc import AsyncIterator
 from uuid import uuid4
@@ -7,16 +8,17 @@ from uuid import uuid4
 import httpx
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from .config import config_catalog, get_settings
+from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
 from .customer_documents import CustomerDocumentNotConfigured
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
-from .schemas import ConfigPatch, ConversationCreate, MessageCreate, SkillCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
+from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, SkillCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
 from .umc_auth import UMCAuthError
@@ -64,6 +66,52 @@ def make_router(service: DSHService) -> APIRouter:
             token_ref=_token_reference(authorization),
             umc_token=raw,
         )
+
+    async def stored_console_password(db: AsyncSession) -> str:
+        result = await db.execute(
+            select(ConfigEntry).where(
+                ConfigEntry.scope == "system",
+                ConfigEntry.key == CONSOLE_PASSWORD_CONFIG_KEY,
+            )
+        )
+        entry = result.scalar_one_or_none()
+        if entry:
+            value = raw_config_value(entry)
+            if isinstance(value, str) and value:
+                service.console_password = value
+        return service.console_password
+
+    @router.post("/console/login", tags=["Test console"])
+    async def console_login(payload: ConsoleLogin, request: Request, db: AsyncSession = Depends(get_db)):
+        """Unlock the Docker test console and issue an HttpOnly session cookie."""
+
+        password = await stored_console_password(db)
+        if not hmac.compare_digest(payload.password, password):
+            # Do not disclose whether the password is missing, changed, or
+            # otherwise invalid. The fixed credential remains DB-recoverable.
+            raise HTTPException(status_code=401, detail="invalid console password")
+        response = JSONResponse({"authenticated": True, "expiresInSeconds": CONSOLE_SESSION_MAX_AGE_SECONDS})
+        response.set_cookie(
+            key=CONSOLE_SESSION_COOKIE,
+            value=issue_session(password),
+            max_age=CONSOLE_SESSION_MAX_AGE_SECONDS,
+            httponly=True,
+            secure=request.url.scheme == "https",
+            samesite="strict",
+            path="/",
+        )
+        return response
+
+    @router.get("/console/session", tags=["Test console"])
+    async def console_session(request: Request):
+        authenticated = verify_session(request.cookies.get(CONSOLE_SESSION_COOKIE), service.console_password)
+        return {"authenticated": authenticated, "expiresInSeconds": CONSOLE_SESSION_MAX_AGE_SECONDS if authenticated else 0}
+
+    @router.post("/console/logout", tags=["Test console"])
+    async def console_logout():
+        response = JSONResponse({"authenticated": False})
+        response.delete_cookie(key=CONSOLE_SESSION_COOKIE, path="/")
+        return response
 
     @router.get("/ai-chat/config", tags=["Chatbot compatibility"])
     async def ai_chat_config(principal: Principal = Depends(chat_principal)):
@@ -203,15 +251,19 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.get("/conversations")
     async def list_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        conversations = await service.list_owned_conversations(db, principal)
+        conversations, is_admin = await service.list_audit_conversations(db, principal)
         items: list[dict] = []
         for conversation in conversations:
             events = await service.list_events(db, conversation, event_type="user.message")
             title = ""
             if events:
                 title = str(events[0].event_json.get("content", "")).strip()[:160]
-            items.append({**service.conversation_json(conversation), "title": title})
-        return {"conversations": items}
+            item = {**service.conversation_json(conversation), "title": title}
+            if is_admin:
+                item["ownerUserId"] = conversation.user_id
+                item["ownerTenantId"] = conversation.tenant_id
+            items.append(item)
+        return {"conversations": items, "scope": "admin" if is_admin else "owner"}
 
     @router.get("/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
@@ -266,18 +318,21 @@ def make_router(service: DSHService) -> APIRouter:
         db: AsyncSession = Depends(get_db),
         principal: Principal = Depends(get_principal),
     ):
-        """Return the persisted execution trail for one owned conversation."""
+        """Return the persisted execution trail for an owned or admin-scoped conversation."""
 
         try:
-            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+            conversation, is_admin = await service.get_audit_conversation(db, principal, conversation_id)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         query = select(AuditRecord).where(
             AuditRecord.conversation_id == conversation_id,
-            AuditRecord.tenant_id == principal.tenant_id,
-            AuditRecord.user_id == principal.user_id,
         )
+        if not is_admin:
+            query = query.where(
+                AuditRecord.tenant_id == principal.tenant_id,
+                AuditRecord.user_id == principal.user_id,
+            )
         if category:
             query = query.where(AuditRecord.category == category.strip().lower())
         query = query.order_by(AuditRecord.created_at.asc(), AuditRecord.id.asc()).limit(limit)
@@ -303,9 +358,12 @@ def make_router(service: DSHService) -> APIRouter:
         if not audit_records:
             event_query = select(SessionEvent).where(
                 SessionEvent.conversation_id == conversation_id,
-                SessionEvent.tenant_id == principal.tenant_id,
-                SessionEvent.user_id == principal.user_id,
             ).order_by(SessionEvent.created_at.asc(), SessionEvent.id.asc())
+            if not is_admin:
+                event_query = event_query.where(
+                    SessionEvent.tenant_id == principal.tenant_id,
+                    SessionEvent.user_id == principal.user_id,
+                )
             event_result = await db.execute(event_query)
             for event in event_result.scalars().all():
                 event_category = service.audit_category(event.event_type)
@@ -325,14 +383,21 @@ def make_router(service: DSHService) -> APIRouter:
                 )
             items = items[:limit]
             source = "session_event_history"
+        conversation_json = service.conversation_json(conversation)
+        if is_admin:
+            conversation_json["owner"] = {
+                "userId": conversation.user_id,
+                "tenantId": conversation.tenant_id,
+            }
         return {
-            "conversation": service.conversation_json(conversation),
+            "conversation": conversation_json,
             "conversationId": conversation_id,
             "items": items,
             "count": len(items),
             "limit": limit,
             "category": category.strip().lower() if category else None,
             "source": source,
+            "scope": "admin" if is_admin else "owner",
         }
 
     @router.get("/conversations/{conversation_id}/events")
@@ -404,6 +469,11 @@ def make_router(service: DSHService) -> APIRouter:
         for key, value in payload.patch.items():
             if key not in allowed:
                 raise HTTPException(status_code=400, detail=f"unsupported config key: {key}")
+            if key.startswith("audit_admin_") and not service.can_view_all_audit(principal):
+                raise HTTPException(
+                    status_code=403,
+                    detail="audit administrator scope can only be changed by an existing audit administrator",
+                )
             spec = next(item for item in config_catalog() if item["key"] == key)
             # A blank secret or the display mask means “leave the existing
             # credential unchanged”; operators can replace it by entering a

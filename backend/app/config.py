@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # history. The sweeper runs periodically and removes expired audit rows.
     audit_retention_days: int = 30
     audit_cleanup_interval_seconds: int = 3600
+    # Audit access is owner-scoped by default. An explicitly configured UMC
+    # user allowlist can be granted an operator-only all-account scope.
+    # Keep this disabled by default so a customer-facing console cannot read
+    # other users' conversations merely by selecting the admin portal.
+    audit_admin_enabled: bool = False
+    audit_admin_user_ids: str = ""
     knowledge_gateway_url: str = "http://knowledge-gateway:8101"
     knowledge_timeout_seconds: float = 30.0
     knowledge_retry_attempts: int = 2
@@ -136,6 +142,8 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "external_tools_enabled", "label": "启用外部 Tools", "env": "EXTERNAL_TOOLS_ENABLED", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "audit_retention_days", "label": "链路审计留存天数", "env": "AUDIT_RETENTION_DAYS", "secret": False, "restartRequired": False, "description": "审计表保留最近 N 天；会话历史不受此项影响。", "group": "链路审计"},
     {"key": "audit_cleanup_interval_seconds", "label": "审计清理周期（秒）", "env": "AUDIT_CLEANUP_INTERVAL_SECONDS", "secret": False, "restartRequired": False, "description": "后台周期清理审计过期记录，最短按 60 秒执行。", "group": "链路审计"},
+    {"key": "audit_admin_enabled", "label": "启用全局审计管理员范围", "env": "AUDIT_ADMIN_ENABLED", "secret": False, "restartRequired": False, "options": ["false", "true"], "description": "仅允许配置的管理员查看所有账号和租户的对话；默认关闭。", "group": "链路审计"},
+    {"key": "audit_admin_user_ids", "label": "审计管理员 UMC 用户 ID", "env": "AUDIT_ADMIN_USER_IDS", "secret": True, "restartRequired": False, "description": "逗号分隔的 UMC User ID。仅在管理员范围开关打开且当前账号命中时生效；隔离的管理员控制台可使用 *。", "group": "链路审计"},
 )
 
 

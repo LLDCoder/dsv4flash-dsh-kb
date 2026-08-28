@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import make_router
 from .config import get_settings
+from .console_auth import ConsoleAuthMiddleware
 from .db import ConfigEntry, SessionLocal, init_db
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
@@ -66,6 +67,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(ConsoleAuthMiddleware, get_password=lambda: service.console_password)
 app.include_router(make_router(service))
 
 

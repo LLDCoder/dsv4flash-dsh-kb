@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncSession, async_sessionmaker,
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .config import get_settings
+from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 
 
 def utcnow() -> datetime:
@@ -148,6 +149,23 @@ async def init_db() -> None:
 
     async with SessionLocal() as session:
         changed = False
+        console_password = await session.execute(
+            select(ConfigEntry).where(
+                ConfigEntry.scope == "system",
+                ConfigEntry.key == CONSOLE_PASSWORD_CONFIG_KEY,
+            )
+        )
+        if console_password.scalar_one_or_none() is None:
+            session.add(
+                ConfigEntry(
+                    scope="system",
+                    key=CONSOLE_PASSWORD_CONFIG_KEY,
+                    version=1,
+                    value={"value": DEFAULT_CONSOLE_PASSWORD},
+                    updated_by="system",
+                )
+            )
+            changed = True
         for definition in DEFAULT_SKILL_DEFINITIONS:
             result = await session.execute(select(Skill).where(Skill.skill_id == definition["skill_id"], Skill.version == 1))
             if result.scalar_one_or_none():

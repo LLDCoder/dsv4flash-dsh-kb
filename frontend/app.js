@@ -1,4 +1,4 @@
-const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, skillDialogMode: "edit", attachment: null, umcToken: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditLoaded: false, auditConversationId: null, auditItems: [] };
+const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, skillDialogMode: "edit", attachment: null, umcToken: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationId: null, auditItems: [], consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
 
 function containsArabic(text) {
@@ -64,9 +64,85 @@ async function api(path, options = {}) {
   const rawToken = state.umcToken || $("umcToken")?.value.trim() || "";
   const headers = { "Content-Type": "application/json", "X-User-Id": $("userId").value, "X-Tenant-Id": $("tenantId").value, ...(options.headers || {}) };
   if (rawToken && !headers.Authorization) headers.Authorization = rawToken.toLowerCase().startsWith("bearer ") ? rawToken : `Bearer ${rawToken}`;
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(path, { credentials: "same-origin", ...options, headers });
+  if (response.status === 401 && !path.startsWith("/api/v1/console/")) {
+    state.consoleAuthenticated = false;
+    showConsoleGate("控制台会话已过期，请重新输入密码。", true);
+  }
   if (!response.ok) throw new Error(await response.text());
   return response.json();
+}
+
+function showConsoleGate(message = "请输入测试控制台密码。", focus = false) {
+  const gate = $("consoleGate");
+  if (!gate) return;
+  gate.hidden = false;
+  const status = $("consoleAuthStatus");
+  if (status) status.textContent = message;
+  if (focus) setTimeout(() => $("consolePassword")?.focus(), 0);
+}
+
+function hideConsoleGate() {
+  const gate = $("consoleGate");
+  if (gate) gate.hidden = true;
+  const status = $("consoleAuthStatus");
+  if (status) status.textContent = "";
+  const input = $("consolePassword");
+  if (input) input.value = "";
+}
+
+async function checkConsoleSession() {
+  const response = await fetch("/api/v1/console/session", { credentials: "same-origin" });
+  if (!response.ok) return false;
+  const data = await response.json();
+  return data.authenticated === true;
+}
+
+async function loginConsole(event) {
+  event.preventDefault();
+  const password = $("consolePassword").value;
+  const status = $("consoleAuthStatus");
+  status.textContent = "正在验证…";
+  try {
+    const response = await fetch("/api/v1/console/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!response.ok) throw new Error("密码不正确或服务不可用");
+    state.consoleAuthenticated = true;
+    hideConsoleGate();
+    await loadUmcToken().catch(() => {});
+  } catch (error) {
+    status.textContent = error.message;
+    $("consolePassword").select();
+  }
+}
+
+async function logoutConsole() {
+  await fetch("/api/v1/console/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+  state.consoleAuthenticated = false;
+  state.umcToken = "";
+  $("umcToken").value = "";
+  setUmcSessionStatus("未登录", false);
+  if (state.ws && state.ws.readyState <= 1) state.ws.close();
+  setConnection("未连接", false);
+  showConsoleGate("已退出测试控制台。", true);
+}
+
+async function bootstrapConsole() {
+  try {
+    state.consoleAuthenticated = await checkConsoleSession();
+  } catch {
+    state.consoleAuthenticated = false;
+  }
+  if (!state.consoleAuthenticated) {
+    showConsoleGate("请输入测试控制台密码。", true);
+    return;
+  }
+  hideConsoleGate();
+  await loadUmcToken().catch(() => {});
 }
 
 function setUmcSessionStatus(text, online = false) {
@@ -419,7 +495,10 @@ function renderAuditConversationList() {
     id.textContent = item.conversationId || "-";
     const meta = document.createElement("span");
     meta.className = "audit-conversation-meta";
-    meta.textContent = `${auditStatusLabel(item.status)} · ${item.lastSeq || 0} 个事件 · ${auditTime(item.lastActivityAt || item.createdAt)}`;
+    const owner = state.auditScope === "admin" && (item.ownerUserId || item.ownerTenantId)
+      ? `账号 ${item.ownerUserId || "-"} · 租户 ${item.ownerTenantId || "-"}`
+      : "";
+    meta.textContent = [owner, auditStatusLabel(item.status), `${item.lastSeq || 0} 个事件`, auditTime(item.lastActivityAt || item.createdAt)].filter(Boolean).join(" · ");
     button.append(title, id, meta);
     list.appendChild(button);
   });
@@ -455,6 +534,10 @@ function renderAuditOverview(conversation) {
     ["Skill Profile", conversation.skillProfile || "default"],
     ["事件序号", String(conversation.lastSeq ?? 0)],
   ];
+  if (state.auditScope === "admin" && conversation.owner) {
+    fields.splice(2, 0, ["所属账号", conversation.owner.userId || "-"]);
+    fields.splice(3, 0, ["所属租户", conversation.owner.tenantId || "-"]);
+  }
   fields.forEach(([label, value]) => {
     const field = document.createElement("div");
     const caption = document.createElement("span");
@@ -524,6 +607,10 @@ async function loadAuditDetail(conversationId) {
   const query = category ? `?category=${encodeURIComponent(category)}` : "";
   try {
     const data = await api(`/api/v1/conversations/${encodeURIComponent(conversationId)}/audit${query}`);
+    state.auditScope = data.scope || state.auditScope || "owner";
+    const scopeNode = $("auditScope");
+    if (scopeNode) scopeNode.textContent = state.auditScope === "admin" ? "管理员范围：全部账号 / 租户" : "当前账号范围";
+    renderAuditConversationList();
     state.auditItems = data.items || [];
     renderAuditOverview(data.conversation);
     renderAuditRecords(state.auditItems);
@@ -542,7 +629,10 @@ async function loadAuditConversations() {
   try {
     const data = await api("/api/v1/conversations");
     state.auditConversations = data.conversations || data.items || [];
+    state.auditScope = data.scope || "owner";
     state.auditLoaded = true;
+    const scopeNode = $("auditScope");
+    if (scopeNode) scopeNode.textContent = state.auditScope === "admin" ? "管理员范围：全部账号 / 租户" : "当前账号范围";
     renderAuditConversationList();
     const current = state.auditConversations.find((item) => item.conversationId === state.auditConversationId)
       || state.auditConversations.find((item) => item.conversationId === state.conversationId)
@@ -792,7 +882,13 @@ async function connect() {
       state.ws.send(JSON.stringify({ type: "subscribe", conversationId: state.conversationId, afterSeq: state.seq }));
     }
   };
-  state.ws.onclose = () => setConnection("已断开", false);
+  state.ws.onclose = (event) => {
+    if (event.code === 4401) {
+      state.consoleAuthenticated = false;
+      showConsoleGate("控制台会话已过期，请重新输入密码。", true);
+    }
+    setConnection("已断开", false);
+  };
   state.ws.onerror = () => setConnection("连接错误", false);
   state.ws.onmessage = (message) => {
     const packet = JSON.parse(message.data);
@@ -840,6 +936,8 @@ async function connect() {
 
 $("createBtn").addEventListener("click", async () => { try { await createConversation(); } catch (error) { addEvent("system.error", error.message); } });
 $("connectBtn").addEventListener("click", () => { void connect(); });
+$("consoleAuthForm").addEventListener("submit", loginConsole);
+$("consoleLogoutBtn").addEventListener("click", () => { void logoutConsole(); });
 document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
 $("reloadConfigBtn").addEventListener("click", loadConfig);
 $("saveConfigBtn").addEventListener("click", saveConfig);
@@ -889,6 +987,6 @@ $("messageForm").addEventListener("submit", async (event) => {
   if (attachment) $("attachmentStatus").textContent = `已发送附件：${attachment.fileName}`;
 });
 
-// Obtain the configured account's UMC session as soon as the console opens;
+// Unlock the console before obtaining the configured account's UMC session;
 // operators should never need to paste a token before uploading or connecting.
-void loadUmcToken().catch(() => {});
+void bootstrapConsole();

@@ -14,6 +14,12 @@
 
 - 测试控制台新增“对话审计”功能切换：先按会话查看内容摘要、运行状态和 DSH Session 信息，再进入对应会话的完整执行链路。
 - 新增 `GET /api/v1/conversations/{conversationId}/audit`，支持按会话和审计类别读取对话、Skill、Tool、LLM 与运行时记录；原始 Payload 可展开查看，凭据仍由后端脱敏。
+- 修复部署环境审计列表为空的问题：默认仍按当前账号/租户隔离；新增 `AUDIT_ADMIN_ENABLED` 与 `AUDIT_ADMIN_USER_IDS` 显式 allowlist，部署环境值作为可信引导配置且不会被历史数据库关闭值遮蔽；管理员命中后返回 `scope=admin`，可查看任意账号和租户的对话审计，列表和详情同时标注所属账号/租户。
+
+### 测试控制台密码保护
+
+- 测试控制台新增固定密码登录，首次启动将密码写入 PostgreSQL `config_entry` 的 `console_password` 配置项，遗失时可由数据库管理员恢复。
+- 登录成功后使用短期 HttpOnly Cookie；测试 REST API 与 WebSocket 均校验控制台会话，未登录请求返回 401；密码不回显到前端或普通日志。
 
 ### UMC Portal 环境切换
 

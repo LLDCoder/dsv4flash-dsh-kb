@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill
 from .customer_documents import CustomerDocumentClient
+from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
@@ -66,6 +67,22 @@ class DSHService:
         self.tool_gateway = ToolGateway(ocr, knowledge, platform)
         from .config import get_settings
         self.settings = get_settings()
+        self.console_password = DEFAULT_CONSOLE_PASSWORD
+        # Environment-provided audit administrator values are a trusted
+        # deployment bootstrap. Preserve them separately because persisted
+        # runtime config is re-applied during startup and must not be able to
+        # shadow the operator's explicit 77 deployment allowlist.
+        configured_fields = self.settings.model_fields_set
+        self._audit_admin_env_enabled = (
+            bool(self.settings.audit_admin_enabled)
+            if "audit_admin_enabled" in configured_fields
+            else False
+        )
+        self._audit_admin_env_user_ids = (
+            str(self.settings.audit_admin_user_ids or "")
+            if "audit_admin_user_ids" in configured_fields
+            else ""
+        )
         self.documents = CustomerDocumentClient(self.settings)
         self.umc_auth = UMCAuthClient(self.settings)
         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
@@ -99,7 +116,7 @@ class DSHService:
             "audit_retention_days": int,
             "audit_cleanup_interval_seconds": int,
         }
-        bool_keys = {"external_tools_enabled"}
+        bool_keys = {"external_tools_enabled", "audit_admin_enabled"}
         umc_auth_keys = {
             "umc_portal",
             "umc_customer_base_url",
@@ -112,6 +129,11 @@ class DSHService:
         umc_auth_changed = False
         for item in entries:
             key = item.key
+            if key == CONSOLE_PASSWORD_CONFIG_KEY:
+                value = self._config_value(item)
+                if isinstance(value, str) and value:
+                    self.console_password = value
+                continue
             if key in restart_only or not hasattr(self.settings, key):
                 continue
             value = self._config_value(item)
@@ -202,6 +224,54 @@ class DSHService:
             .order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
         )
         return list(result.scalars().all())
+
+    def can_view_all_audit(self, principal: Principal) -> bool:
+        """Return whether this principal has the explicitly configured audit scope.
+
+        The gateway does not currently pass a verifiable UMC role claim to
+        DSH, so audit administrator access is intentionally an explicit
+        deployment setting rather than an inference from the selected portal
+        or a browser-provided header. A wildcard is supported only for an
+        isolated administrator console; specific UMC user IDs are preferred.
+        """
+
+        enabled = bool(self.settings.audit_admin_enabled) or getattr(self, "_audit_admin_env_enabled", False)
+        if not enabled:
+            return False
+        configured = ",".join(
+            value
+            for value in (
+                str(self.settings.audit_admin_user_ids or ""),
+                getattr(self, "_audit_admin_env_user_ids", ""),
+            )
+            if value
+        )
+        allowed_ids = {item.strip() for item in configured.split(",") if item.strip()}
+        return "*" in allowed_ids or principal.user_id in allowed_ids
+
+    async def list_audit_conversations(self, db: AsyncSession, principal: Principal) -> tuple[list[Conversation], bool]:
+        """List conversations for the audit UI using the narrowest permitted scope."""
+
+        if self.can_view_all_audit(principal):
+            result = await db.execute(
+                select(Conversation).order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
+            )
+            return list(result.scalars().all()), True
+        return await self.list_owned_conversations(db, principal), False
+
+    async def get_audit_conversation(self, db: AsyncSession, principal: Principal, conversation_id: str) -> tuple[Conversation, bool]:
+        """Resolve an audit target while preserving owner checks for normal users."""
+
+        is_admin = self.can_view_all_audit(principal)
+        if is_admin:
+            result = await db.execute(
+                select(Conversation).where(Conversation.conversation_id == conversation_id)
+            )
+            conversation = result.scalar_one_or_none()
+            if conversation:
+                return conversation, True
+            raise LookupError("conversation not found")
+        return await self.get_owned_conversation(db, principal, conversation_id), False
 
     async def delete_owned_conversation(
         self,

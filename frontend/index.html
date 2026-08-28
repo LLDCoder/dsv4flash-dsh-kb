@@ -4,9 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH UMC 测试控制台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-status2" />
+    <link rel="stylesheet" href="/styles.css?v=20260828-console1" />
   </head>
   <body>
+    <section id="consoleGate" class="console-gate">
+      <form id="consoleAuthForm" class="console-auth-card">
+        <p class="eyebrow">DSH · PRIVATE TEST CONSOLE</p>
+        <h2>测试控制台</h2>
+        <p class="muted">请输入控制台密码后继续使用对话、Skills、测试和审计功能。</p>
+        <label>控制台密码<input id="consolePassword" type="password" autocomplete="current-password" required autofocus /></label>
+        <button type="submit">进入控制台</button>
+        <div id="consoleAuthStatus" class="notice" role="alert"></div>
+      </form>
+    </section>
     <main class="shell">
       <header>
         <div>
@@ -14,7 +24,7 @@
           <h1>测试控制台</h1>
           <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证；UMC Portal 由后端环境开关选择，登录与附件接口自动使用对应地址。</p>
         </div>
-        <span id="connection" class="pill offline">未连接</span>
+        <div class="console-header-actions"><span id="connection" class="pill offline">未连接</span><button id="consoleLogoutBtn" class="secondary" type="button">退出</button></div>
       </header>
 
       <nav class="tabs" aria-label="控制台功能">
@@ -110,7 +120,7 @@
         </section>
         <section class="audit-layout">
           <aside class="audit-conversations card">
-            <div class="audit-list-head"><h3>会话列表</h3><span id="auditConversationCount" class="muted"></span></div>
+            <div class="audit-list-head"><h3>会话列表</h3><div class="audit-list-meta"><span id="auditScope" class="muted">当前账号范围</span><span id="auditConversationCount" class="muted"></span></div></div>
             <div id="auditConversationList" class="audit-conversation-list"><div class="empty">切换到本页后读取会话…</div></div>
           </aside>
           <div class="audit-detail-column">

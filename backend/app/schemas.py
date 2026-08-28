@@ -38,6 +38,10 @@ class ConfigPatch(APIModel):
     patch: dict[str, Any]
 
 
+class ConsoleLogin(APIModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
 class TestCaseGenerateRequest(APIModel):
     languages: list[Literal["en", "ar"]] = Field(default_factory=lambda: ["en", "ar"])
     folder_id: str | None = Field(default=None, alias="folderId")
