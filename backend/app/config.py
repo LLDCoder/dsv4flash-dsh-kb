@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-v4-flash"
     llm_timeout_seconds: float = 60.0
+    # Operator-editable instructions are added to each generated system
+    # prompt. Built-in language, safety, and evidence rules remain enforced.
+    system_prompt: str = ""
     # UMC access is request-scoped: the frontend supplies the caller's
     # umctoken in Authorization and DSH forwards it to the anonymous proxies.
     # It is deliberately not a persisted configuration value.
@@ -54,6 +57,7 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "llm_api_key", "label": "LLM API Key", "env": "LLM_API_KEY", "secret": True, "restartRequired": False, "group": "模型"},
     {"key": "llm_model", "label": "模型名称", "env": "LLM_MODEL", "secret": False, "restartRequired": False, "group": "模型"},
     {"key": "llm_timeout_seconds", "label": "LLM 超时（秒）", "env": "LLM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "模型"},
+    {"key": "system_prompt", "label": "系统提示词（可编辑）", "env": "SYSTEM_PROMPT", "secret": False, "restartRequired": False, "multiline": True, "description": "作为全局追加指令注入每轮系统提示词；内置语言、安全和证据规则仍然优先。", "group": "DSH 行为"},
     {"key": "database_url", "label": "Database URL", "env": "DATABASE_URL", "secret": True, "restartRequired": True, "group": "基础设施"},
     {"key": "redis_url", "label": "Redis URL", "env": "REDIS_URL", "secret": True, "restartRequired": True, "group": "基础设施"},
     {"key": "knowledge_gateway_url", "label": "知识库 Tool URL", "env": "KNOWLEDGE_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},

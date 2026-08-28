@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH UMC 测试控制台</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260828-skill2" />
   </head>
   <body>
     <main class="shell">
@@ -21,6 +21,7 @@
         <button class="tab active" data-tab="chatPanel">对话测试</button>
         <button class="tab" data-tab="configPanel">运行配置</button>
         <button class="tab" data-tab="testPanel">多语言业务测试</button>
+        <button class="tab" data-tab="skillPanel">Skill 配置</button>
       </nav>
 
       <section id="chatPanel" class="tab-panel active">
@@ -60,6 +61,18 @@
         <div id="configStatus" class="notice"></div>
       </section>
 
+      <section id="skillPanel" class="tab-panel">
+        <section class="card panel-head">
+          <div>
+            <h2>Skill 配置</h2>
+            <p class="muted">编辑 DSH 路由 Skill 的名称、允许调用的 Tool、依赖条件和行为指令。只有状态为 PUBLISHED 且已启用的 Skill 会注入对应请求。</p>
+          </div>
+          <div class="panel-actions"><button id="reloadSkillsBtn" class="secondary">重新读取</button><button id="saveSkillsBtn">保存 Skills</button></div>
+        </section>
+        <section id="skillsForm" class="skills-grid"><div class="empty">切换到本页后读取 Skill…</div></section>
+        <div id="skillsStatus" class="notice"></div>
+      </section>
+
       <section id="testPanel" class="tab-panel">
         <section class="card panel-head">
           <div>
@@ -79,6 +92,6 @@
         <pre id="testLog" class="test-log card"></pre>
       </section>
     </main>
-    <script src="/app.js" type="module"></script>
+    <script src="/app.js?v=20260828-skill2" type="module"></script>
   </body>
 </html>

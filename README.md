@@ -165,7 +165,8 @@ docker compose up -d
 访问：
 
 - 测试控制台：http://localhost:18080（可用 `FRONTEND_PORT` 覆盖）
-- 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL 和 Tool 开关；UMC Token 可先通过客户门户 `/api/User/Login` 获取，再在对话测试栏按当前会话输入，不保存到配置页。API Key/DB/Redis 只显示配置状态，不回显密文。
+- 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL、Tool 开关和可编辑的全局系统提示词；系统提示词会追加到每轮请求，但内置语言、安全和证据规则仍优先。UMC Token 可先通过客户门户 `/api/User/Login` 获取，再在对话测试栏按当前会话输入，不保存到配置页。API Key/DB/Redis 只显示配置状态，不回显密文。
+- Skill 配置：在控制台“Skill 配置”页查看和编辑 system Skill 的名称、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。
 - 多语言业务测试：在控制台“多语言业务测试”页从 `/umc` 知识库目录生成 English/العربية 测试集，并执行 DSH 端到端路由、检索、Tool 和 5 分制评分。
 - DSH API Swagger：http://localhost:8000/docs
 - DSH OpenAPI JSON：http://localhost:8000/openapi.json
@@ -184,6 +185,7 @@ docker compose down
 页面使用以下开发接口，均经过 DSH Principal 边界：
 
 - `GET/PATCH /api/v1/config?scope=system`：读取或保存运行配置；敏感值由服务端遮罩，空白 Secret 不会覆盖原值。
+- `GET /api/v1/skills?scope=system`、`PUT /api/v1/skills/{skill_id}`：读取或编辑 system Skill；Skill 内容在运行时按路由、版本、`PUBLISHED` 状态和启用开关加载。
 - `POST /api/v1/test-cases/generate`：从实时知识库目录生成 English/阿语跨业务用例，默认 `top_k=32`、`bm25,graph,vector`。
 - `POST /api/v1/test-cases/run`：并发执行最多 40 条用例，返回路由、工具、完成状态、回答和 5 分制评分。
 

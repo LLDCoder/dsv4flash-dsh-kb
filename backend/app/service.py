@@ -10,7 +10,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .db import ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal
+from .db import ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill
 from .customer_documents import CustomerDocumentClient
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
@@ -100,7 +100,7 @@ class DSHService:
             if key in restart_only or not hasattr(self.settings, key):
                 continue
             value = self._config_value(item)
-            if value is None or value == "":
+            if value is None or (value == "" and key != "system_prompt"):
                 continue
             try:
                 if key in numeric:
@@ -339,7 +339,30 @@ class DSHService:
                             "requestId": principal.request_id,
                         },
                     )
-                    messages.insert(0, {"role": "system", "content": build_system_prompt(route, evidence_available=bool(tool_request), response_language=response_language)})
+                    selected_skill_result = await db.execute(
+                        select(Skill)
+                        .where(
+                            Skill.skill_id == route.skill_id,
+                            Skill.scope == "system",
+                            Skill.enabled.is_(True),
+                            Skill.status == "PUBLISHED",
+                        )
+                        .order_by(Skill.version.desc())
+                    )
+                    selected_skill = selected_skill_result.scalars().first()
+                    messages.insert(
+                        0,
+                        {
+                            "role": "system",
+                            "content": build_system_prompt(
+                                route,
+                                evidence_available=bool(tool_request),
+                                response_language=response_language,
+                                operator_prompt=str(getattr(self.settings, "system_prompt", "") or ""),
+                                skill_content=selected_skill.content if selected_skill else "",
+                            ),
+                        },
+                    )
                     if route.category in {"data_query", "api_call"}:
                         messages.insert(1, {"role": "system", "content": "FLOW INTERACTION CONSTRAINTS: " + json.dumps(build_flow_prompt(route), ensure_ascii=False)})
                     document_failure_message: str | None = None

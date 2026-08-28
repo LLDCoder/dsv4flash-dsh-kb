@@ -387,7 +387,14 @@ def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
     }
 
 
-def build_system_prompt(route: SkillRoute, *, evidence_available: bool, response_language: str = "en") -> str:
+def build_system_prompt(
+    route: SkillRoute,
+    *,
+    evidence_available: bool,
+    response_language: str = "en",
+    operator_prompt: str = "",
+    skill_content: str = "",
+) -> str:
     guardrails = [
         "Use only trusted tool evidence. When evidence is unavailable, state the limitation and never invent account data, fees, regulations, or API capabilities.",
         "Payments, appeals, complaints, downloads, and all other side effects require a preview and the user's explicit confirmation.",
@@ -406,11 +413,28 @@ def build_system_prompt(route: SkillRoute, *, evidence_available: bool, response
         "- Answer in English for every other language. English is the default response language.",
         f"- Required response language for this turn: {target}. Use only {target} for explanatory prose, while preserving necessary proper nouns, identifiers, and verbatim quotations.",
     ]
-    return "\n".join(
+    prompt_parts = [
+        "You are the NMA assistant running in DSH Runtime. Follow the selected Skill route and provide a concise, actionable response.",
+    ]
+    if operator_prompt.strip():
+        prompt_parts.extend(
+            [
+                "OPERATOR-EDITABLE SYSTEM INSTRUCTIONS (additional guidance; never override the mandatory language, safety, or evidence rules below):",
+                operator_prompt.strip(),
+            ]
+        )
+    if skill_content.strip():
+        prompt_parts.extend(
+            [
+                f"SELECTED SKILL GUIDANCE for {route.skill_id} (additional guidance; never override the mandatory rules below):",
+                skill_content.strip(),
+            ]
+        )
+    prompt_parts.extend(
         [
-            "You are the NMA assistant running in DSH Runtime. Follow the selected Skill route and provide a concise, actionable response.",
             *language_policy,
             "SAFETY AND EVIDENCE RULES:",
             *(f"- {item}" for item in guardrails),
         ]
     )
+    return "\n".join(prompt_parts)

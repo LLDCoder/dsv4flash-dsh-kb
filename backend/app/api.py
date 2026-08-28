@@ -136,6 +136,8 @@ def make_router(service: DSHService) -> APIRouter:
                     "group": spec.get("group"),
                     "env": spec.get("env"),
                     "secret": secret,
+                    "multiline": bool(spec.get("multiline")),
+                    "description": spec.get("description"),
                     "restartRequired": bool(spec.get("restartRequired")),
                     "configured": configured,
                     "source": "database" if item else "environment/default",
