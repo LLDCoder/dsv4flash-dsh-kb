@@ -22,6 +22,8 @@
 
 Backend 会把每轮用户/助手对话、Skill 路由、DSH Tool 调用与结果、LLM 请求元数据、流式回答和可用的 `reasoning_content` 写入 PostgreSQL 的 `audit_record` 表。审计记录按 `requestId`、`runtimeId`、会话和类别建立索引，Token、密码、Authorization、API Key 等凭据形态字段会在审计副本中脱敏；原始 UMC Token 不写入数据库。Backend 后台清理任务按运行配置 `AUDIT_RETENTION_DAYS`（默认 30 天）和 `AUDIT_CLEANUP_INTERVAL_SECONDS`（默认 3600 秒）周期删除过期审计记录，用户可在控制台“运行配置 → 链路审计”热更新这两个值；该策略只清理审计表，不删除用户可见的会话历史。
 
+测试控制台的“对话审计”页调用 `GET /api/v1/conversations/{conversationId}/audit`。左侧列出当前用户可访问的会话摘要和执行状态，点击会话后右侧按时间顺序显示完整执行链路；每条记录可展开查看 Payload，包含用户/助手内容、Skill 路由、Tool 参数与结果、LLM 请求/思考/回答和异常信息。审计接口沿用会话所有权校验，只能查看当前用户和租户的记录。
+
 当前 MVP 的运行面使用后端容器内的逻辑 Runtime Lease，接口已将实例管理边界独立出来；后续可以把 `RuntimeManager` 的启动/清理实现替换为 Docker/Kubernetes 动态容器调度，而不改变会话、事件和 WebSocket 契约。
 
 ## 对话语言与欢迎语

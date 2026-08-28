@@ -1,4 +1,4 @@
-const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, attachment: null, umcToken: "", umcTokenPromise: null, testCases: [], testResults: [] };
+const state = { ws: null, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, attachment: null, umcToken: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditLoaded: false, auditConversationId: null, auditItems: [] };
 const $ = (id) => document.getElementById(id);
 
 function containsArabic(text) {
@@ -90,6 +90,7 @@ function setTab(tabId) {
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === tabId));
   if (tabId === "configPanel" && !state.configItems.length) loadConfig();
   if (tabId === "skillPanel" && !state.skillsLoaded) loadSkills();
+  if (tabId === "auditPanel" && !state.auditLoaded) loadAuditConversations();
 }
 
 function configValue(item) {
@@ -288,6 +289,199 @@ async function saveSkillEditor(event) {
     $("skillsStatus").textContent = `保存 Skill 失败：${error.message}`;
   } finally {
     $("saveSkillBtn").disabled = false;
+  }
+}
+
+function auditTime(value) {
+  if (!value) return "时间未知";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function auditCategoryLabel(value) {
+  return { conversation: "对话", dsh: "DSH / Tool", llm: "LLM", runtime: "运行时" }[value] || value || "运行时";
+}
+
+function auditStatusLabel(value) {
+  return { READY: "就绪", BUSY: "执行中", DEAD: "异常", CANCELLED: "已取消" }[value] || value || "未知";
+}
+
+function auditRecordSummary(item) {
+  const payload = item.payload || {};
+  const content = String(payload.content || "").replace(/\s+/g, " ").trim();
+  switch (item.recordType) {
+    case "user.message": return content ? `用户：${content.slice(0, 180)}` : "用户提交消息";
+    case "assistant.message": return content ? `助手：${content.slice(0, 180)}` : "助手返回消息";
+    case "assistant.chunk": return content ? `流式片段：${content.slice(0, 180)}` : "流式回答片段";
+    case "assistant.welcome": return "初始化欢迎语";
+    case "skill.route": return `Skill：${payload.skillId || payload.skill_id || "未标识"} · 模式：${payload.mode || "answer"}`;
+    case "tool.call": return `调用 Tool：${payload.toolName || "未标识"}`;
+    case "tool.result": return `Tool 结果：${payload.toolName || "未标识"} · ${payload.ok === false ? "失败" : "成功"}`;
+    case "llm.request": return `LLM 请求：${payload.model || "未标识"} · ${Array.isArray(payload.messages) ? `${payload.messages.length} 条消息` : ""}`;
+    case "llm.response": return content ? `LLM 回答：${content.slice(0, 180)}` : "LLM 返回完成";
+    case "llm.thought": return content ? `LLM 思考：${content.slice(0, 180)}` : "LLM 思考内容";
+    case "llm.error": return `LLM 异常：${String(payload.error || "未知错误").slice(0, 180)}`;
+    case "runtime.error": return `运行异常：${String(payload.error || "未知错误").slice(0, 180)}`;
+    case "turn.started": return "开始执行本轮请求";
+    case "turn.completed": return "本轮执行完成";
+    case "turn.cancelled": return "本轮执行已取消";
+    default: return content ? content.slice(0, 180) : item.recordType || "审计记录";
+  }
+}
+
+function renderAuditConversationList() {
+  const list = $("auditConversationList");
+  list.replaceChildren();
+  const items = state.auditConversations;
+  $("auditConversationCount").textContent = items.length ? `${items.length} 个` : "";
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">暂无可查看的对话。</div>';
+    return;
+  }
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `audit-conversation-item${item.conversationId === state.auditConversationId ? " active" : ""}`;
+    button.dataset.conversationId = item.conversationId;
+    const title = document.createElement("strong");
+    title.textContent = item.title || item.conversationId || "未命名会话";
+    const id = document.createElement("code");
+    id.textContent = item.conversationId || "-";
+    const meta = document.createElement("span");
+    meta.className = "audit-conversation-meta";
+    meta.textContent = `${auditStatusLabel(item.status)} · ${item.lastSeq || 0} 个事件 · ${auditTime(item.lastActivityAt || item.createdAt)}`;
+    button.append(title, id, meta);
+    list.appendChild(button);
+  });
+}
+
+function renderAuditOverview(conversation) {
+  const overview = $("auditOverview");
+  overview.replaceChildren();
+  if (!conversation) {
+    overview.innerHTML = '<div class="empty">选择一个会话查看审计。</div>';
+    return;
+  }
+  const title = state.auditConversations.find((item) => item.conversationId === conversation.conversationId)?.title;
+  const heading = document.createElement("div");
+  heading.className = "audit-overview-head";
+  const headingText = document.createElement("div");
+  const h3 = document.createElement("h3");
+  h3.textContent = title || conversation.conversationId || "对话详情";
+  const id = document.createElement("code");
+  id.textContent = conversation.conversationId || "-";
+  headingText.append(h3, id);
+  const status = document.createElement("span");
+  status.className = `audit-status audit-status-${String(conversation.status || "").toLowerCase()}`;
+  status.textContent = auditStatusLabel(conversation.status);
+  heading.append(headingText, status);
+  const grid = document.createElement("div");
+  grid.className = "audit-overview-grid";
+  const fields = [
+    ["创建时间", auditTime(conversation.createdAt)],
+    ["最近活动", auditTime(conversation.lastActivityAt)],
+    ["运行时", conversation.runtimeId || "尚未分配"],
+    ["DSH Session", conversation.dshSessionId || "-"],
+    ["Skill Profile", conversation.skillProfile || "default"],
+    ["事件序号", String(conversation.lastSeq ?? 0)],
+  ];
+  fields.forEach(([label, value]) => {
+    const field = document.createElement("div");
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    const content = document.createElement("code");
+    content.textContent = value;
+    field.append(caption, content);
+    grid.appendChild(field);
+  });
+  overview.append(heading, grid);
+  if (conversation.lastError) {
+    const error = document.createElement("p");
+    error.className = "audit-error";
+    error.textContent = `最近错误：${conversation.lastError}`;
+    overview.appendChild(error);
+  }
+}
+
+function renderAuditRecords(items) {
+  const list = $("auditRecordList");
+  list.replaceChildren();
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">该会话暂无匹配的审计记录。</div>';
+    return;
+  }
+  items.forEach((item) => {
+    const record = document.createElement("article");
+    record.className = `audit-record audit-record-${String(item.category || "runtime").toLowerCase()}`;
+    const head = document.createElement("div");
+    head.className = "audit-record-head";
+    const category = document.createElement("span");
+    category.className = "audit-category";
+    category.textContent = auditCategoryLabel(item.category);
+    const type = document.createElement("code");
+    type.textContent = item.recordType || "unknown";
+    const time = document.createElement("time");
+    time.textContent = auditTime(item.createdAt);
+    head.append(category, type, time);
+    const summary = document.createElement("p");
+    summary.className = "audit-record-summary";
+    summary.textContent = auditRecordSummary(item);
+    const meta = document.createElement("p");
+    meta.className = "audit-record-meta";
+    meta.textContent = [item.requestId && `request ${item.requestId}`, item.runtimeId && `runtime ${item.runtimeId}`].filter(Boolean).join(" · ") || "无请求关联 ID";
+    const details = document.createElement("details");
+    const detailsSummary = document.createElement("summary");
+    detailsSummary.textContent = "查看原始审计数据";
+    const payload = document.createElement("pre");
+    payload.textContent = JSON.stringify(item.payload || {}, null, 2);
+    details.append(detailsSummary, payload);
+    record.append(head, summary, meta, details);
+    list.appendChild(record);
+  });
+}
+
+async function loadAuditDetail(conversationId) {
+  if (!conversationId) {
+    renderAuditOverview(null);
+    renderAuditRecords([]);
+    $("auditStatus").textContent = "尚未选择会话。";
+    return;
+  }
+  state.auditConversationId = conversationId;
+  renderAuditConversationList();
+  $("auditStatus").textContent = "正在读取审计…";
+  const category = $("auditCategoryFilter").value;
+  const query = category ? `?category=${encodeURIComponent(category)}` : "";
+  try {
+    const data = await api(`/api/v1/conversations/${encodeURIComponent(conversationId)}/audit${query}`);
+    state.auditItems = data.items || [];
+    renderAuditOverview(data.conversation);
+    renderAuditRecords(state.auditItems);
+    const sourceNote = data.source === "session_event_history" ? "（该会话使用历史事件兼容展示）" : "";
+    $("auditStatus").textContent = `已读取 ${state.auditItems.length} 条记录${data.limit && state.auditItems.length >= data.limit ? "（已达到显示上限）" : ""}${sourceNote}。`;
+  } catch (error) {
+    state.auditItems = [];
+    renderAuditOverview(null);
+    renderAuditRecords([]);
+    $("auditStatus").textContent = `读取审计失败：${error.message}`;
+  }
+}
+
+async function loadAuditConversations() {
+  $("auditStatus").textContent = "正在读取会话列表…";
+  try {
+    const data = await api("/api/v1/conversations");
+    state.auditConversations = data.items || [];
+    state.auditLoaded = true;
+    renderAuditConversationList();
+    const current = state.auditConversations.find((item) => item.conversationId === state.auditConversationId)
+      || state.auditConversations.find((item) => item.conversationId === state.conversationId)
+      || state.auditConversations[0];
+    await loadAuditDetail(current?.conversationId || "");
+  } catch (error) {
+    state.auditLoaded = false;
+    $("auditConversationList").innerHTML = `<div class="empty">读取会话失败：${error.message}</div>`;
+    $("auditStatus").textContent = "无法读取会话列表。";
   }
 }
 
@@ -555,6 +749,11 @@ async function connect() {
       addEvent("user.message", data.content || attachmentNote, `seq ${packet.seq}`);
       state.assistantNode = null;
       state.assistantContent = "";
+    } else if (packet.eventType === "turn.completed") {
+      addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
+      if (document.querySelector("#auditPanel.active") && state.auditConversationId === state.conversationId) {
+        void loadAuditDetail(state.conversationId);
+      }
     } else {
       addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
     }
@@ -567,6 +766,12 @@ document.querySelectorAll(".tab").forEach((button) => button.addEventListener("c
 $("reloadConfigBtn").addEventListener("click", loadConfig);
 $("saveConfigBtn").addEventListener("click", saveConfig);
 $("reloadSkillsBtn").addEventListener("click", loadSkills);
+$("reloadAuditBtn").addEventListener("click", loadAuditConversations);
+$("auditCategoryFilter").addEventListener("change", () => loadAuditDetail(state.auditConversationId));
+$("auditConversationList").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-conversation-id]");
+  if (button) void loadAuditDetail(button.dataset.conversationId);
+});
 $("skillsTable").addEventListener("click", (event) => {
   const button = event.target.closest("[data-action=edit-skill]");
   if (button) openSkillEditor(button.dataset.skillId);

@@ -4,6 +4,11 @@
 
 ## 2026-08-28
 
+### 对话审计查看
+
+- 测试控制台新增“对话审计”功能切换：先按会话查看内容摘要、运行状态和 DSH Session 信息，再进入对应会话的完整执行链路。
+- 新增 `GET /api/v1/conversations/{conversationId}/audit`，支持按会话和审计类别读取对话、Skill、Tool、LLM 与运行时记录；原始 Payload 可展开查看，凭据仍由后端脱敏。
+
 ### UMC Portal 环境切换
 
 - 新增 `UMC_PORTAL=customer|admin|public` 环境开关及 Customer/Admin 两套 Base URL；`public` 复用 Customer Portal 地址，登录、附件上传和下载按所选 Portal 自动拼接后端 API 地址。

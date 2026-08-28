@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import config_catalog, get_settings
 from .customer_documents import CustomerDocumentNotConfigured
-from .db import ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, get_db
+from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .schemas import ConfigPatch, ConversationCreate, MessageCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
@@ -100,6 +100,7 @@ def make_router(service: DSHService) -> APIRouter:
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         await db.execute(delete(SessionEvent).where(SessionEvent.conversation_id == conversation_id))
+        await db.execute(delete(AuditRecord).where(AuditRecord.conversation_id == conversation_id))
         await db.execute(delete(MessageIdempotency).where(MessageIdempotency.conversation_id == conversation_id))
         await db.delete(conversation)
         await db.commit()
@@ -250,6 +251,82 @@ def make_router(service: DSHService) -> APIRouter:
                 {"seq": event.seq, "eventType": event.event_type, "data": event.event_json}
                 for event in events
             ],
+        }
+
+    @router.get("/conversations/{conversation_id}/audit", tags=["Audit"])
+    async def get_conversation_audit(
+        conversation_id: str,
+        category: str | None = Query(default=None),
+        limit: int = Query(default=500, ge=1, le=2000),
+        db: AsyncSession = Depends(get_db),
+        principal: Principal = Depends(get_principal),
+    ):
+        """Return the persisted execution trail for one owned conversation."""
+
+        try:
+            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        query = select(AuditRecord).where(
+            AuditRecord.conversation_id == conversation_id,
+            AuditRecord.tenant_id == principal.tenant_id,
+            AuditRecord.user_id == principal.user_id,
+        )
+        if category:
+            query = query.where(AuditRecord.category == category.strip().lower())
+        query = query.order_by(AuditRecord.created_at.asc(), AuditRecord.id.asc()).limit(limit)
+        result = await db.execute(query)
+
+        def record_json(record: AuditRecord) -> dict[str, object]:
+            return {
+                "id": record.id,
+                "category": record.category,
+                "recordType": record.record_type,
+                "requestId": record.request_id,
+                "runtimeId": record.runtime_id,
+                "payload": record.payload or {},
+                "createdAt": record.created_at.isoformat() if record.created_at else None,
+            }
+
+        items = [record_json(record) for record in result.scalars().all()]
+        source = "audit_record"
+        # Conversations created before chain-audit was enabled have no rows in
+        # audit_record. Reuse their immutable session events so operators can
+        # still inspect the historical dialogue and execution flow.
+        if not items:
+            event_query = select(SessionEvent).where(
+                SessionEvent.conversation_id == conversation_id,
+                SessionEvent.tenant_id == principal.tenant_id,
+                SessionEvent.user_id == principal.user_id,
+            ).order_by(SessionEvent.created_at.asc(), SessionEvent.id.asc())
+            event_result = await db.execute(event_query)
+            for event in event_result.scalars().all():
+                event_category = service.audit_category(event.event_type)
+                if category and event_category != category.strip().lower():
+                    continue
+                payload = event.event_json or {}
+                items.append(
+                    {
+                        "id": f"event:{event.id}",
+                        "category": event_category,
+                        "recordType": event.event_type,
+                        "requestId": payload.get("requestId"),
+                        "runtimeId": payload.get("runtimeId"),
+                        "payload": payload,
+                        "createdAt": event.created_at.isoformat() if event.created_at else None,
+                    }
+                )
+            items = items[:limit]
+            source = "session_event_history"
+        return {
+            "conversation": service.conversation_json(conversation),
+            "conversationId": conversation_id,
+            "items": items,
+            "count": len(items),
+            "limit": limit,
+            "category": category.strip().lower() if category else None,
+            "source": source,
         }
 
     @router.get("/conversations/{conversation_id}/events")

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH UMC 测试控制台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-umc-login1" />
+    <link rel="stylesheet" href="/styles.css?v=20260828-audit1" />
   </head>
   <body>
     <main class="shell">
@@ -22,6 +22,7 @@
         <button class="tab" data-tab="configPanel">运行配置</button>
         <button class="tab" data-tab="testPanel">多语言业务测试</button>
         <button class="tab" data-tab="skillPanel">Skills 配置</button>
+        <button class="tab" data-tab="auditPanel">对话审计</button>
       </nav>
 
       <section id="chatPanel" class="tab-panel active">
@@ -99,6 +100,32 @@
         <div id="skillsStatus" class="notice"></div>
       </section>
 
+      <section id="auditPanel" class="tab-panel">
+        <section class="card panel-head">
+          <div>
+            <h2>对话审计</h2>
+            <p class="muted">按会话查看用户问题、助手回答、Skill 路由、Tool 调用、LLM 请求/思考和执行结果。凭据字段已在后端脱敏。</p>
+          </div>
+          <div class="panel-actions"><button id="reloadAuditBtn" class="secondary">刷新会话</button></div>
+        </section>
+        <section class="audit-layout">
+          <aside class="audit-conversations card">
+            <div class="audit-list-head"><h3>会话列表</h3><span id="auditConversationCount" class="muted"></span></div>
+            <div id="auditConversationList" class="audit-conversation-list"><div class="empty">切换到本页后读取会话…</div></div>
+          </aside>
+          <div class="audit-detail-column">
+            <section class="audit-overview card" id="auditOverview"><div class="empty">选择一个会话查看审计。</div></section>
+            <section class="card audit-records">
+              <div class="audit-records-head">
+                <div><h3>执行链路</h3><p id="auditStatus" class="muted">尚未读取审计。</p></div>
+                <label class="audit-filter">类别<select id="auditCategoryFilter"><option value="">全部</option><option value="conversation">对话</option><option value="dsh">DSH / Tool</option><option value="llm">LLM</option><option value="runtime">运行时</option></select></label>
+              </div>
+              <div id="auditRecordList" class="audit-record-list"><div class="empty">暂无审计记录。</div></div>
+            </section>
+          </div>
+        </section>
+      </section>
+
       <dialog id="skillDialog" class="skill-dialog" aria-labelledby="skillDialogTitle">
         <form id="skillEditForm">
           <div class="skill-dialog-head">
@@ -140,6 +167,6 @@
         <pre id="testLog" class="test-log card"></pre>
       </section>
     </main>
-    <script src="/app.js?v=20260828-umc-portal1" type="module"></script>
+    <script src="/app.js?v=20260828-audit1" type="module"></script>
   </body>
 </html>
