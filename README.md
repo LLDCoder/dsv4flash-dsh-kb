@@ -200,9 +200,11 @@ docker compose up -d
 
 访问：
 
-- 测试控制台：http://localhost:18080（可用 `FRONTEND_PORT` 覆盖）
+- 测试控制台：本机轻量配置当前为 http://localhost:18180；启动本机 DSH 网关后统一使用 http://localhost:18087。直接端口可通过 `FRONTEND_PORT` 覆盖。
 - 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL、Tool 开关和可编辑的全局系统提示词；系统提示词会追加到每轮请求，但内置语言、安全和证据规则仍优先。UMC 会话由 Backend 使用环境变量中的既有测试账号自动获取，页面只显示脱敏状态，不提供手工 Token 输入。API Key/DB/Redis 只显示配置状态，不回显密文。
 - Skills 配置：在控制台“Skills 配置”页以列表查看 system Skill，可点击“新增 Skill”创建或点击“编辑”修改名称、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。
+- Tools 配置：在控制台“Tools 配置”页读取 OpenAPI/Swagger operation，导入并维护模型可读的 Tool 定义。后端以规范化 `HTTP 方法 + 路径` 建立唯一约束，同一个接口不能注册两次；只有启用且发布的 Tool 才能被已发布 Skill 绑定。
+- 本地 Skill 同步：`python scripts/sync_skills_to_77.py` 默认只预览许可证相关 Skill；设置 `DSH_77_CONSOLE_PASSWORD` 后追加 `--publish` 才会通过 77 控制台 API 写入并发布，脚本不会修改系统 Prompt。
 - 多语言业务测试：在控制台“多语言业务测试”页从 `/umc` 知识库目录生成 English/العربية 测试集，并执行 DSH 端到端路由、检索、Tool 和 5 分制评分。
 - DSH API Swagger：http://localhost:8000/docs
 - DSH OpenAPI JSON：http://localhost:8000/openapi.json
@@ -222,6 +224,7 @@ docker compose down
 
 - `GET/PATCH /api/v1/config?scope=system`：读取或保存运行配置；敏感值由服务端遮罩，空白 Secret 不会覆盖原值。
 - `GET /api/v1/skills?scope=system`、`POST /api/v1/skills`、`PUT /api/v1/skills/{skill_id}`：读取、新增或编辑 system Skill；Skill 内容在运行时按路由、版本、`PUBLISHED` 状态和启用开关加载。
+- `GET /api/v1/tools`、`GET /api/v1/tools/swagger?swaggerUrl=...`、`POST /api/v1/tools/import`、`PUT /api/v1/tools/{tool_name}`：读取系统默认能力和业务 Tool Registry、扫描 Swagger、导入 operation 和维护业务 Tool；知识库/OCR 由运行配置动态提供，不落业务 Tool Registry，导入时会拒绝重复 HTTP 接口。
 - `POST /api/v1/test-cases/generate`：从实时知识库目录生成 English/阿语跨业务用例，默认 `top_k=32`、`bm25,graph,vector`。
 - `POST /api/v1/test-cases/run`：并发执行最多 40 条用例，返回路由、工具、完成状态、回答和 5 分制评分。
 
