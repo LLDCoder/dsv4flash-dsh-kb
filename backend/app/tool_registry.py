@@ -113,6 +113,36 @@ DEFAULT_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "auth_strategy": "current_umc_bearer_token",
         "source": "swagger",
     },
+    {
+        "tool_name": "umc.licenses.detail",
+        "display_name": "Get issued license or permit document details",
+        "description": "Read-only details for a selected issued License or Permit, including the portal document URL and PDF Access Code when available.",
+        "operation_id": "license_detail",
+        "http_method": "GET",
+        "http_path": "/api/license/{id}",
+        "parameters": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"]},
+        "auth_strategy": "current_umc_bearer_token",
+        "source": "swagger",
+    },
+    {
+        "tool_name": "umc.licenses.action_validate",
+        "display_name": "Validate an issued license action",
+        "description": "Read-only validation of whether the current user may renew, modify, cancel, transfer, or manage a selected License or Permit.",
+        "operation_id": "licenses_action_validate",
+        "http_method": "POST",
+        "http_path": "/api/licenses-permits/actions/validate",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "documentId": {"type": "string", "minLength": 1},
+                "documentType": {"type": "string", "enum": ["LICENSE", "PERMIT"]},
+                "action": {"type": "string", "enum": ["RENEW", "MODIFY", "CANCEL", "TRANSFER", "PARTNER_MANAGEMENT", "DOWNLOAD"]},
+            },
+            "required": ["documentId", "documentType", "action"],
+        },
+        "auth_strategy": "current_umc_bearer_token",
+        "source": "swagger",
+    },
     {"tool_name": "umc.pending-actions", "display_name": "List pending actions", "description": "Read-only pending actions for the current account.", "operation_id": "pending_actions", "http_method": "GET", "http_path": "/api/MyRequest/PendingActions", "auth_strategy": "current_umc_bearer_token", "source": "swagger"},
     {"tool_name": "umc.collected-services", "display_name": "List collected services", "description": "Read-only services available to the current account.", "operation_id": "collect_service_list", "http_method": "GET", "http_path": "/api/HomePage/CollectServiceList", "auth_strategy": "current_umc_bearer_token", "source": "swagger"},
     {"tool_name": "umc.service-categories", "display_name": "List service categories", "description": "Read-only UMC service categories.", "operation_id": "service_categories", "http_method": "GET", "http_path": "/api/Service/ServiceCategories", "auth_strategy": "current_umc_bearer_token", "source": "swagger"},
@@ -292,6 +322,12 @@ def build_legacy_tool_request(allowed_tools: list[str], text: str, *, mode: str 
             isbn = re.sub(r"[\s-]", "", match.group(0))
             if len(isbn) >= 10:
                 return "umc.book_by_isbn", {"isbn": isbn}
+    if "umc.licenses.detail" in allowed_tools and any(term in text.lower() for term in ("download", "view document", "access code", "下载", "查看文件", "تنزيل", "تحميل")):
+        match = re.search(r"(?:license|licence|permit|document|certificate|id|许可证|牌照|许可)[\s:#-]*([A-Za-z0-9-]{3,})", text, re.IGNORECASE)
+        if match:
+            return "umc.licenses.detail", {"id": match.group(1)}
+    if "umc.applications" in allowed_tools and any(term in text.lower() for term in ("pending payment", "待付款", "الدفع المعلق", "قيد الدفع")):
+        return "umc.applications", {"pageIndex": 1, "pageSize": 100}
     if mode == "answer" and "umc.applications" in allowed_tools:
         return "umc.applications", {"pageIndex": 1, "pageSize": 100}
     license_list_tool = next((name for name in ("umc.licenses.statistics", "umc.licenses.action_needed", "umc.licenses.list") if name in allowed_tools), None)

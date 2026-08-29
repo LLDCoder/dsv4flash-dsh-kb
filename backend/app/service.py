@@ -706,6 +706,12 @@ class DSHService:
                                 "parameters": item.parameters,
                                 "sideEffect": item.side_effect,
                                 "confirmationRequired": item.confirmation_required,
+                                "operationId": item.operation_id,
+                                "httpMethod": item.http_method,
+                                "httpPath": item.http_path,
+                                "authStrategy": item.auth_strategy,
+                                "rbacPolicy": item.rbac_policy,
+                                "maskingPolicy": item.masking_policy,
                                 "source": item.source,
                             }
                             for item in selected_tools_result.scalars().all()

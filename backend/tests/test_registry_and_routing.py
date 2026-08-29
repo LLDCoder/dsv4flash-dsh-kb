@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.skills import build_system_prompt, resolve_skill
-from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key
+from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
 from app.skill_router import normalized_router_mode, valid_llm_route
@@ -58,6 +58,37 @@ class RegistryAndRoutingTests(unittest.TestCase):
         skill_tools = {tool for skill in DEFAULT_SKILL_DEFINITIONS for tool in skill.get("allowed_tools", [])}
         registry_tools = {tool["tool_name"] for tool in DEFAULT_TOOL_DEFINITIONS}
         self.assertEqual(skill_tools - registry_tools, set())
+
+    def test_legacy_skill_tools_are_covered_by_registry_replacements(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        old_tools = {
+            "knowledge.search", "ocr.layout_parsing", "umc.add_application", "umc.appeal-reasons",
+            "umc.application_detail", "umc.applications", "umc.book_by_isbn", "umc.collected-services",
+            "umc.enquiries", "umc.enquiry-applications", "umc.enquiry-types", "umc.licenses", "umc.payments",
+            "umc.pending-actions", "umc.pending-violations", "umc.service-categories",
+        }
+        registry_tools = {tool["tool_name"] for tool in DEFAULT_TOOL_DEFINITIONS}
+        self.assertTrue(old_tools - registry_tools <= {"umc.licenses"})
+        self.assertTrue({"umc.licenses.list", "umc.licenses.statistics", "umc.licenses.action_needed", "umc.licenses.detail"} <= registry_tools)
+        self.assertEqual({"umc.licenses"} - registry_tools, {"umc.licenses"})
+
+    def test_skill_guidance_is_business_scoped(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        for definition in DEFAULT_SKILL_DEFINITIONS:
+            content = definition["content"]
+            self.assertIn("WHEN TO USE:", content)
+            self.assertIn("DO NOT USE WHEN:", content)
+            self.assertIn("PREREQUISITES:", content)
+            self.assertIn("RESPONSE RULES:", content)
+
+    def test_download_compatibility_request_uses_detail_tool(self):
+        request = build_legacy_tool_request(
+            ["umc.licenses.list", "umc.licenses.detail"],
+            "Download license 7364616",
+        )
+        self.assertEqual(request, ("umc.licenses.detail", {"id": "7364616"}))
 
     def test_knowledge_and_ocr_are_runtime_only_capabilities(self):
         business_tools = {item["tool_name"] for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
@@ -114,6 +145,22 @@ class RegistryAndRoutingTests(unittest.TestCase):
         knowledge, licenses = __import__("asyncio").run(run())
         self.assertEqual(knowledge["result"]["folder_id"], "kb")
         self.assertEqual(licenses["result"]["path"], "/api/License/statistics")
+
+    def test_registry_execution_definition_contains_gateway_fields(self):
+        definition = next(item for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS if item["tool_name"] == "umc.licenses.statistics")
+        execution_definition = {
+            "name": definition["tool_name"],
+            "description": definition["description"],
+            "parameters": definition["parameters"],
+            "sideEffect": definition.get("side_effect", "read"),
+            "confirmationRequired": definition.get("confirmation_required", False),
+            "operationId": definition["operation_id"],
+            "httpMethod": definition["http_method"],
+            "httpPath": definition["http_path"],
+            "source": definition["source"],
+        }
+        self.assertEqual(execution_definition["httpMethod"], "GET")
+        self.assertEqual(execution_definition["httpPath"], "/api/License/statistics")
 
 
 if __name__ == "__main__":

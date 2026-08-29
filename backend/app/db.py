@@ -208,9 +208,15 @@ async def init_db() -> None:
             result = await session.execute(select(Skill).where(Skill.skill_id == definition["skill_id"], Skill.version == 1))
             existing_skill = result.scalar_one_or_none()
             if existing_skill:
-                if existing_skill.source == "builtin" and "umc.licenses" in (existing_skill.allowed_tools or []):
-                    existing_skill.allowed_tools = list(definition["allowed_tools"])
-                    changed = True
+                # Builtin definitions are the deployable business baseline.
+                # Apply revisions only while the record is still system-owned;
+                # a Skill edited by an operator is intentionally preserved.
+                if existing_skill.source == "builtin" and existing_skill.updated_by == "system":
+                    for field in ("name", "allowed_tools", "dependencies", "content"):
+                        desired = definition[field]
+                        if getattr(existing_skill, field) != desired:
+                            setattr(existing_skill, field, desired)
+                            changed = True
                 continue
             session.add(
                 Skill(
