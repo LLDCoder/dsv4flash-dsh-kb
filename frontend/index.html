@@ -31,6 +31,7 @@
         <button class="tab active" data-tab="chatPanel">对话测试</button>
         <button class="tab" data-tab="configPanel">运行配置</button>
         <button class="tab" data-tab="testPanel">多语言业务测试</button>
+        <button class="tab" data-tab="toolPanel">Tools 配置</button>
         <button class="tab" data-tab="skillPanel">Skills 配置</button>
         <button class="tab" data-tab="auditPanel">对话审计</button>
       </nav>
@@ -110,6 +111,18 @@
         <div id="skillsStatus" class="notice"></div>
       </section>
 
+      <section id="toolPanel" class="tab-panel">
+        <section class="card panel-head">
+          <div>
+            <h2>Tools 配置</h2>
+            <p class="muted">管理已注册的模型 Tool；新增时从 OpenAPI/Swagger 选择接口。相同 HTTP 方法和路径只能注册一次。</p>
+          </div>
+          <div class="panel-actions"><button id="newToolBtn">新增 Tool</button><button id="reloadToolsBtn" class="secondary">重新读取</button></div>
+        </section>
+        <div id="toolsStatus" class="notice"></div>
+        <section class="card table-card"><div class="table-scroll"><table id="toolsTable"><thead><tr><th>类型</th><th>Tool</th><th>HTTP 接口</th><th>副作用</th><th>状态</th><th>操作</th></tr></thead><tbody><tr><td colspan="6" class="empty">切换到本页后读取 Tools…</td></tr></tbody></table></div></section>
+      </section>
+
       <section id="auditPanel" class="tab-panel">
         <section class="card panel-head">
           <div>
@@ -151,11 +164,60 @@
             <label>名称<input id="skillNameInput" required /></label>
             <label>状态<select id="skillStatusInput"><option value="DRAFT">DRAFT</option><option value="PUBLISHED">PUBLISHED</option><option value="DISABLED">DISABLED</option></select></label>
             <label class="skill-dialog-toggle">启用<input id="skillEnabledInput" type="checkbox" /></label>
-            <label>允许调用的 Tools（逗号分隔）<input id="skillAllowedToolsInput" /></label>
+            <section class="skill-tool-binding wide" aria-labelledby="skillToolBindingTitle">
+              <div class="skill-tool-binding-head">
+                <div>
+                  <span id="skillToolBindingTitle">允许调用的 Tools</span>
+                  <small>仅已启用且已发布的业务 Tool 可新增绑定；系统默认能力由运行配置管理。</small>
+                </div>
+                <strong id="skillToolSelectionCount" class="skill-tool-selection-count">已选 0 个</strong>
+              </div>
+              <div id="skillToolChips" class="skill-tool-chips" aria-live="polite"></div>
+              <label class="skill-tool-search-label" for="skillToolSearchInput">搜索 Tool
+                <input id="skillToolSearchInput" type="search" placeholder="按名称、描述或 API 路径搜索" autocomplete="off" />
+              </label>
+              <div id="skillToolBindingNotice" class="skill-tool-binding-notice" role="status"></div>
+              <div id="skillToolPicker" class="skill-tool-picker" aria-label="可绑定 Tools"></div>
+            </section>
             <label>依赖条件（逗号分隔）<input id="skillDependenciesInput" /></label>
             <label class="wide">Skill 内容 / 行为指令<textarea id="skillContentInput" rows="10"></textarea></label>
           </div>
           <div class="dialog-actions"><button id="cancelSkillBtn" type="button" class="secondary">取消</button><button id="saveSkillBtn" type="submit">保存 Skill</button></div>
+        </form>
+      </dialog>
+      <dialog id="toolDialog" class="skill-dialog" aria-labelledby="toolDialogTitle">
+        <form id="toolEditForm">
+          <div class="skill-dialog-head"><div><p class="eyebrow">TOOL REGISTRY</p><h2 id="toolDialogTitle">编辑 Tool</h2><small id="toolDialogMeta" class="muted"></small></div><button id="closeToolDialogBtn" type="button" class="dialog-close" aria-label="关闭">×</button></div>
+          <div class="skill-dialog-fields">
+            <label>Tool Name<input id="toolNameInput" disabled /></label>
+            <label>显示名称<input id="toolDisplayNameInput" required /></label>
+            <label>HTTP 方法<input id="toolMethodInput" disabled /></label>
+            <label>HTTP 路径<input id="toolPathInput" disabled /></label>
+            <label>副作用<select id="toolSideEffectInput"><option value="read">read</option><option value="download">download</option><option value="write">write</option></select></label>
+            <label class="skill-dialog-toggle">需要确认<input id="toolConfirmationInput" type="checkbox" /></label>
+            <label class="skill-dialog-toggle">启用<input id="toolEnabledInput" type="checkbox" /></label>
+            <label class="skill-dialog-toggle">发布<input id="toolPublishedInput" type="checkbox" /></label>
+            <label class="wide">描述<textarea id="toolDescriptionInput" rows="4"></textarea></label>
+            <label class="wide">参数 Schema<textarea id="toolParametersInput" rows="6"></textarea></label>
+            <label class="wide">返回 Schema<textarea id="toolResponseInput" rows="6"></textarea></label>
+          </div>
+          <div class="dialog-actions"><button id="cancelToolBtn" type="button" class="secondary">取消</button><button id="saveToolBtn" type="submit">保存 Tool</button></div>
+        </form>
+      </dialog>
+
+      <dialog id="swaggerDialog" class="skill-dialog swagger-dialog" aria-labelledby="swaggerDialogTitle">
+        <form id="swaggerImportForm">
+          <div class="skill-dialog-head">
+            <div><p class="eyebrow">ADD TOOLS</p><h2 id="swaggerDialogTitle">新增 Tool</h2><small class="muted">读取 Swagger 后勾选多个接口，一次注册到 Tool Registry。</small></div>
+            <button id="closeSwaggerDialogBtn" type="button" class="dialog-close" aria-label="关闭">×</button>
+          </div>
+          <div class="toolbar swagger-toolbar">
+            <label class="wide">Swagger/OpenAPI URL<input id="toolSwaggerUrl" value="http://host.docker.internal:5206/swagger/v1/swagger.json" required /></label>
+            <button id="inspectSwaggerBtn" type="button">读取接口</button>
+          </div>
+          <div id="swaggerStatus" class="notice"></div>
+          <div class="table-card"><div class="table-scroll"><table id="swaggerOperationsTable"><thead><tr><th><input id="selectAllSwagger" type="checkbox" aria-label="全选 Swagger 接口" /></th><th>operationId</th><th>方法</th><th>路径</th><th>说明</th></tr></thead><tbody><tr><td colspan="5" class="empty">输入 Swagger URL 后读取接口。</td></tr></tbody></table></div></div>
+          <div class="dialog-actions"><button id="cancelSwaggerBtn" type="button" class="secondary">取消</button><button id="importSelectedToolsBtn" type="submit" disabled>导入选中 Tool</button></div>
         </form>
       </dialog>
 
@@ -178,6 +240,6 @@
         <pre id="testLog" class="test-log card"></pre>
       </section>
     </main>
-    <script src="/app.js?v=20260828-wsfix1" type="module"></script>
+    <script src="/app.js?v=20260830-skill-tool-binding1" type="module"></script>
   </body>
 </html>

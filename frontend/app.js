@@ -1,4 +1,4 @@
-const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, editingSkillId: null, skillDialogMode: "edit", attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationId: null, auditItems: [], consoleAuthenticated: false };
+const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, tools: [], toolsLoaded: false, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationId: null, auditItems: [], consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
 
 function containsArabic(text) {
@@ -66,6 +66,17 @@ async function api(path, options = {}) {
   if (rawToken && !headers.Authorization) headers.Authorization = rawToken.toLowerCase().startsWith("bearer ") ? rawToken : `Bearer ${rawToken}`;
   const response = await fetch(path, { credentials: "same-origin", ...options, headers });
   if (response.status === 401 && !path.startsWith("/api/v1/console/")) {
+    state.consoleAuthenticated = false;
+    showConsoleGate("控制台会话已过期，请重新输入密码。", true);
+  }
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+async function consoleApi(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  const response = await fetch(path, { credentials: "same-origin", ...options, headers });
+  if (response.status === 401) {
     state.consoleAuthenticated = false;
     showConsoleGate("控制台会话已过期，请重新输入密码。", true);
   }
@@ -222,6 +233,7 @@ function setTab(tabId) {
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === tabId));
   if (tabId === "configPanel" && !state.configItems.length) loadConfig();
   if (tabId === "skillPanel" && !state.skillsLoaded) loadSkills();
+  if (tabId === "toolPanel" && !state.toolsLoaded) loadTools();
   if (tabId === "auditPanel" && !state.auditLoaded) loadAuditConversations();
 }
 
@@ -308,6 +320,145 @@ function parseSkillValues(value) {
     .filter(Boolean);
 }
 
+function normalizeToolNames(value) {
+  return [...new Set((Array.isArray(value) ? value : []).map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function toolAvailability(item) {
+  if (!item) return { bindable: false, reason: "Tool 已不在 Registry 中" };
+  if (item.toolType === "system_default") {
+    return item.enabled && item.published
+      ? { bindable: true, reason: "系统默认能力" }
+      : { bindable: false, reason: "运行配置未启用" };
+  }
+  if (!item.enabled && !item.published) return { bindable: false, reason: "未启用、未发布" };
+  if (!item.enabled) return { bindable: false, reason: "已停用" };
+  if (!item.published) return { bindable: false, reason: "未发布" };
+  return { bindable: true, reason: "已发布" };
+}
+
+function toolEffectLabel(item) {
+  const label = { read: "只读", write: "写入", download: "下载" }[item?.sideEffect] || item?.sideEffect || "未分类";
+  return item?.confirmationRequired ? `${label} · 需确认` : label;
+}
+
+function renderSkillToolBinding() {
+  const chips = $("skillToolChips");
+  const picker = $("skillToolPicker");
+  const notice = $("skillToolBindingNotice");
+  const count = $("skillToolSelectionCount");
+  if (!chips || !picker || !notice || !count) return;
+
+  const selected = normalizeToolNames(state.selectedSkillTools);
+  state.selectedSkillTools = selected;
+  const toolByName = new Map(state.tools.map((item) => [item.toolName, item]));
+  chips.replaceChildren();
+  if (!selected.length) {
+    const empty = document.createElement("span");
+    empty.className = "skill-tool-empty";
+    empty.textContent = "尚未绑定 Tool";
+    chips.appendChild(empty);
+  } else {
+    selected.forEach((toolName) => {
+      const item = toolByName.get(toolName);
+      const chip = document.createElement("span");
+      chip.className = "skill-tool-chip";
+      const label = document.createElement("span");
+      label.textContent = item?.displayName ? `${toolName} · ${item.displayName}` : toolName;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "skill-tool-chip-remove";
+      remove.dataset.action = "remove-skill-tool";
+      remove.dataset.toolName = toolName;
+      remove.title = `解除绑定 ${toolName}`;
+      remove.setAttribute("aria-label", `解除绑定 ${toolName}`);
+      remove.textContent = "×";
+      chip.append(label, remove);
+      chips.appendChild(chip);
+    });
+  }
+  count.textContent = `已选 ${selected.length} 个`;
+
+  const selectedItems = selected.map((toolName) => toolByName.get(toolName)).filter(Boolean);
+  const sensitiveTools = selectedItems.filter((item) => item.sideEffect !== "read" || item.confirmationRequired);
+  const unavailableTools = selected.filter((toolName) => !toolAvailability(toolByName.get(toolName)).bindable);
+  if (unavailableTools.length) {
+    notice.className = "skill-tool-binding-notice warning";
+    notice.textContent = `有 ${unavailableTools.length} 个已绑定 Tool 当前不可用：${unavailableTools.join("、")}。发布 Skill 前必须解除绑定或恢复 Tool。`;
+  } else if (sensitiveTools.length) {
+    notice.className = "skill-tool-binding-notice caution";
+    notice.textContent = `已绑定 ${sensitiveTools.length} 个具有副作用的 Tool；运行时将按 Tool 的确认策略执行。`;
+  } else {
+    notice.className = "skill-tool-binding-notice";
+    notice.textContent = "当前绑定均为可用的只读 Tool。";
+  }
+
+  const query = $("skillToolSearchInput")?.value.trim().toLowerCase() || "";
+  const unknownSelected = selected
+    .filter((toolName) => !toolByName.has(toolName))
+    .map((toolName) => ({ toolName, displayName: toolName, description: "此 Tool 已不在当前 Registry 中。", toolType: "unavailable", sideEffect: "unknown", enabled: false, published: false }));
+  const groups = [
+    ["系统默认能力", state.tools.filter((item) => item.toolType === "system_default")],
+    ["业务 Tool", state.tools.filter((item) => item.toolType !== "system_default")],
+    ["当前不可用的历史绑定", unknownSelected],
+  ];
+  picker.replaceChildren();
+  let visible = 0;
+  groups.forEach(([title, items]) => {
+    const matches = items.filter((item) => {
+      const haystack = [item.toolName, item.displayName, item.description, item.httpMethod, item.httpPath].join(" ").toLowerCase();
+      return !query || haystack.includes(query);
+    });
+    if (!matches.length) return;
+    visible += matches.length;
+    const group = document.createElement("section");
+    group.className = "skill-tool-group";
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    group.appendChild(heading);
+    matches.sort((left, right) => String(left.toolName).localeCompare(String(right.toolName))).forEach((item) => {
+      const availability = toolAvailability(item);
+      const selectedItem = selected.includes(item.toolName);
+      const option = document.createElement("label");
+      option.className = `skill-tool-option${selectedItem ? " selected" : ""}${availability.bindable ? "" : " unavailable"}`;
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = selectedItem;
+      input.disabled = !availability.bindable;
+      input.dataset.toolName = item.toolName;
+      input.setAttribute("aria-label", `绑定 ${item.toolName}`);
+      const content = document.createElement("span");
+      content.className = "skill-tool-option-content";
+      const name = document.createElement("strong");
+      name.textContent = item.toolName;
+      const detail = document.createElement("span");
+      detail.className = "skill-tool-option-detail";
+      detail.textContent = item.displayName || item.description || "未填写描述";
+      const meta = document.createElement("span");
+      meta.className = "skill-tool-option-meta";
+      const endpoint = item.httpMethod && item.httpPath ? `${item.httpMethod} ${item.httpPath}` : "";
+      meta.textContent = [item.toolType === "system_default" ? "系统默认" : item.toolType === "unavailable" ? "历史引用" : "业务 Tool", endpoint, toolEffectLabel(item), availability.reason].filter(Boolean).join(" · ");
+      content.append(name, detail, meta);
+      option.append(input, content);
+      group.appendChild(option);
+    });
+    picker.appendChild(group);
+  });
+  if (!visible) {
+    const empty = document.createElement("p");
+    empty.className = "skill-tool-picker-empty";
+    empty.textContent = query ? "没有匹配的 Tool。" : "尚无可显示的 Tool。";
+    picker.appendChild(empty);
+  }
+}
+
+function updateSelectedSkillTool(toolName, selected) {
+  state.selectedSkillTools = selected
+    ? normalizeToolNames([...state.selectedSkillTools, toolName])
+    : state.selectedSkillTools.filter((item) => item !== toolName);
+  renderSkillToolBinding();
+}
+
 function renderSkills(items) {
   state.skills = items;
   state.skillsLoaded = true;
@@ -363,7 +514,218 @@ async function loadSkills() {
   }
 }
 
-function openSkillEditor(skillId) {
+function renderTools(items) {
+  state.tools = items;
+  state.toolsLoaded = true;
+  if ($("skillDialog")?.open) renderSkillToolBinding();
+  const body = $("toolsTable").querySelector("tbody");
+  body.replaceChildren();
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">暂未注册业务 Tool；系统默认能力未启用。</td></tr>';
+    return;
+  }
+  items.forEach((item) => {
+    const row = document.createElement("tr");
+    const typeCell = document.createElement("td");
+    typeCell.textContent = item.toolType === "system_default" ? "系统默认" : "业务 Tool";
+    typeCell.className = item.toolType === "system_default" ? "tool-system-default" : "tool-business";
+    const name = document.createElement("td");
+    const nameCode = document.createElement("code");
+    nameCode.textContent = item.toolName || "";
+    const nameLabel = document.createElement("small");
+    nameLabel.textContent = item.displayName || "";
+    name.append(nameCode, document.createElement("br"), nameLabel);
+    const endpoint = document.createElement("td");
+    endpoint.textContent = `${item.httpMethod} ${item.httpPath}`;
+    const sideEffect = document.createElement("td");
+    sideEffect.textContent = `${item.sideEffect || "read"}${item.confirmationRequired ? " · 需确认" : ""}`;
+    const stateCell = document.createElement("td");
+    stateCell.textContent = `${item.published ? "PUBLISHED" : "DRAFT"} · ${item.enabled ? "启用" : "停用"}`;
+    const action = document.createElement("td");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary";
+    button.dataset.action = item.toolType === "system_default" ? "view-system-tool" : "edit-tool";
+    button.dataset.toolName = item.toolName;
+    button.textContent = item.toolType === "system_default" ? "查看配置" : "编辑";
+    action.appendChild(button);
+    row.append(typeCell, name, endpoint, sideEffect, stateCell, action);
+    body.appendChild(row);
+  });
+}
+
+async function loadTools() {
+  try {
+    const data = await api("/api/v1/tools");
+    renderTools(data.items || []);
+    $("toolsStatus").textContent = `已读取 ${state.tools.length} 个 Tool；接口方法和路径不能重复注册。`;
+  } catch (error) {
+    $("toolsStatus").textContent = `读取 Tools 失败：${error.message}`;
+  }
+}
+
+function renderSwaggerOperations(items) {
+  state.swaggerOperations = items;
+  const body = $("swaggerOperationsTable").querySelector("tbody");
+  body.replaceChildren();
+  $("selectAllSwagger").checked = false;
+  $("importSelectedToolsBtn").disabled = true;
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">Swagger 中没有可导入的接口。</td></tr>';
+    return;
+  }
+  const registeredInterfaces = new Set(state.tools.map((tool) => tool.interfaceKey || `${tool.httpMethod} ${tool.httpPath}`.toLowerCase()));
+  items.forEach((item) => {
+    const row = document.createElement("tr");
+    const selectCell = document.createElement("td");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.operationId = item.operationId || "";
+    checkbox.dataset.interfaceKey = item.interfaceKey || "";
+    checkbox.checked = false;
+    checkbox.disabled = registeredInterfaces.has(item.interfaceKey);
+    checkbox.title = checkbox.disabled ? "该 HTTP 接口已注册" : "选择此接口";
+    selectCell.appendChild(checkbox);
+    const operation = document.createElement("td");
+    const operationCode = document.createElement("code");
+    operationCode.textContent = item.operationId || "";
+    operation.appendChild(operationCode);
+    const method = document.createElement("td");
+    method.textContent = item.httpMethod || "";
+    const path = document.createElement("td");
+    const pathCode = document.createElement("code");
+    pathCode.textContent = item.httpPath || "";
+    path.appendChild(pathCode);
+    const description = document.createElement("td");
+    description.textContent = item.displayName || "";
+    row.append(selectCell, operation, method, path, description);
+    body.appendChild(row);
+  });
+}
+
+function updateSwaggerSelectionState() {
+  const checkboxes = [...document.querySelectorAll("#swaggerOperationsTable input[data-operation-id]")];
+  const available = checkboxes.filter((checkbox) => !checkbox.disabled);
+  const selected = available.filter((checkbox) => checkbox.checked);
+  $("importSelectedToolsBtn").disabled = selected.length === 0;
+  const selectAll = $("selectAllSwagger");
+  selectAll.checked = available.length > 0 && selected.length === available.length;
+  selectAll.indeterminate = selected.length > 0 && selected.length < available.length;
+}
+
+function openSwaggerImporter() {
+  $("swaggerStatus").textContent = "输入 Swagger URL 后读取接口。";
+  renderSwaggerOperations([]);
+  $("swaggerDialog").showModal();
+}
+
+function closeSwaggerImporter() {
+  const dialog = $("swaggerDialog");
+  if (dialog.open) dialog.close();
+}
+
+async function inspectSwagger() {
+  const url = $("toolSwaggerUrl").value.trim();
+  if (!url) return;
+  $("inspectSwaggerBtn").disabled = true;
+  $("swaggerStatus").textContent = "正在读取 Swagger…";
+  try {
+    const data = await api(`/api/v1/tools/swagger?swaggerUrl=${encodeURIComponent(url)}`);
+    renderSwaggerOperations(data.items || []);
+    const available = state.swaggerOperations.filter((item) => !state.tools.some((tool) => (tool.interfaceKey || `${tool.httpMethod} ${tool.httpPath}`.toLowerCase()) === item.interfaceKey));
+    $("swaggerStatus").textContent = `Swagger 已读取 ${state.swaggerOperations.length} 个接口，其中 ${available.length} 个尚未注册。`;
+  } catch (error) {
+    $("swaggerStatus").textContent = `读取 Swagger 失败：${error.message}`;
+  } finally {
+    $("inspectSwaggerBtn").disabled = false;
+  }
+}
+
+async function importSelectedSwaggerTools(event) {
+  event.preventDefault();
+  const swaggerUrl = $("toolSwaggerUrl").value.trim();
+  const selectedIds = [...document.querySelectorAll("#swaggerOperationsTable input[data-operation-id]:checked")].map((checkbox) => checkbox.dataset.operationId).filter(Boolean);
+  if (!swaggerUrl || !selectedIds.length) return;
+  $("importSelectedToolsBtn").disabled = true;
+  $("swaggerStatus").textContent = `正在导入 ${selectedIds.length} 个 Tool…`;
+  let imported = 0;
+  const failures = [];
+  try {
+    for (const operationId of selectedIds) {
+      try {
+        await api("/api/v1/tools/import", { method: "POST", body: JSON.stringify({ swaggerUrl, operationId }) });
+        imported += 1;
+      } catch (error) {
+        failures.push(`${operationId}: ${error.message}`);
+      }
+    }
+    await loadTools();
+    closeSwaggerImporter();
+    $("toolsStatus").textContent = failures.length
+      ? `已导入 ${imported} 个 Tool；${failures.length} 个未导入：${failures.join("；")}`
+      : `已导入 ${imported} 个 Tool；如需供模型使用，请编辑后启用并发布。`;
+  } finally {
+    $("importSelectedToolsBtn").disabled = false;
+  }
+}
+
+function openToolEditor(toolName) {
+  const item = state.tools.find((tool) => tool.toolName === toolName);
+  if (!item) return;
+  state.editingToolName = toolName;
+  $("toolDialogTitle").textContent = `编辑 ${item.displayName || toolName}`;
+  $("toolDialogMeta").textContent = `${item.toolName} · ${item.interfaceKey || `${item.httpMethod} ${item.httpPath}`}`;
+  $("toolNameInput").value = item.toolName;
+  $("toolDisplayNameInput").value = item.displayName || "";
+  $("toolMethodInput").value = item.httpMethod || "";
+  $("toolPathInput").value = item.httpPath || "";
+  $("toolSideEffectInput").value = item.sideEffect || "read";
+  $("toolConfirmationInput").checked = Boolean(item.confirmationRequired);
+  $("toolEnabledInput").checked = Boolean(item.enabled);
+  $("toolPublishedInput").checked = Boolean(item.published);
+  $("toolDescriptionInput").value = item.description || "";
+  $("toolParametersInput").value = JSON.stringify(item.parameters || {}, null, 2);
+  $("toolResponseInput").value = JSON.stringify(item.responseSchema || {}, null, 2);
+  $("toolDialog").showModal();
+}
+
+function closeToolEditor() {
+  const dialog = $("toolDialog");
+  if (dialog.open) dialog.close();
+  state.editingToolName = null;
+}
+
+async function saveToolEditor(event) {
+  event.preventDefault();
+  const item = state.tools.find((tool) => tool.toolName === state.editingToolName);
+  if (!item) return;
+  let parameters;
+  let responseSchema;
+  try {
+    parameters = JSON.parse($("toolParametersInput").value || "{}");
+    responseSchema = JSON.parse($("toolResponseInput").value || "{}");
+  } catch {
+    $("toolsStatus").textContent = "参数或返回 Schema 必须是合法 JSON。";
+    return;
+  }
+  try {
+    await api(`/api/v1/tools/${encodeURIComponent(item.toolName)}`, { method: "PUT", body: JSON.stringify({
+      displayName: $("toolDisplayNameInput").value.trim(), description: $("toolDescriptionInput").value,
+      operationId: item.operationId, httpMethod: item.httpMethod, httpPath: item.httpPath,
+      interfaceKey: item.interfaceKey, parameters, responseSchema, authStrategy: item.authStrategy,
+      sideEffect: $("toolSideEffectInput").value, confirmationRequired: $("toolConfirmationInput").checked,
+      rbacPolicy: item.rbacPolicy, maskingPolicy: item.maskingPolicy, swaggerSource: item.swaggerSource,
+      source: item.source, version: item.version, enabled: $("toolEnabledInput").checked, published: $("toolPublishedInput").checked,
+    }) });
+    await loadTools();
+    closeToolEditor();
+    $("toolsStatus").textContent = "Tool 已保存。只有启用且发布的 Tool 才能被 Skill 绑定。";
+  } catch (error) {
+    $("toolsStatus").textContent = `保存 Tool 失败：${error.message}`;
+  }
+}
+
+async function openSkillEditor(skillId) {
   const item = state.skills.find((skill) => skill.skillId === skillId);
   if (!item) return;
   state.skillDialogMode = "edit";
@@ -375,15 +737,18 @@ function openSkillEditor(skillId) {
   $("skillNameInput").value = item.name || "";
   $("skillStatusInput").value = item.status || "DRAFT";
   $("skillEnabledInput").checked = Boolean(item.enabled);
-  $("skillAllowedToolsInput").value = splitSkillValues(item.allowedTools);
+  state.selectedSkillTools = normalizeToolNames(item.allowedTools);
+  $("skillToolSearchInput").value = "";
   $("skillDependenciesInput").value = splitSkillValues(item.dependencies);
   $("skillContentInput").value = item.content || "";
   $("saveSkillBtn").textContent = "保存 Skill";
+  if (!state.toolsLoaded) await loadTools();
+  renderSkillToolBinding();
   $("skillDialog").showModal();
   $("skillNameInput").focus();
 }
 
-function openNewSkillEditor() {
+async function openNewSkillEditor() {
   state.skillDialogMode = "create";
   state.editingSkillId = null;
   $("skillDialogTitle").textContent = "新增 Skill";
@@ -393,10 +758,13 @@ function openNewSkillEditor() {
   $("skillNameInput").value = "";
   $("skillStatusInput").value = "DRAFT";
   $("skillEnabledInput").checked = false;
-  $("skillAllowedToolsInput").value = "";
+  state.selectedSkillTools = [];
+  $("skillToolSearchInput").value = "";
   $("skillDependenciesInput").value = "";
   $("skillContentInput").value = "";
   $("saveSkillBtn").textContent = "创建 Skill";
+  if (!state.toolsLoaded) await loadTools();
+  renderSkillToolBinding();
   $("skillDialog").showModal();
   $("skillIdInput").focus();
 }
@@ -406,6 +774,7 @@ function closeSkillEditor() {
   if (dialog.open) dialog.close();
   state.editingSkillId = null;
   state.skillDialogMode = "edit";
+  state.selectedSkillTools = [];
   $("skillIdInput").disabled = false;
 }
 
@@ -449,7 +818,7 @@ async function saveSkillEditor(event) {
       status: $("skillStatusInput").value,
       scope: item?.scope || "system",
       enabled: $("skillEnabledInput").checked,
-      allowedTools: parseSkillValues($("skillAllowedToolsInput").value),
+      allowedTools: normalizeToolNames(state.selectedSkillTools),
       dependencies: parseSkillValues($("skillDependenciesInput").value),
       content: $("skillContentInput").value,
     };
@@ -638,7 +1007,7 @@ async function loadAuditDetail(conversationId) {
   const category = $("auditCategoryFilter").value;
   const query = category ? `?category=${encodeURIComponent(category)}` : "";
   try {
-    const data = await api(`/api/v1/conversations/${encodeURIComponent(conversationId)}/audit${query}`);
+    const data = await consoleApi(`/api/v1/console/audit/conversations/${encodeURIComponent(conversationId)}${query}`);
     state.auditScope = data.scope || state.auditScope || "owner";
     const scopeNode = $("auditScope");
     if (scopeNode) scopeNode.textContent = state.auditScope === "admin" ? "管理员范围：全部账号 / 租户" : "当前账号范围";
@@ -659,7 +1028,7 @@ async function loadAuditDetail(conversationId) {
 async function loadAuditConversations() {
   $("auditStatus").textContent = "正在读取会话列表…";
   try {
-    const data = await api("/api/v1/conversations");
+    const data = await consoleApi("/api/v1/console/audit/conversations");
     state.auditConversations = data.conversations || data.items || [];
     state.auditScope = data.scope || "owner";
     state.auditLoaded = true;
@@ -1018,8 +1387,21 @@ $("consoleLogoutBtn").addEventListener("click", () => { void logoutConsole(); })
 document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
 $("reloadConfigBtn").addEventListener("click", loadConfig);
 $("saveConfigBtn").addEventListener("click", saveConfig);
-$("newSkillBtn").addEventListener("click", openNewSkillEditor);
+$("newSkillBtn").addEventListener("click", () => { void openNewSkillEditor(); });
 $("reloadSkillsBtn").addEventListener("click", loadSkills);
+$("newToolBtn").addEventListener("click", openSwaggerImporter);
+$("reloadToolsBtn").addEventListener("click", loadTools);
+$("inspectSwaggerBtn").addEventListener("click", inspectSwagger);
+$("swaggerImportForm").addEventListener("submit", importSelectedSwaggerTools);
+$("cancelSwaggerBtn").addEventListener("click", closeSwaggerImporter);
+$("closeSwaggerDialogBtn").addEventListener("click", closeSwaggerImporter);
+$("selectAllSwagger").addEventListener("change", (event) => {
+  document.querySelectorAll("#swaggerOperationsTable input[data-operation-id]:not(:disabled)").forEach((checkbox) => { checkbox.checked = event.target.checked; });
+  updateSwaggerSelectionState();
+});
+$("swaggerOperationsTable").addEventListener("change", (event) => {
+  if (event.target.matches("input[data-operation-id]")) updateSwaggerSelectionState();
+});
 $("reloadAuditBtn").addEventListener("click", loadAuditConversations);
 $("auditCategoryFilter").addEventListener("change", () => loadAuditDetail(state.auditConversationId));
 $("auditConversationList").addEventListener("click", (event) => {
@@ -1028,13 +1410,34 @@ $("auditConversationList").addEventListener("click", (event) => {
 });
 $("skillsTable").addEventListener("click", (event) => {
   const button = event.target.closest("[data-action=edit-skill]");
-  if (button) openSkillEditor(button.dataset.skillId);
+  if (button) void openSkillEditor(button.dataset.skillId);
+});
+$("toolsTable").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-action=edit-tool]");
+  if (button) openToolEditor(button.dataset.toolName);
+  const viewButton = event.target.closest("[data-action=view-system-tool]");
+  if (viewButton) setTab("configPanel");
+});
+$("toolEditForm").addEventListener("submit", saveToolEditor);
+$("cancelToolBtn").addEventListener("click", closeToolEditor);
+$("closeToolDialogBtn").addEventListener("click", closeToolEditor);
+$("toolDialog").addEventListener("click", (event) => {
+  if (event.target === $("toolDialog")) closeToolEditor();
 });
 $("skillEditForm").addEventListener("submit", saveSkillEditor);
 $("cancelSkillBtn").addEventListener("click", closeSkillEditor);
 $("closeSkillDialogBtn").addEventListener("click", closeSkillEditor);
 $("skillDialog").addEventListener("click", (event) => {
   if (event.target === $("skillDialog")) closeSkillEditor();
+});
+$("skillToolSearchInput").addEventListener("input", renderSkillToolBinding);
+$("skillToolPicker").addEventListener("change", (event) => {
+  const input = event.target.closest("input[data-tool-name]");
+  if (input) updateSelectedSkillTool(input.dataset.toolName, input.checked);
+});
+$("skillToolChips").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-action=remove-skill-tool]");
+  if (button) updateSelectedSkillTool(button.dataset.toolName, false);
 });
 $("attachmentPicker").addEventListener("change", onAttachmentPicked);
 $("clearAttachmentBtn").addEventListener("click", clearAttachment);
