@@ -20,7 +20,7 @@
 
 ## 链路审计与数据留存
 
-Backend 会把每轮用户/助手对话、Skill 路由、DSH Tool 调用与结果、LLM 请求元数据、流式回答和可用的 `reasoning_content` 写入 PostgreSQL 的 `audit_record` 表。审计记录按 `requestId`、`runtimeId`、会话和类别建立索引，Token、密码、Authorization、API Key 等凭据形态字段会在审计副本中脱敏；原始 UMC Token 不写入数据库。Backend 后台清理任务按运行配置 `AUDIT_RETENTION_DAYS`（默认 30 天）和 `AUDIT_CLEANUP_INTERVAL_SECONDS`（默认 3600 秒）周期删除过期审计记录，用户可在控制台“运行配置 → 链路审计”热更新这两个值；该策略只清理审计表，不删除用户可见的会话历史。为降低长首 token 等待期间的空白感，WS 还会发送 `assistant.status` 安全进度事件（路由、知识检索、OCR、UMC 查询、整理和生成回答）；这些事件只包含阶段和本地化短提示，不包含原始 LLM reasoning、系统提示词或敏感参数。
+Backend 会把每轮用户/助手对话、Skill 路由、DSH Tool 调用与结果、LLM 请求元数据、完整流式回答和可用的 `reasoning_content` 写入 PostgreSQL 的 `audit_record` 表。生成期间的 `assistant.chunk` 仅通过 Broker 实时发送，不再为每个模型片段执行远端数据库提交；最终 `assistant.message` 和 `llm.response` 是可回放、可审计的权威结果。审计记录按 `requestId`、`runtimeId`、会话和类别建立索引，Token、密码、Authorization、API Key 等凭据形态字段会在审计副本中脱敏；原始 UMC Token 不写入数据库。Backend 后台清理任务按运行配置 `AUDIT_RETENTION_DAYS`（默认 30 天）和 `AUDIT_CLEANUP_INTERVAL_SECONDS`（默认 3600 秒）周期删除过期审计记录，用户可在控制台“运行配置 → 链路审计”热更新这两个值；该策略只清理审计表，不删除用户可见的会话历史。为降低长首 token 等待期间的空白感，WS 还会发送 `assistant.status` 安全进度事件（路由、知识检索、OCR、UMC 查询、整理和生成回答）；这些事件只包含阶段和本地化短提示，不包含原始 LLM reasoning、系统提示词或敏感参数。
 
 测试控制台的“对话审计”页调用 `GET /api/v1/conversations/{conversationId}/audit`。默认按会话所有权校验，普通账号只能查看自己的租户和账号记录；左侧列出可访问的会话摘要和执行状态，点击会话后右侧按时间顺序显示完整执行链路。每条记录可展开查看脱敏后的 Payload，包含用户/助手内容、Skill 路由、Tool 参数与结果、LLM 请求/思考/回答和异常信息。
 

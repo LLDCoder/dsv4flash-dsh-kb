@@ -407,6 +407,25 @@ class DSHService:
         await self.broker.publish(conversation.conversation_id, result)
         return result
 
+    async def publish_stream_event(self, conversation: Conversation, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Publish a live stream event without a remote database round trip.
+
+        Token deltas are intentionally ephemeral. The completed assistant
+        message and llm.response audit record are persisted after generation,
+        so reconnects can recover the authoritative answer without committing
+        once per model fragment.
+        """
+        conversation.last_seq += 1
+        conversation.last_activity_at = datetime.now(timezone.utc)
+        result = {
+            "seq": conversation.last_seq,
+            "eventType": event_type,
+            "data": payload,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        await self.broker.publish(conversation.conversation_id, result)
+        return result
+
     @staticmethod
     def status_phase_for_tool(tool_name: str) -> str:
         """Map an internal tool to a safe, customer-facing progress phase."""
@@ -849,7 +868,15 @@ class DSHService:
                         try:
                             async for token in self.llm.stream(messages, on_reasoning=capture_reasoning):
                                 chunks.append(token)
-                                await self.append_event(db, conversation, "assistant.chunk", {"content": token, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
+                                await self.publish_stream_event(
+                                    conversation,
+                                    "assistant.chunk",
+                                    {
+                                        "content": token,
+                                        "requestId": principal.request_id,
+                                        "runtimeId": conversation.runtime_id,
+                                    },
+                                )
                         except Exception as exc:
                             await self.append_audit(
                                 db,
