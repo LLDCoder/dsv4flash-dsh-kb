@@ -736,6 +736,7 @@ def make_router(service: DSHService) -> APIRouter:
         except IntegrityError as exc:
             await db.rollback()
             raise HTTPException(status_code=409, detail=f"skill {payload.skill_id} v{payload.version} already exists") from exc
+        await service.skill_catalog.invalidate()
         return {"skillId": item.skill_id, "version": item.version, "status": item.status, "enabled": item.enabled}
 
     @router.put("/skills/{skill_id}")
@@ -756,12 +757,14 @@ def make_router(service: DSHService) -> APIRouter:
             item = Skill(skill_id=skill_id, updated_by=principal.user_id, **values)
             db.add(item)
         await db.commit()
+        await service.skill_catalog.invalidate()
         return {"skillId": item.skill_id, "version": item.version, "status": item.status, "enabled": item.enabled}
 
     @router.delete("/skills/{skill_id}")
     async def delete_skill(skill_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
         result = await db.execute(delete(Skill).where(Skill.skill_id == skill_id))
         await db.commit()
+        await service.skill_catalog.invalidate()
         return {"deleted": result.rowcount > 0, "skillId": skill_id}
 
     @router.websocket("/ws")

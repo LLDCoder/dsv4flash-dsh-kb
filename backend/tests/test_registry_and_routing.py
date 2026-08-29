@@ -8,6 +8,7 @@ from app.skills import build_system_prompt, resolve_skill
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
+from app.skill_router import normalized_router_mode, valid_llm_route
 
 
 class RegistryAndRoutingTests(unittest.TestCase):
@@ -62,6 +63,15 @@ class RegistryAndRoutingTests(unittest.TestCase):
         business_tools = {item["tool_name"] for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
         self.assertTrue(SYSTEM_DEFAULT_TOOL_NAMES.isdisjoint(business_tools))
         self.assertEqual(SYSTEM_DEFAULT_TOOL_NAMES, {"knowledge.search", "ocr.layout_parsing"})
+
+    def test_skill_router_modes_and_validation(self):
+        catalog = [{"skillId": "license_permit_status", "status": "PUBLISHED", "enabled": True}]
+        self.assertEqual(normalized_router_mode("SHADOW"), "shadow")
+        self.assertEqual(normalized_router_mode("invalid"), "keyword")
+        self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.91}, catalog), (True, "ok"))
+        self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.2}, catalog), (False, "low_confidence"))
+        self.assertEqual(valid_llm_route({"skillId": "missing", "confidence": 0.91}, catalog), (False, "skill_not_published"))
+        self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.91, "needsClarification": True}, catalog), (False, "needs_clarification"))
 
     def test_selected_tool_definitions_are_visible_to_model_prompt(self):
         prompt = build_system_prompt(

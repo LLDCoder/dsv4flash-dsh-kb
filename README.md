@@ -202,6 +202,7 @@ docker compose up -d
 
 - 测试控制台：本机轻量配置当前为 http://localhost:18180；启动本机 DSH 网关后统一使用 http://localhost:18087。直接端口可通过 `FRONTEND_PORT` 覆盖。
 - 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL、Tool 开关和可编辑的全局系统提示词；系统提示词会追加到每轮请求，但内置语言、安全和证据规则仍优先。UMC 会话由 Backend 使用环境变量中的既有测试账号自动获取，页面只显示脱敏状态，不提供手工 Token 输入。API Key/DB/Redis 只显示配置状态，不回显密文。
+- Skill 路由：`SKILL_ROUTER_MODE` 支持 `keyword`、`shadow`、`llm`。`keyword` 使用当前确定性路由；`shadow` 只调用分类模型并审计关键词/模型差异，不影响执行；`llm` 以结构化 LLM Skill 选择为主，模型超时、输出非法、Skill 不存在/未发布或置信度不足时自动回退关键词。模型分类不接收 Tool，也不能在 shadow 模式触发业务执行。已发布 Skill 目录和完整定义按需缓存到 Redis，数据库仍是事实来源。
 - Skills 配置：在控制台“Skills 配置”页以列表查看 system Skill，可点击“新增 Skill”创建或点击“编辑”修改名称、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。
 - Tools 配置：在控制台“Tools 配置”页读取 OpenAPI/Swagger operation，导入并维护模型可读的 Tool 定义。后端以规范化 `HTTP 方法 + 路径` 建立唯一约束，同一个接口不能注册两次；只有启用且发布的 Tool 才能被已发布 Skill 绑定。
 - 本地 Skill 同步：`python scripts/sync_skills_to_77.py` 默认只预览许可证相关 Skill；设置 `DSH_77_CONSOLE_PASSWORD` 后追加 `--publish` 才会通过 77 控制台 API 写入并发布，脚本不会修改系统 Prompt。

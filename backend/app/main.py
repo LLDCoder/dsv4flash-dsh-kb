@@ -30,6 +30,7 @@ service = DSHService(runtime_manager, llm, broker, ocr, knowledge, platform)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await service.skill_catalog.invalidate()
     # Re-apply operator-managed live settings after every container restart.
     # The DB/Redis URLs remain restart-only because their pools are constructed
     # before the application lifespan begins.
@@ -63,6 +64,7 @@ async def lifespan(app: FastAPI):
         await task
     with suppress(asyncio.CancelledError):
         await audit_task
+    await service.skill_catalog.close()
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)

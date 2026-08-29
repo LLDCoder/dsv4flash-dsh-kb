@@ -19,6 +19,7 @@ from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
 from .runtime import RuntimeManager
+from .skill_router import SkillCatalogCache, normalized_router_mode, valid_llm_route
 from .skills import (
     build_flow_prompt,
     build_knowledge_query,
@@ -85,6 +86,7 @@ class DSHService:
         )
         self.documents = CustomerDocumentClient(self.settings)
         self.umc_auth = UMCAuthClient(self.settings)
+        self.skill_catalog = SkillCatalogCache(self.settings.redis_url)
         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
         self._writer_locks: dict[str, asyncio.Lock] = {}
 
@@ -115,6 +117,7 @@ class DSHService:
             "umc_document_timeout_seconds": float,
             "audit_retention_days": int,
             "audit_cleanup_interval_seconds": int,
+            "skill_router_timeout_seconds": float,
         }
         bool_keys = {"external_tools_enabled", "audit_admin_enabled"}
         umc_auth_keys = {
@@ -152,6 +155,8 @@ class DSHService:
                 continue
             if key in umc_auth_keys and getattr(self.settings, key) != value:
                 umc_auth_changed = True
+            if key == "skill_router_mode":
+                value = normalized_router_mode(value)
             setattr(self.settings, key, value)
 
         # Keep the already-instantiated gateway clients aligned with the
@@ -170,6 +175,58 @@ class DSHService:
         self.documents.timeout = self.settings.umc_document_timeout_seconds
         if umc_auth_changed:
             self.umc_auth.invalidate()
+
+    @staticmethod
+    def route_shape_for_skill(skill_id: str, keyword_route, catalog: list[dict[str, Any]]):
+        """Build a conservative route shape for an LLM-selected Skill."""
+
+        if skill_id == keyword_route.skill_id:
+            return keyword_route
+        item = next((candidate for candidate in catalog if candidate.get("skillId") == skill_id), None)
+        allowed_tools = set(item.get("allowedTools", [])) if item else set()
+        if "knowledge.search" in allowed_tools:
+            return type(keyword_route)(skill_id, "knowledge", "knowledge.search", "summary")
+        if allowed_tools:
+            return type(keyword_route)(skill_id, "api_call", None, "answer")
+        return type(keyword_route)(skill_id, "data_query", None, "answer")
+
+    async def choose_skill_route(self, db: AsyncSession, question: str, keyword_route, conversation: Conversation, request_id: str) -> tuple[Any, dict[str, Any]]:
+        mode = normalized_router_mode(getattr(self.settings, "skill_router_mode", "keyword"))
+        metadata: dict[str, Any] = {"routerMode": mode, "keywordSkillId": keyword_route.skill_id}
+        if mode == "keyword":
+            return keyword_route, metadata
+
+        catalog = await self.skill_catalog.load(db)
+        llm_result: dict[str, object] | None = None
+        fallback_reason = ""
+        try:
+            llm_result = await self.llm.route_skill(question, catalog)
+            valid, fallback_reason = valid_llm_route(llm_result, catalog)
+        except Exception:
+            valid = False
+            fallback_reason = "router_unavailable"
+        llm_skill_id = llm_result.get("skillId") if isinstance(llm_result, dict) else None
+        metadata.update(
+            {
+                "llmSkillId": llm_skill_id,
+                "confidence": llm_result.get("confidence") if isinstance(llm_result, dict) else None,
+                "routeConsistent": bool(llm_skill_id and llm_skill_id == keyword_route.skill_id),
+            }
+        )
+        if mode == "shadow":
+            await self.append_audit(
+                db,
+                conversation,
+                "skill.route.shadow",
+                {**metadata, "fallbackReason": fallback_reason or None},
+                request_id=request_id,
+                runtime_id=conversation.runtime_id,
+            )
+            return keyword_route, metadata
+        if valid and isinstance(llm_skill_id, str):
+            return self.route_shape_for_skill(llm_skill_id, keyword_route, catalog), metadata
+        metadata["fallbackReason"] = fallback_reason or "invalid_output"
+        return keyword_route, metadata
 
     async def parse_document(self, file: str, file_type: int | None, options: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self.ocr.layout_parsing(file, file_type=file_type, options=options)
@@ -419,7 +476,7 @@ class DSHService:
     def audit_category(record_type: str) -> str:
         if record_type.startswith("llm."):
             return "llm"
-        if record_type in {"skill.route", "tool.call", "tool.result", "turn.started", "turn.completed", "runtime.error", "turn.cancelled"}:
+        if record_type in {"skill.route", "skill.route.shadow", "tool.call", "tool.result", "turn.started", "turn.completed", "runtime.error", "turn.cancelled"}:
             return "dsh"
         if record_type.startswith("user.") or record_type.startswith("assistant."):
             return "conversation"
@@ -531,7 +588,8 @@ class DSHService:
                         response_language,
                         request_id=principal.request_id,
                     )
-                    route = resolve_skill(latest_content)
+                    keyword_route = resolve_skill(latest_content)
+                    route, route_metadata = await self.choose_skill_route(db, latest_content, keyword_route, conversation, principal.request_id)
                     selected_skill_result = await db.execute(
                         select(Skill)
                         .where(
@@ -593,6 +651,11 @@ class DSHService:
                             "mode": route.mode,
                             "fields": list(route.fields),
                             "requestId": principal.request_id,
+                            "routerMode": route_metadata.get("routerMode"),
+                            "keywordSkillId": route_metadata.get("keywordSkillId"),
+                            "llmSkillId": route_metadata.get("llmSkillId"),
+                            "routeConsistent": route_metadata.get("routeConsistent"),
+                            "fallbackReason": route_metadata.get("fallbackReason"),
                         },
                     )
                     if tool_request:
