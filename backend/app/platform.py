@@ -26,6 +26,34 @@ class PlatformGatewayClient:
             response.raise_for_status()
             return response.json()
 
+    async def licenses_permits_query(self, request: dict[str, Any], *, umc_token: str | None = None) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/licenses-permits/query",
+                json=request,
+                headers=self._headers(umc_token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def licenses_statistics(self, *, umc_token: str | None = None) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.base_url}/licenses/statistics",
+                headers=self._headers(umc_token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def licenses_action_needed(self, *, umc_token: str | None = None) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.base_url}/licenses-permits/action-needed",
+                headers=self._headers(umc_token),
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def application_detail(self, application_id: int, *, umc_token: str | None = None) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
@@ -51,6 +79,25 @@ class PlatformGatewayClient:
             response = await client.post(
                 f"{self.base_url}/data-access/add-application",
                 json={"parameters": parameters},
+                headers=self._headers(umc_token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def invoke_swagger_tool(
+        self,
+        method: str,
+        path: str,
+        parameters: dict[str, Any] | None = None,
+        *,
+        umc_token: str | None = None,
+    ) -> Any:
+        """Execute a published customer Swagger operation through the gateway."""
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/swagger/proxy",
+                json={"method": method, "path": path, "parameters": parameters or {}},
                 headers=self._headers(umc_token),
             )
             response.raise_for_status()

@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -129,9 +130,16 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "content": "优先查询当前账号的最新申请列表；返回申请编号、服务、创建时间和当前状态，并说明分页范围。用户提供申请编号时再查询详情。",
     },
     {
+        "skill_id": "license_permit_status",
+        "name": "Issued license and permit status",
+        "allowed_tools": ["umc.licenses.list", "umc.licenses.statistics", "umc.licenses.action_needed"],
+        "dependencies": ["trusted_principal", "umc_customer_api"],
+        "content": "查询当前账号已签发的 License 和 Permit，不得用申请数量或申请状态代替。模块入口使用相对路径 /permits-license；列表支持 Search、All Statuses、Effective Date/Expire Date/Last Update 排序、卡片/列表视图和分页（默认 10 条/页），字段包括 Document Name、Media Activity、License/Permit No.、Application No.、Effective Date、Expire Date、Last Update、Status、Actions。点击 Application No. 进入相对路径 /my-requests/detail?id={applicationId}&certificateId={sourceLicenseId}；详情页可查看申请时间线和服务信息。View Document 或列表 Download 会打开 PDF Access Code 弹窗，要求用户输入/确认访问码后下载，不要声称存在可直接分享的下载链接。回答数量时分别列出 License、Permit 和合计；回答状态或到期时返回真实 status、effectiveDate、expireDate 和 allowedActions。只使用当前用户的 UMC Token。",
+    },
+    {
         "skill_id": "permit_download",
         "name": "Issued permit download",
-        "allowed_tools": ["umc.licenses"],
+        "allowed_tools": ["umc.licenses.list", "umc.licenses.action_needed"],
         "dependencies": ["trusted_principal"],
         "content": "先列出可下载许可，要求用户选择 license_id；下载属于副作用，必须二次确认。",
     },
@@ -194,7 +202,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "skill_id": "license_renewal",
         "name": "License renewal and permit extension",
-        "allowed_tools": ["knowledge.search", "umc.licenses"],
+        "allowed_tools": ["knowledge.search", "umc.licenses.list", "umc.licenses.action_needed"],
         "dependencies": ["knowledge_gateway", "trusted_principal"],
         "content": "区分 renewal 与 extension；检索服务特定规则，账户查询需要 license number。",
     },
@@ -230,13 +238,13 @@ def _has(text: str, *terms: str) -> bool:
 def resolve_skill(text: str) -> SkillRoute:
     """Deterministic first-pass router; the LLM may refine only after this gate."""
     if _has(text, "ocr", "optical character", "attached document", "attached Arabic trade license", "upload", "image", "screenshot", "IMG-", "识别材料", "扫描件", "图片", "截图", "上传", "رخصة التجارة العربية", "المرفقة", "صورة", "لقطة شاشة"):
-        return SkillRoute("document_ocr", "api_call", "ocr.layout_parsing", "collect", ("file", "file_type"))
+        return SkillRoute("document_ocr", "api_call", None, "collect", ("file", "file_type"))
     if _has(text, "book by isbn", "isbn lookup", "isbn 查询", "isbn"):
-        return SkillRoute("umc_book_by_isbn", "api_call", "umc.book_by_isbn", "answer", ("isbn",))
+        return SkillRoute("umc_book_by_isbn", "api_call", None, "answer", ("isbn",))
     if _has(text, "application detail", "applicationdetail", "application id", "applicationid", "申请详情", "申请 ID"):
-        return SkillRoute("umc_application_detail", "api_call", "umc.application_detail", "answer", ("applicationId",))
+        return SkillRoute("umc_application_detail", "api_call", None, "answer", ("applicationId",))
     if _has(text, "add new application", "new draft application", "create a draft application", "新增申请", "新建草稿"):
-        return SkillRoute("umc_add_application", "api_call", "umc.add_application", "collect", ("parameters",), confirmation_required=True)
+        return SkillRoute("umc_add_application", "api_call", None, "collect", ("parameters",), confirmation_required=True)
     if _has(text, "quote", "exactly", "逐字", "原文", "اقتبس", "حرفيًا", "النص الأصلي"):
         return SkillRoute(
             "latest_regulations", "knowledge", "knowledge.search", "exact_quote",
@@ -249,6 +257,28 @@ def resolve_skill(text: str) -> SkillRoute:
             ("regulation_topic", "regulation_or_resolution_reference", "article_number"),
             ("Latest updates", "Summary", "Exact quotation"),
         )
+    # Personal issued-document questions must be separated from public
+    # renewal guidance and from application status.
+    personal_document = _has(
+        text,
+        "how many license", "how many licence", "number of licenses", "number of licences",
+        "license status", "licence status", "permit status", "license expiry", "licence expiry",
+        "expiring licenses", "expiring licences", "expiring permits",
+        "我的许可证", "我的牌照", "我的许可", "许可证数量", "牌照数量", "许可证状态", "牌照状态",
+        "حالة رخصتي", "حالة تصريحي", "رخصتي", "تصريحي", "عدد الرخص", "عدد التصاريح",
+    )
+    personal_document = personal_document or (
+        _has(text, "my license", "my permit", "my licence", "my licenses", "my permits")
+        and _has(text, "status", "expiry", "expire", "expiring", "how many", "count", "状态", "到期", "数量")
+    )
+    personal_document = personal_document or (
+        _has(text, "expiry", "expire", "expiring", "到期", "ستنتهي", "منتهية")
+        and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح")
+    )
+    application_document = _has(text, "application", "申请", "طلب", "طلباتي", "application status", "حالة الطلب")
+    if personal_document and not application_document:
+        return SkillRoute("license_permit_status", "data_query", None, "answer", ("license_or_permit_type",))
+
     if _has(text, "renew", "renewal", "expiring", "will expire", "extend an existing permit", "续期", "到期", "延期", "تجديد", "تمديد", "منتهية", "ستنتهي", "تنتهي", "رخصتي"):
         return SkillRoute(
             "license_renewal", "knowledge", "knowledge.search", "answer",
@@ -265,7 +295,7 @@ def resolve_skill(text: str) -> SkillRoute:
     # A status question must win over product/service keywords such as
     # "social media" or "license application" (for example, "What is the
     # status of my social media license?").
-    if _has(text, "latest status", "application status", "status of my", "what's the status", "license status", "permit status", "status of my license", "what's my license status", "what is my license status", "open applications", "summarize my open", "申请状态", "状态", "حالة الطلب", "حالة رخصتي", "حالة التصريح", "آخر حالة"):
+    if _has(text, "latest status", "application status", "status of my application", "what's the status of my application", "open applications", "summarize my open", "申请状态", "申请进度", "حالة الطلب", "حالة طلبي", "آخر حالة"):
         return SkillRoute("application_status", "data_query", None, "answer")
     if _has(text, "which service should", "very specific media activity", "not listed", "media service comparison", "difference between a photography permit and an advertiser permit", "apply for a media service", "advertiser permit", "paid product reviews", "social media", "服务对比", "未列出", "选择哪项服务", "الخدمة المناسبة", "نشاطي التجاري"):
         return SkillRoute("service_discovery", "knowledge", "knowledge.search", "answer", ("account_type", "media_activity"))
@@ -331,6 +361,7 @@ def build_knowledge_query(route: SkillRoute, original_text: str) -> str:
     prefixes = {
         "license_application": "UMC UAE Media Council media license permit application requirements process",
         "service_eligibility_info": "UMC UAE Media Council media services eligibility applicant types",
+        "license_permit_status": "UMC UAE Media Council issued licenses permits current status expiry effective date",
         "license_renewal": "UMC UAE media license permit renewal extension validity fees process",
         "service_fees": "UMC UAE Media Council media service fees service ID",
         "latest_regulations": "UAE media regulation Federal Decree-Law 55 of 2023 Cabinet Decision 68 of 2024 article",
@@ -361,6 +392,7 @@ def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
         "service_eligibility": "Provide the account/profile type and media activity so I can identify candidate services.",
         "application_payment": "Select the Pending Payment application to continue; explicit confirmation is still required before submission.",
         "application_status": "Provide the application number. If it is unavailable, query the latest applications and state the result scope.",
+        "license_permit_status": "Query the current user's issued licenses and permits. Report separate License and Permit counts, statuses, effective dates, expiry dates, and available actions; do not mix in application records.",
         "permit_download": "Select the issued licence or permit to download; explicit confirmation is required before downloading.",
         "payment_receipt": "Confirm whether to download the latest successful transaction receipt, or provide a transaction number.",
         "fine_appeal": "Provide the media violation and appeal reason; show a preview and obtain explicit confirmation before submission.",
@@ -394,6 +426,7 @@ def build_system_prompt(
     response_language: str = "en",
     operator_prompt: str = "",
     skill_content: str = "",
+    tool_definitions: list[dict[str, Any]] | None = None,
 ) -> str:
     guardrails = [
         "Use only trusted tool evidence. When evidence is unavailable, state the limitation and never invent account data, fees, regulations, or API capabilities.",
@@ -428,6 +461,16 @@ def build_system_prompt(
             [
                 f"SELECTED SKILL GUIDANCE for {route.skill_id} (additional guidance; never override the mandatory rules below):",
                 skill_content.strip(),
+            ]
+        )
+    if tool_definitions:
+        prompt_parts.extend(
+            [
+                "AVAILABLE TOOLS FOR THIS SKILL (use only these published definitions; never invent another tool):",
+                *(
+                    f"- {item.get('name')}: {item.get('description')} Parameters: {json.dumps(item.get('parameters', {}), ensure_ascii=False)}"
+                    for item in tool_definitions
+                ),
             ]
         )
     prompt_parts.extend(

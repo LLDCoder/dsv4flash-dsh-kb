@@ -3,6 +3,7 @@ import base64
 import hmac
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 from urllib.parse import parse_qs
 from uuid import uuid4
 
@@ -17,11 +18,12 @@ from sqlalchemy.exc import IntegrityError
 from .config import config_catalog, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
 from .customer_documents import CustomerDocumentNotConfigured
-from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, get_db
+from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, Tool, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
-from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, SkillCreate, SkillUpsert, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
+from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
+from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key, is_system_default_tool, system_default_tool_definitions
 from .umc_auth import UMCAuthError
 
 
@@ -81,6 +83,16 @@ def make_router(service: DSHService) -> APIRouter:
             if isinstance(value, str) and value:
                 service.console_password = value
         return service.console_password
+
+    async def require_console_session(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+    ) -> None:
+        """Authorize operator-only console actions from the signed cookie."""
+
+        password = await stored_console_password(db)
+        if not verify_session(request.cookies.get(CONSOLE_SESSION_COOKIE), password):
+            raise HTTPException(status_code=401, detail="console authentication required")
 
     @router.post("/console/login", tags=["Test console"])
     async def console_login(payload: ConsoleLogin, request: Request, db: AsyncSession = Depends(get_db)):
@@ -250,9 +262,12 @@ def make_router(service: DSHService) -> APIRouter:
             raise HTTPException(status_code=status_code, detail=detail)
         return payload if isinstance(payload, (dict, list)) else {"data": payload}
 
-    @router.get("/conversations")
-    async def list_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        conversations, is_admin = await service.list_audit_conversations(db, principal)
+    async def audit_conversation_list(
+        db: AsyncSession,
+        conversations: list[Conversation],
+        *,
+        is_admin: bool,
+    ) -> dict[str, object]:
         items: list[dict] = []
         for conversation in conversations:
             events = await service.list_events(db, conversation, event_type="user.message")
@@ -265,6 +280,123 @@ def make_router(service: DSHService) -> APIRouter:
                 item["ownerTenantId"] = conversation.tenant_id
             items.append(item)
         return {"conversations": items, "scope": "admin" if is_admin else "owner"}
+
+    async def audit_conversation_detail(
+        db: AsyncSession,
+        conversation: Conversation,
+        *,
+        category: str | None,
+        limit: int,
+        is_admin: bool,
+        principal: Principal | None = None,
+    ) -> dict[str, object]:
+        query = select(AuditRecord).where(
+            AuditRecord.conversation_id == conversation.conversation_id,
+        )
+        if not is_admin and principal:
+            query = query.where(
+                AuditRecord.tenant_id == principal.tenant_id,
+                AuditRecord.user_id == principal.user_id,
+            )
+        if category:
+            query = query.where(AuditRecord.category == category.strip().lower())
+        query = query.order_by(AuditRecord.created_at.asc(), AuditRecord.id.asc()).limit(limit)
+        result = await db.execute(query)
+
+        def record_json(record: AuditRecord) -> dict[str, object]:
+            return {
+                "id": record.id,
+                "category": record.category,
+                "recordType": record.record_type,
+                "requestId": record.request_id,
+                "runtimeId": record.runtime_id,
+                "payload": record.payload or {},
+                "createdAt": record.created_at.isoformat() if record.created_at else None,
+            }
+
+        audit_records = result.scalars().all()
+        items = [record_json(record) for record in audit_records]
+        source = "audit_record"
+        # Conversations created before chain-audit was enabled have no rows in
+        # audit_record. Reuse their immutable session events so operators can
+        # still inspect the historical dialogue and execution flow.
+        if not audit_records:
+            event_query = select(SessionEvent).where(
+                SessionEvent.conversation_id == conversation.conversation_id,
+            ).order_by(SessionEvent.created_at.asc(), SessionEvent.id.asc())
+            if not is_admin and principal:
+                event_query = event_query.where(
+                    SessionEvent.tenant_id == principal.tenant_id,
+                    SessionEvent.user_id == principal.user_id,
+                )
+            event_result = await db.execute(event_query)
+            for event in event_result.scalars().all():
+                event_category = service.audit_category(event.event_type)
+                if category and event_category != category.strip().lower():
+                    continue
+                payload = event.event_json or {}
+                items.append(
+                    {
+                        "id": f"event:{event.id}",
+                        "category": event_category,
+                        "recordType": event.event_type,
+                        "requestId": payload.get("requestId"),
+                        "runtimeId": payload.get("runtimeId"),
+                        "payload": payload,
+                        "createdAt": event.created_at.isoformat() if event.created_at else None,
+                    }
+                )
+            items = items[:limit]
+            source = "session_event_history"
+        conversation_json = service.conversation_json(conversation)
+        if is_admin:
+            conversation_json["owner"] = {
+                "userId": conversation.user_id,
+                "tenantId": conversation.tenant_id,
+            }
+        return {
+            "conversation": conversation_json,
+            "conversationId": conversation.conversation_id,
+            "items": items,
+            "count": len(items),
+            "limit": limit,
+            "category": category.strip().lower() if category else None,
+            "source": source,
+            "scope": "admin" if is_admin else "owner",
+        }
+
+    @router.get("/conversations")
+    async def list_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+        conversations, is_admin = await service.list_audit_conversations(db, principal)
+        return await audit_conversation_list(db, conversations, is_admin=is_admin)
+
+    @router.get("/console/audit/conversations", tags=["Test console"])
+    async def list_console_audit_conversations(
+        db: AsyncSession = Depends(get_db),
+        _: None = Depends(require_console_session),
+    ):
+        result = await db.execute(select(Conversation).order_by(Conversation.last_activity_at.desc(), Conversation.id.desc()))
+        return await audit_conversation_list(db, list(result.scalars().all()), is_admin=True)
+
+    @router.get("/console/audit/conversations/{conversation_id}", tags=["Test console"])
+    async def get_console_audit_conversation(
+        conversation_id: str,
+        category: str | None = Query(default=None),
+        limit: int = Query(default=500, ge=1, le=2000),
+        db: AsyncSession = Depends(get_db),
+        _: None = Depends(require_console_session),
+    ):
+        result = await db.execute(select(Conversation).where(Conversation.conversation_id == conversation_id))
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        return await audit_conversation_detail(
+            db,
+            conversation,
+            category=category,
+            limit=limit,
+            is_admin=True,
+        )
 
     @router.get("/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
@@ -326,80 +458,14 @@ def make_router(service: DSHService) -> APIRouter:
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        query = select(AuditRecord).where(
-            AuditRecord.conversation_id == conversation_id,
+        return await audit_conversation_detail(
+            db,
+            conversation,
+            category=category,
+            limit=limit,
+            is_admin=is_admin,
+            principal=principal,
         )
-        if not is_admin:
-            query = query.where(
-                AuditRecord.tenant_id == principal.tenant_id,
-                AuditRecord.user_id == principal.user_id,
-            )
-        if category:
-            query = query.where(AuditRecord.category == category.strip().lower())
-        query = query.order_by(AuditRecord.created_at.asc(), AuditRecord.id.asc()).limit(limit)
-        result = await db.execute(query)
-
-        def record_json(record: AuditRecord) -> dict[str, object]:
-            return {
-                "id": record.id,
-                "category": record.category,
-                "recordType": record.record_type,
-                "requestId": record.request_id,
-                "runtimeId": record.runtime_id,
-                "payload": record.payload or {},
-                "createdAt": record.created_at.isoformat() if record.created_at else None,
-            }
-
-        audit_records = result.scalars().all()
-        items = [record_json(record) for record in audit_records]
-        source = "audit_record"
-        # Conversations created before chain-audit was enabled have no rows in
-        # audit_record. Reuse their immutable session events so operators can
-        # still inspect the historical dialogue and execution flow.
-        if not audit_records:
-            event_query = select(SessionEvent).where(
-                SessionEvent.conversation_id == conversation_id,
-            ).order_by(SessionEvent.created_at.asc(), SessionEvent.id.asc())
-            if not is_admin:
-                event_query = event_query.where(
-                    SessionEvent.tenant_id == principal.tenant_id,
-                    SessionEvent.user_id == principal.user_id,
-                )
-            event_result = await db.execute(event_query)
-            for event in event_result.scalars().all():
-                event_category = service.audit_category(event.event_type)
-                if category and event_category != category.strip().lower():
-                    continue
-                payload = event.event_json or {}
-                items.append(
-                    {
-                        "id": f"event:{event.id}",
-                        "category": event_category,
-                        "recordType": event.event_type,
-                        "requestId": payload.get("requestId"),
-                        "runtimeId": payload.get("runtimeId"),
-                        "payload": payload,
-                        "createdAt": event.created_at.isoformat() if event.created_at else None,
-                    }
-                )
-            items = items[:limit]
-            source = "session_event_history"
-        conversation_json = service.conversation_json(conversation)
-        if is_admin:
-            conversation_json["owner"] = {
-                "userId": conversation.user_id,
-                "tenantId": conversation.tenant_id,
-            }
-        return {
-            "conversation": conversation_json,
-            "conversationId": conversation_id,
-            "items": items,
-            "count": len(items),
-            "limit": limit,
-            "category": category.strip().lower() if category else None,
-            "source": source,
-            "scope": "admin" if is_admin else "owner",
-        }
 
     @router.get("/conversations/{conversation_id}/events")
     async def sse_events(conversation_id: str, after_seq: int = Query(default=0, alias="afterSeq"), event_type: str | None = Query(default=None, alias="eventType"), db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
@@ -512,8 +578,153 @@ def make_router(service: DSHService) -> APIRouter:
         result = await db.execute(query)
         return {"items": [{"skillId": item.skill_id, "name": item.name, "version": item.version, "source": item.source, "status": item.status, "scope": item.scope, "enabled": item.enabled, "allowedTools": item.allowed_tools, "dependencies": item.dependencies, "content": item.content, "updatedBy": item.updated_by} for item in result.scalars().all()]}
 
+    def tool_json(item: Tool) -> dict[str, Any]:
+        return {
+            "toolName": item.tool_name,
+            "displayName": item.display_name,
+            "description": item.description,
+            "operationId": item.operation_id,
+            "httpMethod": item.http_method,
+            "httpPath": item.http_path,
+            "interfaceKey": item.interface_key,
+            "parameters": item.parameters,
+            "responseSchema": item.response_schema,
+            "authStrategy": item.auth_strategy,
+            "sideEffect": item.side_effect,
+            "confirmationRequired": item.confirmation_required,
+            "rbacPolicy": item.rbac_policy,
+            "maskingPolicy": item.masking_policy,
+            "swaggerSource": item.swagger_source,
+            "source": item.source,
+            "version": item.version,
+            "enabled": item.enabled,
+            "published": item.published,
+            "updatedBy": item.updated_by,
+            "toolType": "business",
+            "mutable": True,
+        }
+
+    def system_tool_json(item: dict[str, Any]) -> dict[str, Any]:
+        return dict(item)
+
+    async def available_published_tools(db: AsyncSession) -> set[str]:
+        result = await db.execute(
+            select(Tool.tool_name).where(
+                ~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES),
+                Tool.enabled.is_(True),
+                Tool.published.is_(True),
+            )
+        )
+        available = set(result.scalars().all())
+        available.update(
+            item["toolName"]
+            for item in system_default_tool_definitions(service.settings)
+            if item.get("enabled") and item.get("published")
+        )
+        return available
+
+    async def fetch_swagger(swagger_url: str) -> dict[str, Any]:
+        if not swagger_url.lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="swaggerUrl must use http:// or https://")
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                response = await client.get(swagger_url, headers={"Accept": "application/json"})
+                response.raise_for_status()
+                document = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(status_code=502, detail=f"unable to read Swagger document: {exc}") from exc
+        if not isinstance(document, dict) or not isinstance(document.get("paths"), dict):
+            raise HTTPException(status_code=422, detail="Swagger document must contain an OpenAPI paths object")
+        return document
+
+    @router.get("/tools")
+    async def list_tools(db: AsyncSession = Depends(get_db), _: None = Depends(require_console_session)):
+        result = await db.execute(
+            select(Tool)
+            .where(~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES))
+            .order_by(Tool.tool_name, Tool.version.desc())
+        )
+        items = [system_tool_json(item) for item in system_default_tool_definitions(service.settings)]
+        items.extend(tool_json(item) for item in result.scalars().all())
+        return {"items": items}
+
+    @router.get("/tools/swagger")
+    async def inspect_swagger(swagger_url: str = Query(alias="swaggerUrl"), _: None = Depends(require_console_session)):
+        document = await fetch_swagger(swagger_url)
+        return {"swaggerUrl": swagger_url, "items": extract_operations(document, swagger_url)}
+
+    @router.post("/tools", status_code=201)
+    async def create_tool(payload: ToolCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal), _: None = Depends(require_console_session)):
+        if is_system_default_tool(payload.tool_name):
+            raise HTTPException(status_code=422, detail="system default capabilities are managed by runtime configuration")
+        key = payload.interface_key or interface_key(payload.http_method, payload.http_path)
+        if (await db.execute(select(Tool).where((Tool.tool_name == payload.tool_name) | (Tool.interface_key == key)))).scalars().first():
+            raise HTTPException(status_code=409, detail="tool name or HTTP interface already exists")
+        item = Tool(tool_name=payload.tool_name, updated_by=principal.user_id, interface_key=key, **payload.model_dump(exclude={"tool_name", "interface_key"}))
+        db.add(item)
+        await db.commit()
+        return tool_json(item)
+
+    @router.post("/tools/import", status_code=201)
+    async def import_tool(payload: SwaggerImportRequest, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal), _: None = Depends(require_console_session)):
+        document = await fetch_swagger(payload.swagger_url)
+        operations = extract_operations(document, payload.swagger_url)
+        operation = next((item for item in operations if item["operationId"] == payload.operation_id), None)
+        if not operation:
+            raise HTTPException(status_code=404, detail=f"operationId {payload.operation_id} not found in Swagger document")
+        tool_name = payload.tool_name or f"swagger.{operation['operationId']}"
+        if is_system_default_tool(tool_name):
+            raise HTTPException(status_code=422, detail="system default capabilities cannot be imported into the business Tool Registry")
+        result = await db.execute(select(Tool).where((Tool.tool_name == tool_name) | (Tool.interface_key == operation["interfaceKey"])))
+        if result.scalars().first():
+            raise HTTPException(status_code=409, detail="this HTTP interface or tool name is already registered")
+        item = Tool(
+            tool_name=tool_name,
+            display_name=payload.display_name or operation["displayName"],
+            description=payload.description or operation["description"],
+            operation_id=operation["operationId"],
+            http_method=operation["httpMethod"],
+            http_path=operation["httpPath"],
+            interface_key=operation["interfaceKey"],
+            parameters=operation["parameters"],
+            response_schema=operation["responseSchema"],
+            side_effect=payload.side_effect,
+            confirmation_required=payload.confirmation_required,
+            swagger_source=payload.swagger_url,
+            enabled=payload.enabled,
+            published=payload.published,
+            updated_by=principal.user_id,
+        )
+        db.add(item)
+        await db.commit()
+        return tool_json(item)
+
+    @router.put("/tools/{tool_name:path}")
+    async def update_tool(tool_name: str, payload: ToolUpsert, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal), _: None = Depends(require_console_session)):
+        if is_system_default_tool(tool_name):
+            raise HTTPException(status_code=422, detail="system default capabilities are managed by runtime configuration")
+        result = await db.execute(select(Tool).where(Tool.tool_name == tool_name))
+        item = result.scalar_one_or_none()
+        if not item:
+            raise HTTPException(status_code=404, detail="tool not found")
+        key = payload.interface_key or interface_key(payload.http_method, payload.http_path)
+        duplicate = await db.execute(select(Tool).where(Tool.interface_key == key, Tool.tool_name != tool_name))
+        if duplicate.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="this HTTP interface is already registered by another tool")
+        for field, value in payload.model_dump(exclude={"interface_key"}).items():
+            setattr(item, field, value)
+        item.interface_key = key
+        item.updated_by = principal.user_id
+        await db.commit()
+        return tool_json(item)
+
     @router.post("/skills", status_code=201)
     async def create_skill(payload: SkillCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+        if payload.status == "PUBLISHED" and payload.allowed_tools:
+            available = await available_published_tools(db)
+            missing = sorted(set(payload.allowed_tools) - available)
+            if missing:
+                raise HTTPException(status_code=422, detail={"code": "unpublished_tools", "tools": missing})
         result = await db.execute(select(Skill).where(Skill.skill_id == payload.skill_id, Skill.version == payload.version))
         if result.scalar_one_or_none():
             raise HTTPException(status_code=409, detail=f"skill {payload.skill_id} v{payload.version} already exists")
@@ -529,6 +740,11 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.put("/skills/{skill_id}")
     async def upsert_skill(skill_id: str, payload: SkillUpsert, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+        if payload.status == "PUBLISHED" and payload.allowed_tools:
+            available = await available_published_tools(db)
+            missing = sorted(set(payload.allowed_tools) - available)
+            if missing:
+                raise HTTPException(status_code=422, detail={"code": "unpublished_tools", "tools": missing})
         result = await db.execute(select(Skill).where(Skill.skill_id == skill_id, Skill.version == payload.version))
         item = result.scalar_one_or_none()
         values = payload.model_dump()

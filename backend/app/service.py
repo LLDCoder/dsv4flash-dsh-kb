@@ -1,7 +1,6 @@
 import asyncio
 import httpx
 import json
-import re
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -11,7 +10,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill
+from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill, Tool
 from .customer_documents import CustomerDocumentClient
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
@@ -28,6 +27,7 @@ from .skills import (
     resolve_skill,
     response_language_for,
 )
+from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, system_default_tool_definitions
 from .tool_gateway import ToolGateway, parse_tool_request
 from .umc_auth import UMCAuthClient
 
@@ -532,12 +532,30 @@ class DSHService:
                         request_id=principal.request_id,
                     )
                     route = resolve_skill(latest_content)
+                    selected_skill_result = await db.execute(
+                        select(Skill)
+                        .where(
+                            Skill.skill_id == route.skill_id,
+                            Skill.scope == "system",
+                            Skill.enabled.is_(True),
+                            Skill.status == "PUBLISHED",
+                        )
+                        .order_by(Skill.version.desc())
+                    )
+                    selected_skill = selected_skill_result.scalars().first()
+                    system_tool_definitions = system_default_tool_definitions(self.settings)
+                    system_tool_map = {item["toolName"]: item for item in system_tool_definitions}
+                    configured_system_tools = {name for name, item in system_tool_map.items() if item.get("enabled") and item.get("published")}
+                    allowed_tool_names = [
+                        name for name in (list(selected_skill.allowed_tools) if selected_skill else [])
+                        if name not in SYSTEM_DEFAULT_TOOL_NAMES or name in configured_system_tools
+                    ]
                     tool_request = (
                         ("ocr.layout_parsing", {
                             "attachment": latest_attachment,
                             "fileType": latest_attachment.get("fileType"),
                         })
-                        if latest_attachment
+                        if latest_attachment and "ocr.layout_parsing" in allowed_tool_names
                         else parse_tool_request(latest_content) if latest_user else None
                     )
                     if not tool_request and route.category == "knowledge" and route.mode == "exact_quote" and not exact_quote_source_sufficient(latest_content):
@@ -553,23 +571,12 @@ class DSHService:
                                 "top_k": self.settings.knowledge_top_k,
                             },
                         )
-                    elif not tool_request and route.tool_name == "umc.application_detail":
-                        match = re.search(r"(?:application\s*(?:id|number)?|申请(?:详情|ID)?)[\s:#-]*(\d{1,12})\b", latest_content, re.IGNORECASE)
-                        if match:
-                            tool_request = ("umc.application_detail", {"applicationId": int(match.group(1))})
-                    elif not tool_request and route.skill_id == "application_status":
-                        # A natural-language status question normally omits an
-                        # application number. Query the caller's own latest
-                        # applications so the LLM can summarize real status
-                        # data instead of replying with an unrelated generic
-                        # licensing explanation.
-                        tool_request = ("umc.applications", {"page_index": 1, "page_size": 100})
-                    elif not tool_request and route.tool_name == "umc.book_by_isbn":
-                        match = re.search(r"\b(?:97[89][\d\s-]{9,20}|\d[\d\s-]{9,20})\b", latest_content)
-                        if match:
-                            isbn = re.sub(r"[\s-]", "", match.group(0))
-                            if len(isbn) >= 10:
-                                tool_request = ("umc.book_by_isbn", {"isbn": isbn})
+                    elif not tool_request:
+                        # Non-knowledge tool selection comes from the
+                        # published Skill allowed-tools list. The compatibility
+                        # builder only extracts legacy arguments; it does not
+                        # bind a route directly to a backend implementation.
+                        tool_request = build_legacy_tool_request(allowed_tool_names, latest_content, mode=route.mode)
                     elif tool_request and tool_request[0] == "knowledge.search":
                         tool_name, arguments = tool_request
                         arguments = dict(arguments)
@@ -604,17 +611,43 @@ class DSHService:
                             response_language,
                             request_id=principal.request_id,
                         )
-                    selected_skill_result = await db.execute(
-                        select(Skill)
-                        .where(
-                            Skill.skill_id == route.skill_id,
-                            Skill.scope == "system",
-                            Skill.enabled.is_(True),
-                            Skill.status == "PUBLISHED",
+                    selected_tool_docs: list[dict[str, Any]] = [
+                        {
+                            "name": item["toolName"],
+                            "description": item["description"],
+                            "parameters": item["parameters"],
+                            "sideEffect": item["sideEffect"],
+                            "confirmationRequired": item["confirmationRequired"],
+                        }
+                        for name, item in system_tool_map.items()
+                        if name in allowed_tool_names
+                    ]
+                    tool_definition_by_name: dict[str, dict[str, Any]] = {
+                        name: system_tool_map[name]
+                        for name in allowed_tool_names
+                        if name in system_tool_map
+                    }
+                    if selected_skill and allowed_tool_names:
+                        selected_tools_result = await db.execute(
+                            select(Tool).where(
+                                ~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES),
+                                Tool.tool_name.in_(allowed_tool_names),
+                                Tool.enabled.is_(True),
+                                Tool.published.is_(True),
+                            )
                         )
-                        .order_by(Skill.version.desc())
-                    )
-                    selected_skill = selected_skill_result.scalars().first()
+                        selected_tool_docs = [
+                            {
+                                "name": item.tool_name,
+                                "description": item.description,
+                                "parameters": item.parameters,
+                                "sideEffect": item.side_effect,
+                                "confirmationRequired": item.confirmation_required,
+                                "source": item.source,
+                            }
+                            for item in selected_tools_result.scalars().all()
+                        ]
+                        tool_definition_by_name.update({item["name"]: item for item in selected_tool_docs})
                     messages.insert(
                         0,
                         {
@@ -625,6 +658,7 @@ class DSHService:
                                 response_language=response_language,
                                 operator_prompt=str(getattr(self.settings, "system_prompt", "") or ""),
                                 skill_content=selected_skill.content if selected_skill else "",
+                                tool_definitions=selected_tool_docs,
                             ),
                         },
                     )
@@ -668,6 +702,8 @@ class DSHService:
                                         "file": document_base64,
                                         "fileType": attachment_argument.get("fileType"),
                                     },
+                                    allowed_tools=allowed_tool_names,
+                                    tool_definition=tool_definition_by_name.get(tool_name),
                                 )
                             except (httpx.HTTPError, PermissionError, RuntimeError, ValueError) as exc:
                                 tool_result = {
@@ -677,7 +713,13 @@ class DSHService:
                                     "error": str(exc)[:500],
                                 }
                         else:
-                            tool_result = await self.tool_gateway.invoke(principal, tool_name, arguments)
+                            tool_result = await self.tool_gateway.invoke(
+                                principal,
+                                tool_name,
+                                arguments,
+                                allowed_tools=allowed_tool_names,
+                                tool_definition=tool_definition_by_name.get(tool_name),
+                            )
                         result_for_event = dict(tool_result)
                         if isinstance(result_for_event.get("result"), dict):
                             result_for_event["result"] = json.dumps(result_for_event["result"], ensure_ascii=False)[:20_000]

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, UniqueConstraint, func, select
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, UniqueConstraint, delete, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -129,6 +129,37 @@ class Skill(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class Tool(Base):
+    __tablename__ = "tool_registry"
+    __table_args__ = (
+        UniqueConstraint("tool_name", name="uq_tool_name"),
+        UniqueConstraint("interface_key", name="uq_tool_interface"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tool_name: Mapped[str] = mapped_column(String(160), index=True)
+    display_name: Mapped[str] = mapped_column(String(256))
+    description: Mapped[str] = mapped_column(Text, default="")
+    operation_id: Mapped[str] = mapped_column(String(256), default="")
+    http_method: Mapped[str] = mapped_column(String(16))
+    http_path: Mapped[str] = mapped_column(String(512))
+    interface_key: Mapped[str] = mapped_column(String(600), index=True)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
+    response_schema: Mapped[dict[str, Any]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
+    auth_strategy: Mapped[str] = mapped_column(String(128), default="current_umc_bearer_token")
+    side_effect: Mapped[str] = mapped_column(String(32), default="read")
+    confirmation_required: Mapped[bool] = mapped_column(default=False)
+    rbac_policy: Mapped[str] = mapped_column(String(512), default="trusted_principal")
+    masking_policy: Mapped[str] = mapped_column(String(512), default="default")
+    swagger_source: Mapped[str] = mapped_column(String(1024), default="")
+    source: Mapped[str] = mapped_column(String(64), default="swagger")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    published: Mapped[bool] = mapped_column(default=False)
+    updated_by: Mapped[str] = mapped_column(String(128), default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 settings = get_settings()
 engine = create_async_engine(settings.database_url, pool_pre_ping=True, pool_size=10, max_overflow=20)
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -146,6 +177,7 @@ async def init_db() -> None:
     # Seed the routing skills once so the Skill API and the runtime share the
     # same guardrails. Existing operator-managed versions are preserved.
     from .skills import DEFAULT_SKILL_DEFINITIONS
+    from .tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, interface_key
 
     async with SessionLocal() as session:
         changed = False
@@ -166,9 +198,19 @@ async def init_db() -> None:
                 )
             )
             changed = True
+        # Knowledge and OCR are runtime-configured system capabilities, not
+        # business Tool Registry rows. Remove rows created by older versions.
+        removed_defaults = await session.execute(
+            delete(Tool).where(Tool.tool_name.in_((*SYSTEM_DEFAULT_TOOL_NAMES, "umc.licenses")))
+        )
+        changed = changed or bool(removed_defaults.rowcount)
         for definition in DEFAULT_SKILL_DEFINITIONS:
             result = await session.execute(select(Skill).where(Skill.skill_id == definition["skill_id"], Skill.version == 1))
-            if result.scalar_one_or_none():
+            existing_skill = result.scalar_one_or_none()
+            if existing_skill:
+                if existing_skill.source == "builtin" and "umc.licenses" in (existing_skill.allowed_tools or []):
+                    existing_skill.allowed_tools = list(definition["allowed_tools"])
+                    changed = True
                 continue
             session.add(
                 Skill(
@@ -182,6 +224,32 @@ async def init_db() -> None:
                     allowed_tools=definition["allowed_tools"],
                     dependencies=definition["dependencies"],
                     content=definition["content"],
+                    updated_by="system",
+                )
+            )
+            changed = True
+        for definition in DEFAULT_BUSINESS_TOOL_DEFINITIONS:
+            result = await session.execute(select(Tool).where(Tool.tool_name == definition["tool_name"]))
+            existing = result.scalar_one_or_none()
+            if existing:
+                # Upgrade the original hard-coded read adapters to their
+                # Swagger-backed Registry definition without overwriting
+                # operator-edited descriptions or lifecycle flags.
+                if existing.source == "builtin" and definition.get("source") == "swagger":
+                    existing.operation_id = str(definition["operation_id"])
+                    existing.http_method = str(definition["http_method"])
+                    existing.http_path = str(definition["http_path"])
+                    existing.interface_key = interface_key(definition["http_method"], definition["http_path"])
+                    existing.parameters = dict(definition.get("parameters", {}))
+                    existing.source = "swagger"
+                    changed = True
+                continue
+            session.add(
+                Tool(
+                    **definition,
+                    interface_key=interface_key(definition["http_method"], definition["http_path"]),
+                    published=True,
+                    enabled=True,
                     updated_by="system",
                 )
             )

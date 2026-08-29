@@ -92,6 +92,7 @@ def requires_console_auth(path: str) -> bool:
     """Return whether a path belongs to the Docker test console API."""
 
     protected_prefixes = (
+        "/api/v1/console/audit",
         "/api/v1/conversations",
         "/api/v1/config",
         "/api/v1/skills",

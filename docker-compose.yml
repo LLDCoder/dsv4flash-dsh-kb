@@ -91,6 +91,7 @@ services:
       context: ./platform-gateway
     environment:
       PLATFORM_BASE_URL: ${PLATFORM_BASE_URL:-http://77.242.240.158:18085/api/platform}
+      UMC_CUSTOMER_BASE_URL: ${UMC_CUSTOMER_BASE_URL:-https://umc-customerportal.sol.daypop.ai}
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
       PLATFORM_RETRY_ATTEMPTS: ${PLATFORM_RETRY_ATTEMPTS:-2}
     expose:
@@ -150,7 +151,7 @@ services:
       platform-gateway:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./backend/app:/app/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -167,7 +168,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${FRONTEND_PORT:-18080}:80"
+      - "127.0.0.1:${FRONTEND_PORT:-18080}:80"
 
   # Official PaddleOCR-VL-1.6 production API and VLM inference services.
   # The model is pinned explicitly so image defaults cannot select another VLM.

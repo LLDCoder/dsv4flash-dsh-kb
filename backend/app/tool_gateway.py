@@ -7,6 +7,7 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
+from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES
 
 
 class ToolGateway:
@@ -17,7 +18,66 @@ class ToolGateway:
         self.knowledge = knowledge
         self.platform = platform
 
-    async def invoke(self, principal: Principal, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _validate_schema(arguments: dict[str, Any], schema: dict[str, Any]) -> str | None:
+        if not isinstance(arguments, dict) or not isinstance(schema, dict):
+            return "arguments must be an object"
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        for name in schema.get("required", []) or []:
+            if name not in arguments:
+                return f"missing required parameter: {name}"
+        for name, value in arguments.items():
+            spec = properties.get(name)
+            if not isinstance(spec, dict):
+                continue
+            expected = spec.get("type")
+            if expected == "string" and not isinstance(value, str):
+                return f"{name} must be a string"
+            if expected == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
+                return f"{name} must be an integer"
+            if expected == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+                return f"{name} must be a number"
+            if expected == "boolean" and not isinstance(value, bool):
+                return f"{name} must be a boolean"
+            if expected == "array" and not isinstance(value, list):
+                return f"{name} must be an array"
+            if isinstance(spec.get("enum"), list) and value not in spec["enum"]:
+                return f"{name} must be one of {spec['enum']}"
+        return None
+
+    async def _invoke_registered_tool(self, principal: Principal, tool_name: str, arguments: dict[str, Any], definition: dict[str, Any]) -> dict[str, Any]:
+        schema = definition.get("parameters") or {}
+        invalid = self._validate_schema(arguments, schema)
+        if invalid:
+            return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "message": invalid}
+        if definition.get("sideEffect", definition.get("side_effect", "read")) != "read" and definition.get("confirmationRequired", definition.get("confirmation_required", False)) and arguments.get("confirmed") is not True:
+            return {"ok": False, "code": "confirmation_required", "toolName": tool_name}
+        method = definition.get("httpMethod", definition.get("http_method"))
+        path = definition.get("httpPath", definition.get("http_path"))
+        if not isinstance(method, str) or not isinstance(path, str) or not path.startswith("/api/"):
+            return {"ok": False, "code": "tool_not_executable", "toolName": tool_name}
+        try:
+            result = await self.platform.invoke_swagger_tool(method, path, arguments, umc_token=principal.umc_token)
+            return {"ok": True, "code": "ok", "toolName": tool_name, "result": result}
+        except httpx.HTTPStatusError as exc:
+            code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"
+            return {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}
+        except httpx.HTTPError as exc:
+            return {"ok": False, "code": "tool_unavailable", "toolName": tool_name, "error": str(exc)[:500]}
+
+    async def invoke(
+        self,
+        principal: Principal,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        allowed_tools: list[str] | None = None,
+        tool_definition: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if allowed_tools is not None and tool_name not in allowed_tools:
+            return {"ok": False, "code": "tool_not_allowed_for_skill", "toolName": tool_name}
+        if tool_definition and tool_name not in SYSTEM_DEFAULT_TOOL_NAMES and tool_definition.get("source") in {"swagger", "ops"}:
+            return await self._invoke_registered_tool(principal, tool_name, arguments, tool_definition)
         if tool_name != "ocr.layout_parsing":
             if tool_name == "knowledge.search":
                 query = arguments.get("query")
@@ -54,41 +114,6 @@ class ToolGateway:
                     result = await self.knowledge.files_page(arguments.get("folder_id") or arguments.get("folderId"), bool(arguments.get("recursive", False)), int(arguments.get("page", 1)), int(arguments.get("page_size", arguments.get("pageSize", 20))), umc_token=principal.umc_token)
                     return {"ok": True, "code": "ok", "toolName": tool_name, "result": result}
                 except httpx.HTTPError as exc:
-                    return {"ok": False, "code": "tool_unavailable", "toolName": tool_name, "error": str(exc)[:500]}
-            if tool_name == "umc.applications":
-                try:
-                    page_index = int(arguments.get("page_index", arguments.get("pageIndex", 1)))
-                    page_size = int(arguments.get("page_size", arguments.get("pageSize", 100)))
-                    if page_index < 1 or page_size < 1 or page_size > 100:
-                        return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "message": "page_index must be >= 1 and page_size must be between 1 and 100"}
-                    return {"ok": True, "code": "ok", "toolName": tool_name, "result": await self.platform.applications_page(page_index, page_size, umc_token=principal.umc_token)}
-                except httpx.HTTPStatusError as exc:
-                    code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"
-                    return {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}
-                except (httpx.HTTPError, ValueError) as exc:
-                    return {"ok": False, "code": "tool_unavailable", "toolName": tool_name, "error": str(exc)[:500]}
-            if tool_name == "umc.application_detail":
-                try:
-                    raw_id = arguments.get("applicationId", arguments.get("application_id"))
-                    application_id = int(raw_id)
-                    if application_id < 1:
-                        raise ValueError("applicationId must be >= 1")
-                    return {"ok": True, "code": "ok", "toolName": tool_name, "result": await self.platform.application_detail(application_id, umc_token=principal.umc_token)}
-                except httpx.HTTPStatusError as exc:
-                    code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"
-                    return {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}
-                except (httpx.HTTPError, ValueError) as exc:
-                    return {"ok": False, "code": "tool_unavailable", "toolName": tool_name, "error": str(exc)[:500]}
-            if tool_name == "umc.book_by_isbn":
-                try:
-                    isbn = str(arguments.get("isbn", "")).strip()
-                    if len(isbn) < 10:
-                        raise ValueError("isbn must be a string with at least 10 characters")
-                    return {"ok": True, "code": "ok", "toolName": tool_name, "result": await self.platform.book_by_isbn(isbn, umc_token=principal.umc_token)}
-                except httpx.HTTPStatusError as exc:
-                    code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"
-                    return {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}
-                except (httpx.HTTPError, ValueError) as exc:
                     return {"ok": False, "code": "tool_unavailable", "toolName": tool_name, "error": str(exc)[:500]}
             if tool_name == "umc.add_application":
                 try:

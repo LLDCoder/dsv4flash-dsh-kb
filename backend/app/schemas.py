@@ -80,6 +80,43 @@ class SkillCreate(SkillUpsert):
     skill_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("skillId", "skill_id"))
 
 
+class ToolUpsert(APIModel):
+    display_name: str = Field(validation_alias=AliasChoices("displayName", "display_name"))
+    description: str = ""
+    operation_id: str = Field(default="", validation_alias=AliasChoices("operationId", "operation_id"))
+    http_method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] = Field(validation_alias=AliasChoices("httpMethod", "http_method"))
+    http_path: str = Field(validation_alias=AliasChoices("httpPath", "http_path"))
+    interface_key: str | None = Field(default=None, validation_alias=AliasChoices("interfaceKey", "interface_key"))
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    response_schema: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("responseSchema", "response_schema"))
+    auth_strategy: str = Field(default="current_umc_bearer_token", validation_alias=AliasChoices("authStrategy", "auth_strategy"))
+    side_effect: str = Field(default="read", validation_alias=AliasChoices("sideEffect", "side_effect"))
+    confirmation_required: bool = Field(default=False, validation_alias=AliasChoices("confirmationRequired", "confirmation_required"))
+    rbac_policy: str = Field(default="trusted_principal", validation_alias=AliasChoices("rbacPolicy", "rbac_policy"))
+    masking_policy: str = Field(default="default", validation_alias=AliasChoices("maskingPolicy", "masking_policy"))
+    swagger_source: str = Field(default="", validation_alias=AliasChoices("swaggerSource", "swagger_source"))
+    source: str = "swagger"
+    version: int = Field(default=1, ge=1)
+    enabled: bool = False
+    published: bool = False
+
+
+class ToolCreate(ToolUpsert):
+    tool_name: str = Field(validation_alias=AliasChoices("toolName", "tool_name"), min_length=1, max_length=160)
+
+
+class SwaggerImportRequest(APIModel):
+    swagger_url: str = Field(validation_alias=AliasChoices("swaggerUrl", "swagger_url"), min_length=1, max_length=2_000)
+    operation_id: str = Field(validation_alias=AliasChoices("operationId", "operation_id"), min_length=1, max_length=256)
+    tool_name: str | None = Field(default=None, validation_alias=AliasChoices("toolName", "tool_name"))
+    display_name: str | None = Field(default=None, validation_alias=AliasChoices("displayName", "display_name"))
+    description: str | None = None
+    side_effect: str = Field(default="read", validation_alias=AliasChoices("sideEffect", "side_effect"))
+    confirmation_required: bool = Field(default=False, validation_alias=AliasChoices("confirmationRequired", "confirmation_required"))
+    enabled: bool = False
+    published: bool = False
+
+
 class WSMessage(APIModel):
     type: Literal["auth", "subscribe", "message", "resume", "ack", "cancel"]
     conversation_id: str | None = Field(default=None, validation_alias=AliasChoices("conversationId", "conversation_id"))
