@@ -3,6 +3,20 @@ name: dsh-external-service
 # Local development mode: keeps the conversation stack and remote knowledge
 # retrieval available without the PaddleOCR GPU images.
 services:
+  postgres:
+    image: public.ecr.aws/docker/library/postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dsh}
+      POSTGRES_USER: ${POSTGRES_USER:-dsh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dsh}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: public.ecr.aws/docker/library/redis:7-alpine
     command: redis-server --appendonly yes
@@ -89,6 +103,8 @@ services:
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
       EXTERNAL_TOOLS_ENABLED: ${EXTERNAL_TOOLS_ENABLED:-true}
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
       platform-gateway:
@@ -116,4 +132,5 @@ services:
       - "127.0.0.1:${FRONTEND_PORT:-18080}:80"
 
 volumes:
+  postgres_data:
   redis_data:
