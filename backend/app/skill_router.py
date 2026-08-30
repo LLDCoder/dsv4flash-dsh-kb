@@ -141,10 +141,12 @@ def recall_skill_candidates(
         if skill_id == keyword_skill_id:
             score += 100
         if skill_id == active_skill:
-            score += 20
+            score += 8
         if active_domain and str(item.get("domain") or "") == active_domain:
-            score += 12
-        score += sum(3 for alias in aliases if alias in text)
+            score += 5
+        # Explicit terms in the latest message outweigh historical context;
+        # this keeps topic switches from being trapped in the prior domain.
+        score += sum(20 for alias in aliases if alias in text)
         if score:
             ranked.append((score, item))
     ranked.sort(key=lambda pair: (-pair[0], str(pair[1].get("skillId", ""))))
