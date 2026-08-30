@@ -73,6 +73,10 @@ class SkillUpsert(APIModel):
     enabled: bool = False
     allowed_tools: list[str] = Field(default_factory=list, validation_alias=AliasChoices("allowedTools", "allowed_tools"))
     dependencies: list[str] = Field(default_factory=list)
+    domain: str = "general"
+    aliases: list[str] = Field(default_factory=list)
+    positive_examples: list[str] = Field(default_factory=list, validation_alias=AliasChoices("positiveExamples", "positive_examples"))
+    negative_examples: list[str] = Field(default_factory=list, validation_alias=AliasChoices("negativeExamples", "negative_examples"))
     content: str = ""
 
 

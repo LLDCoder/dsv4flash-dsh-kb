@@ -19,7 +19,7 @@ from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
 from .runtime import RuntimeManager
-from .skill_router import SkillCatalogCache, normalized_router_mode, valid_llm_route
+from .skill_router import SkillCatalogCache, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 from .skills import (
     build_flow_prompt,
     build_knowledge_query,
@@ -190,18 +190,30 @@ class DSHService:
             return type(keyword_route)(skill_id, "api_call", None, "answer")
         return type(keyword_route)(skill_id, "data_query", None, "answer")
 
-    async def choose_skill_route(self, db: AsyncSession, question: str, keyword_route, conversation: Conversation, request_id: str) -> tuple[Any, dict[str, Any]]:
+    async def choose_skill_route(
+        self,
+        db: AsyncSession,
+        question: str,
+        keyword_route,
+        conversation: Conversation,
+        request_id: str,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, Any]]:
         mode = normalized_router_mode(getattr(self.settings, "skill_router_mode", "keyword"))
         metadata: dict[str, Any] = {"routerMode": mode, "keywordSkillId": keyword_route.skill_id}
         if mode == "keyword":
             return keyword_route, metadata
 
         catalog = await self.skill_catalog.load(db)
+        candidates = recall_skill_candidates(question, keyword_route.skill_id, catalog, context)
+        candidate_ids = [str(item.get("skillId")) for item in candidates]
+        metadata["candidateSkillIds"] = candidate_ids
+        metadata["routeContextUsed"] = bool((context or {}).get("recentMessages") or (context or {}).get("activeSkillId"))
         llm_result: dict[str, object] | None = None
         fallback_reason = ""
         try:
-            llm_result = await self.llm.route_skill(question, catalog)
-            valid, fallback_reason = valid_llm_route(llm_result, catalog)
+            llm_result = await self.llm.route_skill(question, candidates, context)
+            valid, fallback_reason = valid_llm_route(llm_result, candidates)
         except Exception:
             valid = False
             fallback_reason = "router_unavailable"
@@ -608,7 +620,15 @@ class DSHService:
                         request_id=principal.request_id,
                     )
                     keyword_route = resolve_skill(latest_content)
-                    route, route_metadata = await self.choose_skill_route(db, latest_content, keyword_route, conversation, principal.request_id)
+                    route_catalog = await self.skill_catalog.load(db) if normalized_router_mode(getattr(self.settings, "skill_router_mode", "keyword")) != "keyword" else []
+                    route_context = route_context_from_history(history, route_catalog)
+                    # The current question is sent separately to the router;
+                    # keep only preceding turns in the auxiliary context.
+                    if route_context.get("recentMessages") and route_context["recentMessages"][-1].get("role") == "user" and route_context["recentMessages"][-1].get("content") == latest_content:
+                        route_context["recentMessages"] = route_context["recentMessages"][:-1]
+                    route, route_metadata = await self.choose_skill_route(
+                        db, latest_content, keyword_route, conversation, principal.request_id, route_context
+                    )
                     selected_skill_result = await db.execute(
                         select(Skill)
                         .where(
@@ -675,6 +695,9 @@ class DSHService:
                             "llmSkillId": route_metadata.get("llmSkillId"),
                             "routeConsistent": route_metadata.get("routeConsistent"),
                             "fallbackReason": route_metadata.get("fallbackReason"),
+                            "candidateSkillIds": route_metadata.get("candidateSkillIds"),
+                            "routeContextUsed": route_metadata.get("routeContextUsed"),
+                            "confidence": route_metadata.get("confidence"),
                         },
                     )
                     if tool_request:

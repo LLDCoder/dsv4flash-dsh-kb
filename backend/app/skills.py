@@ -220,6 +220,41 @@ SKILL_GUIDANCE: dict[str, str] = {
 }
 
 
+# Routing metadata is intentionally short and operational. The full Skill
+# content remains the source of answer-time instructions; these fields are
+# used only for deterministic candidate recall before LLM classification.
+SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
+    "document_ocr": {"domain": "documents", "aliases": ["ocr", "document", "image", "attachment", "扫描件", "图片"]},
+    "service_discovery": {"domain": "services", "aliases": ["find service", "compare services", "which service", "服务", "service catalogue"]},
+    "umc_application_detail": {"domain": "applications", "aliases": ["application detail", "application id", "申请详情", "applicationid"]},
+    "umc_book_by_isbn": {"domain": "books", "aliases": ["isbn", "book lookup", "书号"]},
+    "umc_add_application": {"domain": "applications", "aliases": ["new application", "create draft", "新建申请", "草稿"]},
+    "copyright_guidance": {"domain": "knowledge_policy", "aliases": ["copyright", "content permission", "版权", "内容合规"]},
+    "admin_inspection": {"domain": "admin", "aliases": ["inspection", "risk", "检查", "高风险"]},
+    "admin_analytics": {"domain": "admin", "aliases": ["analytics", "pivot", "processing time", "分析", "趋势"]},
+    "admin_finance": {"domain": "admin", "aliases": ["revenue", "collection", "finance", "收入", "财务"]},
+    "admin_audit": {"domain": "admin", "aliases": ["audit", "permissions", "审计", "权限"]},
+    "profile_status": {"domain": "profile", "aliases": ["profile review", "profile status", "资料审核", "档案"]},
+    "service_eligibility": {"domain": "services", "aliases": ["my eligibility", "eligible for", "资格", "适用服务"]},
+    "application_payment": {"domain": "payments", "aliases": ["pending payment", "pay application", "待付款", "付款申请"]},
+    "application_status": {"domain": "applications", "aliases": ["application status", "application progress", "申请状态", "申请进度"]},
+    "license_permit_status": {"domain": "licenses_permits", "aliases": ["my license", "license status", "permit status", "license count", "许可证", "牌照", "许可"]},
+    "permit_download": {"domain": "licenses_permits", "aliases": ["download license", "download permit", "license document", "下载许可证"]},
+    "payment_receipt": {"domain": "payments", "aliases": ["receipt", "payment receipt", "收据", "付款凭证"]},
+    "fine_appeal": {"domain": "fines", "aliases": ["appeal fine", "violation appeal", "申诉罚款", "违规申诉"]},
+    "complaint_create": {"domain": "enquiries", "aliases": ["complaint", "投诉", "delayed application"]},
+    "enquiry_followup": {"domain": "enquiries", "aliases": ["follow up enquiry", "enquiry follow-up", "跟进咨询"]},
+    "enquiry_reopen": {"domain": "enquiries", "aliases": ["reopen enquiry", "resolved enquiry", "重新打开咨询"]},
+    "technical_enquiry": {"domain": "enquiries", "aliases": ["technical enquiry", "payment failed", "技术咨询", "支付失败"]},
+    "license_application": {"domain": "license_application", "aliases": ["new license", "license application", "permit requirements", "申请许可证", "办理牌照"]},
+    "service_eligibility_info": {"domain": "knowledge_policy", "aliases": ["who is eligible", "eligibility information", "谁有资格", "资格说明"]},
+    "license_renewal": {"domain": "licenses_permits", "aliases": ["renew license", "renewal", "extend permit", "续期", "延期"]},
+    "service_fees": {"domain": "knowledge_policy", "aliases": ["service fee", "processing time", "费用", "办理时间"]},
+    "latest_regulations": {"domain": "knowledge_policy", "aliases": ["regulation", "cabinet resolution", "media rules", "法规", "条例"]},
+    "fine_payment": {"domain": "fines", "aliases": ["pay fine", "unpaid fine", "罚款缴纳", "未缴罚款"]},
+}
+
+
 DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "skill_id": "document_ocr",
@@ -418,6 +453,14 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "content": SKILL_GUIDANCE["fine_payment"],
     },
 )
+
+# Keep the definition shape backwards compatible while making routing metadata
+# available to DB seeding, Redis catalog generation, and API clients.
+for _definition in DEFAULT_SKILL_DEFINITIONS:
+    _routing = SKILL_ROUTING_METADATA.get(_definition["skill_id"], {})
+    _definition.update(_routing)
+    _definition.setdefault("positive_examples", list(_routing.get("aliases", []))[:4])
+    _definition.setdefault("negative_examples", [])
 
 
 def _has(text: str, *terms: str) -> bool:

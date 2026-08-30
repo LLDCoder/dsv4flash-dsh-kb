@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, UniqueConstraint, delete, func, select
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, UniqueConstraint, delete, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -124,6 +124,10 @@ class Skill(Base):
     enabled: Mapped[bool] = mapped_column(default=False)
     allowed_tools: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
     dependencies: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
+    domain: Mapped[str] = mapped_column(String(128), default="general", server_default="general")
+    aliases: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
+    positive_examples: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
+    negative_examples: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
     content: Mapped[str] = mapped_column(Text, default="")
     updated_by: Mapped[str] = mapped_column(String(128), default="system")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -173,6 +177,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def init_db() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        # create_all does not alter an existing PostgreSQL table. These
+        # additive columns keep deployments upgraded in place, including the
+        # local database imported from the previous environment.
+        if connection.dialect.name == "postgresql":
+            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS domain VARCHAR(128) NOT NULL DEFAULT 'general'"))
+            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS aliases JSONB NOT NULL DEFAULT '[]'::jsonb"))
+            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS positive_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
+            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS negative_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
 
     # Seed the routing skills once so the Skill API and the runtime share the
     # same guardrails. Existing operator-managed versions are preserved.
@@ -212,7 +224,7 @@ async def init_db() -> None:
                 # Apply revisions only while the record is still system-owned;
                 # a Skill edited by an operator is intentionally preserved.
                 if existing_skill.source == "builtin" and existing_skill.updated_by == "system":
-                    for field in ("name", "allowed_tools", "dependencies", "content"):
+                    for field in ("name", "allowed_tools", "dependencies", "domain", "aliases", "positive_examples", "negative_examples", "content"):
                         desired = definition[field]
                         if getattr(existing_skill, field) != desired:
                             setattr(existing_skill, field, desired)
@@ -229,6 +241,10 @@ async def init_db() -> None:
                     enabled=True,
                     allowed_tools=definition["allowed_tools"],
                     dependencies=definition["dependencies"],
+                    domain=definition.get("domain", "general"),
+                    aliases=definition.get("aliases", []),
+                    positive_examples=definition.get("positive_examples", []),
+                    negative_examples=definition.get("negative_examples", []),
                     content=definition["content"],
                     updated_by="system",
                 )

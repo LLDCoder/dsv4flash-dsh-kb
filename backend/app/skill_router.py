@@ -39,6 +39,10 @@ class SkillCatalogCache:
             "description": content[:800],
             "allowedTools": list(item.allowed_tools or []),
             "dependencies": list(item.dependencies or []),
+            "domain": getattr(item, "domain", "general") or "general",
+            "aliases": list(getattr(item, "aliases", None) or []),
+            "positiveExamples": list(getattr(item, "positive_examples", None) or []),
+            "negativeExamples": list(getattr(item, "negative_examples", None) or []),
             "version": item.version,
             "status": item.status,
             "enabled": bool(item.enabled),
@@ -111,3 +115,60 @@ def valid_llm_route(result: object, catalog: list[dict[str, Any]]) -> tuple[bool
     if not any(item.get("skillId") == skill_id.strip() for item in catalog):
         return False, "skill_not_published"
     return True, "ok"
+
+
+def recall_skill_candidates(
+    question: str,
+    keyword_skill_id: str,
+    catalog: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Recall a small, explainable candidate set for the LLM leaf classifier.
+
+    Keyword routing remains authoritative in keyword mode. In LLM/shadow mode
+    this function only reduces the catalog and never executes a tool.
+    """
+    context = context or {}
+    text = str(question or "").lower()
+    active_domain = str(context.get("activeDomain") or "").strip()
+    active_skill = str(context.get("activeSkillId") or "").strip()
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for item in catalog:
+        skill_id = str(item.get("skillId") or "")
+        aliases = [str(value).lower() for value in item.get("aliases", []) if value]
+        score = 0
+        if skill_id == keyword_skill_id:
+            score += 100
+        if skill_id == active_skill:
+            score += 20
+        if active_domain and str(item.get("domain") or "") == active_domain:
+            score += 12
+        score += sum(3 for alias in aliases if alias in text)
+        if score:
+            ranked.append((score, item))
+    ranked.sort(key=lambda pair: (-pair[0], str(pair[1].get("skillId", ""))))
+    candidates = [item for _, item in ranked[: max(1, limit)]]
+    if not candidates:
+        candidates = sorted(catalog, key=lambda item: str(item.get("skillId", "")))[: max(1, limit)]
+    return candidates
+
+
+def route_context_from_history(history: list[Any], catalog: list[dict[str, Any]], max_messages: int = 6) -> dict[str, Any]:
+    """Build bounded routing context from persisted events, excluding tool data."""
+    messages: list[dict[str, str]] = []
+    active_skill_id = ""
+    for event in history:
+        event_type = getattr(event, "event_type", "")
+        payload = getattr(event, "event_json", {}) or {}
+        if event_type in {"user.message", "assistant.message"}:
+            content = str(payload.get("content") or "").strip()
+            if content:
+                messages.append({"role": "user" if event_type == "user.message" else "assistant", "content": content[-1200:]})
+        elif event_type == "skill.route":
+            active_skill_id = str(payload.get("skillId") or active_skill_id)
+    messages = messages[-max_messages:]
+    active_domain = ""
+    if active_skill_id:
+        active_domain = str(next((item.get("domain") for item in catalog if item.get("skillId") == active_skill_id), "") or "")
+    return {"activeSkillId": active_skill_id or None, "activeDomain": active_domain or None, "recentMessages": messages}

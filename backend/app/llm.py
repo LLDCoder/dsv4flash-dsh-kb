@@ -10,18 +10,25 @@ class LLMAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def route_skill(self, question: str, catalog: list[dict[str, object]]) -> dict[str, object]:
+    async def route_skill(
+        self,
+        question: str,
+        catalog: list[dict[str, object]],
+        context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         """Ask the configured model for a classification-only Skill choice.
 
-        This endpoint deliberately does not expose tools or conversation state;
-        the caller validates the returned Skill before any execution.
+        This endpoint is classification-only. It receives bounded recent
+        context and a recalled candidate set, never executable tool schemas.
         """
 
         if not self.settings.llm_base_url or not self.settings.llm_api_key:
             raise RuntimeError("LLM Router is not configured")
         system = (
             "You are a strict intent classifier for the NMA DSH assistant. "
-            "Choose exactly one skillId from the supplied published catalog. "
+            "Choose exactly one skillId from the supplied candidate catalog. "
+            "Prefer the latest user message; use recent context only to resolve references. "
+            "If the user clearly changes topic, ignore the previous active domain. "
             "Do not call tools, do not answer the user, and do not invent a skill. "
             "Return JSON only with keys skillId, confidence, needsClarification, clarifyingQuestion. "
             "Use needsClarification=true when the scope or intent is ambiguous."
@@ -30,7 +37,7 @@ class LLMAdapter:
             "model": self.settings.llm_model,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": json.dumps({"question": question, "skills": catalog}, ensure_ascii=False)},
+                {"role": "user", "content": json.dumps({"question": question, "context": context or {}, "candidates": catalog}, ensure_ascii=False)},
             ],
             "stream": False,
             "response_format": {"type": "json_object"},

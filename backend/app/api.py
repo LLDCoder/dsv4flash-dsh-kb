@@ -576,7 +576,7 @@ def make_router(service: DSHService) -> APIRouter:
         if scope:
             query = query.where(Skill.scope == scope)
         result = await db.execute(query)
-        return {"items": [{"skillId": item.skill_id, "name": item.name, "version": item.version, "source": item.source, "status": item.status, "scope": item.scope, "enabled": item.enabled, "allowedTools": item.allowed_tools, "dependencies": item.dependencies, "content": item.content, "updatedBy": item.updated_by} for item in result.scalars().all()]}
+        return {"items": [{"skillId": item.skill_id, "name": item.name, "version": item.version, "source": item.source, "status": item.status, "scope": item.scope, "enabled": item.enabled, "allowedTools": item.allowed_tools, "dependencies": item.dependencies, "domain": item.domain, "aliases": item.aliases, "positiveExamples": item.positive_examples, "negativeExamples": item.negative_examples, "content": item.content, "updatedBy": item.updated_by} for item in result.scalars().all()]}
 
     def tool_json(item: Tool) -> dict[str, Any]:
         return {
