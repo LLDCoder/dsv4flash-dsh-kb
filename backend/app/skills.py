@@ -565,7 +565,7 @@ def resolve_skill(text: str) -> SkillRoute:
         return SkillRoute("fine_payment", "data_query", None, "collect", ("fine_reference",), confirmation_required=True)
     # Status/payment intent must win over the words “license application” in a
     # sentence such as “show the latest status of my media license application”.
-    if _has(text, "pending payment", "待付款", "الدفع المعلق", "قيد الدفع"):
+    if _has(text, "pending payment", "waiting for payment", "awaiting payment", "待付款", "الدفع المعلق", "قيد الدفع"):
         return SkillRoute("application_payment", "data_query", None, "collect", ("application_number",))
     if _has(text, "download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر") and _has(text, "permit", "license", "许可", "تصريح", "رخصة"):
         return SkillRoute("permit_download", "api_call", None, "collect", ("license_id",), confirmation_required=True)
@@ -592,7 +592,7 @@ def resolve_skill(text: str) -> SkillRoute:
         return SkillRoute("profile_status", "data_query", None, "collect", ("profile_id",), ("Individual", "Business"))
     if _has(text, "eligible", "eligibility", "资格", "مؤهل", "الأهلية"):
         return SkillRoute("service_eligibility", "data_query", None, "collect", ("profile_id", "account_type", "media_activity"), ("Individual", "Commercial", "Government"))
-    if _has(text, "pending payment", "待付款", "الدفع المعلق", "قيد الدفع"):
+    if _has(text, "pending payment", "waiting for payment", "awaiting payment", "待付款", "الدفع المعلق", "قيد الدفع"):
         return SkillRoute("application_payment", "data_query", None, "collect", ("application_number",))
     if _has(text, "latest status", "application status", "申请状态", "حالة الطلب", "آخر حالة"):
         return SkillRoute("application_status", "data_query", None, "answer")

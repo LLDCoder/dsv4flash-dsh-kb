@@ -18,6 +18,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(resolve_skill("Which licenses are expiring?").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("Please show my application status").skill_id, "application_status")
         self.assertEqual(resolve_skill("How do I renew my license?").skill_id, "license_renewal")
+        self.assertEqual(resolve_skill("Do I have any applications waiting for payment?").skill_id, "application_payment")
 
     def test_read_only_customer_portal_routes(self):
         self.assertEqual(resolve_skill("Show my My Requests").skill_id, "application_status")

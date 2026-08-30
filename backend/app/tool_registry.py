@@ -341,7 +341,7 @@ def build_legacy_tool_request(allowed_tools: list[str], text: str, *, mode: str 
         match = re.search(r"(?:application\s*(?:id|number)?|申请(?:详情|ID)?)[\s:#-]*(\d{1,12})\b", text, re.IGNORECASE)
         if match and any(term in text.lower() for term in ("payment", "pending payment", "付款", "支付", "الدفع")):
             return "umc.application_payment_detail", {"applicationId": int(match.group(1))}
-    if "umc.applications" in allowed_tools and any(term in text.lower() for term in ("pending payment", "待付款", "الدفع المعلق", "قيد الدفع")):
+    if "umc.applications" in allowed_tools and any(term in text.lower() for term in ("pending payment", "waiting for payment", "awaiting payment", "待付款", "الدفع المعلق", "قيد الدفع")):
         return "umc.applications", {"pageIndex": 1, "pageSize": 100}
     if mode == "answer" and "umc.applications" in allowed_tools:
         return "umc.applications", {"pageIndex": 1, "pageSize": 100}
