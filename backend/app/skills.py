@@ -56,10 +56,10 @@ SKILL_GUIDANCE: dict[str, str] = {
         "separate candidate services from legal eligibility and explain what information is still missing.",
     ),
     "umc_application_detail": _guidance(
-        "the user selects a UMC application and provides its numeric applicationId.",
-        "no application identifier is available, or the question concerns issued licenses rather than an application.",
+        "the user selects one of their My Requests records and asks for its detail, timeline, fee, service, or linked document.",
+        "no application identifier or selectable My Requests record is available, or the question concerns an issued License/Permit list.",
         "a current UMC bearer token and a positive applicationId.",
-        "return only fields from the live response, identify the application, and never infer missing milestones or approval decisions.",
+        "return only fields from live responses, identify the application number and current status, and never infer missing milestones or approval decisions. This Skill is read-only: do not edit, cancel, duplicate, submit, or pay.",
         "/my-requests/detail?id={applicationId}",
     ),
     "umc_book_by_isbn": _guidance(
@@ -117,30 +117,30 @@ SKILL_GUIDANCE: dict[str, str] = {
         "return candidate services and missing inputs, not a binding eligibility decision.",
     ),
     "application_payment": _guidance(
-        "the user asks which applications are awaiting payment or how to continue a pending-payment application.",
-        "the user asks about an unrelated transaction, an issued permit, or requests payment without selecting an application.",
-        "trusted UMC identity; list current applications and identify records whose status is Pending Payment.",
-        "show application number, service, amount/status returned by UMC, require selection and explicit confirmation before any payment action; this Skill does not clear payment state.",
+        "the user asks which My Requests applications are awaiting payment or asks to inspect the payment details for a selected application.",
+        "the user asks to make, retry, or confirm a payment, or asks about an unrelated transaction or issued permit.",
+        "trusted UMC identity; use the current application list and the selected application's read-only payment detail.",
+        "show application number, service, amount, currency, and payment status returned by UMC. This Skill is read-only and never starts, retries, or confirms payment.",
     ),
     "application_status": _guidance(
-        "the user asks for the status or progress of their own application(s).",
+        "the user asks for the status, progress, filters, counts, or history of their own My Requests applications.",
         "the user asks for an issued license/permit count or general application requirements.",
         "trusted UMC identity; query the current account's application list and use detail only for a selected application.",
-        "include application number, service, creation time, current status, and result scope; distinguish draft, submitted, pending payment, and completed.",
+        "include application number, service, creation time, current status, and result scope; distinguish draft, submitted, pending payment, and completed. This Skill is read-only and never edits, cancels, duplicates, submits, or pays.",
         "/my-requests or /my-requests/detail?id={applicationId}",
     ),
     "license_permit_status": _guidance(
-        "the user asks about their issued License/Permit count, status, validity, expiry, number, or actions.",
+        "the user asks about their issued License/Permit list, count, status, validity, expiry, number, or available portal actions.",
         "the user asks about applications, pending payment, new-license requirements, or administrative records.",
         "a current UMC bearer token and live License/Permit APIs; never substitute application records.",
-        "report License and Permit separately plus a total; use real status/effectiveDate/expireDate/allowedActions and identify the data scope.",
+        "report License and Permit separately plus a total; use real status/effectiveDate/expireDate/allowedActions and identify the data scope. This Skill is read-only and never renews, modifies, cancels, transfers, or submits.",
         "/permits-license; application links use /my-requests/detail?id={applicationId}&certificateId={sourceLicenseId}",
     ),
     "permit_download": _guidance(
         "the user asks to view or download a specific issued License/Permit document.",
         "the user has not selected a document, or asks to download an application draft or another user's document.",
         "list records first, obtain the selected documentId/sourceLicenseId, and require explicit confirmation before exposing download details.",
-        "use the detail response to obtain certificateUrl and pdfPassword; explain the PDF Access Code flow and never claim a public share link.",
+        "use the detail response to obtain certificateUrl and pdfPassword; explain the PDF Access Code flow, ask for explicit confirmation immediately before download, and never claim a public share link or download without confirmation.",
         "/permits-license, then the portal's document viewer/download flow",
     ),
     "payment_receipt": _guidance(
@@ -193,11 +193,18 @@ SKILL_GUIDANCE: dict[str, str] = {
         "label the answer as general guidance and direct personal checks to the profile/service eligibility flow.",
     ),
     "license_renewal": _guidance(
-        "the user asks to renew an existing License/Permit or understand an expiry/action-needed record.",
+        "the user asks which existing License/Permit needs attention or wants read-only renewal/expiry eligibility information.",
         "the user asks to apply for a new service or merely wants the current document count/status.",
         "the document type/number when account lookup is needed, current action-needed data, and the renewal knowledge rule.",
-        "distinguish renewal from extension/modification, validate the selected action when supported, and require confirmation before navigation or any write operation.",
+        "distinguish renewal from extension/modification, use action validation only as a read-only eligibility check, and never initiate renewal or another write operation. Ask for confirmation only if a later download is requested.",
         "/permits-license action-needed cards and the resulting service route",
+    ),
+    "my_requests_pending_actions": _guidance(
+        "the user asks what is pending, what needs attention, or which actions are outstanding in My Requests.",
+        "the user asks about issued License/Permit expiry actions, administrative review data, or asks to perform an action.",
+        "trusted UMC identity and the current account's pending-actions/application list.",
+        "list only live pending items, identify the related application and status, and do not pay, edit, cancel, duplicate, submit, or otherwise mutate a request.",
+        "/my-requests",
     ),
     "service_fees": _guidance(
         "the user asks for the fee or processing time of a specific media service.",
@@ -237,6 +244,7 @@ SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
     "profile_status": {"domain": "profile", "aliases": ["profile review", "profile status", "资料审核", "档案"]},
     "service_eligibility": {"domain": "services", "aliases": ["my eligibility", "eligible for", "资格", "适用服务"]},
     "application_payment": {"domain": "payments", "aliases": ["pending payment", "pay application", "待付款", "付款申请"]},
+    "my_requests_pending_actions": {"domain": "applications", "aliases": ["my requests pending", "pending actions", "what needs attention", "待处理事项", "待办申请"]},
     "application_status": {"domain": "applications", "aliases": ["application status", "application progress", "申请状态", "申请进度"]},
     "license_permit_status": {"domain": "licenses_permits", "aliases": ["my license", "license status", "permit status", "license count", "许可证", "牌照", "许可"]},
     "permit_download": {"domain": "licenses_permits", "aliases": ["download license", "download permit", "license document", "下载许可证"]},
@@ -329,7 +337,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "skill_id": "profile_status",
         "name": "Profile status and application eligibility",
-        "allowed_tools": ["umc.pending-actions", "umc.applications"],
+        "allowed_tools": ["umc.applications"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
         "content": SKILL_GUIDANCE["profile_status"],
     },
@@ -342,10 +350,17 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "skill_id": "application_payment",
-        "name": "Pending payment workflow",
-        "allowed_tools": ["umc.applications"],
+        "name": "Pending payment application details",
+        "allowed_tools": ["umc.applications", "umc.application_payment_detail"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
         "content": SKILL_GUIDANCE["application_payment"],
+    },
+    {
+        "skill_id": "my_requests_pending_actions",
+        "name": "My Requests pending actions",
+        "allowed_tools": ["umc.pending-actions", "umc.applications"],
+        "dependencies": ["trusted_principal", "umc_customer_api"],
+        "content": SKILL_GUIDANCE["my_requests_pending_actions"],
     },
     {
         "skill_id": "application_status",
@@ -426,7 +441,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "skill_id": "license_renewal",
-        "name": "License renewal and permit extension",
+        "name": "License and permit action-needed information",
         "allowed_tools": ["knowledge.search", "umc.licenses.list", "umc.licenses.action_needed", "umc.licenses.action_validate", "umc.licenses.detail"],
         "dependencies": ["knowledge_gateway", "trusted_principal", "umc_customer_api"],
         "content": SKILL_GUIDANCE["license_renewal"],
@@ -490,6 +505,13 @@ def resolve_skill(text: str) -> SkillRoute:
             ("regulation_topic", "regulation_or_resolution_reference", "article_number"),
             ("Latest updates", "Summary", "Exact quotation"),
         )
+    if _has(text, "pending actions", "what needs attention", "outstanding actions", "my requests pending", "my pending actions", "待处理事项", "待办申请", "我的待办", "我的待处理", "需要处理") and (
+        _has(text, "my request", "application", "申请", "请求", "طلب", "طلبات")
+        or not _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح")
+    ):
+        return SkillRoute("my_requests_pending_actions", "data_query", None, "answer")
+    if _has(text, "action needed", "actions needed", "needs renewal", "renewal due", "需要续期", "待处理") and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"):
+        return SkillRoute("license_renewal", "data_query", None, "answer", ("license_or_permit_type", "license_number"))
     # Personal issued-document questions must be separated from public
     # renewal guidance and from application status.
     personal_document = _has(
@@ -528,7 +550,7 @@ def resolve_skill(text: str) -> SkillRoute:
     # A status question must win over product/service keywords such as
     # "social media" or "license application" (for example, "What is the
     # status of my social media license?").
-    if _has(text, "latest status", "application status", "status of my application", "what's the status of my application", "open applications", "summarize my open", "申请状态", "申请进度", "حالة الطلب", "حالة طلبي", "آخر حالة"):
+    if _has(text, "latest status", "application status", "status of my application", "what's the status of my application", "open applications", "summarize my open", "my requests", "我的申请", "我的请求", "申请状态", "申请进度", "حالة الطلب", "حالة طلبي", "آخر حالة"):
         return SkillRoute("application_status", "data_query", None, "answer")
     if _has(text, "which service should", "very specific media activity", "not listed", "media service comparison", "difference between a photography permit and an advertiser permit", "apply for a media service", "advertiser permit", "paid product reviews", "social media", "服务对比", "未列出", "选择哪项服务", "الخدمة المناسبة", "نشاطي التجاري"):
         return SkillRoute("service_discovery", "knowledge", "knowledge.search", "answer", ("account_type", "media_activity"))
@@ -623,7 +645,8 @@ def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
     prompt = {
         "profile_status": "Select an approved profile or provide its profile ID so I can determine whether a new application can be created.",
         "service_eligibility": "Provide the account/profile type and media activity so I can identify candidate services.",
-        "application_payment": "Select the Pending Payment application to continue; explicit confirmation is still required before submission.",
+        "application_payment": "Select the Pending Payment application to inspect its read-only payment details; this Skill never starts or confirms payment.",
+        "my_requests_pending_actions": "Query the current account's My Requests pending actions and identify the related application; no mutation is allowed.",
         "application_status": "Provide the application number. If it is unavailable, query the latest applications and state the result scope.",
         "license_permit_status": "Query the current user's issued licenses and permits. Report separate License and Permit counts, statuses, effective dates, expiry dates, and available actions; do not mix in application records.",
         "permit_download": "Select the issued licence or permit to download; explicit confirmation is required before downloading.",

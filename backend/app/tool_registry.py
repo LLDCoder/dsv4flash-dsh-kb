@@ -57,6 +57,17 @@ DEFAULT_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "source": "swagger",
     },
     {
+        "tool_name": "umc.application_payment_detail",
+        "display_name": "Get application payment details",
+        "description": "Read-only payment details for a selected My Requests application; never starts or confirms payment.",
+        "operation_id": "application_payment_detail",
+        "http_method": "GET",
+        "http_path": "/api/payment-center/service-applications/{applicationId}/payment",
+        "parameters": {"type": "object", "properties": {"applicationId": {"type": "integer", "minimum": 1}}, "required": ["applicationId"]},
+        "auth_strategy": "current_umc_bearer_token",
+        "source": "swagger",
+    },
+    {
         "tool_name": "umc.book_by_isbn",
         "display_name": "Look up a book by ISBN",
         "description": "Read-only UMC book lookup by ISBN string.",
@@ -326,6 +337,10 @@ def build_legacy_tool_request(allowed_tools: list[str], text: str, *, mode: str 
         match = re.search(r"(?:license|licence|permit|document|certificate|id|许可证|牌照|许可)[\s:#-]*([A-Za-z0-9-]{3,})", text, re.IGNORECASE)
         if match:
             return "umc.licenses.detail", {"id": match.group(1)}
+    if "umc.application_payment_detail" in allowed_tools:
+        match = re.search(r"(?:application\s*(?:id|number)?|申请(?:详情|ID)?)[\s:#-]*(\d{1,12})\b", text, re.IGNORECASE)
+        if match and any(term in text.lower() for term in ("payment", "pending payment", "付款", "支付", "الدفع")):
+            return "umc.application_payment_detail", {"applicationId": int(match.group(1))}
     if "umc.applications" in allowed_tools and any(term in text.lower() for term in ("pending payment", "待付款", "الدفع المعلق", "قيد الدفع")):
         return "umc.applications", {"pageIndex": 1, "pageSize": 100}
     if mode == "answer" and "umc.applications" in allowed_tools:
