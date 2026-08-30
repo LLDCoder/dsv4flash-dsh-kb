@@ -164,6 +164,8 @@
             <label>名称<input id="skillNameInput" required /></label>
             <label>状态<select id="skillStatusInput"><option value="DRAFT">DRAFT</option><option value="PUBLISHED">PUBLISHED</option><option value="DISABLED">DISABLED</option></select></label>
             <label class="skill-dialog-toggle">启用<input id="skillEnabledInput" type="checkbox" /></label>
+            <label>业务域<input id="skillDomainInput" placeholder="例如 licenses_permits" /></label>
+            <label>路由别名（逗号分隔）<input id="skillAliasesInput" placeholder="license status, 许可证状态" /></label>
             <section class="skill-tool-binding wide" aria-labelledby="skillToolBindingTitle">
               <div class="skill-tool-binding-head">
                 <div>
@@ -180,6 +182,8 @@
               <div id="skillToolPicker" class="skill-tool-picker" aria-label="可绑定 Tools"></div>
             </section>
             <label>依赖条件（逗号分隔）<input id="skillDependenciesInput" /></label>
+            <label>正向示例（逗号分隔）<input id="skillPositiveExamplesInput" placeholder="用户询问自己许可证状态" /></label>
+            <label>反向示例（逗号分隔）<input id="skillNegativeExamplesInput" placeholder="用户询问申请进度" /></label>
             <label class="wide">Skill 内容 / 行为指令<textarea id="skillContentInput" rows="10"></textarea></label>
           </div>
           <div class="dialog-actions"><button id="cancelSkillBtn" type="button" class="secondary">取消</button><button id="saveSkillBtn" type="submit">保存 Skill</button></div>

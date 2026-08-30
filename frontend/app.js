@@ -737,9 +737,13 @@ async function openSkillEditor(skillId) {
   $("skillNameInput").value = item.name || "";
   $("skillStatusInput").value = item.status || "DRAFT";
   $("skillEnabledInput").checked = Boolean(item.enabled);
+  $("skillDomainInput").value = item.domain || "general";
+  $("skillAliasesInput").value = splitSkillValues(item.aliases);
   state.selectedSkillTools = normalizeToolNames(item.allowedTools);
   $("skillToolSearchInput").value = "";
   $("skillDependenciesInput").value = splitSkillValues(item.dependencies);
+  $("skillPositiveExamplesInput").value = splitSkillValues(item.positiveExamples);
+  $("skillNegativeExamplesInput").value = splitSkillValues(item.negativeExamples);
   $("skillContentInput").value = item.content || "";
   $("saveSkillBtn").textContent = "保存 Skill";
   if (!state.toolsLoaded) await loadTools();
@@ -758,9 +762,13 @@ async function openNewSkillEditor() {
   $("skillNameInput").value = "";
   $("skillStatusInput").value = "DRAFT";
   $("skillEnabledInput").checked = false;
+  $("skillDomainInput").value = "general";
+  $("skillAliasesInput").value = "";
   state.selectedSkillTools = [];
   $("skillToolSearchInput").value = "";
   $("skillDependenciesInput").value = "";
+  $("skillPositiveExamplesInput").value = "";
+  $("skillNegativeExamplesInput").value = "";
   $("skillContentInput").value = "";
   $("saveSkillBtn").textContent = "创建 Skill";
   if (!state.toolsLoaded) await loadTools();
@@ -820,6 +828,10 @@ async function saveSkillEditor(event) {
       enabled: $("skillEnabledInput").checked,
       allowedTools: normalizeToolNames(state.selectedSkillTools),
       dependencies: parseSkillValues($("skillDependenciesInput").value),
+      domain: $("skillDomainInput").value.trim() || "general",
+      aliases: parseSkillValues($("skillAliasesInput").value),
+      positiveExamples: parseSkillValues($("skillPositiveExamplesInput").value),
+      negativeExamples: parseSkillValues($("skillNegativeExamplesInput").value),
       content: $("skillContentInput").value,
     };
     if (isCreating) {

@@ -8,7 +8,7 @@ from app.skills import build_system_prompt, resolve_skill
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
-from app.skill_router import normalized_router_mode, valid_llm_route
+from app.skill_router import normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 
 
 class RegistryAndRoutingTests(unittest.TestCase):
@@ -103,6 +103,33 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.2}, catalog), (False, "low_confidence"))
         self.assertEqual(valid_llm_route({"skillId": "missing", "confidence": 0.91}, catalog), (False, "skill_not_published"))
         self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.91, "needsClarification": True}, catalog), (False, "needs_clarification"))
+
+    def test_skill_candidates_are_keyword_seeded_and_domain_bounded(self):
+        catalog = [
+            {"skillId": "license_permit_status", "domain": "licenses_permits", "aliases": ["license status"]},
+            {"skillId": "license_renewal", "domain": "licenses_permits", "aliases": ["renew license"]},
+            {"skillId": "application_status", "domain": "applications", "aliases": ["application status"]},
+        ]
+        candidates = recall_skill_candidates(
+            "I need to renew my license",
+            "license_renewal",
+            catalog,
+            {"activeDomain": "licenses_permits", "activeSkillId": "license_permit_status"},
+        )
+        self.assertEqual(candidates[0]["skillId"], "license_renewal")
+        self.assertNotIn("application_status", [item["skillId"] for item in candidates])
+
+    def test_route_context_is_bounded_and_tracks_active_skill(self):
+        class Event:
+            def __init__(self, event_type, content=None, skill_id=None):
+                self.event_type = event_type
+                self.event_json = {"content": content} if content is not None else {"skillId": skill_id}
+
+        history = [Event("user.message", "first"), Event("skill.route", skill_id="license_permit_status")]
+        context = route_context_from_history(history, [{"skillId": "license_permit_status", "domain": "licenses_permits"}])
+        self.assertEqual(context["activeDomain"], "licenses_permits")
+        self.assertEqual(context["activeSkillId"], "license_permit_status")
+        self.assertEqual(context["recentMessages"][0]["content"], "first")
 
     def test_selected_tool_definitions_are_visible_to_model_prompt(self):
         prompt = build_system_prompt(
