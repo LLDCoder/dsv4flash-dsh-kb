@@ -131,6 +131,17 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(context["activeSkillId"], "license_permit_status")
         self.assertEqual(context["recentMessages"][0]["content"], "first")
 
+    def test_route_context_keeps_four_prior_messages(self):
+        class Event:
+            def __init__(self, content):
+                self.event_type = "user.message"
+                self.event_json = {"content": content}
+
+        history = [Event(str(index)) for index in range(7)]
+        context = route_context_from_history(history, [])
+        prior = context["recentMessages"][:-1]
+        self.assertEqual([item["content"] for item in prior], ["2", "3", "4", "5"])
+
     def test_selected_tool_definitions_are_visible_to_model_prompt(self):
         prompt = build_system_prompt(
             resolve_skill("What's my license status?"),

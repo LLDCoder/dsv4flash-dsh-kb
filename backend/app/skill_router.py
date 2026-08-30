@@ -156,7 +156,7 @@ def recall_skill_candidates(
     return candidates
 
 
-def route_context_from_history(history: list[Any], catalog: list[dict[str, Any]], max_messages: int = 6) -> dict[str, Any]:
+def route_context_from_history(history: list[Any], catalog: list[dict[str, Any]], max_messages: int = 5) -> dict[str, Any]:
     """Build bounded routing context from persisted events, excluding tool data."""
     messages: list[dict[str, str]] = []
     active_skill_id = ""
