@@ -19,6 +19,25 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(resolve_skill("Please show my application status").skill_id, "application_status")
         self.assertEqual(resolve_skill("How do I renew my license?").skill_id, "license_renewal")
 
+    def test_read_only_customer_portal_routes(self):
+        self.assertEqual(resolve_skill("Show my My Requests").skill_id, "application_status")
+        self.assertEqual(resolve_skill("What pending actions do I have in My Requests?").skill_id, "my_requests_pending_actions")
+        self.assertEqual(resolve_skill("Which licenses need action or renewal?").skill_id, "license_renewal")
+
+    def test_application_payment_detail_is_read_only(self):
+        definition = next(item for item in DEFAULT_TOOL_DEFINITIONS if item["tool_name"] == "umc.application_payment_detail")
+        self.assertEqual(definition["http_method"], "GET")
+        self.assertEqual(definition["http_path"], "/api/payment-center/service-applications/{applicationId}/payment")
+        self.assertEqual(definition.get("side_effect", "read"), "read")
+        self.assertFalse(definition.get("confirmation_required", False))
+        self.assertEqual(
+            build_legacy_tool_request(
+                ["umc.applications", "umc.application_payment_detail"],
+                "show payment details for application 4503",
+            ),
+            ("umc.application_payment_detail", {"applicationId": 4503}),
+        )
+
     def test_existing_knowledge_and_tool_routes_remain_compatible(self):
         knowledge = resolve_skill("What documents are required for a filming permit?")
         self.assertEqual((knowledge.skill_id, knowledge.tool_name), ("license_application", "knowledge.search"))
