@@ -1,6 +1,25 @@
 const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, tools: [], toolsLoaded: false, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationId: null, auditItems: [], consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
 
+function createClientMessageId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function containsArabic(text) {
   return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/u.test(text);
 }
@@ -1480,7 +1499,7 @@ $("messageForm").addEventListener("submit", async (event) => {
     $("attachmentStatus").textContent = "WebSocket 尚未连接，请先点击“连接 WS”。";
     return;
   }
-  state.ws.send(JSON.stringify({ type: "message", conversationId: state.conversationId, content, attachment, clientMessageId: crypto.randomUUID() }));
+  state.ws.send(JSON.stringify({ type: "message", conversationId: state.conversationId, content, attachment, clientMessageId: createClientMessageId() }));
   $("message").value = "";
   if (attachment) $("attachmentStatus").textContent = `已发送附件：${attachment.fileName}`;
 });
