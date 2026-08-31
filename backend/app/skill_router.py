@@ -191,6 +191,29 @@ def recall_skill_candidates(
     return DomainRecall([selected_domain], candidates, {domain: round(score, 3) for domain, score in ranked})
 
 
+def add_keyword_skill_candidate(
+    recall: DomainRecall,
+    catalog: list[dict[str, Any]],
+    keyword_skill_id: object,
+) -> DomainRecall:
+    """Add the legacy resolver result as a published, LLM-selectable candidate.
+
+    The database domain recall remains the primary candidate source. This
+    compatibility anchor protects established intents while their Skill aliases
+    are being configured, and never selects a route by itself.
+    """
+
+    skill_id = str(keyword_skill_id or "").strip()
+    keyword_skill = next((item for item in catalog if item.get("skillId") == skill_id), None)
+    if not keyword_skill or any(item.get("skillId") == skill_id for item in recall.candidates):
+        return recall
+    domain = _skill_domain(keyword_skill)
+    domains = [*recall.domains]
+    if domain not in domains:
+        domains.append(domain)
+    return DomainRecall(domains, [*recall.candidates, keyword_skill], recall.scores)
+
+
 def configured_knowledge_fallback(catalog: list[dict[str, Any]], configured_skill_id: object) -> dict[str, Any] | None:
     """Return the published catalog entry selected as the global KB fallback."""
 

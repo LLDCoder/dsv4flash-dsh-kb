@@ -8,7 +8,7 @@ from app.skills import build_system_prompt, resolve_skill
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
-from app.skill_router import configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
+from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 
 
 class RegistryAndRoutingTests(unittest.TestCase):
@@ -138,6 +138,17 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(recall.domains, ["licenses_permits"])
         self.assertEqual([item["skillId"] for item in recall.candidates], ["license_permit_status", "license_renewal"])
         self.assertNotIn("application_status", [item["skillId"] for item in recall.candidates])
+
+    def test_legacy_keyword_skill_is_added_as_a_published_candidate(self):
+        catalog = [
+            {"skillId": "general_knowledge", "domain": "general", "aliases": ["help"], "positiveExamples": []},
+            {"skillId": "license_permit_status", "domain": "licenses_permits", "aliases": ["my license"], "positiveExamples": []},
+        ]
+        recall = recall_skill_candidates("Do I have expired license?", catalog)
+        self.assertEqual(recall.candidates, [])
+        merged = add_keyword_skill_candidate(recall, catalog, "license_permit_status")
+        self.assertEqual([item["skillId"] for item in merged.candidates], ["license_permit_status"])
+        self.assertEqual(merged.domains, ["licenses_permits"])
 
     def test_unmatched_question_has_no_domain_candidates(self):
         recall = recall_skill_candidates(

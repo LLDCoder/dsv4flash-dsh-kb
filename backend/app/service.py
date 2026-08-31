@@ -20,7 +20,7 @@ from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
 from .runtime import RuntimeManager
-from .skill_router import SkillCatalogCache, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
+from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 from .skills import (
     SkillRoute,
     build_flow_prompt,
@@ -207,6 +207,7 @@ class DSHService:
 
         catalog = await self.skill_catalog.load(db)
         recall = recall_skill_candidates(question, catalog, context)
+        recall = add_keyword_skill_candidate(recall, catalog, keyword_route.skill_id)
         candidates = recall.candidates
         candidate_ids = [str(item.get("skillId")) for item in candidates]
         metadata["candidateSkillIds"] = candidate_ids
