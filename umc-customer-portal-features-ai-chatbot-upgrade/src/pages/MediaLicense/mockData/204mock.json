@@ -1,7 +1,0 @@
-[
-    {
-        "stepNameEn": "Activity Details",
-        "stepNameAr": "تفاصيل النشاط",
-        "formData": "{\"form\":{\"labelCol\":6,\"wrapperCol\":12,\"layout\":\"vertical\"},\"schema\":{\"type\":\"object\",\"properties\":{\"BookTrading\":{\"name\":\"BookTrading\",\"x-decorator\":\"FormItem\",\"x-component\":\"BookTradingForm\",\"x-designable-id\":\"ybq0s0a4qjs\",\"x-index\":0}},\"x-designable-id\":\"omkptos3dyu\"},\"formValues\":{\"BookTrading\":{\"HowDidYouGetTheBook\":3,\"BookType\":\"paper\",\"BookTitle\":\"Publication Title\",\"AuthorName\":\"Author Name\",\"VersionNumber\":\"12\",\"PrintYear\":\"1990\",\"Language\":[1,2,3],\"SubjectCategory\":6,\"SubjectSubCategory\":57,\"UploadPurchaseInvoice\":\"uploads/2026/05/22/134f65d8-2438-4e74-8dd2-34742523b8b2.pdf\",\"NumberOfCopies\":\"1\"}},\"fileList\":[]}"
-    }
-]

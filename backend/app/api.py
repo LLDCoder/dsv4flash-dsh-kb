@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hmac
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import parse_qs
@@ -11,7 +12,7 @@ import httpx
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import delete, select
+from sqlalchemy import String, cast, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -25,6 +26,10 @@ from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key, is_system_default_tool, system_default_tool_definitions
 from .umc_auth import UMCAuthError
+
+# Uvicorn configures this logger at INFO for container output. Using it keeps
+# correlation records visible without changing the global logging policy.
+logger = logging.getLogger("uvicorn.error")
 
 
 def make_router(service: DSHService) -> APIRouter:
@@ -233,7 +238,15 @@ def make_router(service: DSHService) -> APIRouter:
         conversation events or returned by the configuration API.
         """
         try:
-            return await service.umc_auth.get_session(force_refresh=refresh)
+            session = await service.umc_auth.get_session(force_refresh=refresh)
+            token = session.get("token") if isinstance(session, dict) else None
+            logger.info(
+                "umc_session_issued request_id=%s token_ref=%s refresh=%s",
+                principal.request_id,
+                _token_reference(f"Bearer {token}") if isinstance(token, str) else None,
+                refresh,
+            )
+            return session
         except UMCAuthError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -262,46 +275,113 @@ def make_router(service: DSHService) -> APIRouter:
             raise HTTPException(status_code=status_code, detail=detail)
         return payload if isinstance(payload, (dict, list)) else {"data": payload}
 
+    def pagination_json(total: int, page: int, page_size: int) -> dict[str, int]:
+        return {
+            "total": total,
+            "page": page,
+            "pageSize": page_size,
+            "totalPages": max(1, (total + page_size - 1) // page_size),
+        }
+
+    async def paged_items(db: AsyncSession, query, *, page: int, page_size: int):
+        total = int((await db.execute(select(func.count()).select_from(query.order_by(None).subquery()))).scalar_one())
+        result = await db.execute(query.offset((page - 1) * page_size).limit(page_size))
+        return list(result.scalars().all()), total
+
+    def text_match(term: str | None, *fields):
+        value = (term or "").strip()
+        if not value:
+            return None
+        pattern = f"%{value}%"
+        return or_(*(field.ilike(pattern) for field in fields))
+
+    def session_event_category_filter(category: str | None):
+        normalized = (category or "").strip().lower()
+        if not normalized:
+            return None
+        if normalized == "llm":
+            return SessionEvent.event_type.like("llm.%")
+        if normalized == "conversation":
+            return or_(SessionEvent.event_type.like("user.%"), SessionEvent.event_type.like("assistant.%"))
+        if normalized == "dsh":
+            return SessionEvent.event_type.in_(("skill.route", "skill.route.shadow", "tool.call", "tool.result", "turn.started", "turn.completed", "runtime.error", "turn.cancelled"))
+        if normalized == "runtime":
+            return not_(or_(
+                SessionEvent.event_type.like("llm.%"),
+                SessionEvent.event_type.like("user.%"),
+                SessionEvent.event_type.like("assistant.%"),
+                SessionEvent.event_type.in_(("skill.route", "skill.route.shadow", "tool.call", "tool.result", "turn.started", "turn.completed", "runtime.error", "turn.cancelled")),
+            ))
+        return SessionEvent.event_type == normalized
+
     async def audit_conversation_list(
         db: AsyncSession,
         conversations: list[Conversation],
         *,
         is_admin: bool,
+        total: int,
+        page: int,
+        page_size: int,
     ) -> dict[str, object]:
+        conversation_ids = [conversation.conversation_id for conversation in conversations]
+        title_by_conversation: dict[str, str] = {}
+        if conversation_ids:
+            ranked_events = (
+                select(
+                    SessionEvent.conversation_id.label("conversation_id"),
+                    SessionEvent.event_json.label("event_json"),
+                    func.row_number().over(
+                        partition_by=SessionEvent.conversation_id,
+                        order_by=(SessionEvent.created_at.asc(), SessionEvent.id.asc()),
+                    ).label("row_number"),
+                )
+                .where(
+                    SessionEvent.conversation_id.in_(conversation_ids),
+                    SessionEvent.event_type == "user.message",
+                )
+                .subquery()
+            )
+            title_result = await db.execute(
+                select(ranked_events.c.conversation_id, ranked_events.c.event_json).where(ranked_events.c.row_number == 1)
+            )
+            title_by_conversation = {
+                str(conversation_id): str((event_json or {}).get("content", "")).strip()[:160]
+                for conversation_id, event_json in title_result.all()
+            }
         items: list[dict] = []
         for conversation in conversations:
-            events = await service.list_events(db, conversation, event_type="user.message")
-            title = ""
-            if events:
-                title = str(events[0].event_json.get("content", "")).strip()[:160]
-            item = {**service.conversation_json(conversation), "title": title}
+            item = {**service.conversation_json(conversation), "title": title_by_conversation.get(conversation.conversation_id, "")}
             if is_admin:
                 item["ownerUserId"] = conversation.user_id
                 item["ownerTenantId"] = conversation.tenant_id
             items.append(item)
-        return {"conversations": items, "scope": "admin" if is_admin else "owner"}
+        return {"conversations": items, "scope": "admin" if is_admin else "owner", **pagination_json(total, page, page_size)}
 
     async def audit_conversation_detail(
         db: AsyncSession,
         conversation: Conversation,
         *,
         category: str | None,
-        limit: int,
+        search: str | None,
+        page: int,
+        page_size: int,
         is_admin: bool,
         principal: Principal | None = None,
     ) -> dict[str, object]:
-        query = select(AuditRecord).where(
-            AuditRecord.conversation_id == conversation.conversation_id,
-        )
+        base_conditions = [AuditRecord.conversation_id == conversation.conversation_id]
         if not is_admin and principal:
-            query = query.where(
+            base_conditions.extend((
                 AuditRecord.tenant_id == principal.tenant_id,
                 AuditRecord.user_id == principal.user_id,
-            )
+            ))
+        has_audit_records = (await db.execute(select(AuditRecord.id).where(*base_conditions).limit(1))).scalar_one_or_none() is not None
+        query = select(AuditRecord).where(*base_conditions)
         if category:
             query = query.where(AuditRecord.category == category.strip().lower())
-        query = query.order_by(AuditRecord.created_at.asc(), AuditRecord.id.asc()).limit(limit)
-        result = await db.execute(query)
+        record_match = text_match(search, AuditRecord.record_type, cast(AuditRecord.payload, String))
+        if record_match is not None:
+            query = query.where(record_match)
+        query = query.order_by(AuditRecord.created_at.asc(), AuditRecord.id.asc())
 
         def record_json(record: AuditRecord) -> dict[str, object]:
             return {
@@ -314,26 +394,31 @@ def make_router(service: DSHService) -> APIRouter:
                 "createdAt": record.created_at.isoformat() if record.created_at else None,
             }
 
-        audit_records = result.scalars().all()
+        audit_records, total = await paged_items(db, query, page=page, page_size=page_size)
         items = [record_json(record) for record in audit_records]
         source = "audit_record"
         # Conversations created before chain-audit was enabled have no rows in
         # audit_record. Reuse their immutable session events so operators can
         # still inspect the historical dialogue and execution flow.
-        if not audit_records:
+        if not has_audit_records:
             event_query = select(SessionEvent).where(
                 SessionEvent.conversation_id == conversation.conversation_id,
-            ).order_by(SessionEvent.created_at.asc(), SessionEvent.id.asc())
+            )
             if not is_admin and principal:
                 event_query = event_query.where(
                     SessionEvent.tenant_id == principal.tenant_id,
                     SessionEvent.user_id == principal.user_id,
                 )
-            event_result = await db.execute(event_query)
-            for event in event_result.scalars().all():
+            event_category_filter = session_event_category_filter(category)
+            if event_category_filter is not None:
+                event_query = event_query.where(event_category_filter)
+            event_match = text_match(search, SessionEvent.event_type, cast(SessionEvent.event_json, String))
+            if event_match is not None:
+                event_query = event_query.where(event_match)
+            event_query = event_query.order_by(SessionEvent.created_at.asc(), SessionEvent.id.asc())
+            events, total = await paged_items(db, event_query, page=page, page_size=page_size)
+            for event in events:
                 event_category = service.audit_category(event.event_type)
-                if category and event_category != category.strip().lower():
-                    continue
                 payload = event.event_json or {}
                 items.append(
                     {
@@ -346,7 +431,6 @@ def make_router(service: DSHService) -> APIRouter:
                         "createdAt": event.created_at.isoformat() if event.created_at else None,
                     }
                 )
-            items = items[:limit]
             source = "session_event_history"
         conversation_json = service.conversation_json(conversation)
         if is_admin:
@@ -359,30 +443,65 @@ def make_router(service: DSHService) -> APIRouter:
             "conversationId": conversation.conversation_id,
             "items": items,
             "count": len(items),
-            "limit": limit,
             "category": category.strip().lower() if category else None,
+            "search": (search or "").strip() or None,
             "source": source,
             "scope": "admin" if is_admin else "owner",
+            **pagination_json(total, page, page_size),
         }
 
     @router.get("/conversations")
-    async def list_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        conversations, is_admin = await service.list_audit_conversations(db, principal)
-        return await audit_conversation_list(db, conversations, is_admin=is_admin)
+    async def list_conversations(
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        search: str | None = Query(default=None, max_length=160),
+        db: AsyncSession = Depends(get_db),
+        principal: Principal = Depends(get_principal),
+    ):
+        is_admin = service.can_view_all_audit(principal)
+        query = select(Conversation)
+        if not is_admin:
+            query = query.where(Conversation.tenant_id == principal.tenant_id, Conversation.user_id == principal.user_id)
+        conversation_match = text_match(search, Conversation.conversation_id, Conversation.user_id, Conversation.tenant_id)
+        if conversation_match is not None:
+            title_match = select(SessionEvent.id).where(
+                SessionEvent.conversation_id == Conversation.conversation_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(conversation_match, title_match))
+        query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
+        conversations, total = await paged_items(db, query, page=page, page_size=page_size)
+        return await audit_conversation_list(db, conversations, is_admin=is_admin, total=total, page=page, page_size=page_size)
 
     @router.get("/console/audit/conversations", tags=["Test console"])
     async def list_console_audit_conversations(
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        search: str | None = Query(default=None, max_length=160),
         db: AsyncSession = Depends(get_db),
         _: None = Depends(require_console_session),
     ):
-        result = await db.execute(select(Conversation).order_by(Conversation.last_activity_at.desc(), Conversation.id.desc()))
-        return await audit_conversation_list(db, list(result.scalars().all()), is_admin=True)
+        query = select(Conversation)
+        conversation_match = text_match(search, Conversation.conversation_id, Conversation.user_id, Conversation.tenant_id)
+        if conversation_match is not None:
+            title_match = select(SessionEvent.id).where(
+                SessionEvent.conversation_id == Conversation.conversation_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(conversation_match, title_match))
+        query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
+        conversations, total = await paged_items(db, query, page=page, page_size=page_size)
+        return await audit_conversation_list(db, conversations, is_admin=True, total=total, page=page, page_size=page_size)
 
     @router.get("/console/audit/conversations/{conversation_id}", tags=["Test console"])
     async def get_console_audit_conversation(
         conversation_id: str,
         category: str | None = Query(default=None),
-        limit: int = Query(default=500, ge=1, le=2000),
+        search: str | None = Query(default=None, max_length=160),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100, alias="pageSize"),
         db: AsyncSession = Depends(get_db),
         _: None = Depends(require_console_session),
     ):
@@ -394,7 +513,9 @@ def make_router(service: DSHService) -> APIRouter:
             db,
             conversation,
             category=category,
-            limit=limit,
+            search=search,
+            page=page,
+            page_size=page_size,
             is_admin=True,
         )
 
@@ -447,7 +568,9 @@ def make_router(service: DSHService) -> APIRouter:
     async def get_conversation_audit(
         conversation_id: str,
         category: str | None = Query(default=None),
-        limit: int = Query(default=500, ge=1, le=2000),
+        search: str | None = Query(default=None, max_length=160),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100, alias="pageSize"),
         db: AsyncSession = Depends(get_db),
         principal: Principal = Depends(get_principal),
     ):
@@ -462,7 +585,9 @@ def make_router(service: DSHService) -> APIRouter:
             db,
             conversation,
             category=category,
-            limit=limit,
+            search=search,
+            page=page,
+            page_size=page_size,
             is_admin=is_admin,
             principal=principal,
         )
@@ -576,12 +701,26 @@ def make_router(service: DSHService) -> APIRouter:
         return await run_test_cases(service, principal, list(payload.cases), payload.timeout_seconds)
 
     @router.get("/skills")
-    async def list_skills(scope: str | None = None, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    async def list_skills(
+        scope: str | None = None,
+        search: str | None = Query(default=None, max_length=160),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        db: AsyncSession = Depends(get_db),
+        principal: Principal = Depends(get_principal),
+    ):
         query = select(Skill).order_by(Skill.skill_id, Skill.version.desc())
         if scope:
             query = query.where(Skill.scope == scope)
-        result = await db.execute(query)
-        return {"items": [{"skillId": item.skill_id, "name": item.name, "version": item.version, "source": item.source, "status": item.status, "scope": item.scope, "enabled": item.enabled, "allowedTools": item.allowed_tools, "dependencies": item.dependencies, "domain": item.domain, "aliases": item.aliases, "positiveExamples": item.positive_examples, "negativeExamples": item.negative_examples, "workflow": item.workflow, "content": item.content, "updatedBy": item.updated_by} for item in result.scalars().all()]}
+        skill_match = text_match(search, Skill.skill_id, Skill.name, Skill.source, Skill.status, Skill.scope, Skill.domain, Skill.content, cast(Skill.aliases, String))
+        if skill_match is not None:
+            query = query.where(skill_match)
+        items, total = await paged_items(db, query, page=page, page_size=page_size)
+        return {
+            "items": [{"skillId": item.skill_id, "name": item.name, "version": item.version, "source": item.source, "status": item.status, "scope": item.scope, "enabled": item.enabled, "allowedTools": item.allowed_tools, "dependencies": item.dependencies, "domain": item.domain, "aliases": item.aliases, "positiveExamples": item.positive_examples, "negativeExamples": item.negative_examples, "workflow": item.workflow, "content": item.content, "updatedBy": item.updated_by} for item in items],
+            "search": (search or "").strip() or None,
+            **pagination_json(total, page, page_size),
+        }
 
     def tool_json(item: Tool) -> dict[str, Any]:
         return {
@@ -655,15 +794,39 @@ def make_router(service: DSHService) -> APIRouter:
         return document
 
     @router.get("/tools")
-    async def list_tools(db: AsyncSession = Depends(get_db), _: None = Depends(require_console_session)):
-        result = await db.execute(
+    async def list_tools(
+        search: str | None = Query(default=None, max_length=160),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        db: AsyncSession = Depends(get_db),
+        _: None = Depends(require_console_session),
+    ):
+        term = (search or "").strip().lower()
+        system_items = [system_tool_json(item) for item in system_default_tool_definitions(service.settings)]
+        if term:
+            system_items = [
+                item for item in system_items
+                if term in " ".join(str(item.get(key, "")) for key in ("toolName", "displayName", "description", "httpMethod", "httpPath", "operationId")).lower()
+            ]
+        system_items.sort(key=lambda item: str(item.get("toolName", "")))
+        query = (
             select(Tool)
             .where(~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES))
             .order_by(Tool.tool_name, Tool.version.desc())
         )
-        items = [system_tool_json(item) for item in system_default_tool_definitions(service.settings)]
-        items.extend(tool_json(item) for item in result.scalars().all())
-        return {"items": items}
+        tool_match = text_match(search, Tool.tool_name, Tool.display_name, Tool.description, Tool.operation_id, Tool.http_method, Tool.http_path)
+        if tool_match is not None:
+            query = query.where(tool_match)
+        business_total = int((await db.execute(select(func.count()).select_from(query.order_by(None).subquery()))).scalar_one())
+        offset = (page - 1) * page_size
+        items = system_items[offset:offset + page_size]
+        remaining = page_size - len(items)
+        if remaining:
+            business_offset = max(0, offset - len(system_items))
+            result = await db.execute(query.offset(business_offset).limit(remaining))
+            items.extend(tool_json(item) for item in result.scalars().all())
+        total = len(system_items) + business_total
+        return {"items": items, "search": (search or "").strip() or None, **pagination_json(total, page, page_size)}
 
     @router.get("/tools/swagger")
     async def inspect_swagger(swagger_url: str = Query(alias="swaggerUrl"), _: None = Depends(require_console_session)):
@@ -801,7 +964,7 @@ def make_router(service: DSHService) -> APIRouter:
         principal = Principal(
             user_id=user_id or "",
             tenant_id=websocket.headers.get("x-tenant-id") or query_tenant_id or "default",
-            request_id=websocket.headers.get("x-request-id", "ws"),
+            request_id=websocket.headers.get("x-request-id") or str(uuid4()),
             token_ref=None,
             umc_token=_bearer_token(websocket.headers.get("authorization")),
         )
@@ -876,6 +1039,11 @@ def make_router(service: DSHService) -> APIRouter:
                         request_id=principal.request_id,
                         token_ref=_token_reference(f"Bearer {token}"),
                         umc_token=token,
+                    )
+                    logger.info(
+                        "umc_ws_authenticated request_id=%s token_ref=%s",
+                        principal.request_id,
+                        principal.token_ref,
                     )
                     await send({"type": "authenticated", "token": "umctoken"})
                 elif message.type == "subscribe" or message.type == "resume":

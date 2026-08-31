@@ -1,4 +1,0 @@
-interface:
-  display_name: "Modal Shell Scrollbar"
-  short_description: "Standardize centered AntD modal shells with SimpleBar scrolling."
-  default_prompt: "Use this skill when adding or fixing centered AntD modal shells, max-height behavior, fixed footers, or SimpleBar scrolling in this UMC customer portal."

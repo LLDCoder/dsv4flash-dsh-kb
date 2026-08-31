@@ -726,6 +726,10 @@ class DSHService:
                         tool_name, arguments = tool_request
                         arguments = dict(arguments)
                         arguments["query"] = build_knowledge_query(route, str(arguments.get("query", latest_content)))
+                        if not arguments.get("folder_id") and self.settings.knowledge_default_folder_id:
+                            arguments["folder_id"] = self.settings.knowledge_default_folder_id
+                        if "top_k" not in arguments:
+                            arguments["top_k"] = self.settings.knowledge_top_k
                         tool_request = (tool_name, arguments)
                     await self.append_event(
                         db,

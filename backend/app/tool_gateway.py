@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -8,6 +9,8 @@ from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES
+
+logger = logging.getLogger("uvicorn.error")
 
 
 class ToolGateway:
@@ -57,9 +60,37 @@ class ToolGateway:
         if not isinstance(method, str) or not isinstance(path, str) or not path.startswith("/api/"):
             return {"ok": False, "code": "tool_not_executable", "toolName": tool_name}
         try:
-            result = await self.platform.invoke_swagger_tool(method, path, arguments, umc_token=principal.umc_token)
+            logger.info(
+                "umc_tool_forward request_id=%s token_ref=%s tool=%s method=%s path=%s",
+                principal.request_id,
+                principal.token_ref,
+                tool_name,
+                method,
+                path,
+            )
+            result = await self.platform.invoke_swagger_tool(
+                method,
+                path,
+                arguments,
+                umc_token=principal.umc_token,
+                request_id=principal.request_id,
+            )
+            logger.info(
+                "umc_tool_result request_id=%s token_ref=%s tool=%s status=%s",
+                principal.request_id,
+                principal.token_ref,
+                tool_name,
+                200,
+            )
             return {"ok": True, "code": "ok", "toolName": tool_name, "result": result}
         except httpx.HTTPStatusError as exc:
+            logger.info(
+                "umc_tool_result request_id=%s token_ref=%s tool=%s status=%s",
+                principal.request_id,
+                principal.token_ref,
+                tool_name,
+                exc.response.status_code,
+            )
             code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"
             return {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}
         except httpx.HTTPError as exc:
@@ -74,6 +105,12 @@ class ToolGateway:
         allowed_tools: list[str] | None = None,
         tool_definition: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        logger.info(
+            "tool_invocation request_id=%s token_ref=%s tool=%s",
+            principal.request_id,
+            principal.token_ref,
+            tool_name,
+        )
         if allowed_tools is not None and tool_name not in allowed_tools:
             return {"ok": False, "code": "tool_not_allowed_for_skill", "toolName": tool_name}
         if tool_definition and tool_name not in SYSTEM_DEFAULT_TOOL_NAMES and tool_definition.get("source") in {"swagger", "ops"}:
@@ -130,7 +167,16 @@ class ToolGateway:
                         return {"ok": False, "code": "test_draft_required", "toolName": tool_name}
                     if parameters.get("type") == 2 and not parameters.get("applicationId"):
                         return {"ok": False, "code": "application_id_required", "toolName": tool_name}
-                    return {"ok": True, "code": "ok", "toolName": tool_name, "result": await self.platform.add_application(parameters, umc_token=principal.umc_token)}
+                    return {
+                        "ok": True,
+                        "code": "ok",
+                        "toolName": tool_name,
+                        "result": await self.platform.add_application(
+                            parameters,
+                            umc_token=principal.umc_token,
+                            request_id=principal.request_id,
+                        ),
+                    }
                 except httpx.HTTPStatusError as exc:
                     code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"
                     return {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}

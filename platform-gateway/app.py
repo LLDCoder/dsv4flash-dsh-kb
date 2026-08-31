@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import logging
 import os
 import re
 from typing import Any
@@ -15,6 +17,9 @@ UPSTREAM_BASE_URL = os.getenv(
 CUSTOMER_BASE_URL = os.getenv("UMC_CUSTOMER_BASE_URL", "https://umc-customerportal.sol.daypop.ai").rstrip("/")
 TIMEOUT_SECONDS = float(os.getenv("PLATFORM_TIMEOUT_SECONDS", "30"))
 RETRY_ATTEMPTS = max(1, int(os.getenv("PLATFORM_RETRY_ATTEMPTS", "2")))
+
+# Uvicorn configures this logger at INFO for container output.
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="DSH Platform Swagger Gateway", version="0.1.0")
 
@@ -62,8 +67,28 @@ async def _request(method: str, path: str, *, json: dict[str, Any] | None = None
         raise HTTPException(status_code=502, detail={"code": "platform_invalid_upstream_response"}) from exc
 
 
-async def _customer_request(method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None, authorization: str | None = None) -> Any:
+def _token_ref(authorization: str | None) -> str | None:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization[7:].strip()
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token else None
+
+
+def _trace_id(request_id: str | None) -> str:
+    return request_id.strip()[:128] if request_id and request_id.strip() else "-"
+
+
+async def _customer_request(method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None, authorization: str | None = None, request_id: str | None = None) -> Any:
     forwarded = _require_umc_token(authorization)
+    trace_id = _trace_id(request_id)
+    token_ref = _token_ref(forwarded)
+    logger.info(
+        "customer_forward request_id=%s token_ref=%s method=%s path=%s",
+        trace_id,
+        token_ref,
+        method,
+        path,
+    )
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             response = await client.request(
@@ -73,6 +98,14 @@ async def _customer_request(method: str, path: str, *, json: dict[str, Any] | No
                 params=params,
                 headers={"Authorization": forwarded, "Content-Type": "application/json"},
             )
+        logger.info(
+            "customer_response request_id=%s token_ref=%s method=%s path=%s status=%s",
+            trace_id,
+            token_ref,
+            method,
+            path,
+            response.status_code,
+        )
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as exc:
@@ -127,18 +160,18 @@ async def applications_page(request: ApplicationPageRequest, authorization: str 
 
 
 @app.post("/licenses-permits/query")
-async def licenses_permits_query(payload: dict[str, Any], authorization: str | None = Header(default=None)) -> Any:
-    return await _customer_request("POST", "/api/licenses-permits/query", json=payload, authorization=authorization)
+async def licenses_permits_query(payload: dict[str, Any], authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
+    return await _customer_request("POST", "/api/licenses-permits/query", json=payload, authorization=authorization, request_id=x_request_id)
 
 
 @app.get("/licenses/statistics")
-async def licenses_statistics(authorization: str | None = Header(default=None)) -> Any:
-    return await _customer_request("GET", "/api/License/statistics", authorization=authorization)
+async def licenses_statistics(authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
+    return await _customer_request("GET", "/api/License/statistics", authorization=authorization, request_id=x_request_id)
 
 
 @app.get("/licenses-permits/action-needed")
-async def licenses_action_needed(authorization: str | None = Header(default=None)) -> Any:
-    return await _customer_request("GET", "/api/licenses-permits/action-needed", authorization=authorization)
+async def licenses_action_needed(authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
+    return await _customer_request("GET", "/api/licenses-permits/action-needed", authorization=authorization, request_id=x_request_id)
 
 
 class SwaggerProxyRequest(BaseModel):
@@ -148,7 +181,7 @@ class SwaggerProxyRequest(BaseModel):
 
 
 @app.post("/swagger/proxy")
-async def swagger_proxy(request: SwaggerProxyRequest, authorization: str | None = Header(default=None)) -> Any:
+async def swagger_proxy(request: SwaggerProxyRequest, authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
     """Proxy a published, validated customer operation without per-tool routes."""
 
     method = request.method.strip().upper()
@@ -163,8 +196,8 @@ async def swagger_proxy(request: SwaggerProxyRequest, authorization: str | None 
             raise HTTPException(status_code=422, detail={"code": "missing_path_parameter", "parameter": parameter_name})
         path = path.replace("{" + parameter_name + "}", str(parameters.pop(parameter_name)))
     if method in {"GET", "DELETE"}:
-        return await _customer_request(method, path, params=parameters, authorization=authorization)
-    return await _customer_request(method, path, json=parameters, authorization=authorization)
+        return await _customer_request(method, path, params=parameters, authorization=authorization, request_id=x_request_id)
+    return await _customer_request(method, path, json=parameters, authorization=authorization, request_id=x_request_id)
 
 
 class ApplicationDetailRequest(BaseModel):

@@ -1,5 +1,44 @@
-const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, tools: [], toolsLoaded: false, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationId: null, auditItems: [], consoleAuthenticated: false };
+const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
+
+function debounce(callback, delay = 250) {
+  let timer = null;
+  return (...args) => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => callback(...args), delay);
+  };
+}
+
+function renderPager(id, { page, pageSize, total, onPage }) {
+  const container = $(id);
+  if (!container) return;
+  container.replaceChildren();
+  if (total <= pageSize) {
+    container.hidden = true;
+    return;
+  }
+  container.hidden = false;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const previous = document.createElement("button");
+  previous.type = "button";
+  previous.className = "list-pager-button";
+  previous.textContent = "<";
+  previous.title = "上一页";
+  previous.setAttribute("aria-label", "上一页");
+  previous.disabled = page <= 1;
+  previous.addEventListener("click", () => onPage(page - 1));
+  const label = document.createElement("span");
+  label.textContent = `第 ${page} / ${totalPages} 页 · ${total} 条`;
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "list-pager-button";
+  next.textContent = ">";
+  next.title = "下一页";
+  next.setAttribute("aria-label", "下一页");
+  next.disabled = page >= totalPages;
+  next.addEventListener("click", () => onPage(page + 1));
+  container.append(previous, label, next);
+}
 
 function createClientMessageId() {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -523,11 +562,18 @@ function renderSkills(items) {
   });
 }
 
-async function loadSkills() {
+async function loadSkills(page = state.skillPage) {
+  state.skillPage = page;
   try {
-    const data = await api("/api/v1/skills?scope=system");
+    const params = new URLSearchParams({ scope: "system", page: String(page), pageSize: String(state.skillPageSize) });
+    const search = $("skillsSearchInput")?.value.trim();
+    if (search) params.set("search", search);
+    const data = await api(`/api/v1/skills?${params}`);
+    state.skillPage = data.page || page;
+    state.skillTotal = data.total || 0;
     renderSkills(data.items || []);
-    $("skillsStatus").textContent = `已读取 ${state.skills.length} 个 system Skill；只有 PUBLISHED 且启用的版本会注入对应路由。`;
+    renderPager("skillsPager", { page: state.skillPage, pageSize: data.pageSize || state.skillPageSize, total: state.skillTotal, onPage: loadSkills });
+    $("skillsStatus").textContent = `已读取第 ${state.skillPage} 页 ${state.skills.length} / ${state.skillTotal} 个 system Skill；只有 PUBLISHED 且启用的版本会注入对应路由。`;
   } catch (error) {
     $("skillsStatus").textContent = `读取 Skills 失败：${error.message}`;
   }
@@ -573,11 +619,18 @@ function renderTools(items) {
   });
 }
 
-async function loadTools() {
+async function loadTools(page = state.toolPage) {
+  state.toolPage = page;
   try {
-    const data = await api("/api/v1/tools");
+    const params = new URLSearchParams({ page: String(page), pageSize: String(state.toolPageSize) });
+    const search = $("toolsSearchInput")?.value.trim();
+    if (search) params.set("search", search);
+    const data = await api(`/api/v1/tools?${params}`);
+    state.toolPage = data.page || page;
+    state.toolTotal = data.total || 0;
     renderTools(data.items || []);
-    $("toolsStatus").textContent = `已读取 ${state.tools.length} 个 Tool；接口方法和路径不能重复注册。`;
+    renderPager("toolsPager", { page: state.toolPage, pageSize: data.pageSize || state.toolPageSize, total: state.toolTotal, onPage: loadTools });
+    $("toolsStatus").textContent = `已读取第 ${state.toolPage} 页 ${state.tools.length} / ${state.toolTotal} 个 Tool；接口方法和路径不能重复注册。`;
   } catch (error) {
     $("toolsStatus").textContent = `读取 Tools 失败：${error.message}`;
   }
@@ -911,7 +964,7 @@ function renderAuditConversationList() {
   const list = $("auditConversationList");
   list.replaceChildren();
   const items = state.auditConversations;
-  $("auditConversationCount").textContent = items.length ? `${items.length} 个` : "";
+  $("auditConversationCount").textContent = `${state.auditConversationTotal} 个`;
   if (!items.length) {
     list.innerHTML = '<div class="empty">暂无可查看的对话。</div>';
     return;
@@ -1025,47 +1078,107 @@ function renderAuditRecords(items) {
   });
 }
 
-async function loadAuditDetail(conversationId) {
+function renderAuditRecordLoadState() {
+  const node = $("auditRecordLoadState");
+  if (!node) return;
+  if (!state.auditConversationId || !state.auditRecordTotal) {
+    node.textContent = "";
+    return;
+  }
+  node.textContent = state.auditRecordLoading
+    ? "正在加载更多记录…"
+    : `已加载 ${state.auditItems.length} / ${state.auditRecordTotal} 条记录`;
+}
+
+async function loadAuditDetail(conversationId, { append = false } = {}) {
   if (!conversationId) {
+    state.auditRecordRequestId += 1;
+    state.auditRecordLoading = false;
+    state.auditRecordHasMore = false;
+    state.auditRecordTotal = 0;
+    state.auditItems = [];
     renderAuditOverview(null);
     renderAuditRecords([]);
+    $("auditRecordLoadState").textContent = "";
     $("auditStatus").textContent = "尚未选择会话。";
     return;
   }
+  const isSameConversation = state.auditConversationId === conversationId;
+  if (state.auditRecordLoading && (append || isSameConversation)) return;
+  const page = append && isSameConversation ? state.auditRecordPage + 1 : 1;
+  if (append && (!state.auditRecordHasMore || !isSameConversation)) return;
   state.auditConversationId = conversationId;
+  state.auditRecordPage = page;
+  state.auditRecordLoading = true;
+  const requestId = ++state.auditRecordRequestId;
+  if (!append) {
+    state.auditItems = [];
+    state.auditRecordTotal = 0;
+    state.auditRecordHasMore = false;
+    renderAuditRecords([]);
+  }
   renderAuditConversationList();
-  $("auditStatus").textContent = "正在读取审计…";
+  renderAuditRecordLoadState();
+  $("auditStatus").textContent = append ? "正在加载更多审计记录…" : "正在读取审计…";
   const category = $("auditCategoryFilter").value;
-  const query = category ? `?category=${encodeURIComponent(category)}` : "";
+  const params = new URLSearchParams({ page: String(page), pageSize: String(state.auditRecordPageSize) });
+  if (category) params.set("category", category);
+  const search = $("auditRecordSearchInput")?.value.trim();
+  if (search) params.set("search", search);
   try {
-    const data = await consoleApi(`/api/v1/console/audit/conversations/${encodeURIComponent(conversationId)}${query}`);
+    const data = await consoleApi(`/api/v1/console/audit/conversations/${encodeURIComponent(conversationId)}?${params}`);
+    if (requestId !== state.auditRecordRequestId) return;
     state.auditScope = data.scope || state.auditScope || "owner";
     const scopeNode = $("auditScope");
     if (scopeNode) scopeNode.textContent = state.auditScope === "admin" ? "管理员范围：全部账号 / 租户" : "当前账号范围";
     renderAuditConversationList();
-    state.auditItems = data.items || [];
+    const receivedItems = data.items || [];
+    state.auditItems = append ? [...state.auditItems, ...receivedItems] : receivedItems;
+    state.auditRecordPage = data.page || page;
+    state.auditRecordTotal = data.total || 0;
+    state.auditRecordHasMore = state.auditItems.length < state.auditRecordTotal;
     renderAuditOverview(data.conversation);
     renderAuditRecords(state.auditItems);
     const sourceNote = data.source === "session_event_history" ? "（该会话使用历史事件兼容展示）" : "";
-    $("auditStatus").textContent = `已读取 ${state.auditItems.length} 条记录${data.limit && state.auditItems.length >= data.limit ? "（已达到显示上限）" : ""}${sourceNote}。`;
+    $("auditStatus").textContent = `已加载 ${state.auditItems.length} / ${state.auditRecordTotal} 条记录${sourceNote}。`;
   } catch (error) {
-    state.auditItems = [];
-    renderAuditOverview(null);
-    renderAuditRecords([]);
+    if (requestId !== state.auditRecordRequestId) return;
+    if (!append) {
+      state.auditItems = [];
+      renderAuditOverview(null);
+      renderAuditRecords([]);
+    }
     $("auditStatus").textContent = `读取审计失败：${error.message}`;
+  } finally {
+    if (requestId === state.auditRecordRequestId) {
+      state.auditRecordLoading = false;
+      renderAuditRecordLoadState();
+    }
   }
 }
 
-async function loadAuditConversations() {
+async function loadAuditConversations(page = state.auditConversationPage) {
+  state.auditConversationPage = page;
   $("auditStatus").textContent = "正在读取会话列表…";
   try {
-    const data = await consoleApi("/api/v1/console/audit/conversations");
+    const params = new URLSearchParams({ page: String(page), pageSize: String(state.auditConversationPageSize) });
+    const search = $("auditConversationSearchInput")?.value.trim();
+    if (search) params.set("search", search);
+    const data = await consoleApi(`/api/v1/console/audit/conversations?${params}`);
     state.auditConversations = data.conversations || data.items || [];
+    state.auditConversationPage = data.page || page;
+    state.auditConversationTotal = data.total || 0;
     state.auditScope = data.scope || "owner";
     state.auditLoaded = true;
     const scopeNode = $("auditScope");
     if (scopeNode) scopeNode.textContent = state.auditScope === "admin" ? "管理员范围：全部账号 / 租户" : "当前账号范围";
     renderAuditConversationList();
+    renderPager("auditConversationPager", {
+      page: state.auditConversationPage,
+      pageSize: data.pageSize || state.auditConversationPageSize,
+      total: state.auditConversationTotal,
+      onPage: loadAuditConversations,
+    });
     const current = state.auditConversations.find((item) => item.conversationId === state.auditConversationId)
       || state.auditConversations.find((item) => item.conversationId === state.conversationId)
       || state.auditConversations[0];
@@ -1073,6 +1186,7 @@ async function loadAuditConversations() {
   } catch (error) {
     state.auditLoaded = false;
     $("auditConversationList").innerHTML = `<div class="empty">读取会话失败：${error.message}</div>`;
+    $("auditConversationPager").replaceChildren();
     $("auditStatus").textContent = "无法读取会话列表。";
   }
 }
@@ -1420,8 +1534,10 @@ $("reloadConfigBtn").addEventListener("click", loadConfig);
 $("saveConfigBtn").addEventListener("click", saveConfig);
 $("newSkillBtn").addEventListener("click", () => { void openNewSkillEditor(); });
 $("reloadSkillsBtn").addEventListener("click", loadSkills);
+$("skillsSearchInput").addEventListener("input", debounce(() => { void loadSkills(1); }));
 $("newToolBtn").addEventListener("click", openSwaggerImporter);
 $("reloadToolsBtn").addEventListener("click", loadTools);
+$("toolsSearchInput").addEventListener("input", debounce(() => { void loadTools(1); }));
 $("inspectSwaggerBtn").addEventListener("click", inspectSwagger);
 $("swaggerImportForm").addEventListener("submit", importSelectedSwaggerTools);
 $("cancelSwaggerBtn").addEventListener("click", closeSwaggerImporter);
@@ -1434,10 +1550,19 @@ $("swaggerOperationsTable").addEventListener("change", (event) => {
   if (event.target.matches("input[data-operation-id]")) updateSwaggerSelectionState();
 });
 $("reloadAuditBtn").addEventListener("click", loadAuditConversations);
+$("auditConversationSearchInput").addEventListener("input", debounce(() => { void loadAuditConversations(1); }));
+$("auditRecordSearchInput").addEventListener("input", debounce(() => { void loadAuditDetail(state.auditConversationId); }));
 $("auditCategoryFilter").addEventListener("change", () => loadAuditDetail(state.auditConversationId));
 $("auditConversationList").addEventListener("click", (event) => {
   const button = event.target.closest("[data-conversation-id]");
   if (button) void loadAuditDetail(button.dataset.conversationId);
+});
+$("auditRecordList").addEventListener("scroll", (event) => {
+  const list = event.currentTarget;
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 160;
+  if (nearBottom && state.auditRecordHasMore && !state.auditRecordLoading) {
+    void loadAuditDetail(state.auditConversationId, { append: true });
+  }
 });
 $("skillsTable").addEventListener("click", (event) => {
   const button = event.target.closest("[data-action=edit-skill]");

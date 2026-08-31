@@ -18,9 +18,11 @@ class RegistryAndRoutingTests(unittest.TestCase):
     def test_license_intents_are_separate_from_application_status(self):
         self.assertEqual(resolve_skill("How many license do I have?").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("What's my license status?").skill_id, "license_permit_status")
+        self.assertEqual(resolve_skill("How about my Social Media Advertiser Permit?").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("Which licenses are expiring?").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("Please show my application status").skill_id, "application_status")
         self.assertEqual(resolve_skill("How do I renew my license?").skill_id, "license_renewal")
+        self.assertEqual(resolve_skill("Can I modify my Media License?").skill_id, "license_permit_modification_knowledge")
         self.assertEqual(resolve_skill("Do I have any applications waiting for payment?").skill_id, "application_payment")
 
     def test_read_only_customer_portal_routes(self):
@@ -44,11 +46,24 @@ class RegistryAndRoutingTests(unittest.TestCase):
 
     def test_existing_knowledge_and_tool_routes_remain_compatible(self):
         knowledge = resolve_skill("What documents are required for a filming permit?")
-        self.assertEqual((knowledge.skill_id, knowledge.tool_name), ("license_application", "knowledge.search"))
+        self.assertEqual((knowledge.skill_id, knowledge.tool_name), ("license_application_knowledge", "knowledge.search"))
+        application = resolve_skill("How do I apply for a Social Media Advertiser Permit?")
+        self.assertEqual((application.skill_id, application.tool_name), ("license_application_knowledge", "knowledge.search"))
         isbn = resolve_skill("look up this ISBN 9781302000011")
         self.assertEqual((isbn.skill_id, isbn.tool_name), ("umc_book_by_isbn", None))
         detail = resolve_skill("show application detail 3124")
         self.assertEqual((detail.skill_id, detail.tool_name), ("umc_application_detail", None))
+
+    def test_modification_knowledge_workflow_separates_live_and_general_questions(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "license_permit_modification_knowledge")
+        current = build_configured_tool_request(skill["workflow"], skill["allowed_tools"], "Can I modify this Media License?", [], intent_id="current_document")
+        general = build_configured_tool_request(skill["workflow"], skill["allowed_tools"], "What documents are required to modify a media license?", [], intent_id="general_guidance")
+        keyword_current = build_configured_tool_request(skill["workflow"], skill["allowed_tools"], "Can I modify my Media License?", [])
+        self.assertEqual(current[0], "umc.licenses.list")
+        self.assertEqual(general, ("knowledge.search", {}))
+        self.assertEqual(keyword_current[0], "umc.licenses.list")
 
     def test_swagger_operations_have_stable_dedup_key(self):
         document = {
@@ -112,6 +127,10 @@ class RegistryAndRoutingTests(unittest.TestCase):
         skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "permit_download")
         self.assertEqual(skill["allowed_tools"], [])
         self.assertEqual(build_configured_tool_request(skill["workflow"], skill["allowed_tools"], "Download license 7364616", []), None)
+        self.assertIn("requires an Access Code to open", skill["content"])
+        self.assertIn("must not download or open the file", skill["content"])
+        route = resolve_skill("I want to download my issued media permit")
+        self.assertEqual((route.skill_id, route.category, route.mode, route.fields, route.confirmation_required), ("permit_download", "data_query", "answer", (), False))
 
     def test_configured_workflow_selects_a_prior_list_item(self):
         class Event:
@@ -320,8 +339,8 @@ class RegistryAndRoutingTests(unittest.TestCase):
                 return {"query": query, "folder_id": folder_id, "top_k": top_k}
 
         class Platform:
-            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None):
-                return {"method": method, "path": path, "parameters": parameters, "token": umc_token}
+            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None, request_id=None):
+                return {"method": method, "path": path, "parameters": parameters, "token": umc_token, "request_id": request_id}
 
         principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", token_ref="ref", umc_token="token")
         gateway = ToolGateway(None, Knowledge(), Platform())
@@ -346,6 +365,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         knowledge, licenses = __import__("asyncio").run(run())
         self.assertEqual(knowledge["result"]["folder_id"], "kb")
         self.assertEqual(licenses["result"]["path"], "/api/License/statistics")
+        self.assertEqual(licenses["result"]["request_id"], "r1")
 
     def test_registry_execution_definition_contains_gateway_fields(self):
         definition = next(item for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS if item["tool_name"] == "umc.licenses.statistics")

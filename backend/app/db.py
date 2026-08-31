@@ -25,6 +25,7 @@ class Conversation(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "user_id", "conversation_id", name="uq_conversation_owner"),
         Index("ix_conversation_owner", "tenant_id", "user_id", "conversation_id"),
+        Index("ix_conversation_audit_order", "last_activity_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -49,6 +50,7 @@ class SessionEvent(Base):
         UniqueConstraint("conversation_id", "seq", name="uq_event_sequence"),
         Index("ix_event_conversation_seq", "conversation_id", "seq"),
         Index("ix_event_owner", "tenant_id", "user_id", "conversation_id"),
+        Index("ix_event_conversation_created", "conversation_id", "created_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -69,6 +71,7 @@ class AuditRecord(Base):
     __table_args__ = (
         Index("ix_audit_created_at", "created_at"),
         Index("ix_audit_conversation_created", "conversation_id", "created_at"),
+        Index("ix_audit_conversation_category_created", "conversation_id", "category", "created_at", "id"),
         Index("ix_audit_request", "request_id"),
         Index("ix_audit_runtime", "runtime_id"),
     )

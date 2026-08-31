@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH UMC 测试控制台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-console1" />
+    <link rel="stylesheet" href="/styles.css?v=20260901-console2" />
   </head>
   <body>
     <section id="consoleGate" class="console-gate">
@@ -22,7 +22,7 @@
         <div>
           <p class="eyebrow">DSH · UMC EXTERNAL SERVICE</p>
           <h1>测试控制台</h1>
-          <p class="muted">对话、运行参数、知识库三路检索和英文/阿语业务用例集中验证；UMC Portal 由后端环境开关选择，登录与附件接口自动使用对应地址。</p>
+          <p class="muted console-summary">对话验证、运行配置、业务用例与执行审计。</p>
         </div>
         <div class="console-header-actions"><span id="connection" class="pill offline">未连接</span><button id="consoleLogoutBtn" class="secondary" type="button">退出</button></div>
       </header>
@@ -93,12 +93,12 @@
       </section>
 
       <section id="skillPanel" class="tab-panel">
-        <section class="card panel-head">
-          <div>
-            <h2>Skills 配置</h2>
-            <p class="muted">以列表查看 DSH 路由 Skills；可新增 Skill，或点击“编辑”后在弹窗中修改业务域、路由别名、正反向示例、Tool、依赖条件和行为指令。</p>
+        <section class="list-command-bar" aria-label="Skills 配置">
+          <div class="panel-actions">
+            <label class="list-search list-search-primary"><span class="sr-only">搜索 Skills</span><input id="skillsSearchInput" type="search" placeholder="搜索名称、ID、业务域或内容" autocomplete="off" /></label>
+            <button id="newSkillBtn" class="compact-action" type="button" title="新增 Skill">新增</button>
+            <button id="reloadSkillsBtn" class="secondary compact-action" type="button" title="重新读取 Skills">刷新</button>
           </div>
-          <div class="panel-actions"><button id="newSkillBtn">新增 Skill</button><button id="reloadSkillsBtn" class="secondary">重新读取</button></div>
         </section>
         <section id="skillsList" class="skill-list card">
           <div class="table-scroll">
@@ -108,42 +108,39 @@
             </table>
           </div>
         </section>
-        <div id="skillsStatus" class="notice"></div>
+        <div class="list-footer"><p id="skillsStatus" class="list-status" role="status"></p><div id="skillsPager" class="list-pager" aria-label="Skills 分页"></div></div>
       </section>
 
       <section id="toolPanel" class="tab-panel">
-        <section class="card panel-head">
-          <div>
-            <h2>Tools 配置</h2>
-            <p class="muted">管理已注册的模型 Tool；新增时从 OpenAPI/Swagger 选择接口。相同 HTTP 方法和路径只能注册一次。</p>
+        <section class="list-command-bar" aria-label="Tools 配置">
+          <div class="panel-actions">
+            <label class="list-search list-search-primary"><span class="sr-only">搜索 Tools</span><input id="toolsSearchInput" type="search" placeholder="搜索名称、描述或接口" autocomplete="off" /></label>
+            <button id="newToolBtn" class="compact-action" type="button" title="新增 Tool">新增</button>
+            <button id="reloadToolsBtn" class="secondary compact-action" type="button" title="重新读取 Tools">刷新</button>
           </div>
-          <div class="panel-actions"><button id="newToolBtn">新增 Tool</button><button id="reloadToolsBtn" class="secondary">重新读取</button></div>
         </section>
-        <div id="toolsStatus" class="notice"></div>
         <section class="card table-card"><div class="table-scroll"><table id="toolsTable"><thead><tr><th>类型</th><th>Tool</th><th>HTTP 接口</th><th>副作用</th><th>状态</th><th>操作</th></tr></thead><tbody><tr><td colspan="6" class="empty">切换到本页后读取 Tools…</td></tr></tbody></table></div></section>
+        <div class="list-footer"><p id="toolsStatus" class="list-status" role="status"></p><div id="toolsPager" class="list-pager" aria-label="Tools 分页"></div></div>
       </section>
 
       <section id="auditPanel" class="tab-panel">
-        <section class="card panel-head">
-          <div>
-            <h2>对话审计</h2>
-            <p class="muted">按会话查看用户问题、助手回答、Skill 路由、Tool 调用、LLM 请求/思考和执行结果。凭据字段已在后端脱敏。</p>
-          </div>
-          <div class="panel-actions"><button id="reloadAuditBtn" class="secondary">刷新会话</button></div>
-        </section>
         <section class="audit-layout">
-          <aside class="audit-conversations card">
-            <div class="audit-list-head"><h3>会话列表</h3><div class="audit-list-meta"><span id="auditScope" class="muted">当前账号范围</span><span id="auditConversationCount" class="muted"></span></div></div>
-            <div id="auditConversationList" class="audit-conversation-list"><div class="empty">切换到本页后读取会话…</div></div>
-          </aside>
+          <div class="audit-conversations-column">
+            <aside class="audit-conversations card">
+              <div class="audit-list-head"><div class="audit-list-title"><h3>会话</h3><label class="list-search audit-search"><span class="sr-only">搜索会话</span><input id="auditConversationSearchInput" type="search" placeholder="搜索问题、会话、账号或租户" autocomplete="off" /></label></div><div class="audit-list-meta"><span id="auditScope" class="muted">当前账号范围</span><span id="auditConversationCount" class="muted"></span><button id="reloadAuditBtn" class="secondary compact-action" type="button" title="刷新会话">刷新</button></div></div>
+              <div id="auditConversationList" class="audit-conversation-list"><div class="empty">切换到本页后读取会话…</div></div>
+            </aside>
+            <div id="auditConversationPager" class="list-pager audit-pager" aria-label="会话分页"></div>
+          </div>
           <div class="audit-detail-column">
             <section class="audit-overview card" id="auditOverview"><div class="empty">选择一个会话查看审计。</div></section>
             <section class="card audit-records">
               <div class="audit-records-head">
                 <div><h3>执行链路</h3><p id="auditStatus" class="muted">尚未读取审计。</p></div>
-                <label class="audit-filter">类别<select id="auditCategoryFilter"><option value="">全部</option><option value="conversation">对话</option><option value="dsh">DSH / Tool</option><option value="llm">LLM</option><option value="runtime">运行时</option></select></label>
+                <div class="audit-controls"><label class="list-search audit-search"><span>搜索</span><input id="auditRecordSearchInput" type="search" placeholder="事件类型或审计内容" autocomplete="off" /></label><label class="audit-filter">类别<select id="auditCategoryFilter"><option value="">全部</option><option value="conversation">对话</option><option value="dsh">DSH / Tool</option><option value="llm">LLM</option><option value="runtime">运行时</option></select></label></div>
               </div>
               <div id="auditRecordList" class="audit-record-list"><div class="empty">暂无审计记录。</div></div>
+              <div id="auditRecordLoadState" class="audit-record-load-state" aria-live="polite"></div>
             </section>
           </div>
         </section>

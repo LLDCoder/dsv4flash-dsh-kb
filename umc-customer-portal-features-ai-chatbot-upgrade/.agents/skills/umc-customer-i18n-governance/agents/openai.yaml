@@ -1,4 +1,0 @@
-interface:
-  display_name: "UMC Customer i18n Governance"
-  short_description: "Audit and govern English/Arabic customer portal localization."
-  default_prompt: "Use $umc-customer-i18n-governance to review or implement English and Arabic localization changes in this portal."

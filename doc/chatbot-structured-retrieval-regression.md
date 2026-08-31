@@ -13,6 +13,27 @@ Do not assert a fixed record count. The UMC account data changes; compare each a
 | LP-03 | After LP-02: `download this license` | Directs the customer to `/permits-license` and the selected record's `Download` action. It must not download a file, expose a URL/access code/password, or claim that a download started. | `permit_download` is portal-only: no document-download tool call. | Browser verified 2026-08-31. |
 | LP-04 | `How many licenses are about to expire?` | Counts only records in the portal's `Expiring Soon` scope. Already expired records must not be included. The count matches the portal filtered to `Expiring Soon`. | `skillId=license_permit_status`, `intentId=expiring_soon`; `umc.licenses.list` receives `statuses=["EXPIRE_SOON","205"]`. | Browser + workflow/audit configuration verified 2026-08-31. |
 | LP-05 | After a license list with at least two records: `show me the second detail` | Describes the second record from the immediately preceding list and does not switch to general knowledge. | Selection uses the active Skill's `record` filter with ordinal 2 and only reads the selected record. | Unit coverage; keep as a manual browser regression when an account has two matching records. |
+| LP-06 | `How about my Social Media Advertiser Permit?` | Looks up the current account's issued permits. If the named permit is absent, states that no matching issued record was found; it must not claim that account data is inaccessible or direct the user to Public Verify. | `skillId=license_permit_status`, `intentId=named_permit`; first tool is `umc.licenses.list`. No `knowledge.search` or public-verification tool is called. | Browser + audit verified 2026-09-01. |
+
+## Renewal Status
+
+| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
+| --- | --- | --- | --- | --- |
+| LR-01 | After selecting an issued permit: `How do I renew the second permit?` | Separates the issued permit's status from its renewal application's status. An application is a renewal only when UMC returns `Request Type = Renew` or an official renewal service name. A completed `Modify` or `New` application must never be presented as a renewal. | `skillId=license_renewal`, `intentId=personal_renewal_status`; `umc.applications` is the first account lookup. `umc.application_detail` is used only after an application is selected. | Workflow configuration verified 2026-09-01; run as a live browser regression with a current UMC token. |
+| LR-02 | `What documents do I need to renew a Social Media Advertiser Permit?` | Gives general renewal guidance from the knowledge base only. It does not claim a personal permit or renewal status. | `skillId=license_renewal`, `intentId=general_guidance`; calls `knowledge.search` only. | Workflow routing verified 2026-08-31. |
+
+## License and Permit Modification
+
+| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
+| --- | --- | --- | --- | --- |
+| LPM-01 | `What documents do I need to modify a Media License?` | Gives evidence-based general modification documents, rules, fees, and process. It does not claim that a modification was created or submitted. | `skillId=license_permit_modification_knowledge`; calls `knowledge.search` only. | Browser + audit verified 2026-09-01. |
+| LPM-02 | `Can I modify my Media License?` | Reads the current issued records and states Modify availability only from each returned record's actions. It never starts a modification. | `skillId=license_permit_modification_knowledge`; calls `umc.licenses.list`, not `knowledge.search`. | Browser + audit verified 2026-09-01. |
+
+## License Application Knowledge
+
+| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
+| --- | --- | --- | --- | --- |
+| LAK-01 | `How do I apply for a Social Media Advertiser Permit?` | Gives knowledge-base guidance for the named permit's requirements and process. It may ask a follow-up only after answering when a personal condition affects applicability. It must not begin by classifying the user into an unrelated public-service category. | `skillId=license_application_knowledge`; calls `knowledge.search`. It must not route to `service_discovery` solely because the question contains `social media` or `advertiser permit`. | Browser + audit verified 2026-09-01. |
 
 ## My Requests
 
@@ -27,6 +48,7 @@ Do not assert a fixed record count. The UMC account data changes; compare each a
 | --- | --- | --- | --- |
 | CD-01 | Any successful data-query response that uses a tool | The final assistant response contains only customer-facing business information. It never contains a tool invocation such as `{"tool": ..., "args": ...}`, an API envelope, hidden URL, or credential. | Browser verified for LP-02; unit coverage verifies protocol detection. |
 | CD-02 | A follow-up such as `show me the first detail` after a business list | Keeps the active business domain and does not fall back to the general knowledge base merely because the follow-up has no domain keyword. | Unit coverage; LP-02 is the live browser check. |
+| CD-03 | A UMC-backed tool returns `401` | Operators can correlate the WebSocket-authenticated token, the dispatched tool call, and the Customer Portal response without exposing a raw token. | `backend` and `platform-gateway` logs share `request_id` and a SHA-256 token-hash prefix across `umc_ws_authenticated`, `umc_tool_*`, and `customer_*` records. | Controlled gateway check verified 2026-09-01. |
 
 ## Not Yet Included
 

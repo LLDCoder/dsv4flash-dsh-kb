@@ -26,3 +26,7 @@ umc-customer-portal-features-ai-chatbot-upgrade/.env.*
 # Test outputs can contain authenticated responses or generated artifacts.
 # Keep existing tracked outputs available, but do not add new local captures.
 /outputs/**
+
+# This is a separately managed customer frontend workspace, not part of the
+# DSH knowledge-base repository.
+/umc-customer-portal-features-ai-chatbot-upgrade/

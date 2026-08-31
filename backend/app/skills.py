@@ -130,17 +130,24 @@ SKILL_GUIDANCE: dict[str, str] = {
         "/my-requests or /my-requests/detail?id={applicationId}",
     ),
     "license_permit_status": _guidance(
-        "the user asks about their issued License/Permit list, count, status, validity, expiry, number, or available portal actions.",
-        "the user asks about applications, pending payment, new-license requirements, or administrative records.",
-        "a current UMC bearer token and live License/Permit APIs; never substitute application records.",
-        "report License and Permit separately plus a total; use real status/effectiveDate/expireDate/allowedActions and identify the data scope. This Skill is read-only and never renews, modifies, cancels, transfers, or submits.",
+        "the user asks about their own issued License/Permit list, count, status, validity, expiry, number, or available portal actions, including a named document such as 'How about my Social Media Advertiser Permit?'.",
+        "the user explicitly asks for renewal process/requirements, My Requests application status, pending payment, a new-license application, or administrative records.",
+        "a current UMC bearer token and live License/Permit APIs; query the current account's issued-record list and never substitute application records.",
+        "for a named permit, match it against the returned issued records and report its actual status, effective date, expiry date, number, and available actions. Do not say account access is unavailable when the live lookup succeeds. Do not use public verification or knowledge-base guidance as a substitute for the account result. This Skill is read-only and never renews, modifies, cancels, transfers, or submits.",
         "/permits-license; if a selected-record detail request is unavailable, say only that full details are unavailable and direct the user to this portal page. Never describe internal tools, errors, URLs, access codes, or hidden fields.",
+    ),
+    "license_permit_modification_knowledge": _guidance(
+        "the user asks whether a current License/Permit can be modified, why its Modify action is unavailable, or asks the general modification scope, requirements, documents, fees, or process.",
+        "the user asks to actually create, save, submit, cancel, transfer, or pay for a modification; asks for renewal, download, or a My Requests application status.",
+        "for a named current document, the live issued-record list; for general process questions, current knowledge evidence.",
+        "state the live availability of Modify separately from general guidance. Use only returned actions and evidence; do not invent supported changes or claim a modification was started. Direct the user to the selected record's Modify action when it is available.",
+        "/permits-license",
     ),
     "permit_download": _guidance(
         "the user asks to view or download a specific issued License/Permit document.",
         "the user has not selected a document, or asks to download an application draft or another user's document.",
         "the customer uses the authenticated NMA customer portal.",
-        "do not retrieve or expose document URLs, access codes, or download credentials. Direct the customer to the Licenses & Permits page and tell them to use the record's Download action there. Do not describe portal internals or file generation.",
+        "explain that the customer must download the issued record from the Licenses & Permits page in the portal. The downloaded PDF is protected and requires an Access Code to open. The assistant must not download or open the file for the customer, retrieve, request, or reveal an Access Code, document URL, or download credential. Give concise portal guidance in the user's current language and direct the customer to official support if they cannot access the code.",
         "/permits-license",
     ),
     "payment_receipt": _guidance(
@@ -179,11 +186,11 @@ SKILL_GUIDANCE: dict[str, str] = {
         "transaction number, error message, occurrence time, and the available enquiry types.",
         "show a technical-enquiry preview and preserve the error details; do not claim submission or payment resolution.",
     ),
-    "license_application": _guidance(
-        "the user asks how to apply for a new media license or permit.",
-        "the user asks about an existing application, issued document status, or renewal of an existing document.",
-        "specific activity/service and applicant type; use current knowledge evidence for requirements and process.",
-        "distinguish service selection, eligibility, required documents, fees, and submission steps; do not invent a personalized approval outcome.",
+    "license_application_knowledge": _guidance(
+        "the user asks how to apply for a named new media license or permit, including its requirements, documents, fees, or process.",
+        "the user asks to create, save, submit, modify, pay for, or track an application; asks about an issued document or renewal; or only describes an activity without identifying a license/service.",
+        "the named license/service and current knowledge evidence. For an explicit license or permit name, search knowledge before asking for applicant type.",
+        "provide evidence-based requirements and process only. Keep service discovery for an unknown service/activity, and keep future application creation or submission in a separate write Skill. Do not invent a personalized approval outcome.",
         "/services and the selected service's application flow",
     ),
     "service_eligibility_info": _guidance(
@@ -252,7 +259,8 @@ SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
     "application_payment": {"domain": "payments", "aliases": ["pending payment", "pay application", "待付款", "付款申请"]},
     "my_requests_pending_actions": {"domain": "applications", "aliases": ["my requests pending", "pending actions", "what needs attention", "待处理事项", "待办申请"]},
     "application_status": {"domain": "applications", "aliases": ["application status", "application progress", "申请状态", "申请进度"]},
-    "license_permit_status": {"domain": "licenses_permits", "aliases": ["my license", "license status", "permit status", "license count", "许可证", "牌照", "许可"]},
+    "license_permit_status": {"domain": "licenses_permits", "aliases": ["my license", "my permit", "named permit", "license status", "permit status", "license count", "advertiser permit", "许可证", "牌照", "许可"]},
+    "license_permit_modification_knowledge": {"domain": "licenses_permits", "aliases": ["modify license", "modify permit", "change license details", "update media license", "add license activity", "修改许可证", "修改牌照"]},
     "permit_download": {"domain": "licenses_permits", "aliases": ["download license", "download permit", "license document", "下载许可证"]},
     "payment_receipt": {"domain": "payments", "aliases": ["receipt", "payment receipt", "收据", "付款凭证"]},
     "fine_appeal": {"domain": "fines", "aliases": ["appeal fine", "violation appeal", "申诉罚款", "违规申诉"]},
@@ -260,7 +268,7 @@ SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
     "enquiry_followup": {"domain": "enquiries", "aliases": ["follow up enquiry", "enquiry follow-up", "跟进咨询"]},
     "enquiry_reopen": {"domain": "enquiries", "aliases": ["reopen enquiry", "resolved enquiry", "重新打开咨询"]},
     "technical_enquiry": {"domain": "enquiries", "aliases": ["technical enquiry", "payment failed", "技术咨询", "支付失败"]},
-    "license_application": {"domain": "license_application", "aliases": ["new license", "license application", "permit requirements", "申请许可证", "办理牌照"]},
+    "license_application_knowledge": {"domain": "license_application", "aliases": ["apply for license", "apply for permit", "license application", "license requirements", "permit requirements", "new license", "申请许可证", "办理牌照"]},
     "service_eligibility_info": {"domain": "knowledge_policy", "aliases": ["who is eligible", "eligibility information", "谁有资格", "资格说明"]},
     "license_renewal": {"domain": "licenses_permits", "aliases": ["renew license", "renewal", "extend permit", "续期", "延期"]},
     "service_fees": {"domain": "knowledge_policy", "aliases": ["service fee", "processing time", "费用", "办理时间"]},
@@ -440,6 +448,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                 "defaultIntentId": "list",
                 "intents": [
                     {"id": "list", "description": "List or summarize issued licenses and permits."},
+                    {"id": "named_permit", "description": "The user asks about a particular issued permit or license in their account, including 'How about my <permit name>?'."},
                     {"id": "expired", "description": "Records whose status is already expired."},
                     {"id": "expiring_soon", "description": "Records whose status is Expiring Soon, not already expired."},
                     {"id": "action_needed", "description": "Records returned by the portal's Action Needed feed."},
@@ -452,6 +461,11 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
             "requests": [
                 {
                     "intentId": "list",
+                    "toolName": "umc.licenses.list",
+                    "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
+                },
+                {
+                    "intentId": "named_permit",
                     "toolName": "umc.licenses.list",
                     "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
                 },
@@ -493,6 +507,42 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
             },
         },
         "content": SKILL_GUIDANCE["license_permit_status"],
+    },
+    {
+        "skill_id": "license_permit_modification_knowledge",
+        "name": "License and permit modification knowledge",
+        "allowed_tools": ["knowledge.search", "umc.licenses.list"],
+        "dependencies": ["knowledge_gateway", "trusted_principal", "umc_customer_api"],
+        "workflow": {
+            "routing": {
+                "defaultIntentId": "general_guidance",
+                "intents": [
+                    {"id": "current_document", "description": "The user names or selects a current issued license or permit and asks whether Modify is available."},
+                    {"id": "general_guidance", "description": "The user asks the modification scope, requirements, documents, fees, or process without selecting a current document."},
+                ],
+            },
+            "requests": [
+                {
+                    "intentId": "current_document",
+                    "toolName": "umc.licenses.list",
+                    "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
+                },
+            ],
+            "toolRequestRules": [
+                {
+                    "when": {
+                        "anyTerms": [
+                            "my ", "this ", "my license", "my licence", "my permit", "this license", "this licence", "this permit",
+                            "license number", "licence number", "permit number", "我的许可证", "我的牌照", "这个许可证", "这个许可",
+                        ],
+                    },
+                    "toolName": "umc.licenses.list",
+                    "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
+                },
+            ],
+            "defaultToolRequest": {"toolName": "knowledge.search", "arguments": {}},
+        },
+        "content": SKILL_GUIDANCE["license_permit_modification_knowledge"],
     },
     {
         "skill_id": "permit_download",
@@ -544,11 +594,11 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "content": SKILL_GUIDANCE["technical_enquiry"],
     },
     {
-        "skill_id": "license_application",
+        "skill_id": "license_application_knowledge",
         "name": "Media license application knowledge",
         "allowed_tools": ["knowledge.search"],
         "dependencies": ["knowledge_gateway", "trusted_principal"],
-        "content": SKILL_GUIDANCE["license_application"],
+        "content": SKILL_GUIDANCE["license_application_knowledge"],
     },
     {
         "skill_id": "service_eligibility_info",
@@ -643,6 +693,24 @@ def resolve_skill(text: str) -> SkillRoute:
         return SkillRoute("my_requests_pending_actions", "data_query", None, "answer")
     if _has(text, "action needed", "actions needed", "needs renewal", "renewal due", "需要续期", "待处理") and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"):
         return SkillRoute("license_renewal", "data_query", None, "answer", ("license_or_permit_type", "license_number"))
+    # Renewal questions have priority over a generic possessive document
+    # reference; a named permit alone is an issued-document status query.
+    if _has(text, "renew", "renewal", "extend an existing permit", "续期", "延期", "تجديد", "تمديد"):
+        return SkillRoute(
+            "license_renewal", "knowledge", "knowledge.search", "answer",
+            ("license_or_permit_type", "license_number"), ("Renew licence", "Extend permit"),
+        )
+
+    if _has(text, "modify", "modification", "change license", "change permit", "update license", "update permit", "修改", "变更") and _has(
+        text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"
+    ):
+        return SkillRoute(
+            "license_permit_modification_knowledge", "api_call", None, "answer", ("license_or_permit_type",)
+        )
+
+    if _has(text, "download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر") and _has(text, "permit", "license", "许可", "تصريح", "رخصة"):
+        return SkillRoute("permit_download", "data_query", None, "answer")
+
     # Personal issued-document questions must be separated from public
     # renewal guidance and from application status.
     personal_document = _has(
@@ -661,15 +729,15 @@ def resolve_skill(text: str) -> SkillRoute:
         _has(text, "expiry", "expire", "expiring", "到期", "ستنتهي", "منتهية")
         and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح")
     )
+    personal_document = personal_document or (
+        _has(text, "my ", "我的", "رخصتي", "تصريحي")
+        and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح")
+        and not _has(text, "apply", "application", "new license", "new permit", "requirements", "eligibility", "how to get", "申请", "办理", "资格")
+    )
     application_document = _has(text, "application", "申请", "طلب", "طلباتي", "application status", "حالة الطلب")
     if personal_document and not application_document:
         return SkillRoute("license_permit_status", "data_query", None, "answer", ("license_or_permit_type",))
 
-    if _has(text, "renew", "renewal", "expiring", "will expire", "extend an existing permit", "续期", "到期", "延期", "تجديد", "تمديد", "منتهية", "ستنتهي", "تنتهي", "رخصتي"):
-        return SkillRoute(
-            "license_renewal", "knowledge", "knowledge.search", "answer",
-            ("license_or_permit_type", "license_number"), ("Renew licence", "Extend permit"),
-        )
     if _has(text, "inspection summary", "high risk", "inspection", "检查摘要", "高风险"):
         return SkillRoute("admin_inspection", "data_query", None, "answer")
     if _has(text, "dimension pivot", "process time", "按省", "按酋长国", "اتجاه وقت معالجة", "قسّمه حسب الإمارة"):
@@ -683,6 +751,11 @@ def resolve_skill(text: str) -> SkillRoute:
     # status of my social media license?").
     if _has(text, "latest status", "application status", "status of my application", "what's the status of my application", "open applications", "summarize my open", "my requests", "我的申请", "我的请求", "申请状态", "申请进度", "حالة الطلب", "حالة طلبي", "آخر حالة"):
         return SkillRoute("application_status", "data_query", None, "answer")
+    if _has(text, "how to apply", "how do i apply", "apply for", "application requirements", "license requirements", "permit requirements", "申请许可", "申请许可证", "办理牌照") and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"):
+        return SkillRoute(
+            "license_application_knowledge", "knowledge", "knowledge.search", "answer",
+            ("permit_or_service_type",),
+        )
     if _has(text, "which service should", "very specific media activity", "not listed", "media service comparison", "difference between a photography permit and an advertiser permit", "apply for a media service", "advertiser permit", "paid product reviews", "social media", "服务对比", "未列出", "选择哪项服务", "الخدمة المناسبة", "نشاطي التجاري"):
         return SkillRoute("service_discovery", "knowledge", "knowledge.search", "answer", ("account_type", "media_activity"))
     if _has(text, "content standards", "advertising on social media", "media content", "child-safety", "child safety", "children", "advertising rules", "policy comparison", "regulation version", "版权", "copyright", "photograph from the internet", "commercial campaign", "معايير المحتوى", "سلامة الأطفال", "حقوق الطبع"):
@@ -698,15 +771,13 @@ def resolve_skill(text: str) -> SkillRoute:
     # sentence such as “show the latest status of my media license application”.
     if _has(text, "pending payment", "waiting for payment", "awaiting payment", "待付款", "الدفع المعلق", "قيد الدفع"):
         return SkillRoute("application_payment", "data_query", None, "collect", ("application_number",))
-    if _has(text, "download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر") and _has(text, "permit", "license", "许可", "تصريح", "رخصة"):
-        return SkillRoute("permit_download", "api_call", None, "collect", ("license_id",), confirmation_required=True)
     if _has(text, "complaint", "投诉", "شكوى"):
         return SkillRoute("complaint_create", "api_call", None, "collect", ("application_number", "complaint_details"), confirmation_required=True)
     if _has(text, "follow up", "enquiry", "咨询", "متابعة", "استفسار") and _has(text, "earlier", "submitted", "跟进", "سابق", "مقدم"):
         return SkillRoute("enquiry_followup", "data_query", None, "collect", ("enquiry_reference",))
     if _has(text, "photography", "filming", "filming permit", "photocopying equipment", "advertising license", "new permit", "license requirements", "license application", "media license", "newspaper", "publication", "broadcasting", "radio", "television", "申请许可", "摄影", "طلب تصريح", "متطلبات الترخيص", "رخصة إعلامية", "تصريح", "ترخيص", "صحيفة", "منشور", "بث"):
         return SkillRoute(
-            "license_application", "knowledge", "knowledge.search", "answer",
+            "license_application_knowledge", "knowledge", "knowledge.search", "answer",
             ("permit_or_service_type", "account_type"), ("Individual", "Commercial", "Government"),
         )
     if _has(text, "service fees", "fees", "fee", "费用", "الرسوم"):
@@ -727,8 +798,6 @@ def resolve_skill(text: str) -> SkillRoute:
         return SkillRoute("application_payment", "data_query", None, "collect", ("application_number",))
     if _has(text, "latest status", "application status", "申请状态", "حالة الطلب", "آخر حالة"):
         return SkillRoute("application_status", "data_query", None, "answer")
-    if _has(text, "download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر") and _has(text, "permit", "license", "许可", "تصريح", "رخصة"):
-        return SkillRoute("permit_download", "api_call", None, "collect", ("license_id",), confirmation_required=True)
     if _has(text, "payment", "receipt", "付款", "收据", "إيصال", "إيصال الدفع"):
         return SkillRoute("payment_receipt", "api_call", None, "collect", ("transaction_number",), ("Download latest receipt", "Choose another transaction"), confirmation_required=True)
     if _has(text, "complaint", "投诉", "شكوى"):
@@ -745,9 +814,10 @@ def resolve_skill(text: str) -> SkillRoute:
 def build_knowledge_query(route: SkillRoute, original_text: str) -> str:
     """Add domain anchors before retrieval so generic phrases do not hit unrelated corpora."""
     prefixes = {
-        "license_application": "UMC UAE Media Council media license permit application requirements process",
+        "license_application_knowledge": "UMC UAE Media Council media license permit application requirements process",
         "service_eligibility_info": "UMC UAE Media Council media services eligibility applicant types",
         "license_permit_status": "UMC UAE Media Council issued licenses permits current status expiry effective date",
+        "license_permit_modification_knowledge": "UMC UAE Media Council media license permit modification requirements documents fees process",
         "license_renewal": "UMC UAE media license permit renewal extension validity fees process",
         "service_fees": "UMC UAE Media Council media service fees service ID",
         "latest_regulations": "UAE media regulation Federal Decree-Law 55 of 2023 Cabinet Decision 68 of 2024 article",
@@ -780,7 +850,8 @@ def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
         "my_requests_pending_actions": "Query the current account's My Requests pending actions and identify the related application; no mutation is allowed.",
         "application_status": "Provide the application number. If it is unavailable, query the latest applications and state the result scope.",
         "license_permit_status": "Query the current user's issued licenses and permits. Report separate License and Permit counts, statuses, effective dates, expiry dates, and available actions; do not mix in application records.",
-        "permit_download": "Select the issued licence or permit to download; explicit confirmation is required before downloading.",
+        "license_permit_modification_knowledge": "For a named current document, query issued licenses and permits and report whether Modify is available without starting it. For general modification questions, provide knowledge-based requirements and process only.",
+        "permit_download": "Do not download or open the document. Explain that the customer must use the Licenses & Permits portal page; its downloaded PDF requires an Access Code to open, which the assistant cannot retrieve, request, or reveal. Respond in the user's current language.",
         "payment_receipt": "Confirm whether to download the latest successful transaction receipt, or provide a transaction number.",
         "fine_appeal": "Provide the media violation and appeal reason; show a preview and obtain explicit confirmation before submission.",
         "fine_payment": "Provide the media violation to pay; show the amount and payment information and obtain explicit confirmation.",
@@ -789,7 +860,7 @@ def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
         "enquiry_reopen": "Provide the resolved enquiry reference; do not promise that reopening is supported.",
         "technical_enquiry": "Provide the failed transaction, error message, and occurrence time to prepare a technical enquiry preview.",
         "service_discovery": "Describe the account type and media activity so I can identify candidate UMC media services.",
-        "license_application": "Confirm the specific licence/service type and applicant entity before continuing.",
+        "license_application_knowledge": "Provide the named licence or permit. If only the activity is known, use service discovery first.",
         "license_renewal": "Provide the licence or permit type to renew or extend; account lookup also requires the licence number.",
         "service_fees": "Provide the specific media service or service ID whose fees you need.",
         "latest_regulations": "Provide the subject or the regulation/Cabinet Resolution number, title, and date; verbatim quotation also requires a specific article or clause.",
