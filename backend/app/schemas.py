@@ -92,7 +92,14 @@ class ToolUpsert(APIModel):
     http_method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] = Field(validation_alias=AliasChoices("httpMethod", "http_method"))
     http_path: str = Field(validation_alias=AliasChoices("httpPath", "http_path"))
     interface_key: str | None = Field(default=None, validation_alias=AliasChoices("interfaceKey", "interface_key"))
-    parameters: dict[str, Any] = Field(default_factory=dict)
+    parameters: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "JSON Schema for Tool arguments. For controlled write status actions, "
+            "use x-dsh-action-payloads to map an allowed action to server-owned "
+            "upstream parameters; do not expose raw status identifiers as inputs."
+        ),
+    )
     response_schema: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("responseSchema", "response_schema"))
     auth_strategy: str = Field(default="current_umc_bearer_token", validation_alias=AliasChoices("authStrategy", "auth_strategy"))
     side_effect: str = Field(default="read", validation_alias=AliasChoices("sideEffect", "side_effect"))

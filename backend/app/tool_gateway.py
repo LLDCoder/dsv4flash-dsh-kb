@@ -15,6 +15,7 @@ from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES
 # as Swagger and operations-managed tools; otherwise a console-created Tool can
 # be published successfully but can never execute.
 EXECUTABLE_REGISTERED_TOOL_SOURCES = frozenset({"manual", "ops", "swagger"})
+ACTION_PAYLOADS_SCHEMA_KEY = "x-dsh-action-payloads"
 
 
 class ToolGateway:
@@ -30,6 +31,10 @@ class ToolGateway:
         if not isinstance(arguments, dict) or not isinstance(schema, dict):
             return "arguments must be an object"
         properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        if schema.get("additionalProperties") is False:
+            unsupported = sorted(set(arguments) - set(properties))
+            if unsupported:
+                return f"unsupported parameter: {unsupported[0]}"
         for name in schema.get("required", []) or []:
             if name not in arguments:
                 return f"missing required parameter: {name}"
@@ -52,6 +57,32 @@ class ToolGateway:
                 return f"{name} must be one of {spec['enum']}"
         return None
 
+    @staticmethod
+    def _materialize_action_payload(arguments: dict[str, Any], schema: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+        """Replace a configured business action with its server-owned payload.
+
+        Tool definitions carry the action-to-upstream mapping.  Keeping the
+        mapping in the protected Tool Registry prevents the model/client from
+        supplying raw UMC status identifiers and avoids hard-coding UMC values
+        in the runtime source code.
+        """
+
+        mappings = schema.get(ACTION_PAYLOADS_SCHEMA_KEY)
+        if mappings is None:
+            return dict(arguments), None
+        if not isinstance(mappings, dict):
+            return None, "action_not_configured"
+        action = arguments.get("action")
+        payload = mappings.get(action) if isinstance(action, str) else None
+        if not isinstance(payload, dict) or not payload:
+            return None, "action_not_configured"
+        materialized = {name: value for name, value in arguments.items() if name != "action"}
+        for name, value in payload.items():
+            if name in materialized and materialized[name] != value:
+                return None, "action_payload_conflict"
+            materialized[name] = value
+        return materialized, None
+
     async def _invoke_registered_tool(self, principal: Principal, tool_name: str, arguments: dict[str, Any], definition: dict[str, Any]) -> dict[str, Any]:
         schema = definition.get("parameters") or {}
         invalid = self._validate_schema(arguments, schema)
@@ -59,12 +90,15 @@ class ToolGateway:
             return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "message": invalid}
         if definition.get("sideEffect", definition.get("side_effect", "read")) != "read" and definition.get("confirmationRequired", definition.get("confirmation_required", False)) and arguments.get("confirmed") is not True:
             return {"ok": False, "code": "confirmation_required", "toolName": tool_name}
+        parameters, action_error = self._materialize_action_payload(arguments, schema)
+        if action_error:
+            return {"ok": False, "code": action_error, "toolName": tool_name}
         method = definition.get("httpMethod", definition.get("http_method"))
         path = definition.get("httpPath", definition.get("http_path"))
         if not isinstance(method, str) or not isinstance(path, str) or not path.startswith("/api/"):
             return {"ok": False, "code": "tool_not_executable", "toolName": tool_name}
         try:
-            result = await self.platform.invoke_swagger_tool(method, path, arguments, umc_token=principal.umc_token)
+            result = await self.platform.invoke_swagger_tool(method, path, parameters or {}, umc_token=principal.umc_token)
             return {"ok": True, "code": "ok", "toolName": tool_name, "result": result}
         except httpx.HTTPStatusError as exc:
             code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"

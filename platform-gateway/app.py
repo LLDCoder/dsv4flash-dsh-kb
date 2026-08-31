@@ -147,6 +147,19 @@ class SwaggerProxyRequest(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
+def _upstream_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Remove DSH execution controls before forwarding to UMC.
+
+    ``confirmed`` is consumed by DSH's Tool Gateway. ``action`` is consumed by
+    its configuration-driven action mapper. Neither is a UMC API parameter.
+    """
+
+    result = dict(parameters)
+    result.pop("confirmed", None)
+    result.pop("action", None)
+    return result
+
+
 @app.post("/swagger/proxy")
 async def swagger_proxy(request: SwaggerProxyRequest, authorization: str | None = Header(default=None)) -> Any:
     """Proxy a published, validated customer operation without per-tool routes."""
@@ -157,7 +170,7 @@ async def swagger_proxy(request: SwaggerProxyRequest, authorization: str | None 
         raise HTTPException(status_code=422, detail={"code": "unsupported_http_method"})
     if not path.startswith("/api/") or "://" in path or "\\" in path:
         raise HTTPException(status_code=422, detail={"code": "invalid_customer_path"})
-    parameters = dict(request.parameters)
+    parameters = _upstream_parameters(request.parameters)
     for parameter_name in re.findall(r"\{([^{}]+)\}", path):
         if parameter_name not in parameters:
             raise HTTPException(status_code=422, detail={"code": "missing_path_parameter", "parameter": parameter_name})
