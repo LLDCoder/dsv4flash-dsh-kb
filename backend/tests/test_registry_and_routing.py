@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.skills import build_system_prompt, resolve_skill
+from app.skills import LEGACY_SKILL_ID_MIGRATIONS, build_system_prompt, canonical_skill_id, resolve_skill
 from app.skill_workflow import build_configured_tool_request, mask_tool_result, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
@@ -23,10 +23,15 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(resolve_skill("Please show my application status").skill_id, "application_status")
         self.assertEqual(resolve_skill("How do I renew my license?").skill_id, "license_renewal")
         self.assertEqual(resolve_skill("Can I modify my Media License?").skill_id, "license_permit_modification_knowledge")
-        self.assertEqual(resolve_skill("Do I have any applications waiting for payment?").skill_id, "application_payment")
+        self.assertEqual(resolve_skill("Do I have any applications waiting for payment?").skill_id, "application_payment_details")
+        self.assertEqual(resolve_skill("Which application payments are pending?").skill_id, "application_payment_details")
 
     def test_read_only_customer_portal_routes(self):
         self.assertEqual(resolve_skill("Show my My Requests").skill_id, "application_status")
+        self.assertEqual(resolve_skill("Show my application history").skill_id, "application_status")
+        self.assertEqual(resolve_skill("Check ML-2-2026-12345").skill_id, "application_status")
+        self.assertEqual(resolve_skill("What is the status of my renewal application ML-2-2026-12345?").skill_id, "application_status")
+        self.assertEqual(resolve_skill("How much do I need to pay for application ML-2-2026-12345?").skill_id, "application_payment_details")
         self.assertEqual(resolve_skill("What pending actions do I have in My Requests?").skill_id, "my_requests_pending_actions")
         self.assertEqual(resolve_skill("Which licenses need action or renewal?").skill_id, "license_renewal")
 
@@ -37,12 +42,34 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(definition.get("side_effect", "read"), "read")
         self.assertFalse(definition.get("confirmation_required", False))
         self.assertEqual(
+            mask_tool_result(
+                {"result": {"applicationId": 4503, "serviceApplicationId": 4503}},
+                "hide:applicationId,serviceApplicationId",
+            ),
+            {"result": {"applicationId": "[redacted]", "serviceApplicationId": "[redacted]"}},
+        )
+        self.assertEqual(
             build_legacy_tool_request(
                 ["umc.applications", "umc.application_payment_detail"],
                 "show payment details for application 4503",
             ),
             ("umc.application_payment_detail", {"applicationId": 4503}),
         )
+
+    def test_payments_routes_obey_read_only_priority(self):
+        self.assertEqual(resolve_skill("申请 ML-2-2026-12345 待付款").skill_id, "application_payment_details")
+        self.assertEqual(resolve_skill("待缴罚款有哪些？").skill_id, "fine_payment_guidance")
+        self.assertEqual(resolve_skill("I want a refund for a fine").skill_id, "fine_payment_guidance")
+        self.assertEqual(resolve_skill("我要退款").mode, "portal_action")
+        self.assertEqual(resolve_skill("下载收据").mode, "portal_action")
+        self.assertEqual(resolve_skill("导出交易记录").mode, "portal_action")
+        self.assertEqual(resolve_skill("支付失败，查这笔交易").skill_id, "payment_transaction_history")
+        self.assertEqual(resolve_skill("payment").skill_id, "payment_transaction_history")
+
+    def test_payment_skill_id_migration_keeps_old_ids_as_aliases(self):
+        self.assertEqual(canonical_skill_id("payment_receipt"), "payment_transaction_history")
+        self.assertEqual(canonical_skill_id("application_payment"), "application_payment_details")
+        self.assertEqual(canonical_skill_id("fine_payment"), "fine_payment_guidance")
 
     def test_existing_knowledge_and_tool_routes_remain_compatible(self):
         knowledge = resolve_skill("What documents are required for a filming permit?")
@@ -230,7 +257,68 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(application_request[1]["applicationStatusId"], "103")
         self.assertEqual(application_request[1]["startTime"], "2026-08-01")
         self.assertEqual(application_request[1]["endTime"], "2026-08-31")
+        self.assertEqual(application_request[1]["sortBy"], "createdOn")
+        self.assertEqual(application_request[1]["sortDirection"], 0)
         self.assertEqual(routing_contract(application_skill["workflow"])["filters"]["status"]["options"][2]["id"], "pending_payment")
+
+    def test_my_requests_read_only_workflows_keep_summary_history_and_payment_separate(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        pending = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "my_requests_pending_actions")
+        self.assertEqual(
+            build_configured_tool_request(pending["workflow"], pending["allowed_tools"], "What needs attention?", []),
+            ("umc.pending-actions", {}),
+        )
+
+        payment = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "application_payment")
+        self.assertEqual(
+            build_configured_tool_request(payment["workflow"], payment["allowed_tools"], "Which applications are pending payment?", []),
+            ("umc.applications", {"pageIndex": 1, "pageSize": 100, "applicationStatusId": "103", "sortBy": "createdOn", "sortDirection": 0}),
+        )
+        list_event = type("Event", (), {
+            "event_type": "tool.result",
+            "event_json": {"toolName": "umc.applications", "result": json.dumps({"data": {"applicationPage": {"items": [{"id": 752, "applicationNumber": "ML-2-2026-12345"}]}}})},
+        })()
+        intent_id, filters = normalize_route_directives(payment["workflow"], "detail", {"record": {"identifier": "ML-2-2026-12345"}})
+        self.assertEqual(
+            build_configured_tool_request(payment["workflow"], payment["allowed_tools"], "payment details for ML-2-2026-12345", [list_event], intent_id=intent_id, filters=filters),
+            ("umc.application_payment_detail", {"applicationId": 752}),
+        )
+        self.assertEqual(
+            build_configured_tool_request(payment["workflow"], payment["allowed_tools"], "show payment details for the first application", [list_event]),
+            ("umc.application_payment_detail", {"applicationId": 752}),
+        )
+        self.assertIn("never label a numeric applicationId", payment["content"])
+
+    def test_application_detail_selection_is_request_type_agnostic(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        application = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "application_status")
+        for request_type, application_id, application_number in (
+            ("Modify", 4683, "ML-2-903-1610651"),
+            ("Cancel", 4704, "ML-2-904-1206376"),
+        ):
+            list_event = type("Event", (), {
+                "event_type": "tool.result",
+                "event_json": {
+                    "toolName": "umc.applications",
+                    "result": json.dumps({"data": {"applicationPage": {"items": [{
+                        "id": application_id,
+                        "applicationNumber": application_number,
+                        "requestType": request_type,
+                    }]}}}),
+                },
+            })()
+            intent_id, filters = normalize_route_directives(
+                application["workflow"], "detail", {"record": {"identifier": application_number}}
+            )
+            self.assertEqual(
+                build_configured_tool_request(
+                    application["workflow"], application["allowed_tools"], f"show {request_type} detail", [list_event],
+                    intent_id=intent_id, filters=filters,
+                ),
+                ("umc.application_detail", {"applicationId": application_id}),
+            )
 
     def test_knowledge_and_ocr_are_runtime_only_capabilities(self):
         business_tools = {item["tool_name"] for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
@@ -307,6 +395,14 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(context["activeDomain"], "licenses_permits")
         self.assertEqual(context["activeSkillId"], "license_permit_status")
         self.assertEqual(context["recentMessages"][0]["content"], "first")
+
+        legacy_history = [Event("skill.route", skill_id="payment_receipt")]
+        migrated = route_context_from_history(
+            legacy_history,
+            [{"skillId": "payment_transaction_history", "domain": "payments"}],
+        )
+        self.assertEqual(migrated["activeSkillId"], "payment_transaction_history")
+        self.assertEqual(migrated["activeDomain"], "payments")
 
     def test_route_context_keeps_four_prior_messages(self):
         class Event:

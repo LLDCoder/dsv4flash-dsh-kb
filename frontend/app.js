@@ -758,6 +758,7 @@ function openToolEditor(toolName) {
   $("toolDescriptionInput").value = item.description || "";
   $("toolParametersInput").value = JSON.stringify(item.parameters || {}, null, 2);
   $("toolResponseInput").value = JSON.stringify(item.responseSchema || {}, null, 2);
+  $("toolMaskingPolicyInput").value = item.maskingPolicy || "default";
   $("toolDialog").showModal();
 }
 
@@ -786,7 +787,7 @@ async function saveToolEditor(event) {
       operationId: item.operationId, httpMethod: item.httpMethod, httpPath: item.httpPath,
       interfaceKey: item.interfaceKey, parameters, responseSchema, authStrategy: item.authStrategy,
       sideEffect: $("toolSideEffectInput").value, confirmationRequired: $("toolConfirmationInput").checked,
-      rbacPolicy: item.rbacPolicy, maskingPolicy: item.maskingPolicy, swaggerSource: item.swaggerSource,
+      rbacPolicy: item.rbacPolicy, maskingPolicy: $("toolMaskingPolicyInput").value.trim() || "default", swaggerSource: item.swaggerSource,
       source: item.source, version: item.version, enabled: $("toolEnabledInput").checked, published: $("toolPublishedInput").checked,
     }) });
     await loadTools();
@@ -1531,10 +1532,10 @@ document.querySelectorAll(".tab").forEach((button) => button.addEventListener("c
 $("reloadConfigBtn").addEventListener("click", loadConfig);
 $("saveConfigBtn").addEventListener("click", saveConfig);
 $("newSkillBtn").addEventListener("click", () => { void openNewSkillEditor(); });
-$("reloadSkillsBtn").addEventListener("click", loadSkills);
+$("reloadSkillsBtn").addEventListener("click", () => { void loadSkills(); });
 $("skillsSearchInput").addEventListener("input", debounce(() => { void loadSkills(1); }));
 $("newToolBtn").addEventListener("click", openSwaggerImporter);
-$("reloadToolsBtn").addEventListener("click", loadTools);
+$("reloadToolsBtn").addEventListener("click", () => { void loadTools(); });
 $("toolsSearchInput").addEventListener("input", debounce(() => { void loadTools(1); }));
 $("inspectSwaggerBtn").addEventListener("click", inspectSwagger);
 $("swaggerImportForm").addEventListener("submit", importSelectedSwaggerTools);

@@ -206,6 +206,11 @@ class DSHService:
         metadata: dict[str, Any] = {"routerMode": mode, "keywordSkillId": keyword_route.skill_id}
         if mode == "keyword":
             return keyword_route, metadata
+        if keyword_route.routing_locked:
+            # A deterministic route may opt out of LLM replacement when its
+            # declared precedence is part of the business contract.
+            metadata["routingLocked"] = True
+            return keyword_route, metadata
 
         catalog = await self.skill_catalog.load(db)
         recall = recall_skill_candidates(question, catalog, context)
@@ -691,7 +696,11 @@ class DSHService:
                         if latest_attachment and "ocr.layout_parsing" in allowed_tool_names
                         else parse_tool_request(latest_content) if latest_user else None
                     )
-                    if not tool_request and route.category == "knowledge" and route.mode == "exact_quote" and not exact_quote_source_sufficient(latest_content):
+                    if route.mode == "portal_action":
+                        # Downloads, exports, payments, and refunds are visible
+                        # Portal actions only for this read-only release.
+                        tool_request = None
+                    elif not tool_request and route.category == "knowledge" and route.mode == "exact_quote" and not exact_quote_source_sufficient(latest_content):
                         # Do not retrieve and let ranking choose a random law for
                         # an unqualified exact-quotation request.
                         tool_request = None
@@ -753,6 +762,7 @@ class DSHService:
                             "candidateSkillIds": route_metadata.get("candidateSkillIds"),
                             "candidateDomainIds": route_metadata.get("candidateDomainIds"),
                             "domainScores": route_metadata.get("domainScores"),
+                            "routingLocked": route_metadata.get("routingLocked", False),
                             "routeContextUsed": route_metadata.get("routeContextUsed"),
                             "confidence": route_metadata.get("confidence"),
                             "needsClarification": route_metadata.get("needsClarification"),

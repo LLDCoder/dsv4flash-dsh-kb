@@ -234,6 +234,27 @@ def build_configured_tool_request(
     workflow = workflow or {}
     allowed = set(allowed_tools)
     filters = filters or {}
+    selection = workflow.get("selection")
+    if isinstance(selection, dict):
+        selection_request = selection.get("toolRequest") or selection.get("detailRequest")
+        selection_filter = str(selection.get("filter") or "")
+        matches_intent = intent_id and intent_id == selection.get("intentId")
+        matches_legacy_text = isinstance(selection_request, dict) and _matches(text, selection_request.get("when"))
+        if isinstance(selection_request, dict) and (matches_intent or matches_legacy_text):
+            selector = filters.get(selection_filter) if selection_filter else None
+            if selector is None:
+                selector = text
+            item = _selected_item(selector, _selection_items(history, selection), selection)
+            tool_name = str(selection_request.get("toolName") or "")
+            argument_name = str(selection_request.get("argumentName") or "")
+            value_field = str(selection.get("valueField") or "")
+            if item and tool_name in allowed and argument_name and value_field and item.get(value_field) is not None:
+                return tool_name, {
+                    argument_name: _coerce_argument_value(
+                        item[value_field], selection_request.get("argumentValueType")
+                    )
+                }
+
     for definition in workflow.get("requests", []):
         if isinstance(definition, dict) and definition.get("intentId") == intent_id:
             request = _request_from_definition(workflow, definition, allowed, filters)
@@ -246,25 +267,6 @@ def build_configured_tool_request(
         tool_name = str(rule.get("toolName") or "")
         if tool_name in allowed:
             return tool_name, dict(rule.get("arguments") or {})
-
-    selection = workflow.get("selection")
-    if isinstance(selection, dict):
-        selection_request = selection.get("toolRequest") or selection.get("detailRequest")
-        selection_filter = str(selection.get("filter") or "")
-        matches_intent = intent_id and intent_id == selection.get("intentId")
-        matches_legacy_text = isinstance(selection_request, dict) and _matches(text, selection_request.get("when"))
-        if isinstance(selection_request, dict) and (matches_intent or matches_legacy_text):
-            selector = filters.get(selection_filter) if selection_filter else text
-            item = _selected_item(selector, _selection_items(history, selection), selection)
-            tool_name = str(selection_request.get("toolName") or "")
-            argument_name = str(selection_request.get("argumentName") or "")
-            value_field = str(selection.get("valueField") or "")
-            if item and tool_name in allowed and argument_name and value_field and item.get(value_field) is not None:
-                return tool_name, {
-                    argument_name: _coerce_argument_value(
-                        item[value_field], selection_request.get("argumentValueType")
-                    )
-                }
 
     default_request = workflow.get("defaultToolRequest")
     if isinstance(default_request, dict):

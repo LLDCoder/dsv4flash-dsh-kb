@@ -229,6 +229,8 @@ def configured_knowledge_fallback(catalog: list[dict[str, Any]], configured_skil
 
 def route_context_from_history(history: list[Any], catalog: list[dict[str, Any]], max_messages: int = 5) -> dict[str, Any]:
     """Build bounded routing context from persisted events, excluding tool data."""
+    from .skills import canonical_skill_id
+
     messages: list[dict[str, str]] = []
     active_skill_id = ""
     for event in history:
@@ -239,7 +241,7 @@ def route_context_from_history(history: list[Any], catalog: list[dict[str, Any]]
             if content:
                 messages.append({"role": "user" if event_type == "user.message" else "assistant", "content": content[-1200:]})
         elif event_type == "skill.route":
-            active_skill_id = str(payload.get("skillId") or active_skill_id)
+            active_skill_id = canonical_skill_id(str(payload.get("skillId") or active_skill_id))
     messages = messages[-max_messages:]
     active_domain = ""
     if active_skill_id:

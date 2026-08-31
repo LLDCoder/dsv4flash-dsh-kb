@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +29,20 @@ class SkillRoute:
     fields: tuple[str, ...] = ()
     choices: tuple[str, ...] = ()
     confirmation_required: bool = False
+    routing_locked: bool = False
+
+
+LEGACY_SKILL_ID_MIGRATIONS = {
+    "payment_receipt": "payment_transaction_history",
+    "application_payment": "application_payment_details",
+    "fine_payment": "fine_payment_guidance",
+}
+
+
+def canonical_skill_id(skill_id: str) -> str:
+    """Normalize retired built-in IDs in routing context and audit metadata."""
+
+    return LEGACY_SKILL_ID_MIGRATIONS.get(skill_id, skill_id)
 
 
 def _guidance(when: str, boundary: str, prerequisites: str, response: str, navigation: str = "") -> str:
@@ -120,13 +135,13 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks which My Requests applications are awaiting payment or asks to inspect the payment details for a selected application.",
         "the user asks to make, retry, or confirm a payment, or asks about an unrelated transaction or issued permit.",
         "trusted UMC identity; use the current application list and the selected application's read-only payment detail.",
-        "show application number, service, amount, currency, and payment status returned by UMC. This Skill is read-only and never starts, retries, or confirms payment.",
+        "first list only Pending Payment applications, then inspect payment detail only for an application selected from that list. Preserve that selected list item's Application No.; never label a numeric applicationId or serviceApplicationId from payment detail as an application number. Show application number, service, amount, currency, payment status, due date, and timeline only when returned by UMC. This Skill is read-only and never starts, retries, or confirms payment.",
     ),
     "application_status": _guidance(
         "the user asks for the status, progress, filters, counts, or history of their own My Requests applications.",
         "the user asks for an issued license/permit count or general application requirements.",
         "trusted UMC identity; query the current account's application list and use detail only for a selected application.",
-        "include application number, service, creation time, current status, and result scope; distinguish draft, submitted, pending payment, and completed. This Skill is read-only and never edits, cancels, duplicates, submits, or pays.",
+        "include Application No., Service Name, Request Type, Profile Name, Submission Time, current status, and result scope when returned by UMC. Keep Request Type separate from status and call an application a renewal only when Request Type is Renew. This Skill is read-only and never edits, cancels, duplicates, submits, or pays; for those actions, direct the customer to /my-requests.",
         "/my-requests or /my-requests/detail?id={applicationId}",
     ),
     "license_permit_status": _guidance(
@@ -367,6 +382,47 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Pending payment application details",
         "allowed_tools": ["umc.applications", "umc.application_payment_detail"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {
+            "routing": {
+                "defaultIntentId": "list",
+                "intents": [
+                    {"id": "list", "description": "List the user's Pending Payment applications."},
+                    {"id": "detail", "description": "Show payment detail for an application selected from the preceding Pending Payment list."},
+                ],
+                "filters": {
+                    "record": {"type": "selection", "description": "A record from the latest Pending Payment application list, by ordinal or application number."},
+                },
+            },
+            "requests": [
+                {
+                    "intentId": "list",
+                    "toolName": "umc.applications",
+                    "arguments": {"pageIndex": 1, "pageSize": 100, "applicationStatusId": "103", "sortBy": "createdOn", "sortDirection": 0},
+                },
+            ],
+            "defaultToolRequest": {
+                "toolName": "umc.applications",
+                "arguments": {"pageIndex": 1, "pageSize": 100, "applicationStatusId": "103", "sortBy": "createdOn", "sortDirection": 0},
+            },
+            "selection": {
+                "intentId": "detail",
+                "filter": "record",
+                "sourceTool": "umc.applications",
+                "itemsPath": "data.applicationPage.items",
+                "valueField": "id",
+                "identifierFields": ["applicationNumber", "applicationNo"],
+                "ordinalTerms": {
+                    "1": ["first", "1st", "第一个", "第一笔", "الأول"],
+                    "2": ["second", "2nd", "第二个", "第二笔", "الثاني"],
+                },
+                "toolRequest": {
+                    "when": {"anyTerms": ["payment detail", "payment details", "付款详情", "支付详情", "تفاصيل الدفع"]},
+                    "toolName": "umc.application_payment_detail",
+                    "argumentName": "applicationId",
+                    "argumentValueType": "integer",
+                },
+            },
+        },
         "content": SKILL_GUIDANCE["application_payment"],
     },
     {
@@ -374,6 +430,17 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "My Requests pending actions",
         "allowed_tools": ["umc.pending-actions", "umc.applications"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {
+            "routing": {
+                "defaultIntentId": "list",
+                "intents": [
+                    {"id": "list", "description": "Show only the current My Requests actions that need attention."},
+                ],
+                "filters": {},
+            },
+            "requests": [{"intentId": "list", "toolName": "umc.pending-actions", "arguments": {}}],
+            "defaultToolRequest": {"toolName": "umc.pending-actions", "arguments": {}},
+        },
         "content": SKILL_GUIDANCE["my_requests_pending_actions"],
     },
     {
@@ -413,7 +480,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                 {
                     "intentId": "list",
                     "toolName": "umc.applications",
-                    "arguments": {"pageIndex": 1, "pageSize": 100, "sortBy": "createdOn", "sortDirection": 1},
+                    "arguments": {"pageIndex": 1, "pageSize": 100, "sortBy": "createdOn", "sortDirection": 0},
                     "bindings": [
                         {"filter": "keyword", "argument": "keyword"},
                         {"filter": "submissionDate.start", "argument": "startTime"},
@@ -424,15 +491,15 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
             ],
             "defaultToolRequest": {
                 "toolName": "umc.applications",
-                "arguments": {"pageIndex": 1, "pageSize": 100, "sortBy": "createdOn", "sortDirection": 1},
+                "arguments": {"pageIndex": 1, "pageSize": 100, "sortBy": "createdOn", "sortDirection": 0},
             },
             "selection": {
                 "intentId": "detail",
                 "filter": "record",
                 "sourceTool": "umc.applications",
                 "itemsPath": "data.applicationPage.items",
-                "valueField": "applicationId",
-                "identifierFields": ["applicationNumber", "applicationNo", "id"],
+                "valueField": "id",
+                "identifierFields": ["applicationNumber", "applicationNo"],
                 "toolRequest": {"toolName": "umc.application_detail", "argumentName": "applicationId", "argumentValueType": "integer"},
             },
         },
@@ -664,6 +731,12 @@ def _has(text: str, *terms: str) -> bool:
     return any(term.lower() in lowered for term in terms)
 
 
+def _has_application_number(text: str) -> bool:
+    """Recognize portal application numbers without treating them as internal IDs."""
+
+    return bool(re.search(r"\bML-\d+(?:-[A-Za-z0-9]+)*\b", text, re.IGNORECASE))
+
+
 def resolve_skill(text: str) -> SkillRoute:
     """Deterministic first-pass router; the LLM may refine only after this gate."""
     if _has(text, "ocr", "optical character", "attached document", "attached Arabic trade license", "upload", "image", "screenshot", "IMG-", "识别材料", "扫描件", "图片", "截图", "上传", "رخصة التجارة العربية", "المرفقة", "صورة", "لقطة شاشة"):
@@ -674,6 +747,29 @@ def resolve_skill(text: str) -> SkillRoute:
         return SkillRoute("umc_application_detail", "api_call", None, "answer", ("applicationId",))
     if _has(text, "add new application", "new draft application", "create a draft application", "新增申请", "新建草稿"):
         return SkillRoute("umc_add_application", "api_call", None, "collect", ("parameters",), confirmation_required=True)
+    if _has(text, "pending payment", "waiting for payment", "awaiting payment", "application payment", "application payments", "pay now", "how much to pay", "need to pay", "pay for", "payment details", "待付款", "支付多少钱", "付款详情", "الدفع المعلق", "كم أدفع", "تفاصيل الدفع") and (
+        _has(text, "application", "request", "申请", "请求", "طلب") or _has_application_number(text)
+    ):
+        return SkillRoute("application_payment_details", "data_query", None, "answer", routing_locked=True)
+    # Payments is read-only. Explicit refund, receipt-download, and export
+    # requests are Portal instructions, not transaction lookups or actions.
+    if _has(text, "refund", "退款", "استرداد") and not _has(
+        text, "refund in progress", "refund completed", "failed refund", "refund status", "退款中", "退款完成", "交易状态",
+        "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة",
+    ):
+        return SkillRoute("payment_transaction_history", "portal_action", None, "portal_action", routing_locked=True)
+    if _has(text, "download", "下载", "تنزيل", "تحميل", "export", "导出", "تصدير") and _has(
+        text, "receipt", "收据", "إيصال", "transaction", "交易", "record", "记录", "payment", "付款", "支付"
+    ):
+        return SkillRoute("payment_transaction_history", "portal_action", None, "portal_action", routing_locked=True)
+    if _has(text, "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"):
+        if _has(text, "appeal", "申诉", "استئناف", "طعن"):
+            return SkillRoute("fine_appeal", "api_call", None, "collect", ("violation_number", "appeal_reason", "appeal_details"), confirmation_required=True)
+        return SkillRoute("fine_payment_guidance", "data_query", None, "answer", routing_locked=True)
+    if _has(text, "payment", "transaction", "receipt", "付款", "支付", "交易", "收据", "إيصال", "إيصال الدفع"):
+        return SkillRoute("payment_transaction_history", "data_query", None, "answer", routing_locked=True)
+    if _has_application_number(text):
+        return SkillRoute("application_status", "data_query", None, "answer")
     if _has(text, "quote", "exactly", "逐字", "原文", "اقتبس", "حرفيًا", "النص الأصلي"):
         return SkillRoute(
             "latest_regulations", "knowledge", "knowledge.search", "exact_quote",
@@ -749,7 +845,7 @@ def resolve_skill(text: str) -> SkillRoute:
     # A status question must win over product/service keywords such as
     # "social media" or "license application" (for example, "What is the
     # status of my social media license?").
-    if _has(text, "latest status", "application status", "status of my application", "what's the status of my application", "open applications", "summarize my open", "my requests", "我的申请", "我的请求", "申请状态", "申请进度", "حالة الطلب", "حالة طلبي", "آخر حالة"):
+    if _has(text, "latest status", "application status", "application history", "application histories", "status of my application", "what's the status of my application", "open applications", "summarize my open", "my requests", "我的申请", "我的请求", "申请状态", "申请进度", "申请历史", "حالة الطلب", "حالة طلبي", "آخر حالة"):
         return SkillRoute("application_status", "data_query", None, "answer")
     if _has(text, "how to apply", "how do i apply", "apply for", "application requirements", "license requirements", "permit requirements", "申请许可", "申请许可证", "办理牌照") and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"):
         return SkillRoute(
@@ -763,14 +859,10 @@ def resolve_skill(text: str) -> SkillRoute:
         return SkillRoute(skill_id, "knowledge", "knowledge.search", "summary", ("regulation_topic",))
     if _has(text, "cost", "processing time", "how much does", "fees", "fee", "费用", "الرسوم"):
         return SkillRoute("service_fees", "knowledge", "knowledge.search", "answer", ("service_name",))
-    if _has(text, "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"):
-        if _has(text, "appeal", "申诉", "استئناف", "طعن"):
-            return SkillRoute("fine_appeal", "api_call", None, "collect", ("violation_number", "appeal_reason", "appeal_details"), confirmation_required=True)
-        return SkillRoute("fine_payment", "data_query", None, "collect", ("fine_reference",), confirmation_required=True)
     # Status/payment intent must win over the words “license application” in a
     # sentence such as “show the latest status of my media license application”.
     if _has(text, "pending payment", "waiting for payment", "awaiting payment", "待付款", "الدفع المعلق", "قيد الدفع"):
-        return SkillRoute("application_payment", "data_query", None, "collect", ("application_number",))
+        return SkillRoute("application_payment_details", "data_query", None, "collect", ("application_number",))
     if _has(text, "complaint", "投诉", "شكوى"):
         return SkillRoute("complaint_create", "api_call", None, "collect", ("application_number", "complaint_details"), confirmation_required=True)
     if _has(text, "follow up", "enquiry", "咨询", "متابعة", "استفسار") and _has(text, "earlier", "submitted", "跟进", "سابق", "مقدم"):
@@ -785,21 +877,21 @@ def resolve_skill(text: str) -> SkillRoute:
     if _has(text, "who is eligible", "eligible for media services", "media service eligibility", "مؤهل", "الأهلية", "الخدمات الإعلامية"):
         return SkillRoute("service_eligibility_info", "knowledge", "knowledge.search", "answer", ("account_type", "media_activity"), ("Individual", "Commercial", "Government"))
     if _has(text, "technical enquiry", "cannot complete payment", "技术", "استفسار تقني", "تعذر الدفع", "لا أستطيع إتمام الدفع"):
-        return SkillRoute("technical_enquiry", "api_call", None, "collect", ("transaction_number", "error_message", "occurred_at"), confirmation_required=True)
+        return SkillRoute("payment_transaction_history", "data_query", None, "answer")
     if _has(text, "fine", "violation penalty", "罚款", "违规", "غرامة", "مخالفة") and _has(text, "appeal", "申诉", "استئناف", "طعن"):
         return SkillRoute("fine_appeal", "api_call", None, "collect", ("violation_number", "appeal_reason", "appeal_details"), confirmation_required=True)
     if _has(text, "fine", "violation penalty", "罚款", "违规", "غرامة", "مخالفة"):
-        return SkillRoute("fine_payment", "data_query", None, "collect", ("fine_reference",), confirmation_required=True)
+        return SkillRoute("fine_payment_guidance", "data_query", None, "answer")
     if _has(text, "profile is under review", "profile review", "profile 审核", "الملف قيد المراجعة", "ملفي قيد المراجعة", "مراجعة الملف"):
         return SkillRoute("profile_status", "data_query", None, "collect", ("profile_id",), ("Individual", "Business"))
     if _has(text, "eligible", "eligibility", "资格", "مؤهل", "الأهلية"):
         return SkillRoute("service_eligibility", "data_query", None, "collect", ("profile_id", "account_type", "media_activity"), ("Individual", "Commercial", "Government"))
     if _has(text, "pending payment", "waiting for payment", "awaiting payment", "待付款", "الدفع المعلق", "قيد الدفع"):
-        return SkillRoute("application_payment", "data_query", None, "collect", ("application_number",))
+        return SkillRoute("application_payment_details", "data_query", None, "collect", ("application_number",))
     if _has(text, "latest status", "application status", "申请状态", "حالة الطلب", "آخر حالة"):
         return SkillRoute("application_status", "data_query", None, "answer")
     if _has(text, "payment", "receipt", "付款", "收据", "إيصال", "إيصال الدفع"):
-        return SkillRoute("payment_receipt", "api_call", None, "collect", ("transaction_number",), ("Download latest receipt", "Choose another transaction"), confirmation_required=True)
+        return SkillRoute("payment_transaction_history", "data_query", None, "answer")
     if _has(text, "complaint", "投诉", "شكوى"):
         return SkillRoute("complaint_create", "api_call", None, "collect", ("application_number", "complaint_details"), confirmation_required=True)
     if _has(text, "follow up", "enquiry", "咨询", "متابعة", "استفسار") and _has(text, "earlier", "submitted", "跟进", "سابق", "مقدم"):
@@ -821,7 +913,7 @@ def build_knowledge_query(route: SkillRoute, original_text: str) -> str:
         "license_renewal": "UMC UAE media license permit renewal extension validity fees process",
         "service_fees": "UMC UAE Media Council media service fees service ID",
         "latest_regulations": "UAE media regulation Federal Decree-Law 55 of 2023 Cabinet Decision 68 of 2024 article",
-        "fine_payment": "UMC media violation fine payment process",
+        "fine_payment_guidance": "UMC media violation fine payment process",
         "copyright_guidance": "UMC UAE media content copyright permission commercial campaign guidance",
         "service_discovery": "UMC UAE Media Council media services service catalogue applicant activity",
     }

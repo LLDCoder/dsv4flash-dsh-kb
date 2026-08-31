@@ -121,16 +121,15 @@ TEST_BLUEPRINTS: tuple[dict[str, Any], ...] = (
         "knowledge": False,
         "en": "Can you help me obtain the receipt for my latest successful payment?",
         "ar": "هل يمكنك مساعدتي في الحصول على إيصال آخر دفعة ناجحة؟",
-        "expected": "要求 transaction number 或确认最新交易，再执行下载。",
+        "expected": "查询交易历史；仅说明 Completed 交易在 Portal 显示 Download Receipt，不执行下载。",
     },
     {
         "id": "fine-payment",
         "label": "违规罚款支付",
-        "knowledge": True,
-        "query": "UMC media violation fine payment process",
+        "knowledge": False,
         "en": "I need to pay a media violation fine. What information is required?",
         "ar": "أحتاج إلى دفع غرامة مخالفة إعلامية، ما المعلومات المطلوبة؟",
-        "expected": "检查实时违规记录，展示金额后仍需明确确认。",
+        "expected": "检查实时未缴违规记录并说明 Portal 流程；不发起或确认付款。",
     },
     {
         "id": "fine-appeal",
@@ -162,7 +161,7 @@ TEST_BLUEPRINTS: tuple[dict[str, Any], ...] = (
         "knowledge": False,
         "en": "I cannot complete the payment and need a technical enquiry.",
         "ar": "تعذر الدفع وأحتاج إلى تقديم استفسار تقني.",
-        "expected": "收集 transaction number、错误信息和发生时间。",
+        "expected": "仅查询失败交易；需要提交问题时引导至 Enquiries，不在 Payments 中创建咨询。",
     },
     {
         "id": "profile-review",
