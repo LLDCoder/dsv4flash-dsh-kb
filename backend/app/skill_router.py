@@ -6,6 +6,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .skill_workflow import routing_contract
+
 try:  # Redis is optional for local/unit-test environments.
     from redis.asyncio import Redis
 except ImportError:  # pragma: no cover - exercised only without the optional dependency
@@ -46,7 +48,7 @@ class SkillCatalogCache:
             "aliases": list(getattr(item, "aliases", None) or []),
             "positiveExamples": list(getattr(item, "positive_examples", None) or []),
             "negativeExamples": list(getattr(item, "negative_examples", None) or []),
-            "workflow": dict(getattr(item, "workflow", None) or {}),
+            "routing": routing_contract(dict(getattr(item, "workflow", None) or {})),
             "version": item.version,
             "status": item.status,
             "enabled": bool(item.enabled),

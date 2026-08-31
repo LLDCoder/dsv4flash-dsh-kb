@@ -21,7 +21,7 @@ from .platform import PlatformGatewayClient
 from .principal import Principal
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
-from .skill_workflow import build_configured_tool_request, mask_tool_result
+from .skill_workflow import build_configured_tool_request, mask_tool_result, normalize_route_directives
 from .skills import (
     SkillRoute,
     build_flow_prompt,
@@ -247,6 +247,14 @@ class DSHService:
             )
             return keyword_route, metadata
         if valid and isinstance(llm_skill_id, str):
+            selected_candidate = next((item for item in candidates if item.get("skillId") == llm_skill_id), {})
+            intent_id, filters = normalize_route_directives(
+                {"routing": selected_candidate.get("routing")},
+                llm_result.get("intentId") if llm_result else None,
+                llm_result.get("filters") if llm_result else None,
+            )
+            metadata["intentId"] = intent_id
+            metadata["filters"] = filters
             return self.route_shape_for_skill(llm_skill_id, catalog), metadata
         metadata["fallbackReason"] = fallback_reason or "invalid_output"
         active_skill_id = str((context or {}).get("activeSkillId") or "")
@@ -701,6 +709,8 @@ class DSHService:
                             allowed_tool_names,
                             latest_content,
                             history,
+                            intent_id=route_metadata.get("intentId"),
+                            filters=route_metadata.get("filters"),
                         )
                         if not tool_request:
                             # Legacy request parsing remains for established
@@ -730,6 +740,8 @@ class DSHService:
                             "routerMode": route_metadata.get("routerMode"),
                             "keywordSkillId": route_metadata.get("keywordSkillId"),
                             "llmSkillId": route_metadata.get("llmSkillId"),
+                            "intentId": route_metadata.get("intentId"),
+                            "filters": route_metadata.get("filters"),
                             "routeConsistent": route_metadata.get("routeConsistent"),
                             "fallbackReason": route_metadata.get("fallbackReason"),
                             "fallbackSkillId": route_metadata.get("fallbackSkillId"),

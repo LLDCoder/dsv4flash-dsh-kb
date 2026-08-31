@@ -30,7 +30,9 @@ class LLMAdapter:
             "Prefer the latest user message; use recent context only to resolve references. "
             "If the user clearly changes topic, ignore the previous active domain. "
             "Do not call tools, do not answer the user, and do not invent a skill. "
-            "Return JSON only with keys skillId, confidence, needsClarification, clarifyingQuestion. "
+            "When the chosen candidate declares routing intents, return its intentId. "
+            "When it declares routing filters, return only supported filters using their configured IDs and shapes. "
+            "Return JSON only with keys skillId, intentId, filters, confidence, needsClarification, clarifyingQuestion. "
             "Use needsClarification=true when the scope or intent is ambiguous."
         )
         payload = {
@@ -66,6 +68,8 @@ class LLMAdapter:
             raise ValueError("LLM Router output has invalid skillId or confidence")
         return {
             "skillId": skill_id.strip(),
+            "intentId": str(result.get("intentId") or result.get("intent_id") or "").strip() or None,
+            "filters": result.get("filters") if isinstance(result.get("filters"), dict) else {},
             "confidence": confidence,
             "needsClarification": bool(result.get("needsClarification", False)),
             "clarifyingQuestion": str(result.get("clarifyingQuestion", "")).strip() or None,

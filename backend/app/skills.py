@@ -373,6 +373,61 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Application status",
         "allowed_tools": ["umc.applications", "umc.application_detail"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {
+            "routing": {
+                "defaultIntentId": "list",
+                "intents": [
+                    {"id": "list", "description": "Search or summarize the user's My Requests applications."},
+                    {"id": "detail", "description": "Show a selected application from the preceding application list."},
+                ],
+                "filters": {
+                    "keyword": {"type": "string", "description": "Application number or text the user explicitly supplied."},
+                    "submissionDate": {"type": "date_range", "description": "Inclusive submission-date range with ISO start and end dates."},
+                    "status": {
+                        "type": "enum",
+                        "description": "My Requests status filter.",
+                        "options": [
+                            {"id": "draft", "value": "101", "description": "Draft requests."},
+                            {"id": "under_review", "value": "102", "description": "Requests under review."},
+                            {"id": "pending_payment", "value": "103", "description": "Requests awaiting payment."},
+                            {"id": "pending_modification", "value": "104", "description": "Requests awaiting modification."},
+                            {"id": "completed", "value": "105", "description": "Completed requests."},
+                            {"id": "rejected", "value": "106", "description": "Rejected requests."},
+                            {"id": "cancelled", "value": "107", "description": "Cancelled requests."},
+                            {"id": "pending_disposition", "value": "108", "description": "Requests pending disposition."},
+                            {"id": "submitted", "value": "110", "description": "Submitted requests."},
+                        ],
+                    },
+                    "record": {"type": "selection", "description": "A record from the latest application list, by ordinal or application identifier."},
+                },
+            },
+            "requests": [
+                {
+                    "intentId": "list",
+                    "toolName": "umc.applications",
+                    "arguments": {"pageIndex": 1, "pageSize": 100, "sortBy": "createdOn", "sortDirection": 1},
+                    "bindings": [
+                        {"filter": "keyword", "argument": "keyword"},
+                        {"filter": "submissionDate.start", "argument": "startTime"},
+                        {"filter": "submissionDate.end", "argument": "endTime"},
+                        {"filter": "status", "argument": "applicationStatusId"},
+                    ],
+                },
+            ],
+            "defaultToolRequest": {
+                "toolName": "umc.applications",
+                "arguments": {"pageIndex": 1, "pageSize": 100, "sortBy": "createdOn", "sortDirection": 1},
+            },
+            "selection": {
+                "intentId": "detail",
+                "filter": "record",
+                "sourceTool": "umc.applications",
+                "itemsPath": "data.applicationPage.items",
+                "valueField": "applicationId",
+                "identifierFields": ["applicationNumber", "applicationNo", "id"],
+                "toolRequest": {"toolName": "umc.application_detail", "argumentName": "applicationId", "argumentValueType": "integer"},
+            },
+        },
         "content": SKILL_GUIDANCE["application_status"],
     },
     {
@@ -381,9 +436,27 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "allowed_tools": ["umc.licenses.list", "umc.licenses.statistics", "umc.licenses.action_needed", "umc.licenses.detail"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
         "workflow": {
-            "toolRequestRules": [
+            "routing": {
+                "defaultIntentId": "list",
+                "intents": [
+                    {"id": "list", "description": "List or summarize issued licenses and permits."},
+                    {"id": "expired", "description": "Records whose status is already expired."},
+                    {"id": "expiring_soon", "description": "Records whose status is Expiring Soon, not already expired."},
+                    {"id": "action_needed", "description": "Records returned by the portal's Action Needed feed."},
+                    {"id": "detail", "description": "Show a selected record from the preceding license or permit list."},
+                ],
+                "filters": {
+                    "record": {"type": "selection", "description": "A record from the latest license list, by ordinal or identifier."},
+                },
+            },
+            "requests": [
                 {
-                    "when": {"anyTerms": ["expir", "到期", "ستنتهي", "منتهية"]},
+                    "intentId": "list",
+                    "toolName": "umc.licenses.list",
+                    "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
+                },
+                {
+                    "intentId": "expired",
                     "toolName": "umc.licenses.list",
                     "arguments": {
                         "statuses": ["EXPIRED"],
@@ -394,19 +467,25 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                         "sortDirection": 1,
                     },
                 },
+                {
+                    "intentId": "expiring_soon",
+                    "toolName": "umc.licenses.list",
+                    "arguments": {"statuses": ["EXPIRE_SOON", "205"], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortBy": "expireDate", "sortDirection": 1},
+                },
+                {"intentId": "action_needed", "toolName": "umc.licenses.action_needed", "arguments": {}},
             ],
             "defaultToolRequest": {
                 "toolName": "umc.licenses.list",
                 "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
             },
             "selection": {
+                "intentId": "detail",
+                "filter": "record",
                 "sourceTool": "umc.licenses.list",
                 "itemsPath": "data.items",
                 "valueField": "sourceLicenseId",
                 "identifierFields": ["documentId", "licensePermitNo", "showLicenseNumber", "mediaLicenseNumber", "documentName"],
-                "ordinalTerms": {"1": ["first", "第一个"], "2": ["second", "第二个"]},
-                "detailRequest": {
-                    "when": {"anyTerms": ["detail", "view document", "详情", "查看文件"]},
+                "toolRequest": {
                     "toolName": "umc.licenses.detail",
                     "argumentName": "id",
                     "argumentValueType": "string",

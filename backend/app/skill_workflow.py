@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 
@@ -37,6 +38,102 @@ def _value_at_path(value: Any, path: object) -> Any:
     return current
 
 
+def routing_contract(workflow: dict[str, Any] | None) -> dict[str, Any]:
+    """Expose only the semantic routing contract to the classifier."""
+
+    routing = (workflow or {}).get("routing")
+    if not isinstance(routing, dict):
+        return {}
+    intents = [
+        {"id": str(item.get("id") or ""), "description": str(item.get("description") or "")}
+        for item in routing.get("intents", [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    filters: dict[str, dict[str, Any]] = {}
+    for name, specification in dict(routing.get("filters") or {}).items():
+        if not isinstance(specification, dict):
+            continue
+        item = {
+            "type": str(specification.get("type") or "string"),
+            "description": str(specification.get("description") or ""),
+        }
+        if item["type"] == "enum":
+            item["options"] = [
+                {"id": str(option.get("id") or ""), "description": str(option.get("description") or "")}
+                for option in specification.get("options", [])
+                if isinstance(option, dict) and str(option.get("id") or "").strip()
+            ]
+        filters[str(name)] = item
+    return {"intents": intents, "filters": filters}
+
+
+def _normalized_filter_value(specification: dict[str, Any], value: Any) -> Any | None:
+    value_type = str(specification.get("type") or "string")
+    if value_type == "enum":
+        option_ids = {str(item.get("id")) for item in specification.get("options", []) if isinstance(item, dict)}
+        candidate = str(value or "").strip()
+        return candidate if candidate in option_ids else None
+    if value_type == "string":
+        candidate = str(value or "").strip()
+        return candidate[:500] if candidate else None
+    if value_type == "integer":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if value_type == "date_range":
+        if not isinstance(value, dict):
+            return None
+        normalized: dict[str, str] = {}
+        for boundary in ("start", "end"):
+            candidate = value.get(boundary)
+            if candidate in (None, ""):
+                continue
+            try:
+                normalized[boundary] = date.fromisoformat(str(candidate)).isoformat()
+            except ValueError:
+                return None
+        return normalized or None
+    if value_type == "selection":
+        if not isinstance(value, dict):
+            return None
+        if isinstance(value.get("ordinal"), int) and value["ordinal"] > 0:
+            return {"ordinal": value["ordinal"]}
+        identifier = str(value.get("identifier") or "").strip()
+        return {"identifier": identifier[:500]} if identifier else None
+    return None
+
+
+def normalize_route_directives(
+    workflow: dict[str, Any] | None,
+    intent_id: object,
+    filters: object,
+) -> tuple[str | None, dict[str, Any]]:
+    """Validate LLM route details against the selected Skill's DB contract."""
+
+    routing = (workflow or {}).get("routing")
+    if not isinstance(routing, dict):
+        return None, {}
+    intent_ids = {
+        str(item.get("id"))
+        for item in routing.get("intents", [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    candidate_intent = str(intent_id or "").strip()
+    normalized_intent = candidate_intent if candidate_intent in intent_ids else str(routing.get("defaultIntentId") or "").strip()
+    if normalized_intent not in intent_ids:
+        normalized_intent = None
+    normalized_filters: dict[str, Any] = {}
+    supplied_filters = filters if isinstance(filters, dict) else {}
+    for name, specification in dict(routing.get("filters") or {}).items():
+        if not isinstance(specification, dict) or name not in supplied_filters:
+            continue
+        value = _normalized_filter_value(specification, supplied_filters[name])
+        if value is not None:
+            normalized_filters[str(name)] = value
+    return normalized_intent, normalized_filters
+
+
 def _selection_items(history: list[Any], selection: dict[str, Any]) -> list[dict[str, Any]]:
     source_tool = str(selection.get("sourceTool") or "")
     for event in reversed(history):
@@ -50,8 +147,13 @@ def _selection_items(history: list[Any], selection: dict[str, Any]) -> list[dict
     return []
 
 
-def _selected_item(text: str, items: list[dict[str, Any]], selection: dict[str, Any]) -> dict[str, Any] | None:
-    normalized = text.casefold()
+def _selected_item(selector: object, items: list[dict[str, Any]], selection: dict[str, Any]) -> dict[str, Any] | None:
+    if isinstance(selector, dict):
+        ordinal = selector.get("ordinal")
+        if isinstance(ordinal, int):
+            return items[ordinal - 1] if ordinal <= len(items) else None
+        selector = str(selector.get("identifier") or "")
+    normalized = str(selector or "").casefold()
     identifier_fields = [str(field) for field in selection.get("identifierFields", []) if str(field).strip()]
     matches = [
         item for item in items
@@ -82,16 +184,62 @@ def _coerce_argument_value(value: Any, value_type: object) -> Any:
     return value
 
 
+def _bound_filter_value(workflow: dict[str, Any], filters: dict[str, Any], source: object) -> Any:
+    source_path = str(source or "")
+    root, _, _ = source_path.partition(".")
+    value = _value_at_path(filters, source_path)
+    specification = dict((workflow.get("routing") or {}).get("filters") or {}).get(root)
+    if not isinstance(specification, dict) or value is None:
+        return value
+    if specification.get("type") != "enum" or "." in source_path:
+        return value
+    option = next(
+        (item for item in specification.get("options", []) if isinstance(item, dict) and str(item.get("id")) == str(value)),
+        None,
+    )
+    return option.get("value", value) if option else value
+
+
+def _request_from_definition(
+    workflow: dict[str, Any],
+    definition: dict[str, Any],
+    allowed: set[str],
+    filters: dict[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    tool_name = str(definition.get("toolName") or "")
+    if tool_name not in allowed:
+        return None
+    arguments = dict(definition.get("arguments") or {})
+    for binding in definition.get("bindings", []):
+        if not isinstance(binding, dict):
+            continue
+        argument = str(binding.get("argument") or "")
+        value = _bound_filter_value(workflow, filters, binding.get("filter"))
+        if argument and value is not None:
+            arguments[argument] = value
+    return tool_name, arguments
+
+
 def build_configured_tool_request(
     workflow: dict[str, Any] | None,
     allowed_tools: list[str],
     text: str,
     history: list[Any],
+    *,
+    intent_id: str | None = None,
+    filters: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
     """Build a tool request from published Skill workflow configuration."""
 
     workflow = workflow or {}
     allowed = set(allowed_tools)
+    filters = filters or {}
+    for definition in workflow.get("requests", []):
+        if isinstance(definition, dict) and definition.get("intentId") == intent_id:
+            request = _request_from_definition(workflow, definition, allowed, filters)
+            if request:
+                return request
+
     for rule in workflow.get("toolRequestRules", []):
         if not isinstance(rule, dict) or not _matches(text, rule.get("when")):
             continue
@@ -101,24 +249,26 @@ def build_configured_tool_request(
 
     selection = workflow.get("selection")
     if isinstance(selection, dict):
-        detail_request = selection.get("detailRequest")
-        if isinstance(detail_request, dict) and _matches(text, detail_request.get("when")):
-            item = _selected_item(text, _selection_items(history, selection), selection)
-            tool_name = str(detail_request.get("toolName") or "")
-            argument_name = str(detail_request.get("argumentName") or "")
+        selection_request = selection.get("toolRequest") or selection.get("detailRequest")
+        selection_filter = str(selection.get("filter") or "")
+        matches_intent = intent_id and intent_id == selection.get("intentId")
+        matches_legacy_text = isinstance(selection_request, dict) and _matches(text, selection_request.get("when"))
+        if isinstance(selection_request, dict) and (matches_intent or matches_legacy_text):
+            selector = filters.get(selection_filter) if selection_filter else text
+            item = _selected_item(selector, _selection_items(history, selection), selection)
+            tool_name = str(selection_request.get("toolName") or "")
+            argument_name = str(selection_request.get("argumentName") or "")
             value_field = str(selection.get("valueField") or "")
             if item and tool_name in allowed and argument_name and value_field and item.get(value_field) is not None:
                 return tool_name, {
                     argument_name: _coerce_argument_value(
-                        item[value_field], detail_request.get("argumentValueType")
+                        item[value_field], selection_request.get("argumentValueType")
                     )
                 }
 
     default_request = workflow.get("defaultToolRequest")
     if isinstance(default_request, dict):
-        tool_name = str(default_request.get("toolName") or "")
-        if tool_name in allowed:
-            return tool_name, dict(default_request.get("arguments") or {})
+        return _request_from_definition(workflow, default_request, allowed, filters)
     return None
 
 

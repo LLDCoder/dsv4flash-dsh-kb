@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.skills import build_system_prompt, resolve_skill
-from app.skill_workflow import build_configured_tool_request, mask_tool_result
+from app.skill_workflow import build_configured_tool_request, mask_tool_result, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
@@ -159,19 +159,20 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(detail["alternatePrivateUrl"], "[redacted]")
         self.assertEqual(detail["accessSecret"], "[redacted]")
 
-    def test_expired_status_rule_is_skill_configuration(self):
+    def test_structured_intents_and_filters_are_skill_configuration(self):
         from app.skills import DEFAULT_SKILL_DEFINITIONS
 
         skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "license_permit_status")
+        intent_id, filters = normalize_route_directives(skill["workflow"], "expiring_soon", {})
         request = build_configured_tool_request(
-            skill["workflow"], skill["allowed_tools"], "Do I have expired license?", []
+            skill["workflow"], skill["allowed_tools"], "How many are about to expire?", [], intent_id=intent_id, filters=filters
         )
         self.assertEqual(
             request,
             (
                 "umc.licenses.list",
                 {
-                    "statuses": ["EXPIRED"],
+                    "statuses": ["EXPIRE_SOON", "205"],
                     "documentTypes": [],
                     "pageIndex": 1,
                     "pageSize": 100,
@@ -188,10 +189,28 @@ class RegistryAndRoutingTests(unittest.TestCase):
             "event_type": "tool.result",
             "event_json": {"toolName": "umc.licenses.list", "result": json.dumps({"data": {"items": [{"sourceLicenseId": 752}]}})},
         })()
+        detail_intent, detail_filters = normalize_route_directives(
+            skill["workflow"], "detail", {"record": {"ordinal": 1}}
+        )
         detail_request = build_configured_tool_request(
-            skill["workflow"], skill["allowed_tools"], "show the first detail", [list_event]
+            skill["workflow"], skill["allowed_tools"], "show the first detail", [list_event], intent_id=detail_intent, filters=detail_filters
         )
         self.assertEqual(detail_request, ("umc.licenses.detail", {"id": "752"}))
+
+        application_skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "application_status")
+        application_intent, application_filters = normalize_route_directives(
+            application_skill["workflow"],
+            "list",
+            {"status": "pending_payment", "submissionDate": {"start": "2026-08-01", "end": "2026-08-31"}},
+        )
+        application_request = build_configured_tool_request(
+            application_skill["workflow"], application_skill["allowed_tools"], "show my requests", [], intent_id=application_intent, filters=application_filters
+        )
+        self.assertEqual(application_request[0], "umc.applications")
+        self.assertEqual(application_request[1]["applicationStatusId"], "103")
+        self.assertEqual(application_request[1]["startTime"], "2026-08-01")
+        self.assertEqual(application_request[1]["endTime"], "2026-08-31")
+        self.assertEqual(routing_contract(application_skill["workflow"])["filters"]["status"]["options"][2]["id"], "pending_payment")
 
     def test_knowledge_and_ocr_are_runtime_only_capabilities(self):
         business_tools = {item["tool_name"] for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
