@@ -367,6 +367,151 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(licenses["result"]["path"], "/api/License/statistics")
         self.assertEqual(licenses["result"]["request_id"], "r1")
 
+    def test_manual_registered_tool_uses_the_same_guarded_execution_path(self):
+        class Platform:
+            def __init__(self):
+                self.calls = []
+
+            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None, request_id=None):
+                self.calls.append((method, path, parameters, umc_token, request_id))
+                return {"method": method, "path": path, "parameters": parameters}
+
+        principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", token_ref="ref", umc_token="token")
+        platform = Platform()
+        gateway = ToolGateway(None, None, platform)
+        definition = {
+            "name": "umc.refund-applications",
+            "source": "manual",
+            "httpMethod": "GET",
+            "httpPath": "/api/Refund/Applications",
+            "parameters": {"type": "object", "properties": {"pageSize": {"type": "integer"}}},
+            "sideEffect": "read",
+            "confirmationRequired": False,
+        }
+
+        result = __import__("asyncio").run(
+            gateway.invoke(
+                principal,
+                "umc.refund-applications",
+                {"pageSize": 10},
+                allowed_tools=["umc.refund-applications"],
+                tool_definition=definition,
+            )
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(platform.calls, [("GET", "/api/Refund/Applications", {"pageSize": 10}, "token", "r1")])
+
+    def test_manual_write_tool_still_requires_explicit_confirmation(self):
+        class Platform:
+            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None):
+                self.fail("write Tool must not run before explicit confirmation")
+
+        principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", token_ref="ref", umc_token="token")
+        gateway = ToolGateway(None, None, Platform())
+        definition = {
+            "name": "umc.refund-create",
+            "source": "manual",
+            "httpMethod": "POST",
+            "httpPath": "/api/Refund/ApplicationModel",
+            "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}},
+            "sideEffect": "write",
+            "confirmationRequired": True,
+        }
+
+        result = __import__("asyncio").run(
+            gateway.invoke(
+                principal,
+                "umc.refund-create",
+                {},
+                allowed_tools=["umc.refund-create"],
+                tool_definition=definition,
+            )
+        )
+
+        self.assertEqual(result["code"], "confirmation_required")
+
+    def test_configured_action_is_materialized_without_client_status_identifier(self):
+        class Platform:
+            def __init__(self):
+                self.calls = []
+
+            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None, request_id=None):
+                self.calls.append((method, path, parameters, umc_token, request_id))
+                return {"method": method, "path": path, "parameters": parameters}
+
+        principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", token_ref="ref", umc_token="token")
+        platform = Platform()
+        gateway = ToolGateway(None, None, platform)
+        definition = {
+            "name": "umc.enquiry-status-transition",
+            "source": "manual",
+            "httpMethod": "PUT",
+            "httpPath": "/api/Enquiry/Status",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "enquiryId": {"type": "integer"},
+                    "action": {"type": "string", "enum": ["cancel"]},
+                    "confirmed": {"type": "boolean"},
+                },
+                "required": ["enquiryId", "action", "confirmed"],
+                # Fixture data represents protected Tool Registry configuration,
+                # not any production UMC status value embedded in code.
+                "x-dsh-action-payloads": {"cancel": {"enquiryStatusId": 9001}},
+            },
+            "sideEffect": "write",
+            "confirmationRequired": True,
+        }
+
+        result = __import__("asyncio").run(
+            gateway.invoke(
+                principal,
+                "umc.enquiry-status-transition",
+                {"enquiryId": 42, "action": "cancel", "confirmed": True},
+                allowed_tools=["umc.enquiry-status-transition"],
+                tool_definition=definition,
+            )
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(platform.calls[0][2], {"enquiryId": 42, "confirmed": True, "enquiryStatusId": 9001})
+
+    def test_unconfigured_action_and_raw_status_identifier_are_rejected(self):
+        class Platform:
+            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None):
+                self.fail("invalid action input must not be forwarded")
+
+        principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", token_ref="ref", umc_token="token")
+        gateway = ToolGateway(None, None, Platform())
+        definition = {
+            "name": "umc.refund-update-status",
+            "source": "manual",
+            "httpMethod": "PUT",
+            "httpPath": "/api/Refund/1/ApplicationModel/Status",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"action": {"type": "string"}, "confirmed": {"type": "boolean"}},
+                "required": ["action", "confirmed"],
+                "x-dsh-action-payloads": {},
+            },
+            "sideEffect": "write",
+            "confirmationRequired": True,
+        }
+
+        unconfigured = __import__("asyncio").run(
+            gateway.invoke(principal, "umc.refund-update-status", {"action": "cancel", "confirmed": True}, allowed_tools=["umc.refund-update-status"], tool_definition=definition)
+        )
+        raw_status = __import__("asyncio").run(
+            gateway.invoke(principal, "umc.refund-update-status", {"action": "cancel", "confirmed": True, "refundStatusId": 1}, allowed_tools=["umc.refund-update-status"], tool_definition=definition)
+        )
+
+        self.assertEqual(unconfigured["code"], "action_not_configured")
+        self.assertEqual(raw_status["code"], "invalid_arguments")
+        self.assertIn("unsupported parameter: refundStatusId", raw_status["message"])
+
     def test_registry_execution_definition_contains_gateway_fields(self):
         definition = next(item for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS if item["tool_name"] == "umc.licenses.statistics")
         execution_definition = {
