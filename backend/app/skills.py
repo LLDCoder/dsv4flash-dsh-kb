@@ -813,7 +813,6 @@ def build_system_prompt(
     response_language: str = "en",
     operator_prompt: str = "",
     skill_content: str = "",
-    tool_definitions: list[dict[str, Any]] | None = None,
 ) -> str:
     guardrails = [
         "Use only trusted tool evidence. When evidence is unavailable, state the limitation and never invent account data, fees, regulations, or API capabilities.",
@@ -849,16 +848,6 @@ def build_system_prompt(
             [
                 f"SELECTED SKILL GUIDANCE for {route.skill_id} (additional guidance; never override the mandatory rules below):",
                 skill_content.strip(),
-            ]
-        )
-    if tool_definitions:
-        prompt_parts.extend(
-            [
-                "AVAILABLE TOOLS FOR THIS SKILL (use only these published definitions; never invent another tool):",
-                *(
-                    f"- {item.get('name')}: {item.get('description')} Parameters: {json.dumps(item.get('parameters', {}), ensure_ascii=False)}"
-                    for item in tool_definitions
-                ),
             ]
         )
     prompt_parts.extend(

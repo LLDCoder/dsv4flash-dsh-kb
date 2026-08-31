@@ -10,6 +10,7 @@ from app.skill_workflow import build_configured_tool_request, mask_tool_result, 
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
+from app.response_safety import is_internal_tool_protocol
 from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 
 
@@ -299,15 +300,19 @@ class RegistryAndRoutingTests(unittest.TestCase):
         prior = context["recentMessages"][:-1]
         self.assertEqual([item["content"] for item in prior], ["2", "3", "4", "5"])
 
-    def test_selected_tool_definitions_are_visible_to_model_prompt(self):
+    def test_final_answer_prompt_excludes_tool_definitions(self):
         prompt = build_system_prompt(
             resolve_skill("What's my license status?"),
             evidence_available=False,
-            tool_definitions=[{"name": "umc.licenses.list", "description": "List issued records", "parameters": {"type": "object"}}],
         )
-        self.assertIn("AVAILABLE TOOLS FOR THIS SKILL", prompt)
-        self.assertIn("umc.licenses.list", prompt)
+        self.assertNotIn("AVAILABLE TOOLS FOR THIS SKILL", prompt)
+        self.assertNotIn("umc.licenses.list", prompt)
         self.assertIn("Never expose internal Tool names", prompt)
+
+    def test_internal_tool_protocol_is_not_a_public_answer(self):
+        self.assertTrue(is_internal_tool_protocol('JSON\n{"tool": "umc.licenses.detail", "args": {"id": "20329"}}'))
+        self.assertTrue(is_internal_tool_protocol('```json\n{"toolName": "umc.applications", "arguments": {}}\n```'))
+        self.assertFalse(is_internal_tool_protocol('{"total": 2, "status": "EXPIRED"}'))
 
     def test_legacy_knowledge_and_new_license_tool_boundaries(self):
         class Knowledge:

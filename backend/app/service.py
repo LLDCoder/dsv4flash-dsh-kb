@@ -19,6 +19,7 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
+from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 from .skill_workflow import build_configured_tool_request, mask_tool_result, normalize_route_directives
@@ -822,7 +823,6 @@ class DSHService:
                                 response_language=response_language,
                                 operator_prompt=str(getattr(self.settings, "system_prompt", "") or ""),
                                 skill_content=selected_skill.content if selected_skill else "",
-                                tool_definitions=selected_tool_docs,
                             ),
                         },
                     )
@@ -955,20 +955,45 @@ class DSHService:
                             request_id=principal.request_id,
                             runtime_id=conversation.runtime_id,
                         )
-                        chunks: list[str] = []
-                        reasoning_chunks: list[str] = []
-
-                        async def capture_reasoning(value: str) -> None:
-                            reasoning_chunks.append(value)
-
                         try:
-                            async for token in self.llm.stream(messages, on_reasoning=capture_reasoning):
-                                chunks.append(token)
+                            async def draft_answer(prompt_messages: list[dict[str, str]]) -> tuple[str, str]:
+                                chunks: list[str] = []
+                                reasoning_chunks: list[str] = []
+
+                                async def capture_reasoning(value: str) -> None:
+                                    reasoning_chunks.append(value)
+
+                                async for token in self.llm.stream(prompt_messages, on_reasoning=capture_reasoning):
+                                    chunks.append(token)
+                                return "".join(chunks), "".join(reasoning_chunks)
+
+                            content, reasoning = await draft_answer(messages)
+                            if is_internal_tool_protocol(content):
+                                retry_messages = [
+                                    *messages,
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            "The previous draft exposed an internal tool invocation. "
+                                            "Return a natural-language answer to the user using only the internal evidence. "
+                                            "Do not output JSON, tool names, arguments, API paths, or implementation details."
+                                        ),
+                                    },
+                                ]
+                                content, retry_reasoning = await draft_answer(retry_messages)
+                                reasoning += retry_reasoning
+                            if is_internal_tool_protocol(content):
+                                content = (
+                                    "تعذر تنسيق النتيجة المطلوبة. يرجى المحاولة مرة أخرى."
+                                    if response_language == "ar"
+                                    else "I could not format the requested result. Please try again."
+                                )
+                            if content:
                                 await self.publish_stream_event(
                                     conversation,
                                     "assistant.chunk",
                                     {
-                                        "content": token,
+                                        "content": content,
                                         "requestId": principal.request_id,
                                         "runtimeId": conversation.runtime_id,
                                     },
@@ -988,8 +1013,6 @@ class DSHService:
                                 runtime_id=conversation.runtime_id,
                             )
                             raise
-                        content = "".join(chunks)
-                        reasoning = "".join(reasoning_chunks)
                         await self.append_audit(
                             db,
                             conversation,
