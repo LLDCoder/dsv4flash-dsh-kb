@@ -342,6 +342,70 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(knowledge["result"]["folder_id"], "kb")
         self.assertEqual(licenses["result"]["path"], "/api/License/statistics")
 
+    def test_manual_registered_tool_uses_the_same_guarded_execution_path(self):
+        class Platform:
+            def __init__(self):
+                self.calls = []
+
+            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None):
+                self.calls.append((method, path, parameters, umc_token))
+                return {"method": method, "path": path, "parameters": parameters}
+
+        principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", token_ref="ref", umc_token="token")
+        platform = Platform()
+        gateway = ToolGateway(None, None, platform)
+        definition = {
+            "name": "umc.refund-applications",
+            "source": "manual",
+            "httpMethod": "GET",
+            "httpPath": "/api/Refund/Applications",
+            "parameters": {"type": "object", "properties": {"pageSize": {"type": "integer"}}},
+            "sideEffect": "read",
+            "confirmationRequired": False,
+        }
+
+        result = __import__("asyncio").run(
+            gateway.invoke(
+                principal,
+                "umc.refund-applications",
+                {"pageSize": 10},
+                allowed_tools=["umc.refund-applications"],
+                tool_definition=definition,
+            )
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(platform.calls, [("GET", "/api/Refund/Applications", {"pageSize": 10}, "token")])
+
+    def test_manual_write_tool_still_requires_explicit_confirmation(self):
+        class Platform:
+            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None):
+                self.fail("write Tool must not run before explicit confirmation")
+
+        principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", token_ref="ref", umc_token="token")
+        gateway = ToolGateway(None, None, Platform())
+        definition = {
+            "name": "umc.refund-create",
+            "source": "manual",
+            "httpMethod": "POST",
+            "httpPath": "/api/Refund/ApplicationModel",
+            "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}},
+            "sideEffect": "write",
+            "confirmationRequired": True,
+        }
+
+        result = __import__("asyncio").run(
+            gateway.invoke(
+                principal,
+                "umc.refund-create",
+                {},
+                allowed_tools=["umc.refund-create"],
+                tool_definition=definition,
+            )
+        )
+
+        self.assertEqual(result["code"], "confirmation_required")
+
     def test_registry_execution_definition_contains_gateway_fields(self):
         definition = next(item for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS if item["tool_name"] == "umc.licenses.statistics")
         execution_definition = {

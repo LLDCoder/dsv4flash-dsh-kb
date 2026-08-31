@@ -10,6 +10,13 @@ from .principal import Principal
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES
 
 
+# ``manual`` is created through the protected console Tool Registry.  It must
+# follow the same schema validation, confirmation and UMC-token forwarding path
+# as Swagger and operations-managed tools; otherwise a console-created Tool can
+# be published successfully but can never execute.
+EXECUTABLE_REGISTERED_TOOL_SOURCES = frozenset({"manual", "ops", "swagger"})
+
+
 class ToolGateway:
     """Only DSH Runtime calls this boundary; clients do not call OCR directly."""
 
@@ -76,7 +83,11 @@ class ToolGateway:
     ) -> dict[str, Any]:
         if allowed_tools is not None and tool_name not in allowed_tools:
             return {"ok": False, "code": "tool_not_allowed_for_skill", "toolName": tool_name}
-        if tool_definition and tool_name not in SYSTEM_DEFAULT_TOOL_NAMES and tool_definition.get("source") in {"swagger", "ops"}:
+        if (
+            tool_definition
+            and tool_name not in SYSTEM_DEFAULT_TOOL_NAMES
+            and tool_definition.get("source") in EXECUTABLE_REGISTERED_TOOL_SOURCES
+        ):
             return await self._invoke_registered_tool(principal, tool_name, arguments, tool_definition)
         if tool_name != "ocr.layout_parsing":
             if tool_name == "knowledge.search":

@@ -100,7 +100,7 @@ class ToolUpsert(APIModel):
     rbac_policy: str = Field(default="trusted_principal", validation_alias=AliasChoices("rbacPolicy", "rbac_policy"))
     masking_policy: str = Field(default="default", validation_alias=AliasChoices("maskingPolicy", "masking_policy"))
     swagger_source: str = Field(default="", validation_alias=AliasChoices("swaggerSource", "swagger_source"))
-    source: str = "swagger"
+    source: Literal["builtin", "manual", "ops", "swagger"] = "swagger"
     version: int = Field(default=1, ge=1)
     enabled: bool = False
     published: bool = False
