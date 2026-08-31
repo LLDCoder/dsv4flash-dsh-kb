@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from .config import get_settings
+from .config import DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 
 
@@ -206,6 +206,23 @@ async def init_db() -> None:
                     key=CONSOLE_PASSWORD_CONFIG_KEY,
                     version=1,
                     value={"value": DEFAULT_CONSOLE_PASSWORD},
+                    updated_by="system",
+                )
+            )
+            changed = True
+        fallback_skill = await session.execute(
+            select(ConfigEntry).where(
+                ConfigEntry.scope == "system",
+                ConfigEntry.key == "skill_router_fallback_skill_id",
+            )
+        )
+        if fallback_skill.scalar_one_or_none() is None:
+            session.add(
+                ConfigEntry(
+                    scope="system",
+                    key="skill_router_fallback_skill_id",
+                    version=1,
+                    value={"value": DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID},
                     updated_by="system",
                 )
             )

@@ -4,6 +4,9 @@ from typing import ClassVar
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID = "general_knowledge"
+
+
 class Settings(BaseSettings):
     UMC_PORTALS: ClassVar[tuple[str, ...]] = ("customer", "admin", "public")
     app_name: str = "DSH External Service"
@@ -19,8 +22,9 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-v4-flash"
     llm_timeout_seconds: float = 60.0
-    skill_router_mode: str = "keyword"
+    skill_router_mode: str = "llm"
     skill_router_timeout_seconds: float = 10.0
+    skill_router_fallback_skill_id: str = DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID
     # Operator-editable instructions are added to each generated system
     # prompt. Built-in language, safety, and evidence rules remain enforced.
     system_prompt: str = ""
@@ -126,8 +130,9 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "llm_api_key", "label": "LLM API Key", "env": "LLM_API_KEY", "secret": True, "restartRequired": False, "group": "模型"},
     {"key": "llm_model", "label": "模型名称", "env": "LLM_MODEL", "secret": False, "restartRequired": False, "group": "模型"},
     {"key": "llm_timeout_seconds", "label": "LLM 超时（秒）", "env": "LLM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "模型"},
-    {"key": "skill_router_mode", "label": "Skill 路由模式", "env": "SKILL_ROUTER_MODE", "secret": False, "restartRequired": False, "options": ["keyword", "shadow", "llm"], "description": "keyword 使用硬编码路由；shadow 只审计 LLM 路由；llm 以 LLM 为主并在失败时回退关键词。", "group": "DSH 行为"},
+    {"key": "skill_router_mode", "label": "Skill 路由模式", "env": "SKILL_ROUTER_MODE", "secret": False, "restartRequired": False, "options": ["keyword", "shadow", "llm"], "description": "llm 为默认调试模式：先按 Redis 业务域召回，再由 LLM 选择 Skill；keyword 保留旧路由基线；shadow 只审计新路由。", "group": "DSH 行为"},
     {"key": "skill_router_timeout_seconds", "label": "Skill 路由超时（秒）", "env": "SKILL_ROUTER_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "DSH 行为"},
+    {"key": "skill_router_fallback_skill_id", "label": "默认知识库兜底 Skill", "env": "SKILL_ROUTER_FALLBACK_SKILL_ID", "secret": False, "restartRequired": False, "dynamicOptions": "knowledge_fallback_skills", "description": "只显示已发布、启用且唯一绑定 knowledge.search 的 Skill；无领域候选或 LLM 选择失败时使用。", "group": "DSH 行为"},
     {"key": "system_prompt", "label": "系统提示词（可编辑）", "env": "SYSTEM_PROMPT", "secret": False, "restartRequired": False, "multiline": True, "description": "作为全局追加指令注入每轮系统提示词；内置语言、安全和证据规则仍然优先。", "group": "DSH 行为"},
     {"key": "database_url", "label": "Database URL", "env": "DATABASE_URL", "secret": True, "restartRequired": True, "group": "基础设施"},
     {"key": "redis_url", "label": "Redis URL", "env": "REDIS_URL", "secret": True, "restartRequired": True, "group": "基础设施"},

@@ -224,6 +224,12 @@ SKILL_GUIDANCE: dict[str, str] = {
         "current pending-violation data and the payment procedure from the knowledge base.",
         "show the violation and amount returned by UMC, require explicit confirmation before payment, and never claim payment completion without a transaction result.",
     ),
+    "general_knowledge": _guidance(
+        "no business domain was confidently recalled and the user asks for general NMA or media-service information.",
+        "the user asks for a personal application, license, payment, account, or other live record that needs a business Skill.",
+        "knowledge-base evidence; ask a focused follow-up only when the question cannot be answered reliably from the available evidence.",
+        "answer from retrieved evidence, cite the source, and clearly state when the knowledge base has no reliable answer. Do not invent personal account results or policy requirements.",
+    ),
 }
 
 
@@ -466,6 +472,17 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "allowed_tools": ["umc.pending-violations", "knowledge.search"],
         "dependencies": ["trusted_principal", "knowledge_gateway", "umc_customer_api", "explicit_confirmation"],
         "content": SKILL_GUIDANCE["fine_payment"],
+    },
+    {
+        "skill_id": "general_knowledge",
+        "name": "General knowledge-base guidance",
+        "allowed_tools": ["knowledge.search"],
+        "dependencies": ["knowledge_gateway"],
+        "domain": "general",
+        "aliases": [],
+        "positive_examples": [],
+        "negative_examples": [],
+        "content": SKILL_GUIDANCE["general_knowledge"],
     },
 )
 

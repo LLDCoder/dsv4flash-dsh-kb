@@ -202,8 +202,8 @@ docker compose up -d
 
 - 测试控制台：本机轻量配置当前为 http://localhost:18180；启动本机 DSH 网关后统一使用 http://localhost:18087。直接端口可通过 `FRONTEND_PORT` 覆盖。
 - 运行配置：在控制台“运行配置”页维护 LLM API Key、DB/Redis URL、知识库/Swagger/OCR Tool URL、Tool 开关和可编辑的全局系统提示词；系统提示词会追加到每轮请求，但内置语言、安全和证据规则仍优先。UMC 会话由 Backend 使用环境变量中的既有测试账号自动获取，页面只显示脱敏状态，不提供手工 Token 输入。API Key/DB/Redis 只显示配置状态，不回显密文。
-- Skill 路由：`SKILL_ROUTER_MODE` 支持 `keyword`、`shadow`、`llm`。`keyword` 使用当前确定性路由；`shadow` 只调用分类模型并审计关键词/模型差异，不影响执行；`llm` 以结构化 LLM Skill 选择为主，模型超时、输出非法、Skill 不存在/未发布或置信度不足时自动回退关键词。模型分类不接收 Tool，也不能在 shadow 模式触发业务执行。已发布 Skill 目录和完整定义按需缓存到 Redis，数据库仍是事实来源。
-- Skills 配置：在控制台“Skills 配置”页以列表查看 system Skill，可点击“新增 Skill”创建或点击“编辑”修改名称、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。
+- Skill 路由：默认 `SKILL_ROUTER_MODE=llm`，用于直接调试新路由；`keyword` 保留历史确定性路由，`shadow` 只审计新路由而不改变实际执行。运行时从 Redis 中的已发布、启用 Skill 读取单一业务域、路由别名和正向示例；按当前问题与最近几条用户消息计分，选得分最高的一个业务域，再交给 LLM 从该业务域的 Skill 中选择具体项。反向示例和 Skill 内容只给 LLM 判断边界，不参与本地打分。无领域候选、模型超时、输出非法或置信度不足时，统一使用运行配置 `SKILL_ROUTER_FALLBACK_SKILL_ID` 指定的知识库兜底 Skill，默认 `general_knowledge`；候选必须已发布、启用，且只绑定 `knowledge.search`。模型分类不接收 Tool，也不能在 shadow 模式触发业务执行。PostgreSQL 是事实来源，Redis 是运行时缓存。
+- Skills 配置：在控制台“Skills 配置”页以列表查看 system Skill，可点击“新增 Skill”创建或点击“编辑”修改名称、业务域、路由别名、正反向示例、允许调用的 Tools、依赖条件、状态、启用开关和行为指令；只有 `PUBLISHED` 且启用的 Skill 内容会注入对应路由，保存后对后续请求生效。依赖条件目前保留为自由文本元数据，暂不参与运行时过滤。绑定 Tool 是允许调用，不表示每轮都会调用。
 - Tools 配置：在控制台“Tools 配置”页读取 OpenAPI/Swagger operation，导入并维护模型可读的 Tool 定义。后端以规范化 `HTTP 方法 + 路径` 建立唯一约束，同一个接口不能注册两次；只有启用且发布的 Tool 才能被已发布 Skill 绑定。
 - 本地 Skill 同步：`python scripts/sync_skills_to_77.py` 默认只预览许可证相关 Skill；设置 `DSH_77_CONSOLE_PASSWORD` 后追加 `--publish` 才会通过 77 控制台 API 写入并发布，脚本不会修改系统 Prompt。
 - 多语言业务测试：在控制台“多语言业务测试”页从 `/umc` 知识库目录生成 English/العربية 测试集，并执行 DSH 端到端路由、检索、Tool 和 5 分制评分。

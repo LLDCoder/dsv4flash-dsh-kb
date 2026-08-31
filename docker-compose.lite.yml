@@ -76,7 +76,7 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
-      SKILL_ROUTER_MODE: ${SKILL_ROUTER_MODE:-keyword}
+      SKILL_ROUTER_MODE: ${SKILL_ROUTER_MODE:-llm}
       SKILL_ROUTER_TIMEOUT_SECONDS: ${SKILL_ROUTER_TIMEOUT_SECONDS:-10}
       # OCR remains intentionally absent from the lightweight stack.
       OCR_GATEWAY_URL: ""

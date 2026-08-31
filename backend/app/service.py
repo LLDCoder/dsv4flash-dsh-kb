@@ -10,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .config import DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill, Tool
 from .customer_documents import CustomerDocumentClient
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
@@ -19,8 +20,9 @@ from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
 from .runtime import RuntimeManager
-from .skill_router import SkillCatalogCache, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
+from .skill_router import SkillCatalogCache, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 from .skills import (
+    SkillRoute,
     build_flow_prompt,
     build_knowledge_query,
     build_system_prompt,
@@ -177,18 +179,17 @@ class DSHService:
             self.umc_auth.invalidate()
 
     @staticmethod
-    def route_shape_for_skill(skill_id: str, keyword_route, catalog: list[dict[str, Any]]):
-        """Build a conservative route shape for an LLM-selected Skill."""
+    def route_shape_for_skill(skill_id: str, catalog: list[dict[str, Any]]):
+        """Derive automatic execution only from a Skill's allowed Tools."""
 
-        if skill_id == keyword_route.skill_id:
-            return keyword_route
         item = next((candidate for candidate in catalog if candidate.get("skillId") == skill_id), None)
         allowed_tools = set(item.get("allowedTools", [])) if item else set()
-        if "knowledge.search" in allowed_tools:
-            return type(keyword_route)(skill_id, "knowledge", "knowledge.search", "summary")
-        if allowed_tools:
-            return type(keyword_route)(skill_id, "api_call", None, "answer")
-        return type(keyword_route)(skill_id, "data_query", None, "answer")
+        business_tools = allowed_tools - SYSTEM_DEFAULT_TOOL_NAMES
+        if allowed_tools == {"knowledge.search"}:
+            return SkillRoute(skill_id, "knowledge", "knowledge.search", "summary")
+        if business_tools or allowed_tools:
+            return SkillRoute(skill_id, "api_call", None, "answer")
+        return SkillRoute(skill_id, "data_query", None, "answer")
 
     async def choose_skill_route(
         self,
@@ -199,29 +200,37 @@ class DSHService:
         request_id: str,
         context: dict[str, Any] | None = None,
     ) -> tuple[Any, dict[str, Any]]:
-        mode = normalized_router_mode(getattr(self.settings, "skill_router_mode", "keyword"))
+        mode = normalized_router_mode(getattr(self.settings, "skill_router_mode", "llm"))
         metadata: dict[str, Any] = {"routerMode": mode, "keywordSkillId": keyword_route.skill_id}
         if mode == "keyword":
             return keyword_route, metadata
 
         catalog = await self.skill_catalog.load(db)
-        candidates = recall_skill_candidates(question, keyword_route.skill_id, catalog, context)
+        recall = recall_skill_candidates(question, catalog, context)
+        candidates = recall.candidates
         candidate_ids = [str(item.get("skillId")) for item in candidates]
         metadata["candidateSkillIds"] = candidate_ids
+        metadata["candidateDomainIds"] = recall.domains
+        metadata["domainScores"] = recall.scores
         metadata["routeContextUsed"] = bool((context or {}).get("recentMessages") or (context or {}).get("activeSkillId"))
         llm_result: dict[str, object] | None = None
         fallback_reason = ""
-        try:
-            llm_result = await self.llm.route_skill(question, candidates, context)
-            valid, fallback_reason = valid_llm_route(llm_result, candidates)
-        except Exception:
+        if not candidates:
             valid = False
-            fallback_reason = "router_unavailable"
+            fallback_reason = "domain_unresolved"
+        else:
+            try:
+                llm_result = await self.llm.route_skill(question, candidates, context)
+                valid, fallback_reason = valid_llm_route(llm_result, candidates)
+            except Exception:
+                valid = False
+                fallback_reason = "router_unavailable"
         llm_skill_id = llm_result.get("skillId") if isinstance(llm_result, dict) else None
         metadata.update(
             {
                 "llmSkillId": llm_skill_id,
                 "confidence": llm_result.get("confidence") if isinstance(llm_result, dict) else None,
+                "needsClarification": bool(llm_result.get("needsClarification", False)) if isinstance(llm_result, dict) else False,
                 "routeConsistent": bool(llm_skill_id and llm_skill_id == keyword_route.skill_id),
             }
         )
@@ -236,9 +245,17 @@ class DSHService:
             )
             return keyword_route, metadata
         if valid and isinstance(llm_skill_id, str):
-            return self.route_shape_for_skill(llm_skill_id, keyword_route, catalog), metadata
+            return self.route_shape_for_skill(llm_skill_id, catalog), metadata
         metadata["fallbackReason"] = fallback_reason or "invalid_output"
-        return keyword_route, metadata
+        fallback = configured_knowledge_fallback(
+            catalog,
+            getattr(self.settings, "skill_router_fallback_skill_id", DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID),
+        )
+        if fallback:
+            fallback_id = str(fallback["skillId"])
+            metadata["fallbackSkillId"] = fallback_id
+            return self.route_shape_for_skill(fallback_id, catalog), metadata
+        return SkillRoute("general", "general"), metadata
 
     async def parse_document(self, file: str, file_type: int | None, options: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self.ocr.layout_parsing(file, file_type=file_type, options=options)
@@ -620,7 +637,7 @@ class DSHService:
                         request_id=principal.request_id,
                     )
                     keyword_route = resolve_skill(latest_content)
-                    route_catalog = await self.skill_catalog.load(db) if normalized_router_mode(getattr(self.settings, "skill_router_mode", "keyword")) != "keyword" else []
+                    route_catalog = await self.skill_catalog.load(db) if normalized_router_mode(getattr(self.settings, "skill_router_mode", "llm")) != "keyword" else []
                     route_context = route_context_from_history(history, route_catalog)
                     # The current question is sent separately to the router;
                     # keep only preceding turns in the auxiliary context.
@@ -695,9 +712,13 @@ class DSHService:
                             "llmSkillId": route_metadata.get("llmSkillId"),
                             "routeConsistent": route_metadata.get("routeConsistent"),
                             "fallbackReason": route_metadata.get("fallbackReason"),
+                            "fallbackSkillId": route_metadata.get("fallbackSkillId"),
                             "candidateSkillIds": route_metadata.get("candidateSkillIds"),
+                            "candidateDomainIds": route_metadata.get("candidateDomainIds"),
+                            "domainScores": route_metadata.get("domainScores"),
                             "routeContextUsed": route_metadata.get("routeContextUsed"),
                             "confidence": route_metadata.get("confidence"),
+                            "needsClarification": route_metadata.get("needsClarification"),
                         },
                     )
                     if tool_request:

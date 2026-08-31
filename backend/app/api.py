@@ -502,6 +502,7 @@ def make_router(service: DSHService) -> APIRouter:
     async def get_config(scope: str = "system", db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
         result = await db.execute(select(ConfigEntry).where(ConfigEntry.scope == scope))
         entries = {item.key: item for item in result.scalars().all()}
+        fallback_options = await knowledge_fallback_options(db)
         settings = get_settings()
         items: list[dict[str, object]] = []
         for spec in config_catalog():
@@ -518,7 +519,7 @@ def make_router(service: DSHService) -> APIRouter:
                     "env": spec.get("env"),
                     "secret": secret,
                     "multiline": bool(spec.get("multiline")),
-                    "options": list(spec.get("options", [])),
+                    "options": fallback_options if spec.get("dynamicOptions") == "knowledge_fallback_skills" else list(spec.get("options", [])),
                     "description": spec.get("description"),
                     "restartRequired": bool(spec.get("restartRequired")),
                     "configured": configured,
@@ -541,6 +542,10 @@ def make_router(service: DSHService) -> APIRouter:
                     status_code=403,
                     detail="audit administrator scope can only be changed by an existing audit administrator",
                 )
+            if key == "skill_router_fallback_skill_id":
+                valid_ids = {item["value"] for item in await knowledge_fallback_options(db)}
+                if not isinstance(value, str) or value not in valid_ids:
+                    raise HTTPException(status_code=422, detail={"code": "invalid_knowledge_fallback", "message": "fallback Skill must be published, enabled, and only bind knowledge.search"})
             spec = next(item for item in config_catalog() if item["key"] == key)
             # A blank secret or the display mask means “leave the existing
             # credential unchanged”; operators can replace it by entering a
@@ -622,6 +627,18 @@ def make_router(service: DSHService) -> APIRouter:
             if item.get("enabled") and item.get("published")
         )
         return available
+
+    async def knowledge_fallback_options(db: AsyncSession) -> list[dict[str, str]]:
+        result = await db.execute(
+            select(Skill)
+            .where(Skill.scope == "system", Skill.status == "PUBLISHED", Skill.enabled.is_(True))
+            .order_by(Skill.name, Skill.skill_id)
+        )
+        return [
+            {"value": item.skill_id, "label": f"{item.name} ({item.skill_id})"}
+            for item in result.scalars().all()
+            if set(item.allowed_tools or []) == {"knowledge.search"}
+        ]
 
     async def fetch_swagger(swagger_url: str) -> dict[str, Any]:
         if not swagger_url.lower().startswith(("http://", "https://")):

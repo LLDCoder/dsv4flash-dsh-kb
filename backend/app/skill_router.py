@@ -1,4 +1,6 @@
 import json
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -10,10 +12,11 @@ except ImportError:  # pragma: no cover - exercised only without the optional de
     Redis = None  # type: ignore[assignment,misc]
 
 
-SKILL_CATALOG_KEY = "dsh:skills:catalog:system:v1"
+SKILL_CATALOG_KEY = "dsh:skills:catalog:system:v2"
 SKILL_CACHE_TTL_SECONDS = 60
 LLM_ROUTER_MODES = {"keyword", "shadow", "llm"}
 LLM_ROUTER_MIN_CONFIDENCE = 0.60
+DOMAIN_HISTORY_WEIGHTS = (0.25, 0.10, 0.05)
 
 
 class SkillCatalogCache:
@@ -98,8 +101,8 @@ class SkillCatalogCache:
 
 
 def normalized_router_mode(value: object) -> str:
-    mode = str(value or "keyword").strip().lower()
-    return mode if mode in LLM_ROUTER_MODES else "keyword"
+    mode = str(value or "llm").strip().lower()
+    return mode if mode in LLM_ROUTER_MODES else "llm"
 
 
 def valid_llm_route(result: object, catalog: list[dict[str, Any]]) -> tuple[bool, str]:
@@ -110,50 +113,92 @@ def valid_llm_route(result: object, catalog: list[dict[str, Any]]) -> tuple[bool
         return False, "missing_skill_id"
     if float(result.get("confidence", 0.0)) < LLM_ROUTER_MIN_CONFIDENCE:
         return False, "low_confidence"
-    if bool(result.get("needsClarification", False)):
-        return False, "needs_clarification"
     if not any(item.get("skillId") == skill_id.strip() for item in catalog):
         return False, "skill_not_published"
-    return True, "ok"
+    return True, "needs_clarification" if bool(result.get("needsClarification", False)) else "ok"
+
+
+@dataclass(frozen=True)
+class DomainRecall:
+    domains: list[str]
+    candidates: list[dict[str, Any]]
+    scores: dict[str, float]
+
+
+def _normalized_text(value: object) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def _phrase_score(message: str, phrases: list[object]) -> float:
+    """Score configured phrases without turning the Skill ID into a keyword."""
+
+    text = _normalized_text(message)
+    score = 0.0
+    for phrase in phrases:
+        normalized = _normalized_text(phrase)
+        if not normalized:
+            continue
+        if normalized in text:
+            score += 1.0
+            continue
+        words = [word for word in re.findall(r"[\w-]+", normalized) if len(word) > 1]
+        if len(words) >= 2:
+            matched = sum(word in text for word in words)
+            if matched / len(words) >= 0.7:
+                score += 0.5
+    return score
+
+
+def _skill_domain(item: dict[str, Any]) -> str:
+    return str(item.get("domain") or "general").strip() or "general"
 
 
 def recall_skill_candidates(
     question: str,
-    keyword_skill_id: str,
     catalog: list[dict[str, Any]],
     context: dict[str, Any] | None = None,
-    limit: int = 5,
-) -> list[dict[str, Any]]:
-    """Recall a small, explainable candidate set for the LLM leaf classifier.
+) -> DomainRecall:
+    """Recall one business domain from configured phrases, then its Skills."""
 
-    Keyword routing remains authoritative in keyword mode. In LLM/shadow mode
-    this function only reduces the catalog and never executes a tool.
-    """
     context = context or {}
-    text = str(question or "").lower()
-    active_domain = str(context.get("activeDomain") or "").strip()
-    active_skill = str(context.get("activeSkillId") or "").strip()
-    ranked: list[tuple[int, dict[str, Any]]] = []
+    messages: list[tuple[str, float]] = [(str(question or ""), 1.0)]
+    prior_users = [
+        str(item.get("content") or "")
+        for item in reversed(list(context.get("recentMessages") or []))
+        if isinstance(item, dict) and item.get("role") == "user" and str(item.get("content") or "").strip()
+    ]
+    messages.extend((message, DOMAIN_HISTORY_WEIGHTS[index]) for index, message in enumerate(prior_users[: len(DOMAIN_HISTORY_WEIGHTS)]))
+
+    scores: dict[str, float] = {}
     for item in catalog:
-        skill_id = str(item.get("skillId") or "")
-        aliases = [str(value).lower() for value in item.get("aliases", []) if value]
-        score = 0
-        if skill_id == keyword_skill_id:
-            score += 100
-        if skill_id == active_skill:
-            score += 8
-        if active_domain and str(item.get("domain") or "") == active_domain:
-            score += 5
-        # Explicit terms in the latest message outweigh historical context;
-        # this keeps topic switches from being trapped in the prior domain.
-        score += sum(20 for alias in aliases if alias in text)
-        if score:
-            ranked.append((score, item))
-    ranked.sort(key=lambda pair: (-pair[0], str(pair[1].get("skillId", ""))))
-    candidates = [item for _, item in ranked[: max(1, limit)]]
-    if not candidates:
-        candidates = sorted(catalog, key=lambda item: str(item.get("skillId", "")))[: max(1, limit)]
-    return candidates
+        phrases = list(item.get("aliases", []) or []) + list(item.get("positiveExamples", []) or [])
+        skill_score = sum(_phrase_score(message, phrases) * weight for message, weight in messages)
+        if skill_score > 0:
+            domain = _skill_domain(item)
+            scores[domain] = scores.get(domain, 0.0) + skill_score
+
+    active_domain = str(context.get("activeDomain") or "").strip()
+    if active_domain and scores:
+        scores[active_domain] = scores.get(active_domain, 0.0) + 0.10
+    ranked = sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
+    if not ranked:
+        return DomainRecall([], [], {})
+    selected_domain = ranked[0][0]
+    candidates = sorted(
+        (item for item in catalog if _skill_domain(item) == selected_domain),
+        key=lambda item: str(item.get("skillId") or ""),
+    )
+    return DomainRecall([selected_domain], candidates, {domain: round(score, 3) for domain, score in ranked})
+
+
+def configured_knowledge_fallback(catalog: list[dict[str, Any]], configured_skill_id: object) -> dict[str, Any] | None:
+    """Return the published catalog entry selected as the global KB fallback."""
+
+    skill_id = str(configured_skill_id or "").strip()
+    item = next((candidate for candidate in catalog if candidate.get("skillId") == skill_id), None)
+    if item and set(item.get("allowedTools") or []) == {"knowledge.search"}:
+        return item
+    return None
 
 
 def route_context_from_history(history: list[Any], catalog: list[dict[str, Any]], max_messages: int = 5) -> dict[str, Any]:

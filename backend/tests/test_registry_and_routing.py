@@ -8,7 +8,7 @@ from app.skills import build_system_prompt, resolve_skill
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
-from app.skill_router import normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
+from app.skill_router import configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 
 
 class RegistryAndRoutingTests(unittest.TestCase):
@@ -118,26 +118,50 @@ class RegistryAndRoutingTests(unittest.TestCase):
     def test_skill_router_modes_and_validation(self):
         catalog = [{"skillId": "license_permit_status", "status": "PUBLISHED", "enabled": True}]
         self.assertEqual(normalized_router_mode("SHADOW"), "shadow")
-        self.assertEqual(normalized_router_mode("invalid"), "keyword")
+        self.assertEqual(normalized_router_mode("invalid"), "llm")
         self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.91}, catalog), (True, "ok"))
         self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.2}, catalog), (False, "low_confidence"))
         self.assertEqual(valid_llm_route({"skillId": "missing", "confidence": 0.91}, catalog), (False, "skill_not_published"))
-        self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.91, "needsClarification": True}, catalog), (False, "needs_clarification"))
+        self.assertEqual(valid_llm_route({"skillId": "license_permit_status", "confidence": 0.91, "needsClarification": True}, catalog), (True, "needs_clarification"))
 
-    def test_skill_candidates_are_keyword_seeded_and_domain_bounded(self):
+    def test_skill_candidates_use_the_highest_scoring_domain(self):
         catalog = [
-            {"skillId": "license_permit_status", "domain": "licenses_permits", "aliases": ["license status"]},
-            {"skillId": "license_renewal", "domain": "licenses_permits", "aliases": ["renew license"]},
-            {"skillId": "application_status", "domain": "applications", "aliases": ["application status"]},
+            {"skillId": "license_permit_status", "domain": "licenses_permits", "aliases": ["license status"], "positiveExamples": []},
+            {"skillId": "license_renewal", "domain": "licenses_permits", "aliases": ["renew license"], "positiveExamples": ["renew my permit"]},
+            {"skillId": "application_status", "domain": "applications", "aliases": ["application status"], "positiveExamples": []},
         ]
-        candidates = recall_skill_candidates(
+        recall = recall_skill_candidates(
             "I need to renew my license",
-            "license_renewal",
             catalog,
             {"activeDomain": "licenses_permits", "activeSkillId": "license_permit_status"},
         )
-        self.assertEqual(candidates[0]["skillId"], "license_renewal")
-        self.assertNotIn("application_status", [item["skillId"] for item in candidates])
+        self.assertEqual(recall.domains, ["licenses_permits"])
+        self.assertEqual([item["skillId"] for item in recall.candidates], ["license_permit_status", "license_renewal"])
+        self.assertNotIn("application_status", [item["skillId"] for item in recall.candidates])
+
+    def test_unmatched_question_has_no_domain_candidates(self):
+        recall = recall_skill_candidates(
+            "How do I register a new media outlet?",
+            [{"skillId": "license_status", "domain": "licenses", "aliases": ["license status"], "positiveExamples": []}],
+        )
+        self.assertEqual(recall.domains, [])
+        self.assertEqual(recall.candidates, [])
+
+    def test_configured_knowledge_fallback_requires_bound_knowledge_tool(self):
+        catalog = [
+            {"skillId": "general_knowledge", "allowedTools": ["knowledge.search"]},
+            {"skillId": "wrong_fallback", "allowedTools": ["umc.applications"]},
+            {"skillId": "mixed_fallback", "allowedTools": ["knowledge.search", "umc.applications"]},
+        ]
+        self.assertEqual(configured_knowledge_fallback(catalog, "general_knowledge")["skillId"], "general_knowledge")
+        self.assertIsNone(configured_knowledge_fallback(catalog, "wrong_fallback"))
+        self.assertIsNone(configured_knowledge_fallback(catalog, "mixed_fallback"))
+
+    def test_general_knowledge_is_a_builtin_knowledge_skill(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "general_knowledge")
+        self.assertEqual(skill["allowed_tools"], ["knowledge.search"])
 
     def test_route_context_is_bounded_and_tracks_active_skill(self):
         class Event:

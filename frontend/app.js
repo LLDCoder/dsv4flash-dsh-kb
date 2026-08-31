@@ -286,8 +286,8 @@ function renderConfig(items) {
       if (options.length) {
         options.forEach((option) => {
           const optionNode = document.createElement("option");
-          optionNode.value = option;
-          optionNode.textContent = option;
+          optionNode.value = typeof option === "object" ? option.value : option;
+          optionNode.textContent = typeof option === "object" ? option.label : option;
           input.appendChild(optionNode);
         });
       } else if (!item.multiline) {
