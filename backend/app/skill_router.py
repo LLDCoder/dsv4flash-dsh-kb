@@ -46,6 +46,7 @@ class SkillCatalogCache:
             "aliases": list(getattr(item, "aliases", None) or []),
             "positiveExamples": list(getattr(item, "positive_examples", None) or []),
             "negativeExamples": list(getattr(item, "negative_examples", None) or []),
+            "workflow": dict(getattr(item, "workflow", None) or {}),
             "version": item.version,
             "status": item.status,
             "enabled": bool(item.enabled),

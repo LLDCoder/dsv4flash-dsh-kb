@@ -127,11 +127,12 @@ DEFAULT_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "tool_name": "umc.licenses.detail",
         "display_name": "Get issued license or permit document details",
-        "description": "Read-only details for a selected issued License or Permit, including the portal document URL and PDF Access Code when available.",
+        "description": "Read-only details for a selected issued License or Permit.",
         "operation_id": "license_detail",
         "http_method": "GET",
         "http_path": "/api/license/{id}",
         "parameters": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"]},
+        "masking_policy": "hide:certificateUrl,certificateWithHeaderUrl,pdfPassword",
         "auth_strategy": "current_umc_bearer_token",
         "source": "swagger",
     },
@@ -315,7 +316,13 @@ def extract_operations(document: dict[str, Any], source_url: str) -> list[dict[s
     return result
 
 
-def build_legacy_tool_request(allowed_tools: list[str], text: str, *, mode: str = "answer") -> tuple[str, dict[str, Any]] | None:
+def build_legacy_tool_request(
+    allowed_tools: list[str],
+    text: str,
+    *,
+    mode: str = "answer",
+    skill_id: str | None = None,
+) -> tuple[str, dict[str, Any]] | None:
     """Build compatibility requests from published Skill tools.
 
     This keeps old deterministic flows working while making the Skill's
@@ -333,10 +340,6 @@ def build_legacy_tool_request(allowed_tools: list[str], text: str, *, mode: str 
             isbn = re.sub(r"[\s-]", "", match.group(0))
             if len(isbn) >= 10:
                 return "umc.book_by_isbn", {"isbn": isbn}
-    if "umc.licenses.detail" in allowed_tools and any(term in text.lower() for term in ("download", "view document", "access code", "下载", "查看文件", "تنزيل", "تحميل")):
-        match = re.search(r"(?:license|licence|permit|document|certificate|id|许可证|牌照|许可)[\s:#-]*([A-Za-z0-9-]{3,})", text, re.IGNORECASE)
-        if match:
-            return "umc.licenses.detail", {"id": match.group(1)}
     if "umc.application_payment_detail" in allowed_tools:
         match = re.search(r"(?:application\s*(?:id|number)?|申请(?:详情|ID)?)[\s:#-]*(\d{1,12})\b", text, re.IGNORECASE)
         if match and any(term in text.lower() for term in ("payment", "pending payment", "付款", "支付", "الدفع")):
@@ -345,19 +348,4 @@ def build_legacy_tool_request(allowed_tools: list[str], text: str, *, mode: str 
         return "umc.applications", {"pageIndex": 1, "pageSize": 100}
     if mode == "answer" and "umc.applications" in allowed_tools:
         return "umc.applications", {"pageIndex": 1, "pageSize": 100}
-    license_list_tool = next((name for name in ("umc.licenses.statistics", "umc.licenses.action_needed", "umc.licenses.list") if name in allowed_tools), None)
-    if mode == "answer" and license_list_tool:
-        lowered = text.lower()
-        if any(term in lowered for term in ("how many", "number of", "count", "数量", "عدد")):
-            if "umc.licenses.statistics" in allowed_tools:
-                return "umc.licenses.statistics", {}
-            operation = "query"
-        elif any(term in lowered for term in ("expir", "到期", "ستنتهي", "منتهية")):
-            if "umc.licenses.action_needed" in allowed_tools:
-                return "umc.licenses.action_needed", {}
-            operation = "query"
-        else:
-            operation = "query"
-        if "umc.licenses.list" in allowed_tools:
-            return "umc.licenses.list", {"pageIndex": 1, "pageSize": 100}
     return None

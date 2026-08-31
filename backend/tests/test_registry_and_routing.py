@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -5,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.skills import build_system_prompt, resolve_skill
+from app.skill_workflow import build_configured_tool_request, mask_tool_result
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
@@ -103,12 +105,93 @@ class RegistryAndRoutingTests(unittest.TestCase):
             self.assertIn("PREREQUISITES:", content)
             self.assertIn("RESPONSE RULES:", content)
 
-    def test_download_compatibility_request_uses_detail_tool(self):
-        request = build_legacy_tool_request(
-            ["umc.licenses.list", "umc.licenses.detail"],
-            "Download license 7364616",
+    def test_license_download_is_portal_only(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "permit_download")
+        self.assertEqual(skill["allowed_tools"], [])
+        self.assertEqual(build_configured_tool_request(skill["workflow"], skill["allowed_tools"], "Download license 7364616", []), None)
+
+    def test_configured_workflow_selects_a_prior_list_item(self):
+        class Event:
+            event_type = "tool.result"
+            event_json = {
+                "toolName": "records.list",
+                "result": {"data": {"items": [
+                    {"displayId": "A-1", "detailId": "a"},
+                    {"displayId": "B-2", "detailId": "b"},
+                ]}},
+            }
+
+        workflow = {
+            "selection": {
+                "sourceTool": "records.list",
+                "itemsPath": "data.items",
+                "valueField": "detailId",
+                "identifierFields": ["displayId"],
+                "ordinalTerms": {"1": ["first"], "2": ["second"]},
+                "detailRequest": {"when": {"anyTerms": ["detail"]}, "toolName": "records.detail", "argumentName": "id", "argumentValueType": "string"},
+            },
+        }
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["records.detail"], "show the first detail", [Event()]),
+            ("records.detail", {"id": "a"}),
         )
-        self.assertEqual(request, ("umc.licenses.detail", {"id": "7364616"}))
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["records.detail"], "show detail B-2", [Event()]),
+            ("records.detail", {"id": "b"}),
+        )
+
+    def test_tool_masking_policy_hides_configured_fields(self):
+        evidence = {
+            "result": json.dumps({
+                "data": {
+                    "publicName": "record",
+                    "privateUrl": "https://example.test/signed.pdf",
+                    "alternatePrivateUrl": "license/2026/record.pdf",
+                    "accessSecret": "secret-code",
+                },
+            }),
+        }
+        hidden = mask_tool_result(evidence, "hide:privateUrl,alternatePrivateUrl,accessSecret")
+        detail = json.loads(hidden["result"])["data"]
+        self.assertEqual(detail["privateUrl"], "[redacted]")
+        self.assertEqual(detail["alternatePrivateUrl"], "[redacted]")
+        self.assertEqual(detail["accessSecret"], "[redacted]")
+
+    def test_expired_status_rule_is_skill_configuration(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "license_permit_status")
+        request = build_configured_tool_request(
+            skill["workflow"], skill["allowed_tools"], "Do I have expired license?", []
+        )
+        self.assertEqual(
+            request,
+            (
+                "umc.licenses.list",
+                {
+                    "statuses": ["EXPIRED"],
+                    "documentTypes": [],
+                    "pageIndex": 1,
+                    "pageSize": 100,
+                    "sortBy": "expireDate",
+                    "sortDirection": 1,
+                },
+            ),
+        )
+        renewal = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "license_renewal")
+        renewal_request = build_configured_tool_request(renewal["workflow"], renewal["allowed_tools"], "Which licenses need renewal?", [])
+        self.assertEqual(renewal_request, ("umc.licenses.action_needed", {}))
+
+        list_event = type("Event", (), {
+            "event_type": "tool.result",
+            "event_json": {"toolName": "umc.licenses.list", "result": json.dumps({"data": {"items": [{"sourceLicenseId": 752}]}})},
+        })()
+        detail_request = build_configured_tool_request(
+            skill["workflow"], skill["allowed_tools"], "show the first detail", [list_event]
+        )
+        self.assertEqual(detail_request, ("umc.licenses.detail", {"id": "752"}))
 
     def test_knowledge_and_ocr_are_runtime_only_capabilities(self):
         business_tools = {item["tool_name"] for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
@@ -205,6 +288,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         )
         self.assertIn("AVAILABLE TOOLS FOR THIS SKILL", prompt)
         self.assertIn("umc.licenses.list", prompt)
+        self.assertIn("Never expose internal Tool names", prompt)
 
     def test_legacy_knowledge_and_new_license_tool_boundaries(self):
         class Knowledge:

@@ -128,6 +128,7 @@ class Skill(Base):
     aliases: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
     positive_examples: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
     negative_examples: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
+    workflow: Mapped[dict[str, Any]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
     content: Mapped[str] = mapped_column(Text, default="")
     updated_by: Mapped[str] = mapped_column(String(128), default="system")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -185,6 +186,7 @@ async def init_db() -> None:
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS aliases JSONB NOT NULL DEFAULT '[]'::jsonb"))
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS positive_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS negative_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
+            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS workflow JSONB NOT NULL DEFAULT '{}'::jsonb"))
 
     # Seed the routing skills once so the Skill API and the runtime share the
     # same guardrails. Existing operator-managed versions are preserved.
@@ -241,8 +243,10 @@ async def init_db() -> None:
                 # Apply revisions only while the record is still system-owned;
                 # a Skill edited by an operator is intentionally preserved.
                 if existing_skill.source == "builtin" and existing_skill.updated_by == "system":
-                    for field in ("name", "allowed_tools", "dependencies", "domain", "aliases", "positive_examples", "negative_examples", "content"):
-                        desired = definition[field]
+                    for field in ("name", "allowed_tools", "dependencies", "domain", "aliases", "positive_examples", "negative_examples", "workflow", "content"):
+                        # New declarative fields may be absent while a development
+                        # reloader is between module versions.
+                        desired = definition.get(field, {} if field == "workflow" else getattr(existing_skill, field))
                         if getattr(existing_skill, field) != desired:
                             setattr(existing_skill, field, desired)
                             changed = True
@@ -262,6 +266,7 @@ async def init_db() -> None:
                     aliases=definition.get("aliases", []),
                     positive_examples=definition.get("positive_examples", []),
                     negative_examples=definition.get("negative_examples", []),
+                    workflow=definition.get("workflow", {}),
                     content=definition["content"],
                     updated_by="system",
                 )
@@ -274,12 +279,13 @@ async def init_db() -> None:
                 # Upgrade the original hard-coded read adapters to their
                 # Swagger-backed Registry definition without overwriting
                 # operator-edited descriptions or lifecycle flags.
-                if existing.source == "builtin" and definition.get("source") == "swagger":
+                if existing.updated_by == "system" and definition.get("source") == "swagger":
                     existing.operation_id = str(definition["operation_id"])
                     existing.http_method = str(definition["http_method"])
                     existing.http_path = str(definition["http_path"])
                     existing.interface_key = interface_key(definition["http_method"], definition["http_path"])
                     existing.parameters = dict(definition.get("parameters", {}))
+                    existing.masking_policy = str(definition.get("masking_policy", "default"))
                     existing.source = "swagger"
                     changed = True
                 continue

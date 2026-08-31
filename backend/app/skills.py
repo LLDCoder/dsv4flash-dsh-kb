@@ -134,14 +134,14 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks about applications, pending payment, new-license requirements, or administrative records.",
         "a current UMC bearer token and live License/Permit APIs; never substitute application records.",
         "report License and Permit separately plus a total; use real status/effectiveDate/expireDate/allowedActions and identify the data scope. This Skill is read-only and never renews, modifies, cancels, transfers, or submits.",
-        "/permits-license; application links use /my-requests/detail?id={applicationId}&certificateId={sourceLicenseId}",
+        "/permits-license; if a selected-record detail request is unavailable, say only that full details are unavailable and direct the user to this portal page. Never describe internal tools, errors, URLs, access codes, or hidden fields.",
     ),
     "permit_download": _guidance(
         "the user asks to view or download a specific issued License/Permit document.",
         "the user has not selected a document, or asks to download an application draft or another user's document.",
-        "list records first, obtain the selected documentId/sourceLicenseId, and require explicit confirmation before exposing download details.",
-        "use the detail response to obtain certificateUrl and pdfPassword; explain the PDF Access Code flow, ask for explicit confirmation immediately before download, and never claim a public share link or download without confirmation.",
-        "/permits-license, then the portal's document viewer/download flow",
+        "the customer uses the authenticated NMA customer portal.",
+        "do not retrieve or expose document URLs, access codes, or download credentials. Direct the customer to the Licenses & Permits page and tell them to use the record's Download action there. Do not describe portal internals or file generation.",
+        "/permits-license",
     ),
     "payment_receipt": _guidance(
         "the user asks to find or download a receipt for a completed payment.",
@@ -380,13 +380,46 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Issued license and permit status",
         "allowed_tools": ["umc.licenses.list", "umc.licenses.statistics", "umc.licenses.action_needed", "umc.licenses.detail"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {
+            "toolRequestRules": [
+                {
+                    "when": {"anyTerms": ["expir", "到期", "ستنتهي", "منتهية"]},
+                    "toolName": "umc.licenses.list",
+                    "arguments": {
+                        "statuses": ["EXPIRED"],
+                        "documentTypes": [],
+                        "pageIndex": 1,
+                        "pageSize": 100,
+                        "sortBy": "expireDate",
+                        "sortDirection": 1,
+                    },
+                },
+            ],
+            "defaultToolRequest": {
+                "toolName": "umc.licenses.list",
+                "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
+            },
+            "selection": {
+                "sourceTool": "umc.licenses.list",
+                "itemsPath": "data.items",
+                "valueField": "sourceLicenseId",
+                "identifierFields": ["documentId", "licensePermitNo", "showLicenseNumber", "mediaLicenseNumber", "documentName"],
+                "ordinalTerms": {"1": ["first", "第一个"], "2": ["second", "第二个"]},
+                "detailRequest": {
+                    "when": {"anyTerms": ["detail", "view document", "详情", "查看文件"]},
+                    "toolName": "umc.licenses.detail",
+                    "argumentName": "id",
+                    "argumentValueType": "string",
+                },
+            },
+        },
         "content": SKILL_GUIDANCE["license_permit_status"],
     },
     {
         "skill_id": "permit_download",
         "name": "Issued permit download",
-        "allowed_tools": ["umc.licenses.list", "umc.licenses.action_needed", "umc.licenses.detail"],
-        "dependencies": ["trusted_principal", "umc_customer_api", "explicit_confirmation"],
+        "allowed_tools": [],
+        "dependencies": [],
         "content": SKILL_GUIDANCE["permit_download"],
     },
     {
@@ -450,6 +483,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "License and permit action-needed information",
         "allowed_tools": ["knowledge.search", "umc.licenses.list", "umc.licenses.action_needed", "umc.licenses.action_validate", "umc.licenses.detail"],
         "dependencies": ["knowledge_gateway", "trusted_principal", "umc_customer_api"],
+        "workflow": {"defaultToolRequest": {"toolName": "umc.licenses.action_needed", "arguments": {}}},
         "content": SKILL_GUIDANCE["license_renewal"],
     },
     {
@@ -493,6 +527,7 @@ for _definition in DEFAULT_SKILL_DEFINITIONS:
     _definition.update(_routing)
     _definition.setdefault("positive_examples", list(_routing.get("aliases", []))[:4])
     _definition.setdefault("negative_examples", [])
+    _definition.setdefault("workflow", {})
 
 
 def _has(text: str, *terms: str) -> bool:
@@ -703,6 +738,7 @@ def build_system_prompt(
 ) -> str:
     guardrails = [
         "Use only trusted tool evidence. When evidence is unavailable, state the limitation and never invent account data, fees, regulations, or API capabilities.",
+        "Never expose internal Tool names, request arguments, serialized JSON, API envelopes, or internal evidence instructions. Convert verified evidence into a concise user-facing answer.",
         "Payments, appeals, complaints, downloads, and all other side effects require a preview and the user's explicit confirmation.",
         "Candidate services are not eligibility decisions. Treat renewal and extension as distinct operations.",
     ]

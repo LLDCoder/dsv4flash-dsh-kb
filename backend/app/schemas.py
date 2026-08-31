@@ -77,6 +77,7 @@ class SkillUpsert(APIModel):
     aliases: list[str] = Field(default_factory=list)
     positive_examples: list[str] = Field(default_factory=list, validation_alias=AliasChoices("positiveExamples", "positive_examples"))
     negative_examples: list[str] = Field(default_factory=list, validation_alias=AliasChoices("negativeExamples", "negative_examples"))
+    workflow: dict[str, Any] = Field(default_factory=dict)
     content: str = ""
 
 
