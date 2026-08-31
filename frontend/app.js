@@ -1132,10 +1132,12 @@ function extractUploadReference(value, depth = 0) {
   return "";
 }
 
-async function postAttachment(file, token, fieldName) {
+async function postAttachment(file, token) {
   const formData = new FormData();
-  formData.append(fieldName, file, file.name);
-  const response = await fetch("/api/v1/umc/documents/upload", {
+  // Reuse the UMC Customer Portal upload endpoint. The verified portal
+  // contract uses the plural multipart field name `files`.
+  formData.append("files", file, file.name);
+  const response = await fetch("/api/Document/Upload", {
     method: "POST",
     headers: { Authorization: token.toLowerCase().startsWith("bearer ") ? token : `Bearer ${token}` },
     body: formData,
@@ -1162,17 +1164,13 @@ async function uploadAttachment(file) {
   $("attachmentType").value = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf") ? "0" : "1";
   $("attachmentStatus").textContent = `正在上传 ${file.name}…`;
   try {
-    let result = await postAttachment(file, rawToken, "file");
-    // The documented field is singular, but the current 77 portal build has
-    // a compatibility quirk: it may answer 200/data=[] for `file` and return
-    // the object reference only for the frontend's historical `files` field.
+    let result = await postAttachment(file, rawToken);
     if (result.response.status === 401) {
       state.umcToken = "";
       $("umcToken").value = "";
       await loadUmcToken(true);
-      result = await postAttachment(file, state.umcToken, "file");
+      result = await postAttachment(file, state.umcToken);
     }
-    if (!result.fileRef && result.response.status !== 401) result = await postAttachment(file, state.umcToken, "files");
     const { response, payload, fileRef } = result;
     if (!response.ok) throw new Error(typeof payload === "string" ? payload || `HTTP ${response.status}` : JSON.stringify(payload));
     if (!fileRef) throw new Error("上传成功但 UMC 响应中没有文件对象引用。");
