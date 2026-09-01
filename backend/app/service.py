@@ -41,11 +41,6 @@ from .tool_gateway import ToolGateway, parse_tool_request
 from .umc_auth import UMCAuthClient
 
 
-WELCOME_MESSAGE = """Hello! 👋 I’m your AI assistant for the National Media Authority (NMA). Tell me about your work or publishing needs, and I’ll help you find the right services.
-
-مرحباً! 👋 أنا مساعدك الذكي من الهيئة الوطنية للإعلام (NMA). أخبرني عن عملك أو احتياجاتك للنشر، وسأساعدك في اختيار الخدمات المناسبة."""
-
-
 class EventBroker:
     def __init__(self) -> None:
         self._subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = defaultdict(set)
@@ -307,12 +302,6 @@ class DSHService:
         db.add(conversation)
         await db.commit()
         await db.refresh(conversation)
-        await self.append_event(
-            db,
-            conversation,
-            "assistant.welcome",
-            {"content": WELCOME_MESSAGE, "source": "conversation.initialization"},
-        )
         return conversation
 
     async def get_owned_conversation(self, db: AsyncSession, principal: Principal, conversation_id: str) -> Conversation:
