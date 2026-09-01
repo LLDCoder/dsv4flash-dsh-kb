@@ -1160,6 +1160,10 @@ async function loadAuditDetail(conversationId, { append = false } = {}) {
 }
 
 async function loadAuditConversations(page = state.auditConversationPage) {
+  const requestedPage = Number(page);
+  page = Number.isInteger(requestedPage) && requestedPage >= 1
+    ? requestedPage
+    : state.auditConversationPage;
   state.auditConversationPage = page;
   $("auditStatus").textContent = "正在读取会话列表…";
   try {
@@ -1549,7 +1553,7 @@ $("selectAllSwagger").addEventListener("change", (event) => {
 $("swaggerOperationsTable").addEventListener("change", (event) => {
   if (event.target.matches("input[data-operation-id]")) updateSwaggerSelectionState();
 });
-$("reloadAuditBtn").addEventListener("click", loadAuditConversations);
+$("reloadAuditBtn").addEventListener("click", () => { void loadAuditConversations(); });
 $("auditConversationSearchInput").addEventListener("input", debounce(() => { void loadAuditConversations(1); }));
 $("auditRecordSearchInput").addEventListener("input", debounce(() => { void loadAuditDetail(state.auditConversationId); }));
 $("auditCategoryFilter").addEventListener("change", () => loadAuditDetail(state.auditConversationId));

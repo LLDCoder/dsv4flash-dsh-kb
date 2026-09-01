@@ -225,6 +225,30 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(blocked["code"], "profile_selection_required")
         self.assertEqual(len(platform.calls), 1)
 
+    def test_profile_scope_does_not_match_profile_name_inside_regular_word(self):
+        context = profile_context_from_payload({
+            "activeProfileId": "0",
+            "isGlobalView": True,
+            "profiles": [{"id": "22", "name": "Test"}],
+        })
+        definition = {
+            "name": "applications.list",
+            "httpPath": "/api/MyRequest/ApplicationPage",
+            "parameters": {"type": "object", "properties": {}},
+            "profileScope": {"mode": "token_scoped"},
+        }
+        self.assertIsNone(
+            requires_profile_switch(
+                definition,
+                context,
+                "What's my latest application, and when was it submitted?",
+            )
+        )
+        self.assertEqual(
+            requires_profile_switch(definition, context, "Show requests for Test profile").profile_id,
+            "22",
+        )
+
     def test_every_published_skill_tool_has_a_registry_definition(self):
         from app.skills import DEFAULT_SKILL_DEFINITIONS
 
@@ -590,6 +614,11 @@ class RegistryAndRoutingTests(unittest.TestCase):
     def test_internal_tool_protocol_is_not_a_public_answer(self):
         self.assertTrue(is_internal_tool_protocol('JSON\n{"tool": "umc.licenses.detail", "args": {"id": "20329"}}'))
         self.assertTrue(is_internal_tool_protocol('```json\n{"toolName": "umc.applications", "arguments": {}}\n```'))
+        self.assertTrue(is_internal_tool_protocol(
+            'I will check the guidance.\n\n<｜｜DSML｜｜tool_calls>\n'
+            '<｜｜DSML｜｜invoke name="knowledge.search">\n'
+            '<｜｜DSML｜｜parameter name="query" string="true">Text Permit application</｜｜DSML｜｜parameter>'
+        ))
         self.assertFalse(is_internal_tool_protocol('{"total": 2, "status": "EXPIRED"}'))
 
     def test_legacy_knowledge_and_new_license_tool_boundaries(self):

@@ -106,18 +106,33 @@ def _profile_aliases(name: str) -> set[str]:
     return aliases
 
 
+def _contains_profile_name(text: str, name: str) -> bool:
+    """Match a profile name as whole words, never as a substring.
+
+    A compact substring match makes short profile names unsafe: for example,
+    the profile name ``Test`` incorrectly matches the word ``latest``. Keep
+    matching punctuation-insensitive, but require the full sequence of words.
+    """
+
+    name_words = re.findall(r"[\w]+", name.casefold(), flags=re.UNICODE)
+    text_words = re.findall(r"[\w]+", text.casefold(), flags=re.UNICODE)
+    if not name_words or len(name_words) > len(text_words):
+        return False
+    width = len(name_words)
+    return any(text_words[index:index + width] == name_words for index in range(len(text_words) - width + 1))
+
+
 def requested_profile(text: str, context: ProfileContext | None) -> ProfileReference | None:
     """Resolve only an unambiguous profile already known to the portal."""
 
     if not context or not text.strip():
         return None
-    haystack = _compact(text)
     words = re.findall(r"[\w]+", text.casefold(), flags=re.UNICODE)
     profile_word_indexes = [index for index, word in enumerate(words) if word == "profile"]
     matches: dict[str, ProfileReference] = {}
     for profile in context.profiles:
         aliases = _profile_aliases(profile.name)
-        exact_match = any(len(alias) >= 4 and alias in haystack for alias in aliases if alias == _compact(profile.name))
+        exact_match = _contains_profile_name(text, profile.name)
         contextual_match = False
         for index in profile_word_indexes:
             if index == 0:
