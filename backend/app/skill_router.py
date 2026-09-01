@@ -49,6 +49,9 @@ class SkillCatalogCache:
             "positiveExamples": list(getattr(item, "positive_examples", None) or []),
             "negativeExamples": list(getattr(item, "negative_examples", None) or []),
             "routing": routing_contract(dict(getattr(item, "workflow", None) or {})),
+            # The full routing rule is intentionally included for runtime
+            # evaluation. The shorter `routing` field remains the LLM contract.
+            "deterministicRouting": list((getattr(item, "workflow", None) or {}).get("deterministicRouting") or []),
             "version": item.version,
             "status": item.status,
             "enabled": bool(item.enabled),

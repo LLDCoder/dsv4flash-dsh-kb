@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.skills import LEGACY_SKILL_ID_MIGRATIONS, build_system_prompt, canonical_skill_id, resolve_skill
-from app.skill_workflow import build_configured_tool_request, mask_tool_result, normalize_route_directives, routing_contract
+from app.skills import LEGACY_SKILL_ID_MIGRATIONS, build_system_prompt, canonical_skill_id, merged_skill_workflow, resolve_configured_skill, resolve_skill
+from app.skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
@@ -55,6 +55,36 @@ class RegistryAndRoutingTests(unittest.TestCase):
             ),
             ("umc.application_payment_detail", {"applicationId": 4503}),
         )
+
+    def test_published_selection_workflow_claims_only_its_declared_follow_up(self):
+        class Event:
+            event_type = "tool.result"
+            event_json = {
+                "toolName": "records.list",
+                "result": json.dumps({"data": {"items": [{"id": 1}]}}),
+            }
+
+        workflow = {
+            "selection": {
+                "sourceTool": "records.list",
+                "itemsPath": "data.items",
+                "toolRequest": {"when": {"anyTerms": ["inspect selected"]}},
+            },
+        }
+        self.assertTrue(matches_configured_selection_follow_up(workflow, "inspect selected record", [Event()]))
+        self.assertFalse(matches_configured_selection_follow_up(workflow, "show a different report", [Event()]))
+
+    def test_deterministic_routing_is_driven_by_published_skill_configuration(self):
+        catalog = [{
+            "skillId": "custom_records",
+            "deterministicRouting": [{
+                "priority": 10,
+                "allTerms": ["inspect", "record"],
+                "route": {"category": "api_call", "mode": "answer", "fields": ["record_id"]},
+            }],
+        }]
+        route = resolve_configured_skill("inspect this record", catalog, canonicalize=False)
+        self.assertEqual((route.skill_id, route.category, route.fields), ("custom_records", "api_call", ("record_id",)))
 
     def test_payments_routes_obey_read_only_priority(self):
         self.assertEqual(resolve_skill("申请 ML-2-2026-12345 待付款").skill_id, "application_payment_details")
@@ -243,6 +273,18 @@ class RegistryAndRoutingTests(unittest.TestCase):
             skill["workflow"], skill["allowed_tools"], "show the first detail", [list_event], intent_id=detail_intent, filters=detail_filters
         )
         self.assertEqual(detail_request, ("umc.licenses.detail", {"id": "752"}))
+        second_list_event = type("Event", (), {
+            "event_type": "tool.result",
+            "event_json": {"toolName": "umc.licenses.list", "result": json.dumps({"data": {"items": [
+                {"sourceLicenseId": 752}, {"sourceLicenseId": 753},
+            ]}})},
+        })()
+        self.assertEqual(
+            build_configured_tool_request(
+                skill["workflow"], skill["allowed_tools"], "show the second detail", [second_list_event], intent_id="detail"
+            ),
+            ("umc.licenses.detail", {"id": "753"}),
+        )
 
         application_skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "application_status")
         application_intent, application_filters = normalize_route_directives(
@@ -414,6 +456,49 @@ class RegistryAndRoutingTests(unittest.TestCase):
         context = route_context_from_history(history, [])
         prior = context["recentMessages"][:-1]
         self.assertEqual([item["content"] for item in prior], ["2", "3", "4", "5"])
+
+    def test_active_legacy_skill_alias_resolves_to_the_published_record(self):
+        catalog = [{"skillId": "application_payment", "domain": "payments"}]
+        active_skill_id = "application_payment_details"
+        active = next(
+            (item for item in catalog if canonical_skill_id(item["skillId"]) == active_skill_id),
+            None,
+        )
+        self.assertEqual(active["skillId"], "application_payment")
+
+    def test_renamed_skill_inherits_only_missing_workflow_sections(self):
+        workflow = merged_skill_workflow(
+            "application_payment_details",
+            {
+                "routing": {"defaultIntentId": "list"},
+                "selection": {
+                    "sourceTool": "umc.applications",
+                    "itemsPath": "data.applicationPage.items",
+                    "valueField": "id",
+                    "toolRequest": {
+                        "toolName": "umc.application_payment_detail",
+                        "argumentName": "applicationId",
+                        "argumentValueType": "integer",
+                    },
+                },
+            },
+        )
+        self.assertEqual(workflow["routing"]["defaultIntentId"], "list")
+        self.assertTrue(workflow["routing"]["intents"])
+        self.assertEqual(workflow["selection"]["sourceTool"], "umc.applications")
+        self.assertEqual(workflow["selection"]["ordinalTerms"]["2"], ["second", "2nd", "第二个", "第二笔", "الثاني"])
+        event = type("Event", (), {
+            "event_type": "tool.result",
+            "event_json": {
+                "toolName": "umc.applications",
+                "result": {"data": {"applicationPage": {"items": [{"id": 4503}]}}},
+            },
+        })()
+        self.assertTrue(matches_configured_selection_follow_up(workflow, "show payment details for the first one", [event]))
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["umc.application_payment_detail"], "show payment details for the first one", [event]),
+            ("umc.application_payment_detail", {"applicationId": 4503}),
+        )
 
     def test_final_answer_prompt_excludes_tool_definitions(self):
         prompt = build_system_prompt(

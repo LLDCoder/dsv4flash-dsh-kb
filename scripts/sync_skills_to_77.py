@@ -68,6 +68,11 @@ def main() -> int:
             "enabled": bool(args.publish),
             "allowedTools": definition["allowed_tools"],
             "dependencies": definition["dependencies"],
+            "domain": definition.get("domain", "general"),
+            "aliases": definition.get("aliases", []),
+            "positiveExamples": definition.get("positive_examples", []),
+            "negativeExamples": definition.get("negative_examples", []),
+            "workflow": definition.get("workflow", {}),
             "content": definition["content"],
         }
         action = "PUT" if existing else "POST"

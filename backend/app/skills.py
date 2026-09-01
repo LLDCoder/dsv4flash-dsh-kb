@@ -566,6 +566,10 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                 "itemsPath": "data.items",
                 "valueField": "sourceLicenseId",
                 "identifierFields": ["documentId", "licensePermitNo", "showLicenseNumber", "mediaLicenseNumber", "documentName"],
+                "ordinalTerms": {
+                    "1": ["first", "1st", "第一", "第一个", "الأول"],
+                    "2": ["second", "2nd", "第二", "第二个", "الثاني"],
+                },
                 "toolRequest": {
                     "toolName": "umc.licenses.detail",
                     "argumentName": "id",
@@ -726,181 +730,152 @@ for _definition in DEFAULT_SKILL_DEFINITIONS:
     _definition.setdefault("workflow", {})
 
 
-def _has(text: str, *terms: str) -> bool:
+ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
+    "document_ocr": [{"priority": 1000, "anyTerms": ["ocr", "optical character", "attached document", "attached Arabic trade license", "upload", "image", "screenshot", "IMG-", "识别材料", "扫描件", "图片", "截图", "上传", "رخصة التجارة العربية", "المرفقة", "صورة", "لقطة شاشة"], "route": {"category": "api_call", "mode": "collect", "fields": ["file", "file_type"]}}],
+    "umc_book_by_isbn": [{"priority": 1000, "anyTerms": ["book by isbn", "isbn lookup", "isbn 查询", "isbn"], "route": {"category": "api_call", "fields": ["isbn"]}}],
+    "umc_application_detail": [{"priority": 1000, "anyTerms": ["application detail", "applicationdetail", "application id", "applicationid", "申请详情", "申请 id"], "route": {"category": "api_call", "fields": ["applicationId"]}}],
+    "umc_add_application": [{"priority": 1000, "anyTerms": ["add new application", "new draft application", "create a draft application", "新增申请", "新建草稿"], "route": {"category": "api_call", "mode": "collect", "fields": ["parameters"], "confirmationRequired": True}}],
+    "application_payment": [
+        {"priority": 990, "anyTerms": ["pending payment", "waiting for payment", "awaiting payment", "application payment", "application payments", "待付款", "支付多少钱", "付款详情", "الدفع المعلق", "كم أدفع", "تفاصيل الدفع"], "route": {"category": "data_query", "routingLocked": True}},
+        {"priority": 980, "anyTerms": ["pay now", "how much to pay", "need to pay", "pay for", "payment details"], "anyTermGroups": [["application"], ["request"], ["申请"], ["请求"]], "route": {"category": "data_query", "routingLocked": True}},
+    ],
+    "payment_receipt": [
+        {"priority": 970, "anyTerms": ["refund", "退款", "استرداد"], "noneTerms": ["refund in progress", "refund completed", "failed refund", "refund status", "退款中", "退款完成", "交易状态", "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
+        {"priority": 970, "anyTerms": ["download", "下载", "تنزيل", "تحميل", "export", "导出", "تصدير"], "anyTermGroups": [["receipt"], ["收据"], ["إيصال"], ["transaction"], ["交易"], ["record"], ["记录"], ["payment"], ["付款"], ["支付"]], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
+        {"priority": 900, "anyTerms": ["payment", "transaction", "receipt", "付款", "支付", "交易", "收据", "إيصال", "إيصال الدفع", "technical enquiry", "cannot complete payment", "技术", "استفسار تقني", "تعذر الدفع", "لا أستطيع إتمام الدفع"], "route": {"category": "data_query", "routingLocked": True}},
+    ],
+    "fine_appeal": [{"priority": 965, "anyTerms": ["appeal", "申诉", "استئناف", "طعن"], "anyTermGroups": [["fine"], ["violation penalty"], ["罚款"], ["违规"], ["غرامة"], ["مخالفة"]], "route": {"category": "api_call", "mode": "collect", "fields": ["violation_number", "appeal_reason", "appeal_details"], "confirmationRequired": True}}],
+    "fine_payment": [{"priority": 960, "anyTerms": ["fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "route": {"category": "data_query", "routingLocked": True}}],
+    "latest_regulations": [
+        {"priority": 880, "anyTerms": ["quote", "exactly", "逐字", "原文", "اقتبس", "حرفيًا", "النص الأصلي"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "exact_quote", "fields": ["regulation_or_resolution_reference", "article_number"], "choices": ["Latest updates", "Summary", "Exact quotation"]}},
+        {"priority": 870, "anyTerms": ["regulation", "media rules", "media regulations", "cabinet resolution", "法规", "条例", "لائحة", "لوائح", "تشريعات", "قرار مجلس الوزراء", "content standards", "advertising on social media", "media content", "child-safety", "child safety", "children", "advertising rules", "policy comparison", "regulation version", "معايير المحتوى", "سلامة الأطفال"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "fields": ["regulation_topic", "regulation_or_resolution_reference", "article_number"], "choices": ["Latest updates", "Summary", "Exact quotation"]}},
+    ],
+    "my_requests_pending_actions": [{"priority": 850, "anyTerms": ["pending actions", "what needs attention", "outstanding actions", "my requests pending", "my pending actions", "待处理事项", "待办申请", "我的待办", "我的待处理", "需要处理"], "noneTerms": ["license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"], "route": {"category": "data_query"}}],
+    "license_renewal": [
+        {"priority": 860, "anyTerms": ["action needed", "actions needed", "needs renewal", "renewal due", "需要续期", "待处理"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"]}},
+        {"priority": 855, "anyTerms": ["renew", "renewal", "extend an existing permit", "续期", "延期", "تجديد", "تمديد"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["license_or_permit_type", "license_number"], "choices": ["Renew licence", "Extend permit"]}},
+    ],
+    "license_permit_modification_knowledge": [{"priority": 850, "anyTerms": ["modify", "modification", "change license", "change permit", "update license", "update permit", "修改", "变更"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "route": {"category": "api_call", "fields": ["license_or_permit_type"]}}],
+    "permit_download": [{"priority": 835, "anyTerms": ["download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر"], "anyTermGroups": [["permit"], ["license"], ["许可"], ["تصريح"], ["رخصة"]], "route": {"category": "data_query"}}],
+    "license_permit_status": [
+        {"priority": 845, "anyTerms": ["my", "我的", "رخصتي", "تصريحي"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب", "download", "下载", "تنزيل", "تحميل"], "route": {"category": "data_query", "fields": ["license_or_permit_type"]}},
+        {"priority": 830, "anyTerms": ["expire", "expiring", "expiry", "到期", "ستنتهي", "منتهية"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب"], "route": {"category": "data_query", "fields": ["license_or_permit_type"]}},
+        {"priority": 830, "anyTerms": ["how many license", "how many licence", "number of licenses", "number of licences", "license status", "licence status", "permit status", "license expiry", "licence expiry", "expiring licenses", "expiring licences", "expiring permits", "my license", "my permit", "my licence", "my licenses", "my permits", "我的许可证", "我的牌照", "我的许可", "许可证数量", "牌照数量", "许可证状态", "牌照状态", "حالة رخصتي", "حالة تصريحي", "رخصتي", "تصريحي", "عدد الرخص", "عدد التصاريح"], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب"], "route": {"category": "data_query", "fields": ["license_or_permit_type"]}},
+    ],
+    "admin_inspection": [{"priority": 820, "anyTerms": ["inspection summary", "high risk", "inspection", "检查摘要", "高风险"], "route": {"category": "data_query"}}],
+    "admin_analytics": [{"priority": 820, "anyTerms": ["dimension pivot", "process time", "按省", "按酋长国", "اتجاه وقت معالجة", "قسّمه حسب الإمارة"], "route": {"category": "data_query"}}],
+    "admin_finance": [{"priority": 820, "anyTerms": ["revenue", "fine collection", "last 7 days", "finance trend", "收入", "罚款回收", "الإيرادات", "تحصيل الغرامات"], "route": {"category": "data_query"}}],
+    "admin_audit": [{"priority": 820, "anyTerms": ["audit", "low-confidence", "full user details", "permissions", "审计", "低置信度", "用户详情"], "route": {"category": "data_query"}}],
+    "application_status": [
+        {"priority": 950, "patterns": ["application_number"], "route": {"category": "data_query"}},
+        {"priority": 810, "anyTerms": ["latest status", "application status", "application history", "application histories", "status of my application", "what's the status of my application", "open applications", "summarize my open", "my requests", "我的申请", "我的请求", "申请状态", "申请进度", "申请历史", "حالة الطلب", "حالة طلبي", "آخر حالة"], "route": {"category": "data_query"}},
+    ],
+    "license_application_knowledge": [{"priority": 800, "anyTerms": ["how to apply", "how do i apply", "apply for", "application requirements", "license requirements", "permit requirements", "photography", "filming", "filming permit", "photocopying equipment", "advertising license", "new permit", "license application", "media license", "newspaper", "publication", "broadcasting", "radio", "television", "申请许可", "申请许可证", "办理牌照", "摄影", "طلب تصريح", "متطلبات الترخيص", "رخصة إعلامية", "تصريح", "ترخيص", "صحيفة", "منشور", "بث"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["permit_or_service_type", "account_type"], "choices": ["Individual", "Commercial", "Government"]}}],
+    "service_discovery": [{"priority": 790, "anyTerms": ["which service should", "very specific media activity", "not listed", "media service comparison", "difference between a photography permit and an advertiser permit", "apply for a media service", "advertiser permit", "paid product reviews", "social media", "right service", "service for my business", "服务对比", "未列出", "选择哪项服务", "找不到服务", "الخدمة المناسبة", "نشاطي التجاري"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["account_type", "media_activity"]}}],
+    "copyright_guidance": [{"priority": 875, "anyTerms": ["版权", "copyright", "photograph from the internet", "commercial campaign", "حقوق الطبع"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "fields": ["regulation_topic"]}}],
+    "service_fees": [{"priority": 780, "anyTerms": ["cost", "processing time", "how much does", "service fees", "fees", "fee", "费用", "الرسوم"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["service_name"]}}],
+    "complaint_create": [{"priority": 770, "anyTerms": ["complaint", "投诉", "شكوى"], "route": {"category": "api_call", "mode": "collect", "fields": ["application_number", "complaint_details"], "confirmationRequired": True}}],
+    "enquiry_followup": [{"priority": 770, "anyTerms": ["follow up", "enquiry", "咨询", "متابعة", "استفسار"], "anyTermGroups": [["earlier"], ["submitted"], ["跟进"], ["سابق"], ["مقدم"]], "route": {"category": "data_query", "mode": "collect", "fields": ["enquiry_reference"]}}],
+    "enquiry_reopen": [{"priority": 770, "anyTerms": ["reopen", "resolved enquiry", "重新打开", "إعادة فتح", "استفسار مغلق"], "route": {"category": "api_call", "mode": "collect", "fields": ["enquiry_reference"], "choices": ["Check message option", "Create linked enquiry"]}}],
+    "profile_status": [{"priority": 760, "anyTerms": ["profile is under review", "profile review", "profile 审核", "الملف قيد المراجعة", "ملفي قيد المراجعة", "مراجعة الملف"], "route": {"category": "data_query", "mode": "collect", "fields": ["profile_id"], "choices": ["Individual", "Business"]}}],
+    "service_eligibility_info": [{"priority": 750, "anyTerms": ["who is eligible", "eligible for media services", "media service eligibility", "مؤهل", "الأهلية", "الخدمات الإعلامية"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["account_type", "media_activity"], "choices": ["Individual", "Commercial", "Government"]}}],
+    "service_eligibility": [{"priority": 740, "anyTerms": ["eligible", "eligibility", "资格", "مؤهل", "الأهلية"], "route": {"category": "data_query", "mode": "collect", "fields": ["profile_id", "account_type", "media_activity"], "choices": ["Individual", "Commercial", "Government"]}}],
+}
+
+
+for _definition in DEFAULT_SKILL_DEFINITIONS:
+    rules = ROUTING_RULES.get(_definition["skill_id"])
+    if rules:
+        _definition["workflow"] = {**_definition["workflow"], "deterministicRouting": rules}
+
+
+def _rule_matches(text: str, rule: dict[str, Any]) -> bool:
     lowered = text.lower()
-    return any(term.lower() in lowered for term in terms)
+    contains = lambda term: str(term).lower() in lowered
+    any_terms = list(rule.get("anyTerms") or [])
+    all_terms = list(rule.get("allTerms") or [])
+    any_groups = list(rule.get("anyTermGroups") or [])
+    if any_terms and not any(contains(term) for term in any_terms):
+        return False
+    if all_terms and not all(contains(term) for term in all_terms):
+        return False
+    if any_groups and not any(all(contains(term) for term in group) for group in any_groups if isinstance(group, list)):
+        return False
+    if any(contains(term) for term in list(rule.get("noneTerms") or [])):
+        return False
+    for pattern in list(rule.get("patterns") or []):
+        if pattern == "application_number":
+            if not re.search(r"\bML-\d+(?:-[A-Za-z0-9]+)*\b", text, re.IGNORECASE):
+                return False
+        elif not re.search(str(pattern), text, re.IGNORECASE):
+            return False
+    return bool(any_terms or all_terms or any_groups or rule.get("patterns"))
 
 
-def _has_application_number(text: str) -> bool:
-    """Recognize portal application numbers without treating them as internal IDs."""
+def resolve_configured_skill(
+    text: str,
+    definitions: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    *,
+    canonicalize: bool = True,
+) -> SkillRoute | None:
+    """Evaluate persisted per-Skill routing rules without business-specific code."""
 
-    return bool(re.search(r"\bML-\d+(?:-[A-Za-z0-9]+)*\b", text, re.IGNORECASE))
+    candidates: list[tuple[int, int, str, dict[str, Any], dict[str, Any]]] = []
+    for definition_index, definition in enumerate(definitions):
+        workflow = dict(definition.get("workflow") or {})
+        rules = workflow.get("deterministicRouting") or definition.get("deterministicRouting") or []
+        skill_id = str(definition.get("skill_id") or definition.get("skillId") or "").strip()
+        for rule_index, rule in enumerate(rules):
+            if isinstance(rule, dict) and skill_id and _rule_matches(text, rule):
+                candidates.append((int(rule.get("priority", 0)), -definition_index, skill_id, rule, dict(rule.get("route") or {})))
+    if not candidates:
+        return None
+    _, _, skill_id, _, route = max(candidates, key=lambda candidate: (candidate[0], candidate[1]))
+    return SkillRoute(
+        canonical_skill_id(skill_id) if canonicalize else skill_id,
+        str(route.get("category") or "data_query"),
+        str(route["toolName"]) if route.get("toolName") else None,
+        str(route.get("mode") or "answer"),
+        tuple(str(value) for value in route.get("fields", []) or []),
+        tuple(str(value) for value in route.get("choices", []) or []),
+        bool(route.get("confirmationRequired", False)),
+        bool(route.get("routingLocked", False)),
+    )
+
+
+def merged_skill_workflow(skill_id: str, published_workflow: dict[str, Any] | None) -> dict[str, Any]:
+    """Fill missing legacy workflow sections from the canonical built-in Skill.
+
+    Published values always win. This only preserves new workflow sections for
+    records created before a Skill was renamed or its workflow was expanded.
+    """
+
+    def merge_defaults(default: Any, published: Any) -> Any:
+        if not isinstance(default, dict) or not isinstance(published, dict):
+            return published
+        return {
+            key: merge_defaults(default[key], value) if key in default else value
+            for key, value in published.items()
+        } | {
+            key: value for key, value in default.items() if key not in published
+        }
+
+    canonical_id = canonical_skill_id(skill_id)
+    default = next(
+        (
+            definition
+            for definition in DEFAULT_SKILL_DEFINITIONS
+            if canonical_skill_id(str(definition.get("skill_id") or "")) == canonical_id
+        ),
+        None,
+    )
+    return merge_defaults(dict((default or {}).get("workflow") or {}), dict(published_workflow or {}))
 
 
 def resolve_skill(text: str) -> SkillRoute:
-    """Deterministic first-pass router; the LLM may refine only after this gate."""
-    if _has(text, "ocr", "optical character", "attached document", "attached Arabic trade license", "upload", "image", "screenshot", "IMG-", "识别材料", "扫描件", "图片", "截图", "上传", "رخصة التجارة العربية", "المرفقة", "صورة", "لقطة شاشة"):
-        return SkillRoute("document_ocr", "api_call", None, "collect", ("file", "file_type"))
-    if _has(text, "book by isbn", "isbn lookup", "isbn 查询", "isbn"):
-        return SkillRoute("umc_book_by_isbn", "api_call", None, "answer", ("isbn",))
-    if _has(text, "application detail", "applicationdetail", "application id", "applicationid", "申请详情", "申请 ID"):
-        return SkillRoute("umc_application_detail", "api_call", None, "answer", ("applicationId",))
-    if _has(text, "add new application", "new draft application", "create a draft application", "新增申请", "新建草稿"):
-        return SkillRoute("umc_add_application", "api_call", None, "collect", ("parameters",), confirmation_required=True)
-    if _has(text, "pending payment", "waiting for payment", "awaiting payment", "application payment", "application payments", "pay now", "how much to pay", "need to pay", "pay for", "payment details", "待付款", "支付多少钱", "付款详情", "الدفع المعلق", "كم أدفع", "تفاصيل الدفع") and (
-        _has(text, "application", "request", "申请", "请求", "طلب") or _has_application_number(text)
-    ):
-        return SkillRoute("application_payment_details", "data_query", None, "answer", routing_locked=True)
-    # Payments is read-only. Explicit refund, receipt-download, and export
-    # requests are Portal instructions, not transaction lookups or actions.
-    if _has(text, "refund", "退款", "استرداد") and not _has(
-        text, "refund in progress", "refund completed", "failed refund", "refund status", "退款中", "退款完成", "交易状态",
-        "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة",
-    ):
-        return SkillRoute("payment_transaction_history", "portal_action", None, "portal_action", routing_locked=True)
-    if _has(text, "download", "下载", "تنزيل", "تحميل", "export", "导出", "تصدير") and _has(
-        text, "receipt", "收据", "إيصال", "transaction", "交易", "record", "记录", "payment", "付款", "支付"
-    ):
-        return SkillRoute("payment_transaction_history", "portal_action", None, "portal_action", routing_locked=True)
-    if _has(text, "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"):
-        if _has(text, "appeal", "申诉", "استئناف", "طعن"):
-            return SkillRoute("fine_appeal", "api_call", None, "collect", ("violation_number", "appeal_reason", "appeal_details"), confirmation_required=True)
-        return SkillRoute("fine_payment_guidance", "data_query", None, "answer", routing_locked=True)
-    if _has(text, "payment", "transaction", "receipt", "付款", "支付", "交易", "收据", "إيصال", "إيصال الدفع"):
-        return SkillRoute("payment_transaction_history", "data_query", None, "answer", routing_locked=True)
-    if _has_application_number(text):
-        return SkillRoute("application_status", "data_query", None, "answer")
-    if _has(text, "quote", "exactly", "逐字", "原文", "اقتبس", "حرفيًا", "النص الأصلي"):
-        return SkillRoute(
-            "latest_regulations", "knowledge", "knowledge.search", "exact_quote",
-            ("regulation_or_resolution_reference", "article_number"),
-            ("Latest updates", "Summary", "Exact quotation"),
-        )
-    if _has(text, "regulation", "media rules", "media regulations", "cabinet resolution", "法规", "条例", "لائحة", "لوائح", "تشريعات", "قرار مجلس الوزراء"):
-        return SkillRoute(
-            "latest_regulations", "knowledge", "knowledge.search", "summary",
-            ("regulation_topic", "regulation_or_resolution_reference", "article_number"),
-            ("Latest updates", "Summary", "Exact quotation"),
-        )
-    if _has(text, "pending actions", "what needs attention", "outstanding actions", "my requests pending", "my pending actions", "待处理事项", "待办申请", "我的待办", "我的待处理", "需要处理") and (
-        _has(text, "my request", "application", "申请", "请求", "طلب", "طلبات")
-        or not _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح")
-    ):
-        return SkillRoute("my_requests_pending_actions", "data_query", None, "answer")
-    if _has(text, "action needed", "actions needed", "needs renewal", "renewal due", "需要续期", "待处理") and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"):
-        return SkillRoute("license_renewal", "data_query", None, "answer", ("license_or_permit_type", "license_number"))
-    # Renewal questions have priority over a generic possessive document
-    # reference; a named permit alone is an issued-document status query.
-    if _has(text, "renew", "renewal", "extend an existing permit", "续期", "延期", "تجديد", "تمديد"):
-        return SkillRoute(
-            "license_renewal", "knowledge", "knowledge.search", "answer",
-            ("license_or_permit_type", "license_number"), ("Renew licence", "Extend permit"),
-        )
+    """Resolve default Skill configuration; published Skills can override it at runtime."""
 
-    if _has(text, "modify", "modification", "change license", "change permit", "update license", "update permit", "修改", "变更") and _has(
-        text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"
-    ):
-        return SkillRoute(
-            "license_permit_modification_knowledge", "api_call", None, "answer", ("license_or_permit_type",)
-        )
-
-    if _has(text, "download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر") and _has(text, "permit", "license", "许可", "تصريح", "رخصة"):
-        return SkillRoute("permit_download", "data_query", None, "answer")
-
-    # Personal issued-document questions must be separated from public
-    # renewal guidance and from application status.
-    personal_document = _has(
-        text,
-        "how many license", "how many licence", "number of licenses", "number of licences",
-        "license status", "licence status", "permit status", "license expiry", "licence expiry",
-        "expiring licenses", "expiring licences", "expiring permits",
-        "我的许可证", "我的牌照", "我的许可", "许可证数量", "牌照数量", "许可证状态", "牌照状态",
-        "حالة رخصتي", "حالة تصريحي", "رخصتي", "تصريحي", "عدد الرخص", "عدد التصاريح",
-    )
-    personal_document = personal_document or (
-        _has(text, "my license", "my permit", "my licence", "my licenses", "my permits")
-        and _has(text, "status", "expiry", "expire", "expiring", "how many", "count", "状态", "到期", "数量")
-    )
-    personal_document = personal_document or (
-        _has(text, "expiry", "expire", "expiring", "到期", "ستنتهي", "منتهية")
-        and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح")
-    )
-    personal_document = personal_document or (
-        _has(text, "my ", "我的", "رخصتي", "تصريحي")
-        and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح")
-        and not _has(text, "apply", "application", "new license", "new permit", "requirements", "eligibility", "how to get", "申请", "办理", "资格")
-    )
-    application_document = _has(text, "application", "申请", "طلب", "طلباتي", "application status", "حالة الطلب")
-    if personal_document and not application_document:
-        return SkillRoute("license_permit_status", "data_query", None, "answer", ("license_or_permit_type",))
-
-    if _has(text, "inspection summary", "high risk", "inspection", "检查摘要", "高风险"):
-        return SkillRoute("admin_inspection", "data_query", None, "answer")
-    if _has(text, "dimension pivot", "process time", "按省", "按酋长国", "اتجاه وقت معالجة", "قسّمه حسب الإمارة"):
-        return SkillRoute("admin_analytics", "data_query", None, "answer")
-    if _has(text, "revenue", "fine collection", "last 7 days", "finance trend", "收入", "罚款回收", "الإيرادات", "تحصيل الغرامات"):
-        return SkillRoute("admin_finance", "data_query", None, "answer")
-    if _has(text, "audit", "low-confidence", "full user details", "permissions", "审计", "低置信度", "用户详情"):
-        return SkillRoute("admin_audit", "data_query", None, "answer")
-    # A status question must win over product/service keywords such as
-    # "social media" or "license application" (for example, "What is the
-    # status of my social media license?").
-    if _has(text, "latest status", "application status", "application history", "application histories", "status of my application", "what's the status of my application", "open applications", "summarize my open", "my requests", "我的申请", "我的请求", "申请状态", "申请进度", "申请历史", "حالة الطلب", "حالة طلبي", "آخر حالة"):
-        return SkillRoute("application_status", "data_query", None, "answer")
-    if _has(text, "how to apply", "how do i apply", "apply for", "application requirements", "license requirements", "permit requirements", "申请许可", "申请许可证", "办理牌照") and _has(text, "license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"):
-        return SkillRoute(
-            "license_application_knowledge", "knowledge", "knowledge.search", "answer",
-            ("permit_or_service_type",),
-        )
-    if _has(text, "which service should", "very specific media activity", "not listed", "media service comparison", "difference between a photography permit and an advertiser permit", "apply for a media service", "advertiser permit", "paid product reviews", "social media", "服务对比", "未列出", "选择哪项服务", "الخدمة المناسبة", "نشاطي التجاري"):
-        return SkillRoute("service_discovery", "knowledge", "knowledge.search", "answer", ("account_type", "media_activity"))
-    if _has(text, "content standards", "advertising on social media", "media content", "child-safety", "child safety", "children", "advertising rules", "policy comparison", "regulation version", "版权", "copyright", "photograph from the internet", "commercial campaign", "معايير المحتوى", "سلامة الأطفال", "حقوق الطبع"):
-        skill_id = "copyright_guidance" if _has(text, "copyright", "版权", "photograph from the internet", "commercial campaign", "حقوق الطبع") else "latest_regulations"
-        return SkillRoute(skill_id, "knowledge", "knowledge.search", "summary", ("regulation_topic",))
-    if _has(text, "cost", "processing time", "how much does", "fees", "fee", "费用", "الرسوم"):
-        return SkillRoute("service_fees", "knowledge", "knowledge.search", "answer", ("service_name",))
-    # Status/payment intent must win over the words “license application” in a
-    # sentence such as “show the latest status of my media license application”.
-    if _has(text, "pending payment", "waiting for payment", "awaiting payment", "待付款", "الدفع المعلق", "قيد الدفع"):
-        return SkillRoute("application_payment_details", "data_query", None, "collect", ("application_number",))
-    if _has(text, "complaint", "投诉", "شكوى"):
-        return SkillRoute("complaint_create", "api_call", None, "collect", ("application_number", "complaint_details"), confirmation_required=True)
-    if _has(text, "follow up", "enquiry", "咨询", "متابعة", "استفسار") and _has(text, "earlier", "submitted", "跟进", "سابق", "مقدم"):
-        return SkillRoute("enquiry_followup", "data_query", None, "collect", ("enquiry_reference",))
-    if _has(text, "photography", "filming", "filming permit", "photocopying equipment", "advertising license", "new permit", "license requirements", "license application", "media license", "newspaper", "publication", "broadcasting", "radio", "television", "申请许可", "摄影", "طلب تصريح", "متطلبات الترخيص", "رخصة إعلامية", "تصريح", "ترخيص", "صحيفة", "منشور", "بث"):
-        return SkillRoute(
-            "license_application_knowledge", "knowledge", "knowledge.search", "answer",
-            ("permit_or_service_type", "account_type"), ("Individual", "Commercial", "Government"),
-        )
-    if _has(text, "service fees", "fees", "fee", "费用", "الرسوم"):
-        return SkillRoute("service_fees", "knowledge", "knowledge.search", "answer", ("service_name",))
-    if _has(text, "who is eligible", "eligible for media services", "media service eligibility", "مؤهل", "الأهلية", "الخدمات الإعلامية"):
-        return SkillRoute("service_eligibility_info", "knowledge", "knowledge.search", "answer", ("account_type", "media_activity"), ("Individual", "Commercial", "Government"))
-    if _has(text, "technical enquiry", "cannot complete payment", "技术", "استفسار تقني", "تعذر الدفع", "لا أستطيع إتمام الدفع"):
-        return SkillRoute("payment_transaction_history", "data_query", None, "answer")
-    if _has(text, "fine", "violation penalty", "罚款", "违规", "غرامة", "مخالفة") and _has(text, "appeal", "申诉", "استئناف", "طعن"):
-        return SkillRoute("fine_appeal", "api_call", None, "collect", ("violation_number", "appeal_reason", "appeal_details"), confirmation_required=True)
-    if _has(text, "fine", "violation penalty", "罚款", "违规", "غرامة", "مخالفة"):
-        return SkillRoute("fine_payment_guidance", "data_query", None, "answer")
-    if _has(text, "profile is under review", "profile review", "profile 审核", "الملف قيد المراجعة", "ملفي قيد المراجعة", "مراجعة الملف"):
-        return SkillRoute("profile_status", "data_query", None, "collect", ("profile_id",), ("Individual", "Business"))
-    if _has(text, "eligible", "eligibility", "资格", "مؤهل", "الأهلية"):
-        return SkillRoute("service_eligibility", "data_query", None, "collect", ("profile_id", "account_type", "media_activity"), ("Individual", "Commercial", "Government"))
-    if _has(text, "pending payment", "waiting for payment", "awaiting payment", "待付款", "الدفع المعلق", "قيد الدفع"):
-        return SkillRoute("application_payment_details", "data_query", None, "collect", ("application_number",))
-    if _has(text, "latest status", "application status", "申请状态", "حالة الطلب", "آخر حالة"):
-        return SkillRoute("application_status", "data_query", None, "answer")
-    if _has(text, "payment", "receipt", "付款", "收据", "إيصال", "إيصال الدفع"):
-        return SkillRoute("payment_transaction_history", "data_query", None, "answer")
-    if _has(text, "complaint", "投诉", "شكوى"):
-        return SkillRoute("complaint_create", "api_call", None, "collect", ("application_number", "complaint_details"), confirmation_required=True)
-    if _has(text, "follow up", "enquiry", "咨询", "متابعة", "استفسار") and _has(text, "earlier", "submitted", "跟进", "سابق", "مقدم"):
-        return SkillRoute("enquiry_followup", "data_query", None, "collect", ("enquiry_reference",))
-    if _has(text, "reopen", "resolved enquiry", "重新打开", "إعادة فتح", "استفسار مغلق"):
-        return SkillRoute("enquiry_reopen", "api_call", None, "collect", ("enquiry_reference",), ("Check message option", "Create linked enquiry"))
-    if _has(text, "right service", "service for my business", "找不到服务", "الخدمة المناسبة", "نشاطي التجاري"):
-        return SkillRoute("service_discovery", "data_query", None, "collect", ("account_type", "media_activity"), ("Publishing / books", "Advertising content", "Broadcast / production", "Social media"))
-    return SkillRoute("general", "general")
+    return resolve_configured_skill(text, DEFAULT_SKILL_DEFINITIONS) or SkillRoute("general", "general")
 
 
 def build_knowledge_query(route: SkillRoute, original_text: str) -> str:

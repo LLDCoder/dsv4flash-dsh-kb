@@ -220,6 +220,20 @@ def _request_from_definition(
     return tool_name, arguments
 
 
+def matches_configured_selection_follow_up(
+    workflow: dict[str, Any] | None,
+    text: str,
+    history: list[Any],
+) -> bool:
+    """Whether a published selection workflow claims this follow-up turn."""
+
+    selection = (workflow or {}).get("selection")
+    if not isinstance(selection, dict) or not _selection_items(history, selection):
+        return False
+    request = selection.get("toolRequest") or selection.get("detailRequest")
+    return isinstance(request, dict) and _matches(text, request.get("when"))
+
+
 def build_configured_tool_request(
     workflow: dict[str, Any] | None,
     allowed_tools: list[str],

@@ -22,13 +22,16 @@ from .principal import Principal
 from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
-from .skill_workflow import build_configured_tool_request, mask_tool_result, normalize_route_directives
+from .skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives
 from .skills import (
     SkillRoute,
     build_flow_prompt,
     build_knowledge_query,
     build_system_prompt,
+    canonical_skill_id,
     exact_quote_source_sufficient,
+    merged_skill_workflow,
+    resolve_configured_skill,
     resolve_skill,
     response_language_for,
 )
@@ -181,17 +184,17 @@ class DSHService:
             self.umc_auth.invalidate()
 
     @staticmethod
-    def route_shape_for_skill(skill_id: str, catalog: list[dict[str, Any]]):
+    def route_shape_for_skill(skill_id: str, catalog: list[dict[str, Any]], *, routing_locked: bool = False):
         """Derive automatic execution only from a Skill's allowed Tools."""
 
         item = next((candidate for candidate in catalog if candidate.get("skillId") == skill_id), None)
         allowed_tools = set(item.get("allowedTools", [])) if item else set()
         business_tools = allowed_tools - SYSTEM_DEFAULT_TOOL_NAMES
         if allowed_tools == {"knowledge.search"}:
-            return SkillRoute(skill_id, "knowledge", "knowledge.search", "summary")
+            return SkillRoute(skill_id, "knowledge", "knowledge.search", "summary", routing_locked=routing_locked)
         if business_tools or allowed_tools:
-            return SkillRoute(skill_id, "api_call", None, "answer")
-        return SkillRoute(skill_id, "data_query", None, "answer")
+            return SkillRoute(skill_id, "api_call", None, "answer", routing_locked=routing_locked)
+        return SkillRoute(skill_id, "data_query", None, "answer", routing_locked=routing_locked)
 
     async def choose_skill_route(
         self,
@@ -660,13 +663,51 @@ class DSHService:
                         response_language,
                         request_id=principal.request_id,
                     )
-                    keyword_route = resolve_skill(latest_content)
-                    route_catalog = await self.skill_catalog.load(db) if normalized_router_mode(getattr(self.settings, "skill_router_mode", "llm")) != "keyword" else []
+                    # Published Skill workflow is authoritative for deterministic
+                    # routing. Built-in definitions are only a cold-start fallback.
+                    route_catalog = await self.skill_catalog.load(db)
+                    keyword_route = (
+                        resolve_configured_skill(latest_content, route_catalog, canonicalize=False)
+                        or resolve_skill(latest_content)
+                    )
                     route_context = route_context_from_history(history, route_catalog)
                     # The current question is sent separately to the router;
                     # keep only preceding turns in the auxiliary context.
                     if route_context.get("recentMessages") and route_context["recentMessages"][-1].get("role") == "user" and route_context["recentMessages"][-1].get("content") == latest_content:
                         route_context["recentMessages"] = route_context["recentMessages"][:-1]
+                    active_skill_id = str(route_context.get("activeSkillId") or "")
+                    if active_skill_id:
+                        active_catalog_entry = next(
+                            (item for item in route_catalog if str(item.get("skillId") or "") == active_skill_id),
+                            None,
+                        ) or next(
+                            (
+                                item
+                                for item in route_catalog
+                                if canonical_skill_id(str(item.get("skillId") or "")) == active_skill_id
+                            ),
+                            None,
+                        )
+                        active_skill_record_id = str((active_catalog_entry or {}).get("skillId") or active_skill_id)
+                        active_skill_result = await db.execute(
+                            select(Skill)
+                            .where(
+                                Skill.skill_id == active_skill_record_id,
+                                Skill.scope == "system",
+                                Skill.enabled.is_(True),
+                                Skill.status == "PUBLISHED",
+                            )
+                            .order_by(Skill.version.desc())
+                        )
+                        active_skill = active_skill_result.scalars().first()
+                        if active_skill and matches_configured_selection_follow_up(
+                            merged_skill_workflow(active_skill.skill_id, active_skill.workflow), latest_content, history
+                        ):
+                            keyword_route = self.route_shape_for_skill(
+                                active_skill_record_id,
+                                route_catalog,
+                                routing_locked=True,
+                            )
                     route, route_metadata = await self.choose_skill_route(
                         db, latest_content, keyword_route, conversation, principal.request_id, route_context
                     )
@@ -715,7 +756,7 @@ class DSHService:
                         )
                     elif not tool_request:
                         tool_request = build_configured_tool_request(
-                            selected_skill.workflow if selected_skill else {},
+                            merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow) if selected_skill else {},
                             allowed_tool_names,
                             latest_content,
                             history,
