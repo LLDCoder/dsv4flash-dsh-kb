@@ -24,6 +24,7 @@ class MessageCreate(APIModel):
     content: str = Field(default="", max_length=50_000)
     client_message_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
     attachment: MessageAttachment | None = None
+    profile_context: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("profileContext", "profile_context"))
 
     @model_validator(mode="after")
     def require_content_or_attachment(self):
@@ -106,6 +107,7 @@ class ToolUpsert(APIModel):
     confirmation_required: bool = Field(default=False, validation_alias=AliasChoices("confirmationRequired", "confirmation_required"))
     rbac_policy: str = Field(default="trusted_principal", validation_alias=AliasChoices("rbacPolicy", "rbac_policy"))
     masking_policy: str = Field(default="default", validation_alias=AliasChoices("maskingPolicy", "masking_policy"))
+    profile_scope: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("profileScope", "profile_scope"))
     swagger_source: str = Field(default="", validation_alias=AliasChoices("swaggerSource", "swagger_source"))
     source: Literal["builtin", "manual", "ops", "swagger"] = "swagger"
     version: int = Field(default=1, ge=1)
@@ -138,6 +140,7 @@ class WSMessage(APIModel):
     after_seq: int = Field(default=0, validation_alias=AliasChoices("afterSeq", "after_seq"))
     seq: int | None = None
     umc_token: str | None = Field(default=None, validation_alias=AliasChoices("umctoken", "umcToken", "umc_token"))
+    profile_context: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("profileContext", "profile_context"))
 
     @model_validator(mode="after")
     def require_message_payload(self):

@@ -21,6 +21,7 @@ from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, C
 from .customer_documents import CustomerDocumentNotConfigured
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, Tool, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
+from .profile_scope import normalize_profile_scope
 from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
@@ -34,6 +35,18 @@ logger = logging.getLogger("uvicorn.error")
 
 def make_router(service: DSHService) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
+
+    def token_profile_id(token: str | None) -> str | None:
+        if not token:
+            return None
+        try:
+            part = token.split(".")[1]
+            part += "=" * (-len(part) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(part).decode("utf-8"))
+            value = claims.get("UserProFileId")
+            return str(value).strip() if isinstance(value, (str, int)) and str(value).strip() else None
+        except (ValueError, KeyError, IndexError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
 
     def raw_config_value(item: ConfigEntry) -> object:
         value = item.value
@@ -73,6 +86,7 @@ def make_router(service: DSHService) -> APIRouter:
             request_id=x_request_id or str(uuid4()),
             token_ref=_token_reference(authorization),
             umc_token=raw,
+            profile_id=token_profile_id(raw),
         )
 
     async def stored_console_password(db: AsyncSession) -> str:
@@ -545,6 +559,7 @@ def make_router(service: DSHService) -> APIRouter:
                 payload.content,
                 payload.client_message_id,
                 payload.attachment.model_dump(by_alias=True) if payload.attachment else None,
+                payload.profile_context,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -738,6 +753,7 @@ def make_router(service: DSHService) -> APIRouter:
             "confirmationRequired": item.confirmation_required,
             "rbacPolicy": item.rbac_policy,
             "maskingPolicy": item.masking_policy,
+            "profileScope": item.profile_scope,
             "swaggerSource": item.swagger_source,
             "source": item.source,
             "version": item.version,
@@ -840,7 +856,9 @@ def make_router(service: DSHService) -> APIRouter:
         key = payload.interface_key or interface_key(payload.http_method, payload.http_path)
         if (await db.execute(select(Tool).where((Tool.tool_name == payload.tool_name) | (Tool.interface_key == key)))).scalars().first():
             raise HTTPException(status_code=409, detail="tool name or HTTP interface already exists")
-        item = Tool(tool_name=payload.tool_name, updated_by=principal.user_id, interface_key=key, **payload.model_dump(exclude={"tool_name", "interface_key"}))
+        values = payload.model_dump(exclude={"tool_name", "interface_key"})
+        values["profile_scope"] = normalize_profile_scope(values.get("profile_scope"), parameters=values.get("parameters"), http_path=str(values.get("http_path") or ""))
+        item = Tool(tool_name=payload.tool_name, updated_by=principal.user_id, interface_key=key, **values)
         db.add(item)
         await db.commit()
         return tool_json(item)
@@ -868,6 +886,7 @@ def make_router(service: DSHService) -> APIRouter:
             interface_key=operation["interfaceKey"],
             parameters=operation["parameters"],
             response_schema=operation["responseSchema"],
+            profile_scope=operation["profileScope"],
             side_effect=payload.side_effect,
             confirmation_required=payload.confirmation_required,
             swagger_source=payload.swagger_url,
@@ -891,7 +910,9 @@ def make_router(service: DSHService) -> APIRouter:
         duplicate = await db.execute(select(Tool).where(Tool.interface_key == key, Tool.tool_name != tool_name))
         if duplicate.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="this HTTP interface is already registered by another tool")
-        for field, value in payload.model_dump(exclude={"interface_key"}).items():
+        values = payload.model_dump(exclude={"interface_key"})
+        values["profile_scope"] = normalize_profile_scope(values.get("profile_scope"), parameters=values.get("parameters"), http_path=str(values.get("http_path") or ""))
+        for field, value in values.items():
             setattr(item, field, value)
         item.interface_key = key
         item.updated_by = principal.user_id
@@ -1039,6 +1060,7 @@ def make_router(service: DSHService) -> APIRouter:
                         request_id=principal.request_id,
                         token_ref=_token_reference(f"Bearer {token}"),
                         umc_token=token,
+                        profile_id=token_profile_id(token),
                     )
                     logger.info(
                         "umc_ws_authenticated request_id=%s token_ref=%s",
@@ -1070,6 +1092,7 @@ def make_router(service: DSHService) -> APIRouter:
                             message.content or "",
                             message.client_message_id,
                             message.attachment.model_dump(by_alias=True) if message.attachment else None,
+                            message.profile_context,
                         )
                     except LookupError:
                         await send({"type": "error", "code": "conversation_not_found"})

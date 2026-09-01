@@ -6,6 +6,8 @@ from typing import Any
 from urllib.parse import urlsplit
 import re
 
+from .profile_scope import infer_profile_scope
+
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
 SYSTEM_DEFAULT_TOOL_NAMES = frozenset({"knowledge.search", "ocr.layout_parsing"})
@@ -323,6 +325,7 @@ def extract_operations(document: dict[str, Any], source_url: str) -> list[dict[s
                     "interfaceKey": interface_key(method, path),
                     "parameters": _schema_from_request(operation),
                     "responseSchema": _response_schema(operation),
+                    "profileScope": infer_profile_scope(_schema_from_request(operation), path),
                     "swaggerSource": source_url,
                 }
             )

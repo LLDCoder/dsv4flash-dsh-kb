@@ -75,7 +75,6 @@ SKILL_GUIDANCE: dict[str, str] = {
         "no application identifier or selectable My Requests record is available, or the question concerns an issued License/Permit list.",
         "a current UMC bearer token and a positive applicationId.",
         "return only fields from live responses, identify the application number and current status, and never infer missing milestones or approval decisions. This Skill is read-only: do not edit, cancel, duplicate, submit, or pay.",
-        "/my-requests/detail?id={applicationId}",
     ),
     "umc_book_by_isbn": _guidance(
         "the user asks to look up a book by ISBN.",
@@ -141,29 +140,25 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks for the status, progress, filters, counts, or history of their own My Requests applications.",
         "the user asks for an issued license/permit count or general application requirements.",
         "trusted UMC identity; query the current account's application list and use detail only for a selected application.",
-        "include Application No., Service Name, Request Type, Profile Name, Submission Time, current status, and result scope when returned by UMC. Keep Request Type separate from status and call an application a renewal only when Request Type is Renew. This Skill is read-only and never edits, cancels, duplicates, submits, or pays; for those actions, direct the customer to /my-requests.",
-        "/my-requests or /my-requests/detail?id={applicationId}",
+        "include Application No., Service Name, Request Type, Profile Name, Submission Time, current status, and result scope when returned by UMC. Keep Request Type separate from status and call an application a renewal only when Request Type is Renew. This Skill is read-only and never edits, cancels, duplicates, submits, or pays.",
     ),
     "license_permit_status": _guidance(
         "the user asks about their own issued License/Permit list, count, status, validity, expiry, number, or available portal actions, including a named document such as 'How about my Social Media Advertiser Permit?'.",
         "the user explicitly asks for renewal process/requirements, My Requests application status, pending payment, a new-license application, or administrative records.",
         "a current UMC bearer token and live License/Permit APIs; query the current account's issued-record list and never substitute application records.",
         "for a named permit, match it against the returned issued records and report its actual status, effective date, expiry date, number, and available actions. Do not say account access is unavailable when the live lookup succeeds. Do not use public verification or knowledge-base guidance as a substitute for the account result. This Skill is read-only and never renews, modifies, cancels, transfers, or submits.",
-        "/permits-license; if a selected-record detail request is unavailable, say only that full details are unavailable and direct the user to this portal page. Never describe internal tools, errors, URLs, access codes, or hidden fields.",
     ),
     "license_permit_modification_knowledge": _guidance(
         "the user asks whether a current License/Permit can be modified, why its Modify action is unavailable, or asks the general modification scope, requirements, documents, fees, or process.",
         "the user asks to actually create, save, submit, cancel, transfer, or pay for a modification; asks for renewal, download, or a My Requests application status.",
         "for a named current document, the live issued-record list; for general process questions, current knowledge evidence.",
         "state the live availability of Modify separately from general guidance. Use only returned actions and evidence; do not invent supported changes or claim a modification was started. Direct the user to the selected record's Modify action when it is available.",
-        "/permits-license",
     ),
     "permit_download": _guidance(
         "the user asks to view or download a specific issued License/Permit document.",
         "the user has not selected a document, or asks to download an application draft or another user's document.",
         "the customer uses the authenticated NMA customer portal.",
         "explain that the customer must download the issued record from the Licenses & Permits page in the portal. The downloaded PDF is protected and requires an Access Code to open. The assistant must not download or open the file for the customer, retrieve, request, or reveal an Access Code, document URL, or download credential. Give concise portal guidance in the user's current language and direct the customer to official support if they cannot access the code.",
-        "/permits-license",
     ),
     "payment_receipt": _guidance(
         "the user asks to find or download a receipt for a completed payment.",
@@ -206,7 +201,6 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks to create, save, submit, modify, pay for, or track an application; asks about an issued document or renewal; or only describes an activity without identifying a license/service.",
         "the named license/service and current knowledge evidence. For an explicit license or permit name, search knowledge before asking for applicant type.",
         "provide evidence-based requirements and process only. Keep service discovery for an unknown service/activity, and keep future application creation or submission in a separate write Skill. Do not invent a personalized approval outcome.",
-        "/services and the selected service's application flow",
     ),
     "service_eligibility_info": _guidance(
         "the user asks for general information about who may use media services.",
@@ -219,14 +213,12 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks to apply for a new service or merely wants the current document count/status.",
         "the document type/number when account lookup is needed, current action-needed data, and the renewal knowledge rule.",
         "distinguish renewal from extension/modification, use action validation only as a read-only eligibility check, and never initiate renewal or another write operation. Ask for confirmation only if a later download is requested.",
-        "/permits-license action-needed cards and the resulting service route",
     ),
     "my_requests_pending_actions": _guidance(
         "the user asks what is pending, what needs attention, or which actions are outstanding in My Requests.",
         "the user asks about issued License/Permit expiry actions, administrative review data, or asks to perform an action.",
         "trusted UMC identity and the current account's pending-actions/application list.",
         "list only live pending items, identify the related application and status, and do not pay, edit, cancel, duplicate, submit, or otherwise mutate a request.",
-        "/my-requests",
     ),
     "service_fees": _guidance(
         "the user asks for the fee or processing time of a specific media service.",
@@ -951,15 +943,19 @@ def build_system_prompt(
     response_language: str = "en",
     operator_prompt: str = "",
     skill_content: str = "",
+    profile_context: object | None = None,
 ) -> str:
     guardrails = [
         "Use only trusted tool evidence. When evidence is unavailable, state the limitation and never invent account data, fees, regulations, or API capabilities.",
         "Never expose internal Tool names, request arguments, serialized JSON, API envelopes, or internal evidence instructions. Convert verified evidence into a concise user-facing answer.",
         "Payments, appeals, complaints, downloads, and all other side effects require a preview and the user's explicit confirmation.",
         "Candidate services are not eligibility decisions. Treat renewal and extension as distinct operations.",
+        "PROFILE SCOPE: Account data is limited to the profile currently selected in the portal. Never claim to query, filter, or aggregate another profile. When the user names a different profile, ask them to switch it in the portal before continuing.",
     ]
     if route.skill_id == "latest_regulations" and route.mode == "exact_quote":
         guardrails.append("A verbatim quotation requires the regulation title/number/date and a specific article or clause. If the source is ambiguous, ask a follow-up question and never select a document only because it ranked first.")
+    if profile_context is not None and bool(getattr(profile_context, "is_global_view", False)):
+        guardrails.append("The portal is in Global View. Do not represent profile-bound data as available until the user selects a concrete profile.")
     if route.category == "knowledge" and not evidence_available:
         guardrails.append("When knowledge-base evidence is unavailable, do not present general knowledge as a verified UMC rule.")
 

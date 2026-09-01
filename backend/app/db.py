@@ -159,6 +159,7 @@ class Tool(Base):
     confirmation_required: Mapped[bool] = mapped_column(default=False)
     rbac_policy: Mapped[str] = mapped_column(String(512), default="trusted_principal")
     masking_policy: Mapped[str] = mapped_column(String(512), default="default")
+    profile_scope: Mapped[dict[str, Any]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
     swagger_source: Mapped[str] = mapped_column(String(1024), default="")
     source: Mapped[str] = mapped_column(String(64), default="swagger")
     version: Mapped[int] = mapped_column(Integer, default=1)
@@ -190,10 +191,12 @@ async def init_db() -> None:
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS positive_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS negative_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS workflow JSONB NOT NULL DEFAULT '{}'::jsonb"))
+            await connection.execute(text("ALTER TABLE tool_registry ADD COLUMN IF NOT EXISTS profile_scope JSONB NOT NULL DEFAULT '{}'::jsonb"))
 
     # Seed the routing skills once so the Skill API and the runtime share the
     # same guardrails. Existing operator-managed versions are preserved.
     from .skills import DEFAULT_SKILL_DEFINITIONS
+    from .profile_scope import infer_profile_scope
     from .tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, interface_key
 
     async with SessionLocal() as session:
@@ -289,12 +292,18 @@ async def init_db() -> None:
                     existing.interface_key = interface_key(definition["http_method"], definition["http_path"])
                     existing.parameters = dict(definition.get("parameters", {}))
                     existing.masking_policy = str(definition.get("masking_policy", "default"))
+                    existing.profile_scope = infer_profile_scope(existing.parameters, existing.http_path)
                     existing.source = "swagger"
                     changed = True
                 continue
+            tool_values = dict(definition)
+            tool_values["profile_scope"] = infer_profile_scope(
+                tool_values.get("parameters"),
+                str(tool_values.get("http_path") or ""),
+            )
             session.add(
                 Tool(
-                    **definition,
+                    **tool_values,
                     interface_key=interface_key(definition["http_method"], definition["http_path"]),
                     published=True,
                     enabled=True,

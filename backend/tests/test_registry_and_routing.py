@@ -10,6 +10,7 @@ from app.skill_workflow import build_configured_tool_request, mask_tool_result, 
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
+from app.profile_scope import profile_context_from_payload, requires_profile_switch
 from app.response_safety import is_internal_tool_protocol
 from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 
@@ -146,6 +147,83 @@ class RegistryAndRoutingTests(unittest.TestCase):
         }
         operation = extract_operations(document, "http://example.test/openapi.json")[0]
         self.assertEqual(operation["httpPath"], "/api/License/statistics")
+
+    def test_swagger_profile_parameter_is_marked_for_active_profile_binding(self):
+        document = {
+            "paths": {
+                "/api/Appeal/List": {
+                    "get": {
+                        "operationId": "appealList",
+                        "parameters": [{"name": "UserProfileId", "required": True, "schema": {"type": "integer"}}],
+                    }
+                }
+            }
+        }
+        operation = extract_operations(document, "http://example.test/openapi.json")[0]
+        self.assertEqual(operation["profileScope"], {"mode": "bind_parameter", "parameter": "UserProfileId"})
+
+    def test_profile_scope_blocks_known_cross_profile_and_binds_active_parameter(self):
+        class Platform:
+            def __init__(self):
+                self.calls = []
+
+            async def invoke_swagger_tool(self, method, path, parameters, *, umc_token=None, request_id=None):
+                self.calls.append((method, path, parameters))
+                return {"parameters": parameters}
+
+        context = profile_context_from_payload({
+            "activeProfileId": "11",
+            "activeProfileName": "Commercial UMC",
+            "profiles": [
+                {"id": "11", "name": "Commercial UMC"},
+                {"id": "22", "name": "Government UMC"},
+            ],
+        })
+        definition = {
+            "name": "appeal.list",
+            "source": "swagger",
+            "httpMethod": "GET",
+            "httpPath": "/api/Appeal/List",
+            "parameters": {"type": "object", "properties": {"UserProfileId": {"type": "integer"}, "pageSize": {"type": "integer"}}, "required": ["UserProfileId"]},
+            "profileScope": {"mode": "bind_parameter", "parameter": "UserProfileId"},
+        }
+        self.assertEqual(requires_profile_switch(definition, context, "Show requests for Gover profile").profile_id, "22")
+        platform = Platform()
+        gateway = ToolGateway(None, None, platform)
+        principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", umc_token="token")
+        result = __import__("asyncio").run(
+            gateway.invoke(
+                principal,
+                "appeal.list",
+                {"UserProfileId": 999, "pageSize": 20},
+                allowed_tools=["appeal.list"],
+                tool_definition=definition,
+                profile_context=context,
+            )
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(platform.calls[0][2]["UserProfileId"], 11)
+        forged_global_context = profile_context_from_payload(
+            {
+                "activeProfileId": "22",
+                "isGlobalView": False,
+                "profiles": [{"id": "22", "name": "Government UMC"}],
+            },
+            trusted_profile_id="0",
+        )
+        blocked = __import__("asyncio").run(
+            gateway.invoke(
+                principal,
+                "appeal.list",
+                {"pageSize": 20},
+                allowed_tools=["appeal.list"],
+                tool_definition=definition,
+                profile_context=forged_global_context,
+            )
+        )
+        self.assertTrue(forged_global_context.is_global_view)
+        self.assertEqual(blocked["code"], "profile_selection_required")
+        self.assertEqual(len(platform.calls), 1)
 
     def test_every_published_skill_tool_has_a_registry_definition(self):
         from app.skills import DEFAULT_SKILL_DEFINITIONS

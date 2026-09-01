@@ -8,6 +8,7 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
+from .profile_scope import ProfileContext, bind_active_profile
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES
 
 logger = logging.getLogger("uvicorn.error")
@@ -86,14 +87,17 @@ class ToolGateway:
             materialized[name] = value
         return materialized, None
 
-    async def _invoke_registered_tool(self, principal: Principal, tool_name: str, arguments: dict[str, Any], definition: dict[str, Any]) -> dict[str, Any]:
+    async def _invoke_registered_tool(self, principal: Principal, tool_name: str, arguments: dict[str, Any], definition: dict[str, Any], profile_context: ProfileContext | None = None) -> dict[str, Any]:
         schema = definition.get("parameters") or {}
-        invalid = self._validate_schema(arguments, schema)
+        scoped_arguments, scope_error = bind_active_profile(definition, arguments, profile_context)
+        if scope_error:
+            return {"ok": False, "code": scope_error, "toolName": tool_name}
+        invalid = self._validate_schema(scoped_arguments or {}, schema)
         if invalid:
             return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "message": invalid}
         if definition.get("sideEffect", definition.get("side_effect", "read")) != "read" and definition.get("confirmationRequired", definition.get("confirmation_required", False)) and arguments.get("confirmed") is not True:
             return {"ok": False, "code": "confirmation_required", "toolName": tool_name}
-        parameters, action_error = self._materialize_action_payload(arguments, schema)
+        parameters, action_error = self._materialize_action_payload(scoped_arguments or {}, schema)
         if action_error:
             return {"ok": False, "code": action_error, "toolName": tool_name}
         method = definition.get("httpMethod", definition.get("http_method"))
@@ -145,6 +149,7 @@ class ToolGateway:
         *,
         allowed_tools: list[str] | None = None,
         tool_definition: dict[str, Any] | None = None,
+        profile_context: ProfileContext | None = None,
     ) -> dict[str, Any]:
         logger.info(
             "tool_invocation request_id=%s token_ref=%s tool=%s",
@@ -159,7 +164,7 @@ class ToolGateway:
             and tool_name not in SYSTEM_DEFAULT_TOOL_NAMES
             and tool_definition.get("source") in EXECUTABLE_REGISTERED_TOOL_SOURCES
         ):
-            return await self._invoke_registered_tool(principal, tool_name, arguments, tool_definition)
+            return await self._invoke_registered_tool(principal, tool_name, arguments, tool_definition, profile_context)
         if tool_name != "ocr.layout_parsing":
             if tool_name == "knowledge.search":
                 query = arguments.get("query")

@@ -19,6 +19,7 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
+from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requires_profile_switch
 from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
@@ -613,6 +614,7 @@ class DSHService:
         content: str,
         client_message_id: str,
         attachment: dict[str, Any] | None = None,
+        profile_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
@@ -638,10 +640,16 @@ class DSHService:
                 db.add(MessageIdempotency(conversation_id=conversation_id, client_message_id=client_message_id, user_event_seq=event["seq"]))
                 await db.commit()
                 await self.runtime_manager.mark_busy(conversation_id)
-                self._turn_tasks[conversation_id] = asyncio.create_task(self._run_turn(principal, conversation_id))
+                self._turn_tasks[conversation_id] = asyncio.create_task(
+                    self._run_turn(
+                        principal,
+                        conversation_id,
+                        profile_context_from_payload(profile_context, trusted_profile_id=principal.profile_id),
+                    )
+                )
                 return {"accepted": True, "duplicate": False, "conversationId": conversation_id, "seq": event["seq"], "requestId": principal.request_id, "runtimeId": lease.runtime_id}
 
-    async def _run_turn(self, principal: Principal, conversation_id: str) -> None:
+    async def _run_turn(self, principal: Principal, conversation_id: str, profile_context: ProfileContext | None = None) -> None:
         async with self.writer_lock_for(conversation_id):
             try:
                 async with SessionLocal() as db:
@@ -863,6 +871,7 @@ class DSHService:
                                 "authStrategy": item.auth_strategy,
                                 "rbacPolicy": item.rbac_policy,
                                 "maskingPolicy": item.masking_policy,
+                                "profileScope": item.profile_scope,
                                 "source": item.source,
                             }
                             for item in selected_tools_result.scalars().all()
@@ -878,6 +887,7 @@ class DSHService:
                                 response_language=response_language,
                                 operator_prompt=str(getattr(self.settings, "system_prompt", "") or ""),
                                 skill_content=selected_skill.content if selected_skill else "",
+                                profile_context=profile_context,
                             ),
                         },
                     )
@@ -886,6 +896,36 @@ class DSHService:
                     document_failure_message: str | None = None
                     if tool_request:
                         tool_name, arguments = tool_request
+                        tool_definition = tool_definition_by_name.get(tool_name) or {}
+                        target_profile = requires_profile_switch(
+                            tool_definition,
+                            profile_context,
+                            latest_content,
+                        )
+                        requires_selection = (
+                            profile_scope_for_definition(tool_definition).get("mode") == "bind_parameter"
+                            and (not profile_context or profile_context.is_global_view)
+                        )
+                        if target_profile or requires_selection:
+                            switch_message = (
+                                f"يرجى التبديل إلى ملف {target_profile.name} في البوابة أولاً، ثم أرسل الطلب مرة أخرى."
+                                if target_profile and response_language == "ar"
+                                else "يرجى اختيار ملف شخصي في البوابة أولاً، ثم أرسل الطلب مرة أخرى."
+                                if response_language == "ar"
+                                else f"Please switch to the {target_profile.name} profile in the portal, then ask again."
+                                if target_profile
+                                else "Please select a profile in the portal, then ask again."
+                            )
+                            await self.append_event(db, conversation, "profile.scope", {"outcome": "switch_required" if target_profile else "selection_required", "targetProfileId": target_profile.profile_id if target_profile else None, "requestId": principal.request_id})
+                            await self.append_event(db, conversation, "assistant.message", {"content": switch_message, "requestId": principal.request_id})
+                            await self.append_event(db, conversation, "turn.completed", {"requestId": principal.request_id, "runtimeId": conversation.runtime_id})
+                            conversation.status = "READY"
+                            conversation.last_activity_at = datetime.now(timezone.utc)
+                            await db.commit()
+                            lease = self.runtime_manager.get(conversation_id)
+                            if lease:
+                                lease.state = "READY"
+                            return
                         attachment_argument = arguments.get("attachment")
                         parameter_schema = (tool_definition_by_name.get(tool_name) or {}).get("parameters") or {}
                         declared_parameters = parameter_schema.get("properties", {}) if isinstance(parameter_schema, dict) else {}
@@ -931,6 +971,7 @@ class DSHService:
                                     },
                                     allowed_tools=allowed_tool_names,
                                     tool_definition=tool_definition_by_name.get(tool_name),
+                                    profile_context=profile_context,
                                 )
                             except (httpx.HTTPError, PermissionError, RuntimeError, ValueError) as exc:
                                 tool_result = {
@@ -946,6 +987,7 @@ class DSHService:
                                 arguments,
                                 allowed_tools=allowed_tool_names,
                                 tool_definition=tool_definition_by_name.get(tool_name),
+                                profile_context=profile_context,
                             )
                         masking_policy = str((tool_definition_by_name.get(tool_name) or {}).get("maskingPolicy") or "default")
                         masked_tool_result = mask_tool_result(tool_result, masking_policy)
