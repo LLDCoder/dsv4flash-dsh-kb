@@ -1051,7 +1051,8 @@ function renderAuditRecords(items) {
   }
   items.forEach((item) => {
     const record = document.createElement("article");
-    record.className = `audit-record audit-record-${String(item.category || "runtime").toLowerCase()}`;
+    const isSkillRoute = item.recordType === "skill.route";
+    record.className = `audit-record audit-record-${String(item.category || "runtime").toLowerCase()}${isSkillRoute ? " audit-record-skill-route" : ""}`;
     const head = document.createElement("div");
     head.className = "audit-record-head";
     const category = document.createElement("span");
