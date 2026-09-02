@@ -109,6 +109,12 @@ class Settings(BaseSettings):
         override = (self.umc_document_base_url or "").strip().rstrip("/")
         return override or self.umc_base_url
 
+    @property
+    def umc_user_info_endpoint(self) -> str:
+        """Return the portal-specific endpoint used to validate browser tokens."""
+        path = "/api/AdminUser/GetUserInfo" if self.umc_portal_name == "admin" else "/api/User/GetUserInfo"
+        return f"{self.umc_document_service_base_url}{path}"
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     @property
