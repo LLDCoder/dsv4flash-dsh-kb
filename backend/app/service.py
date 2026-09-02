@@ -36,7 +36,7 @@ from .skills import (
     resolve_skill,
     response_language_for,
 )
-from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, system_default_tool_definitions
+from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, system_default_tool_definitions
 from .tool_gateway import ToolGateway, parse_tool_request
 from .umc_auth import UMCAuthClient
 
@@ -760,15 +760,6 @@ class DSHService:
                             intent_id=route_metadata.get("intentId"),
                             filters=route_metadata.get("filters"),
                         )
-                        if not tool_request:
-                            # Legacy request parsing remains for established
-                            # Skills that have not yet defined a workflow.
-                            tool_request = build_legacy_tool_request(
-                                allowed_tool_names,
-                                latest_content,
-                                mode=route.mode,
-                                skill_id=route.skill_id,
-                            )
                     elif tool_request and tool_request[0] == "knowledge.search":
                         tool_name, arguments = tool_request
                         arguments = dict(arguments)

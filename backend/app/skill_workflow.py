@@ -57,7 +57,7 @@ def routing_contract(workflow: dict[str, Any] | None) -> dict[str, Any]:
             "type": str(specification.get("type") or "string"),
             "description": str(specification.get("description") or ""),
         }
-        if item["type"] == "enum":
+        if item["type"] in {"enum", "enum_array"}:
             item["options"] = [
                 {"id": str(option.get("id") or ""), "description": str(option.get("description") or "")}
                 for option in specification.get("options", [])
@@ -73,14 +73,38 @@ def _normalized_filter_value(specification: dict[str, Any], value: Any) -> Any |
         option_ids = {str(item.get("id")) for item in specification.get("options", []) if isinstance(item, dict)}
         candidate = str(value or "").strip()
         return candidate if candidate in option_ids else None
+    if value_type == "enum_array":
+        if not isinstance(value, list):
+            return None
+        option_ids = {str(item.get("id")) for item in specification.get("options", []) if isinstance(item, dict)}
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        return normalized if normalized and all(item in option_ids for item in normalized) else None
+    if value_type in {"string_array", "integer_array"}:
+        if not isinstance(value, list):
+            return None
+        if value_type == "string_array":
+            normalized = [str(item).strip()[:500] for item in value if str(item).strip()]
+        else:
+            try:
+                normalized = [int(item) for item in value]
+            except (TypeError, ValueError):
+                return None
+        return normalized or None
     if value_type == "string":
         candidate = str(value or "").strip()
         return candidate[:500] if candidate else None
     if value_type == "integer":
         try:
-            return int(value)
+            normalized = int(value)
         except (TypeError, ValueError):
             return None
+        minimum = specification.get("minimum")
+        maximum = specification.get("maximum")
+        if isinstance(minimum, int) and normalized < minimum:
+            return None
+        if isinstance(maximum, int) and normalized > maximum:
+            return None
+        return normalized
     if value_type == "date_range":
         if not isinstance(value, dict):
             return None
@@ -191,13 +215,16 @@ def _bound_filter_value(workflow: dict[str, Any], filters: dict[str, Any], sourc
     specification = dict((workflow.get("routing") or {}).get("filters") or {}).get(root)
     if not isinstance(specification, dict) or value is None:
         return value
-    if specification.get("type") != "enum" or "." in source_path:
+    if specification.get("type") not in {"enum", "enum_array"} or "." in source_path:
         return value
-    option = next(
-        (item for item in specification.get("options", []) if isinstance(item, dict) and str(item.get("id")) == str(value)),
-        None,
-    )
-    return option.get("value", value) if option else value
+    options = {
+        str(item.get("id")): item.get("value", item.get("id"))
+        for item in specification.get("options", [])
+        if isinstance(item, dict)
+    }
+    if specification.get("type") == "enum_array":
+        return [options.get(str(item), item) for item in value]
+    return options.get(str(value), value)
 
 
 def _request_from_definition(

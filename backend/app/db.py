@@ -303,24 +303,20 @@ async def init_db() -> None:
                     existing.interface_key = interface_key(definition["http_method"], definition["http_path"])
                     existing.parameters = dict(definition.get("parameters", {}))
                     existing.masking_policy = str(definition.get("masking_policy", "default"))
-                    existing.profile_scope = infer_profile_scope(existing.parameters, existing.http_path)
+                    existing.profile_scope = dict(definition.get("profile_scope") or infer_profile_scope(existing.parameters, existing.http_path))
                     existing.source = "swagger"
                     changed = True
                 continue
             tool_values = dict(definition)
-            tool_values["profile_scope"] = infer_profile_scope(
+            tool_values["profile_scope"] = dict(tool_values.get("profile_scope") or infer_profile_scope(
                 tool_values.get("parameters"),
                 str(tool_values.get("http_path") or ""),
-            )
-            session.add(
-                Tool(
-                    **tool_values,
-                    interface_key=interface_key(definition["http_method"], definition["http_path"]),
-                    published=True,
-                    enabled=True,
-                    updated_by="system",
-                )
-            )
+            ))
+            tool_values["interface_key"] = interface_key(definition["http_method"], definition["http_path"])
+            tool_values.setdefault("published", True)
+            tool_values.setdefault("enabled", True)
+            tool_values.setdefault("updated_by", "system")
+            session.add(Tool(**tool_values))
             changed = True
         if changed:
             await session.commit()
