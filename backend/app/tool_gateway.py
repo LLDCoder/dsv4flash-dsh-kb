@@ -166,6 +166,20 @@ class ToolGateway:
         ):
             return await self._invoke_registered_tool(principal, tool_name, arguments, tool_definition, profile_context)
         if tool_name != "ocr.layout_parsing":
+            if tool_name == "umc.profile.summary":
+                if arguments:
+                    return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "message": "this tool uses only the current authenticated UMC identity"}
+                try:
+                    result = await self.platform.profile_summary(
+                        umc_token=principal.umc_token,
+                        request_id=principal.request_id,
+                    )
+                    return {"ok": True, "code": "ok", "toolName": tool_name, "result": result}
+                except httpx.HTTPStatusError as exc:
+                    code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"
+                    return {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}
+                except httpx.HTTPError as exc:
+                    return {"ok": False, "code": "tool_unavailable", "toolName": tool_name, "error": str(exc)[:500]}
             if tool_name == "knowledge.search":
                 query = arguments.get("query")
                 folder_id = arguments.get("folder_id") or arguments.get("folderId")

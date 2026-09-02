@@ -7,6 +7,19 @@ from datetime import date
 from typing import Any
 
 
+# A selection is a generic workflow concern rather than a business-specific
+# Skill rule.  Published workflows may add or override these phrases through
+# ``selection.ordinalTerms``; this fallback keeps ordinary follow-ups such as
+# “view the second one” executable for every list/detail Skill.
+DEFAULT_ORDINAL_TERMS: dict[str, list[str]] = {
+    "1": ["first", "1st", "first one", "first item", "first point", "first piece", "number 1", "no. 1", "#1", "第一", "第1"],
+    "2": ["second", "2nd", "second one", "second item", "second point", "second piece", "number 2", "no. 2", "#2", "第二", "第2"],
+    "3": ["third", "3rd", "third one", "third item", "third point", "third piece", "number 3", "no. 3", "#3", "第三", "第3"],
+    "4": ["fourth", "4th", "fourth one", "fourth item", "fourth point", "fourth piece", "number 4", "no. 4", "#4", "第四", "第4"],
+    "5": ["fifth", "5th", "fifth one", "fifth item", "fifth point", "fifth piece", "number 5", "no. 5", "#5", "第五", "第5"],
+}
+
+
 def _matches(text: str, condition: object) -> bool:
     if not isinstance(condition, dict):
         return False
@@ -151,7 +164,7 @@ def _selected_item(selector: object, items: list[dict[str, Any]], selection: dic
     if isinstance(selector, dict):
         ordinal = selector.get("ordinal")
         if isinstance(ordinal, int):
-            return items[ordinal - 1] if ordinal <= len(items) else None
+            return items[ordinal - 1] if 1 <= ordinal <= len(items) else None
         selector = str(selector.get("identifier") or "")
     normalized = str(selector or "").casefold()
     identifier_fields = [str(field) for field in selection.get("identifierFields", []) if str(field).strip()]
@@ -161,7 +174,11 @@ def _selected_item(selector: object, items: list[dict[str, Any]], selection: dic
     ]
     if len(matches) == 1:
         return matches[0]
-    for index, terms in dict(selection.get("ordinalTerms", {})).items():
+    ordinal_terms = dict(DEFAULT_ORDINAL_TERMS)
+    configured_terms = selection.get("ordinalTerms", {})
+    if isinstance(configured_terms, dict):
+        ordinal_terms.update({str(index): list(terms) for index, terms in configured_terms.items() if isinstance(terms, list)})
+    for index, terms in ordinal_terms.items():
         if not isinstance(terms, list) or not any(str(term).casefold() in normalized for term in terms):
             continue
         try:
@@ -228,10 +245,16 @@ def matches_configured_selection_follow_up(
     """Whether a published selection workflow claims this follow-up turn."""
 
     selection = (workflow or {}).get("selection")
-    if not isinstance(selection, dict) or not _selection_items(history, selection):
+    if not isinstance(selection, dict):
+        return False
+    items = _selection_items(history, selection)
+    if not items:
         return False
     request = selection.get("toolRequest") or selection.get("detailRequest")
-    return isinstance(request, dict) and _matches(text, request.get("when"))
+    return isinstance(request, dict) and (
+        _matches(text, request.get("when"))
+        or _selected_item(text, items, selection) is not None
+    )
 
 
 def build_configured_tool_request(
@@ -254,11 +277,11 @@ def build_configured_tool_request(
         selection_filter = str(selection.get("filter") or "")
         matches_intent = intent_id and intent_id == selection.get("intentId")
         matches_legacy_text = isinstance(selection_request, dict) and _matches(text, selection_request.get("when"))
-        if isinstance(selection_request, dict) and (matches_intent or matches_legacy_text):
-            selector = filters.get(selection_filter) if selection_filter else None
-            if selector is None:
-                selector = text
-            item = _selected_item(selector, _selection_items(history, selection), selection)
+        selector = filters.get(selection_filter) if selection_filter else None
+        if selector is None:
+            selector = text
+        item = _selected_item(selector, _selection_items(history, selection), selection)
+        if isinstance(selection_request, dict) and (matches_intent or matches_legacy_text or item is not None):
             tool_name = str(selection_request.get("toolName") or "")
             argument_name = str(selection_request.get("argumentName") or "")
             value_field = str(selection.get("valueField") or "")

@@ -37,6 +37,21 @@ class ApplicationPageRequest(BaseModel):
     page_size: int = Field(default=100, ge=1, le=100, alias="pageSize")
 
 
+PROFILE_SENSITIVE_KEY_FRAGMENTS = (
+    "token",
+    "password",
+    "secret",
+    "email",
+    "phone",
+    "mobile",
+    "address",
+    "identitynumber",
+    "idnumber",
+    "emiratesid",
+    "passport",
+)
+
+
 async def _request(method: str, path: str, *, json: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> Any:
     last_error: Exception | None = None
     response: httpx.Response | None = None
@@ -115,6 +130,70 @@ async def _customer_request(method: str, path: str, *, json: dict[str, Any] | No
         raise HTTPException(status_code=503, detail={"code": "customer_upstream_unavailable", "message": str(exc)[:500]}) from exc
 
 
+def _find_user_id(value: Any) -> str | None:
+    """Find the authenticated UMC user id in its live identity response only."""
+
+    if isinstance(value, dict):
+        for key in ("UserID", "UserId", "userId", "userID"):
+            candidate = value.get(key)
+            if isinstance(candidate, (str, int)) and str(candidate).strip():
+                return str(candidate).strip()
+        for child in value.values():
+            found = _find_user_id(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_user_id(child)
+            if found:
+                return found
+    return None
+
+
+def _redact_profile_payload(value: Any) -> Any:
+    """Keep profile status fields while excluding credentials and contact/ID values."""
+
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+            if any(fragment in normalized for fragment in PROFILE_SENSITIVE_KEY_FRAGMENTS):
+                continue
+            result[str(key)] = _redact_profile_payload(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_profile_payload(item) for item in value]
+    return value
+
+
+async def _profile_read(
+    label: str,
+    method: str,
+    path: str,
+    *,
+    authorization: str | None,
+    request_id: str | None,
+    params: dict[str, Any] | None = None,
+) -> tuple[str, Any]:
+    """Collect an optional Profile source without turning partial read loss into a write/retry flow."""
+
+    try:
+        return "ok", await _customer_request(
+            method,
+            path,
+            params=params,
+            authorization=authorization,
+            request_id=request_id,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        return "unavailable", {
+            "source": label,
+            "status": exc.status_code,
+            "code": detail.get("code", "profile_source_unavailable"),
+        }
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {
@@ -124,7 +203,7 @@ async def healthz() -> dict[str, Any]:
         "customerUpstream": CUSTOMER_BASE_URL,
         "authMode": "umctoken-forwarded",
         "retryAttempts": RETRY_ATTEMPTS,
-        "supportedOperations": ["data-access.application-detail", "data-access.book-by-isbn", "data-access.add-application", "applications.page", "licenses.query", "licenses.statistics", "licenses.action-needed", "swagger.document", "swagger.proxy"],
+        "supportedOperations": ["data-access.application-detail", "data-access.book-by-isbn", "data-access.add-application", "applications.page", "licenses.query", "licenses.statistics", "licenses.action-needed", "profiles.summary", "swagger.document", "swagger.proxy"],
     }
 
 
@@ -172,6 +251,74 @@ async def licenses_statistics(authorization: str | None = Header(default=None), 
 @app.get("/licenses-permits/action-needed")
 async def licenses_action_needed(authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
     return await _customer_request("GET", "/api/licenses-permits/action-needed", authorization=authorization, request_id=x_request_id)
+
+
+@app.get("/profiles/summary")
+async def profile_summary(authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
+    """Read the authenticated user's Profile state without accepting account selectors.
+
+    Individual profile data is returned independently from establishment Profile
+    data.  The caller must not treat the individual record as the token's
+    selected establishment Profile when UMC does not explicitly identify one.
+    """
+
+    identity = await _customer_request(
+        "POST",
+        "/api/User/GetUserInfo",
+        json={},
+        authorization=authorization,
+        request_id=x_request_id,
+    )
+    user_id = _find_user_id(identity)
+    if not user_id:
+        raise HTTPException(status_code=502, detail={"code": "customer_identity_missing"})
+
+    approved, individual, establishments = await asyncio.gather(
+        _profile_read(
+            "approvedProfiles",
+            "GET",
+            "/api/User/GetUserAllApproveProfiles",
+            params={"userId": user_id},
+            authorization=authorization,
+            request_id=x_request_id,
+        ),
+        _profile_read(
+            "individualProfile",
+            "GET",
+            "/api/User/GetUserIndividual",
+            params={"userId": user_id},
+            authorization=authorization,
+            request_id=x_request_id,
+        ),
+        _profile_read(
+            "establishmentProfiles",
+            "GET",
+            f"/api/User/GetUserEstablishmentsList/{user_id}",
+            params={"pageIndex": 1, "pageSize": 100},
+            authorization=authorization,
+            request_id=x_request_id,
+        ),
+    )
+
+    sources = {
+        "currentIdentity": "ok",
+        "approvedProfiles": approved[0],
+        "individualProfile": individual[0],
+        "establishmentProfiles": establishments[0],
+    }
+    return {
+        "scope": "current_authenticated_umc_user",
+        "sources": sources,
+        "currentIdentity": _redact_profile_payload(identity),
+        "approvedProfiles": _redact_profile_payload(approved[1]),
+        "individualProfile": _redact_profile_payload(individual[1]),
+        "establishmentProfiles": _redact_profile_payload(establishments[1]),
+        "limitations": [
+            "No user or Profile identifier is accepted from the caller.",
+            "Individual Profile data is not evidence that an establishment Profile is currently selected.",
+            "Only fields returned by UMC may be used to report review state or document expiry.",
+        ],
+    }
 
 
 class SwaggerProxyRequest(BaseModel):

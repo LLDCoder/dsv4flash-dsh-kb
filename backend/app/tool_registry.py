@@ -10,7 +10,7 @@ from .profile_scope import infer_profile_scope
 
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
-SYSTEM_DEFAULT_TOOL_NAMES = frozenset({"knowledge.search", "ocr.layout_parsing"})
+SYSTEM_DEFAULT_TOOL_NAMES = frozenset({"knowledge.search", "ocr.layout_parsing", "umc.profile.summary"})
 
 
 DEFAULT_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
@@ -191,7 +191,7 @@ def is_system_default_tool(tool_name: str) -> bool:
 
 
 def system_default_tool_definitions(settings: Any) -> list[dict[str, Any]]:
-    """Build the two non-persisted capabilities from live runtime config."""
+    """Build non-persisted capabilities from live runtime configuration."""
 
     knowledge_enabled = bool(str(getattr(settings, "knowledge_gateway_url", "") or "").strip())
     ocr_enabled = bool(str(getattr(settings, "ocr_gateway_url", "") or "").strip())
@@ -246,6 +246,25 @@ def system_default_tool_definitions(settings: Any) -> list[dict[str, Any]]:
             "toolType": "system_default",
             "enabled": ocr_enabled,
             "published": ocr_enabled,
+            "mutable": False,
+        },
+        {
+            "toolName": "umc.profile.summary",
+            "displayName": "Read my profile status",
+            "description": "Read-only summary of the current UMC user's individual and establishment Profile records. The server derives the user identity from the live UMC session; callers cannot supply another user or Profile ID.",
+            "operationId": "umc_profile_summary",
+            "httpMethod": "GET",
+            "httpPath": "/profiles/summary",
+            "interfaceKey": "GET /profiles/summary",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "responseSchema": {},
+            "authStrategy": "current_umc_bearer_token",
+            "sideEffect": "read",
+            "confirmationRequired": False,
+            "source": "runtime_config",
+            "toolType": "system_default",
+            "enabled": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
+            "published": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
             "mutable": False,
         },
     ]

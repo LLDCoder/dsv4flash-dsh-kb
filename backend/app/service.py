@@ -280,6 +280,128 @@ class DSHService:
             return self.route_shape_for_skill(fallback_id, catalog), metadata
         return SkillRoute("general", "general"), metadata
 
+    @staticmethod
+    def _nested_value(value: Any, path: str) -> Any:
+        """Read a dotted field from a Tool result without evaluating input."""
+
+        current = value
+        for part in (path or "").split("."):
+            if not part:
+                continue
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+        return current
+
+    @staticmethod
+    def _tool_result_payload(event_json: dict[str, Any]) -> dict[str, Any] | None:
+        raw = event_json.get("result")
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except (TypeError, ValueError):
+                return None
+            return decoded if isinstance(decoded, dict) else None
+        return None
+
+    def configured_cross_skill_handoff(
+        self,
+        active_skill: Skill,
+        latest_content: str,
+        history: list[SessionEvent],
+        catalog: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Resolve a published cross-Skill handoff from the latest detail result.
+
+        Handoffs are declarative Skill workflow data.  This keeps Refund and
+        Complaints independent while allowing either one to delegate a clearly
+        linked application question to the existing My Requests Skill.
+        """
+
+        workflow = merged_skill_workflow(active_skill.skill_id, active_skill.workflow)
+        handoffs = workflow.get("crossSkillHandoffs") or []
+        question = latest_content.casefold().strip()
+        for handoff in handoffs:
+            if not isinstance(handoff, dict):
+                continue
+            triggers = handoff.get("triggers") or {}
+            any_terms = [str(term).casefold() for term in triggers.get("anyTerms") or [] if str(term).strip()]
+            all_terms = [str(term).casefold() for term in triggers.get("allTerms") or [] if str(term).strip()]
+            none_terms = [str(term).casefold() for term in triggers.get("noneTerms") or [] if str(term).strip()]
+            exact_terms = {str(term).casefold().strip() for term in triggers.get("exactTerms") or [] if str(term).strip()}
+            # A one-word detail follow-up such as "application" is safe only
+            # inside the active Refund/Complaints detail context.  Keep it an
+            # exact match so "refund application" cannot accidentally leave
+            # the current Skill.
+            exact_match = question in exact_terms
+            if not exact_match:
+                if any_terms and not any(term in question for term in any_terms):
+                    continue
+                if all_terms and not all(term in question for term in all_terms):
+                    continue
+            if any(term in question for term in none_terms):
+                continue
+            source_tools = {str(value) for value in handoff.get("sourceTools") or [] if str(value).strip()}
+            source_event = next(
+                (
+                    event
+                    for event in reversed(history)
+                    if event.event_type == "tool.result"
+                    and str(event.event_json.get("toolName") or "") in source_tools
+                    and event.event_json.get("ok") is True
+                ),
+                None,
+            )
+            if not source_event:
+                return {
+                    "id": str(handoff.get("id") or "related-application"),
+                    "targetSkillId": str(handoff.get("targetSkillId") or "application_status"),
+                    "sourceSkillId": active_skill.skill_id,
+                    "missing": True,
+                    "missingMessage": str(handoff.get("missingMessage") or "Please open the specific record first so I can find its related application."),
+                }
+            payload = self._tool_result_payload(source_event.event_json)
+            for extractor in handoff.get("extractors") or []:
+                if not isinstance(extractor, dict) or not payload:
+                    continue
+                value = self._nested_value(payload, str(extractor.get("path") or ""))
+                if value in (None, ""):
+                    continue
+                value_type = str(extractor.get("argumentType") or "string")
+                if value_type == "integer":
+                    try:
+                        value = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                target_skill_id = str(handoff.get("targetSkillId") or "application_status")
+                target_entry = next((item for item in catalog if str(item.get("skillId") or "") == target_skill_id), None)
+                allowed_tools = set((target_entry or {}).get("allowedTools") or [])
+                tool_name = str(extractor.get("toolName") or "")
+                argument_name = str(extractor.get("argumentName") or "")
+                if not target_entry or tool_name not in allowed_tools or not argument_name:
+                    continue
+                arguments = dict(extractor.get("arguments") or {})
+                arguments[argument_name] = value
+                return {
+                    "id": str(handoff.get("id") or "related-application"),
+                    "targetSkillId": target_skill_id,
+                    "sourceSkillId": active_skill.skill_id,
+                    "sourceToolName": str(source_event.event_json.get("toolName") or ""),
+                    "toolRequest": (tool_name, arguments),
+                    "missing": False,
+                }
+            return {
+                "id": str(handoff.get("id") or "related-application"),
+                "targetSkillId": str(handoff.get("targetSkillId") or "application_status"),
+                "sourceSkillId": active_skill.skill_id,
+                "sourceToolName": str(source_event.event_json.get("toolName") or ""),
+                "missing": True,
+                "missingMessage": str(handoff.get("missingMessage") or "I could not find an application identifier linked to that record. Please provide the application number."),
+            }
+        return None
+
     async def parse_document(self, file: str, file_type: int | None, options: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self.ocr.layout_parsing(file, file_type=file_type, options=options)
 
@@ -673,6 +795,7 @@ class DSHService:
                     if route_context.get("recentMessages") and route_context["recentMessages"][-1].get("role") == "user" and route_context["recentMessages"][-1].get("content") == latest_content:
                         route_context["recentMessages"] = route_context["recentMessages"][:-1]
                     active_skill_id = str(route_context.get("activeSkillId") or "")
+                    cross_skill_handoff: dict[str, Any] | None = None
                     if active_skill_id:
                         active_catalog_entry = next(
                             (item for item in route_catalog if str(item.get("skillId") or "") == active_skill_id),
@@ -697,7 +820,23 @@ class DSHService:
                             .order_by(Skill.version.desc())
                         )
                         active_skill = active_skill_result.scalars().first()
-                        if active_skill and matches_configured_selection_follow_up(
+                        if active_skill:
+                            cross_skill_handoff = self.configured_cross_skill_handoff(
+                                active_skill, latest_content, history, route_catalog
+                            )
+                        if cross_skill_handoff:
+                            target_skill_id = str(cross_skill_handoff.get("targetSkillId") or "")
+                            target_entry = next(
+                                (item for item in route_catalog if str(item.get("skillId") or "") == target_skill_id),
+                                None,
+                            )
+                            if target_entry:
+                                keyword_route = self.route_shape_for_skill(
+                                    target_skill_id, route_catalog, routing_locked=True
+                                )
+                            else:
+                                cross_skill_handoff = None
+                        elif active_skill and matches_configured_selection_follow_up(
                             merged_skill_workflow(active_skill.skill_id, active_skill.workflow), latest_content, history
                         ):
                             keyword_route = self.route_shape_for_skill(
@@ -708,6 +847,15 @@ class DSHService:
                     route, route_metadata = await self.choose_skill_route(
                         db, latest_content, keyword_route, conversation, principal.request_id, route_context
                     )
+                    if cross_skill_handoff:
+                        route_metadata.update(
+                            {
+                                "crossSkillHandoffId": cross_skill_handoff.get("id"),
+                                "crossSkillSourceSkillId": cross_skill_handoff.get("sourceSkillId"),
+                                "crossSkillSourceToolName": cross_skill_handoff.get("sourceToolName"),
+                                "crossSkillHandoffMissing": bool(cross_skill_handoff.get("missing")),
+                            }
+                        )
                     selected_skill_result = await db.execute(
                         select(Skill)
                         .where(
@@ -726,6 +874,12 @@ class DSHService:
                         name for name in (list(selected_skill.allowed_tools) if selected_skill else [])
                         if name not in SYSTEM_DEFAULT_TOOL_NAMES or name in configured_system_tools
                     ]
+                    handoff_tool_request = cross_skill_handoff.get("toolRequest") if cross_skill_handoff else None
+                    handoff_missing_message = (
+                        str(cross_skill_handoff.get("missingMessage") or "")
+                        if cross_skill_handoff and cross_skill_handoff.get("missing")
+                        else ""
+                    )
                     tool_request = (
                         ("ocr.layout_parsing", {
                             "attachment": latest_attachment,
@@ -734,6 +888,8 @@ class DSHService:
                         if latest_attachment and "ocr.layout_parsing" in allowed_tool_names
                         else parse_tool_request(latest_content) if latest_user else None
                     )
+                    if handoff_tool_request and not latest_attachment:
+                        tool_request = handoff_tool_request
                     if route.mode == "portal_action":
                         # Downloads, exports, payments, and refunds are visible
                         # Portal actions only for this read-only release.
@@ -751,7 +907,7 @@ class DSHService:
                                 "top_k": self.settings.knowledge_top_k,
                             },
                         )
-                    elif not tool_request:
+                    elif not tool_request and not handoff_missing_message:
                         tool_request = build_configured_tool_request(
                             merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow) if selected_skill else {},
                             allowed_tool_names,
@@ -804,6 +960,10 @@ class DSHService:
                             "routeContextUsed": route_metadata.get("routeContextUsed"),
                             "confidence": route_metadata.get("confidence"),
                             "needsClarification": route_metadata.get("needsClarification"),
+                            "crossSkillHandoffId": route_metadata.get("crossSkillHandoffId"),
+                            "crossSkillSourceSkillId": route_metadata.get("crossSkillSourceSkillId"),
+                            "crossSkillSourceToolName": route_metadata.get("crossSkillSourceToolName"),
+                            "crossSkillHandoffMissing": route_metadata.get("crossSkillHandoffMissing", False),
                         },
                     )
                     if tool_request:
@@ -882,7 +1042,7 @@ class DSHService:
                     )
                     if route.category in {"data_query", "api_call"}:
                         messages.insert(1, {"role": "system", "content": "FLOW INTERACTION CONSTRAINTS: " + json.dumps(build_flow_prompt(route), ensure_ascii=False)})
-                    document_failure_message: str | None = None
+                    forced_response_message: str | None = handoff_missing_message or None
                     if tool_request:
                         tool_name, arguments = tool_request
                         tool_definition = tool_definition_by_name.get(tool_name) or {}
@@ -992,7 +1152,7 @@ class DSHService:
                             request_id=principal.request_id,
                         )
                         if latest_attachment and not tool_result.get("ok"):
-                            document_failure_message = (
+                            forced_response_message = (
                                 "تعذر علي قراءة الملف المرفق لأن خدمة تحليل المستندات غير متاحة حالياً. "
                                 "يرجى المحاولة مرة أخرى بعد توفر خدمة OCR."
                                 if response_language == "ar"
@@ -1003,7 +1163,7 @@ class DSHService:
                                 "role": "user",
                                 "content": "The user uploaded a document without a written question. Extract the relevant information from the OCR result and give a concise, NMA-focused summary.",
                             })
-                        if not document_failure_message:
+                        if not forced_response_message:
                             messages.append(
                                 {
                                     "role": "system",
@@ -1015,8 +1175,8 @@ class DSHService:
                                     ),
                                 }
                             )
-                    if document_failure_message:
-                        await self.append_event(db, conversation, "assistant.message", {"content": document_failure_message, "requestId": principal.request_id})
+                    if forced_response_message:
+                        await self.append_event(db, conversation, "assistant.message", {"content": forced_response_message, "requestId": principal.request_id})
                     else:
                         await self.append_status(
                             db,

@@ -4,8 +4,18 @@ import json
 import re
 
 
+def _is_tool_invocation(payload: object) -> bool:
+    return isinstance(payload, dict) and bool({"tool", "toolName", "name"} & set(payload)) and bool(
+        {"args", "arguments", "parameters"} & set(payload)
+    )
+
+
 def is_internal_tool_protocol(content: str) -> bool:
-    """Detect a model draft that exposes a tool invocation instead of an answer."""
+    """Detect a model draft that exposes an internal tool invocation.
+
+    A draft may contain a natural-language prefix followed by JSON.  That is
+    still an internal protocol leak and must never become a public answer.
+    """
     candidate = content.strip()
     lowered = candidate.casefold()
     # Some compatible model endpoints emit their native DSML/XML tool-call
@@ -20,9 +30,19 @@ def is_internal_tool_protocol(content: str) -> bool:
     if candidate.startswith("```json") and candidate.endswith("```"):
         candidate = candidate[7:-3].strip()
     try:
-        payload = json.loads(candidate)
+        if _is_tool_invocation(json.loads(candidate)):
+            return True
     except json.JSONDecodeError:
-        return False
-    if not isinstance(payload, dict):
-        return False
-    return bool({"tool", "toolName", "name"} & set(payload)) and bool({"args", "arguments", "parameters"} & set(payload))
+        pass
+
+    decoder = json.JSONDecoder()
+    for offset, character in enumerate(candidate):
+        if character != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(candidate[offset:])
+        except json.JSONDecodeError:
+            continue
+        if _is_tool_invocation(payload):
+            return True
+    return False

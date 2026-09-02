@@ -88,6 +88,21 @@ class PlatformGatewayClient:
             response.raise_for_status()
             return response.json()
 
+    async def profile_summary(self, *, umc_token: str | None = None, request_id: str | None = None) -> dict[str, Any]:
+        """Read Profile data for the identity authenticated by the live UMC token.
+
+        The caller provides no user or Profile identifiers.  This prevents a
+        model prompt from changing the scope away from the current account.
+        """
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.base_url}/profiles/summary",
+                headers=self._headers(umc_token, request_id),
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def invoke_swagger_tool(
         self,
         method: str,

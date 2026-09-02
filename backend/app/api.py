@@ -189,6 +189,13 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.post("/ai-chat/messages/stream", tags=["Chatbot compatibility"])
     async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
+        """Stream a customer-chat turn.
+
+        A clearly linked application follow-up after a Refund or Complaints
+        detail may be handed off to the read-only My Requests application
+        Skill.  The service uses only an application identifier present in the
+        prior verified detail result; it never guesses or performs a write.
+        """
         payload = await request.json()
         content = str(payload.get("message") or "").strip()
         if not content:
@@ -552,6 +559,15 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.post("/conversations/{conversation_id}/messages")
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(get_principal)):
+        """Submit a conversation turn with read-only cross-Skill handoff support.
+
+        When a Refund or Complaints detail has a verified related application,
+        a follow-up explicitly asking for that application's status or details
+        is routed to the existing My Requests Skill.  If the identifier is not
+        present, the response asks for an application number instead of
+        querying unrelated records.
+
+        """
         try:
             return await service.submit_message(
                 principal,
