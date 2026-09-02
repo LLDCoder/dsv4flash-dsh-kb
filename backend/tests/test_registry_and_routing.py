@@ -87,6 +87,47 @@ class RegistryAndRoutingTests(unittest.TestCase):
         route = resolve_configured_skill("inspect this record", catalog, canonicalize=False)
         self.assertEqual((route.skill_id, route.category, route.fields), ("custom_records", "api_call", ("record_id",)))
 
+    def test_published_workflow_normalizes_array_filters_and_integer_bounds(self):
+        workflow = {
+            "routing": {
+                "defaultIntentId": "list",
+                "intents": [{"id": "list", "description": "List records."}],
+                "filters": {
+                    "statuses": {
+                        "type": "enum_array",
+                        "options": [
+                            {"id": "pending", "value": 1},
+                            {"id": "completed", "value": 2},
+                        ],
+                    },
+                    "tags": {"type": "string_array"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+            },
+            "requests": [{
+                "intentId": "list",
+                "toolName": "records.list",
+                "bindings": [
+                    {"filter": "statuses", "argument": "statusIds"},
+                    {"filter": "tags", "argument": "tags"},
+                    {"filter": "limit", "argument": "pageSize"},
+                ],
+            }],
+        }
+        intent_id, filters = normalize_route_directives(
+            workflow,
+            "list",
+            {"statuses": ["pending", "completed"], "tags": ["urgent", "media"], "limit": 5},
+        )
+        self.assertEqual(intent_id, "list")
+        self.assertEqual(filters, {"statuses": ["pending", "completed"], "tags": ["urgent", "media"], "limit": 5})
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["records.list"], "list records", [], intent_id=intent_id, filters=filters),
+            ("records.list", {"statusIds": [1, 2], "tags": ["urgent", "media"], "pageSize": 5}),
+        )
+        _, invalid = normalize_route_directives(workflow, "list", {"statuses": ["unknown"], "limit": 101})
+        self.assertEqual(invalid, {})
+
     def test_payments_routes_obey_read_only_priority(self):
         self.assertEqual(resolve_skill("申请 ML-2-2026-12345 待付款").skill_id, "application_payment_details")
         self.assertEqual(resolve_skill("待缴罚款有哪些？").skill_id, "fine_payment_guidance")
@@ -266,7 +307,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         from app.skills import DEFAULT_SKILL_DEFINITIONS
 
         skill_tools = {tool for skill in DEFAULT_SKILL_DEFINITIONS for tool in skill.get("allowed_tools", [])}
-        registry_tools = {tool["tool_name"] for tool in DEFAULT_TOOL_DEFINITIONS}
+        registry_tools = {tool["tool_name"] for tool in DEFAULT_TOOL_DEFINITIONS} | set(SYSTEM_DEFAULT_TOOL_NAMES)
         self.assertEqual(skill_tools - registry_tools, set())
 
     def test_legacy_skill_tools_are_covered_by_registry_replacements(self):
