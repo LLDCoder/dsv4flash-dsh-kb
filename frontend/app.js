@@ -1,5 +1,13 @@
 const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
+const dshBasePath = window.location.pathname === "/dsh-audit" || window.location.pathname.startsWith("/dsh-audit/")
+  ? "/dsh-audit"
+  : "";
+const dshUrl = (path) => `${dshBasePath}${path}`;
+
+function opensAuditByDefault() {
+  return window.location.pathname.replace(/\/+$/, "") === "/dsh-audit";
+}
 
 function debounce(callback, delay = 250) {
   let timer = null;
@@ -122,7 +130,7 @@ async function api(path, options = {}) {
   const rawToken = state.umcToken || $("umcToken")?.value.trim() || "";
   const headers = { "Content-Type": "application/json", "X-User-Id": $("userId").value, "X-Tenant-Id": $("tenantId").value, ...(options.headers || {}) };
   if (rawToken && !headers.Authorization) headers.Authorization = rawToken.toLowerCase().startsWith("bearer ") ? rawToken : `Bearer ${rawToken}`;
-  const response = await fetch(path, { credentials: "same-origin", ...options, headers });
+  const response = await fetch(dshUrl(path), { credentials: "same-origin", ...options, headers });
   if (response.status === 401 && !path.startsWith("/api/v1/console/")) {
     state.consoleAuthenticated = false;
     showConsoleGate("控制台会话已过期，请重新输入密码。", true);
@@ -133,7 +141,7 @@ async function api(path, options = {}) {
 
 async function consoleApi(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  const response = await fetch(path, { credentials: "same-origin", ...options, headers });
+  const response = await fetch(dshUrl(path), { credentials: "same-origin", ...options, headers });
   if (response.status === 401) {
     state.consoleAuthenticated = false;
     showConsoleGate("控制台会话已过期，请重新输入密码。", true);
@@ -161,7 +169,7 @@ function hideConsoleGate() {
 }
 
 async function checkConsoleSession() {
-  const response = await fetch("/api/v1/console/session", { credentials: "same-origin" });
+  const response = await fetch(dshUrl("/api/v1/console/session"), { credentials: "same-origin" });
   if (!response.ok) return false;
   const data = await response.json();
   return data.authenticated === true;
@@ -173,7 +181,7 @@ async function loginConsole(event) {
   const status = $("consoleAuthStatus");
   status.textContent = "正在验证…";
   try {
-    const response = await fetch("/api/v1/console/login", {
+    const response = await fetch(dshUrl("/api/v1/console/login"), {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
@@ -182,6 +190,7 @@ async function loginConsole(event) {
     if (!response.ok) throw new Error("密码不正确或服务不可用");
     state.consoleAuthenticated = true;
     hideConsoleGate();
+    if (opensAuditByDefault()) setTab("auditPanel");
     await loadUmcToken().catch(() => {});
   } catch (error) {
     status.textContent = error.message;
@@ -218,7 +227,7 @@ function syncUmcIdentity(rawToken, session = {}) {
 }
 
 async function logoutConsole() {
-  await fetch("/api/v1/console/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+  await fetch(dshUrl("/api/v1/console/logout"), { method: "POST", credentials: "same-origin" }).catch(() => {});
   state.consoleAuthenticated = false;
   state.umcToken = "";
   $("umcToken").value = "";
@@ -239,6 +248,7 @@ async function bootstrapConsole() {
     return;
   }
   hideConsoleGate();
+  if (opensAuditByDefault()) setTab("auditPanel");
   await loadUmcToken().catch(() => {});
 }
 
@@ -1257,7 +1267,7 @@ async function postAttachment(file, token) {
   // Reuse the UMC Customer Portal upload endpoint. The verified portal
   // contract uses the plural multipart field name `files`.
   formData.append("files", file, file.name);
-  const response = await fetch("/api/Document/Upload", {
+  const response = await fetch(dshUrl("/api/Document/Upload"), {
     method: "POST",
     headers: { Authorization: token.toLowerCase().startsWith("bearer ") ? token : `Bearer ${token}` },
     body: formData,
@@ -1419,7 +1429,7 @@ async function connect() {
     const previous = state.ws;
     if (previous && previous.readyState <= 1) previous.close();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${protocol}://${location.host}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
+    const ws = new WebSocket(`${protocol}://${location.host}${dshUrl("/api/v1/ws")}?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
     state.ws = ws;
     const generation = ++state.wsGeneration;
     const ready = new Promise((resolve, reject) => {

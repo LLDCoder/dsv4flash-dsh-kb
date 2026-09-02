@@ -181,9 +181,10 @@ DEFAULT_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {"tool_name": "umc.enquiry-types", "display_name": "List enquiry types", "description": "Read-only enquiry type options.", "operation_id": "enquiry_types", "http_method": "GET", "http_path": "/api/Enquiry/EnquiryTypes", "auth_strategy": "current_umc_bearer_token", "source": "swagger"},
 )
 
-DEFAULT_BUSINESS_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = tuple(
-    definition for definition in DEFAULT_TOOL_DEFINITIONS if definition["tool_name"] not in SYSTEM_DEFAULT_TOOL_NAMES
-)
+# Business tools are owned by the published Tool Registry. Do not seed the
+# legacy Customer Portal adapters at startup: an Admin deployment must not
+# recreate them after operators replace the registry from Admin Swagger.
+DEFAULT_BUSINESS_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = ()
 
 
 def is_system_default_tool(tool_name: str) -> bool:

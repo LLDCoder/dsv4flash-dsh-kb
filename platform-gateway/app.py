@@ -14,7 +14,16 @@ UPSTREAM_BASE_URL = os.getenv(
     "PLATFORM_BASE_URL",
     "http://77.242.240.158:18085/api/platform",
 ).rstrip("/")
+UMC_PORTAL = os.getenv("UMC_PORTAL", "customer").strip().lower()
 CUSTOMER_BASE_URL = os.getenv("UMC_CUSTOMER_BASE_URL", "https://umc-customerportal.sol.daypop.ai").rstrip("/")
+ADMIN_BASE_URL = os.getenv("UMC_ADMIN_BASE_URL", "https://umc-adminportal.sol.daypop.ai").rstrip("/")
+PUBLIC_BASE_URL = os.getenv("UMC_PUBLIC_BASE_URL", "").rstrip("/")
+UMC_BASE_URLS = {
+    "customer": CUSTOMER_BASE_URL,
+    "admin": ADMIN_BASE_URL,
+    "public": PUBLIC_BASE_URL or CUSTOMER_BASE_URL,
+}
+UMC_BASE_URL = UMC_BASE_URLS.get(UMC_PORTAL, CUSTOMER_BASE_URL)
 TIMEOUT_SECONDS = float(os.getenv("PLATFORM_TIMEOUT_SECONDS", "30"))
 RETRY_ATTEMPTS = max(1, int(os.getenv("PLATFORM_RETRY_ATTEMPTS", "2")))
 
@@ -78,12 +87,13 @@ def _trace_id(request_id: str | None) -> str:
     return request_id.strip()[:128] if request_id and request_id.strip() else "-"
 
 
-async def _customer_request(method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None, authorization: str | None = None, request_id: str | None = None) -> Any:
+async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None, authorization: str | None = None, request_id: str | None = None) -> Any:
     forwarded = _require_umc_token(authorization)
     trace_id = _trace_id(request_id)
     token_ref = _token_ref(forwarded)
     logger.info(
-        "customer_forward request_id=%s token_ref=%s method=%s path=%s",
+        "umc_forward portal=%s request_id=%s token_ref=%s method=%s path=%s",
+        UMC_PORTAL,
         trace_id,
         token_ref,
         method,
@@ -93,13 +103,14 @@ async def _customer_request(method: str, path: str, *, json: dict[str, Any] | No
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             response = await client.request(
                 method,
-                f"{CUSTOMER_BASE_URL}{path}",
+                f"{UMC_BASE_URL}{path}",
                 json=json,
                 params=params,
                 headers={"Authorization": forwarded, "Content-Type": "application/json"},
             )
         logger.info(
-            "customer_response request_id=%s token_ref=%s method=%s path=%s status=%s",
+            "umc_response portal=%s request_id=%s token_ref=%s method=%s path=%s status=%s",
+            UMC_PORTAL,
             trace_id,
             token_ref,
             method,
@@ -110,9 +121,9 @@ async def _customer_request(method: str, path: str, *, json: dict[str, Any] | No
         return response.json()
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response.status_code in {401, 403, 404, 422} else 502
-        raise HTTPException(status_code=status, detail={"code": "customer_upstream_error", "upstreamStatus": exc.response.status_code}) from exc
+        raise HTTPException(status_code=status, detail={"code": "umc_upstream_error", "upstreamStatus": exc.response.status_code}) from exc
     except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail={"code": "customer_upstream_unavailable", "message": str(exc)[:500]}) from exc
+        raise HTTPException(status_code=503, detail={"code": "umc_upstream_unavailable", "message": str(exc)[:500]}) from exc
 
 
 @app.get("/healthz")
@@ -121,7 +132,8 @@ async def healthz() -> dict[str, Any]:
         "status": "ok",
         "provider": "77-platform-swagger",
         "upstream": UPSTREAM_BASE_URL,
-        "customerUpstream": CUSTOMER_BASE_URL,
+        "umcPortal": UMC_PORTAL,
+        "umcUpstream": UMC_BASE_URL,
         "authMode": "umctoken-forwarded",
         "retryAttempts": RETRY_ATTEMPTS,
         "supportedOperations": ["data-access.application-detail", "data-access.book-by-isbn", "data-access.add-application", "applications.page", "licenses.query", "licenses.statistics", "licenses.action-needed", "swagger.document", "swagger.proxy"],
@@ -161,17 +173,17 @@ async def applications_page(request: ApplicationPageRequest, authorization: str 
 
 @app.post("/licenses-permits/query")
 async def licenses_permits_query(payload: dict[str, Any], authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
-    return await _customer_request("POST", "/api/licenses-permits/query", json=payload, authorization=authorization, request_id=x_request_id)
+    return await _umc_request("POST", "/api/licenses-permits/query", json=payload, authorization=authorization, request_id=x_request_id)
 
 
 @app.get("/licenses/statistics")
 async def licenses_statistics(authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
-    return await _customer_request("GET", "/api/License/statistics", authorization=authorization, request_id=x_request_id)
+    return await _umc_request("GET", "/api/License/statistics", authorization=authorization, request_id=x_request_id)
 
 
 @app.get("/licenses-permits/action-needed")
 async def licenses_action_needed(authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
-    return await _customer_request("GET", "/api/licenses-permits/action-needed", authorization=authorization, request_id=x_request_id)
+    return await _umc_request("GET", "/api/licenses-permits/action-needed", authorization=authorization, request_id=x_request_id)
 
 
 class SwaggerProxyRequest(BaseModel):
@@ -195,22 +207,22 @@ def _upstream_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/swagger/proxy")
 async def swagger_proxy(request: SwaggerProxyRequest, authorization: str | None = Header(default=None), x_request_id: str | None = Header(default=None)) -> Any:
-    """Proxy a published, validated customer operation without per-tool routes."""
+    """Proxy a published, validated operation for the configured UMC portal."""
 
     method = request.method.strip().upper()
     path = request.path.strip()
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise HTTPException(status_code=422, detail={"code": "unsupported_http_method"})
     if not path.startswith("/api/") or "://" in path or "\\" in path:
-        raise HTTPException(status_code=422, detail={"code": "invalid_customer_path"})
+        raise HTTPException(status_code=422, detail={"code": "invalid_umc_path"})
     parameters = _upstream_parameters(request.parameters)
     for parameter_name in re.findall(r"\{([^{}]+)\}", path):
         if parameter_name not in parameters:
             raise HTTPException(status_code=422, detail={"code": "missing_path_parameter", "parameter": parameter_name})
         path = path.replace("{" + parameter_name + "}", str(parameters.pop(parameter_name)))
     if method in {"GET", "DELETE"}:
-        return await _customer_request(method, path, params=parameters, authorization=authorization, request_id=x_request_id)
-    return await _customer_request(method, path, json=parameters, authorization=authorization, request_id=x_request_id)
+        return await _umc_request(method, path, params=parameters, authorization=authorization, request_id=x_request_id)
+    return await _umc_request(method, path, json=parameters, authorization=authorization, request_id=x_request_id)
 
 
 class ApplicationDetailRequest(BaseModel):

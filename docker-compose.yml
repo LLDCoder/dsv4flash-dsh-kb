@@ -91,7 +91,10 @@ services:
       context: ./platform-gateway
     environment:
       PLATFORM_BASE_URL: ${PLATFORM_BASE_URL:-http://77.242.240.158:18085/api/platform}
+      UMC_PORTAL: ${UMC_PORTAL:-customer}
       UMC_CUSTOMER_BASE_URL: ${UMC_CUSTOMER_BASE_URL:-https://umc-customerportal.sol.daypop.ai}
+      UMC_ADMIN_BASE_URL: ${UMC_ADMIN_BASE_URL:-https://umc-adminportal.sol.daypop.ai}
+      UMC_PUBLIC_BASE_URL: ${UMC_PUBLIC_BASE_URL:-}
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
       PLATFORM_RETRY_ATTEMPTS: ${PLATFORM_RETRY_ATTEMPTS:-2}
     expose:

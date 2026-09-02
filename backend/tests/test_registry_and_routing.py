@@ -829,21 +829,8 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(raw_status["code"], "invalid_arguments")
         self.assertIn("unsupported parameter: refundStatusId", raw_status["message"])
 
-    def test_registry_execution_definition_contains_gateway_fields(self):
-        definition = next(item for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS if item["tool_name"] == "umc.licenses.statistics")
-        execution_definition = {
-            "name": definition["tool_name"],
-            "description": definition["description"],
-            "parameters": definition["parameters"],
-            "sideEffect": definition.get("side_effect", "read"),
-            "confirmationRequired": definition.get("confirmation_required", False),
-            "operationId": definition["operation_id"],
-            "httpMethod": definition["http_method"],
-            "httpPath": definition["http_path"],
-            "source": definition["source"],
-        }
-        self.assertEqual(execution_definition["httpMethod"], "GET")
-        self.assertEqual(execution_definition["httpPath"], "/api/License/statistics")
+    def test_business_tools_are_not_seeded_from_customer_defaults(self):
+        self.assertEqual(DEFAULT_BUSINESS_TOOL_DEFINITIONS, ())
 
 
 if __name__ == "__main__":
