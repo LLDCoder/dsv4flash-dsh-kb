@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.skills import LEGACY_SKILL_ID_MIGRATIONS, build_system_prompt, canonical_skill_id, merged_skill_workflow, resolve_configured_skill, resolve_skill
+from app.skills import CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY, LEGACY_SKILL_ID_MIGRATIONS, SKILL_GUIDANCE, build_system_prompt, canonical_skill_id, merged_skill_workflow, resolve_configured_skill, resolve_skill
 from app.skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
@@ -496,7 +496,10 @@ class RegistryAndRoutingTests(unittest.TestCase):
     def test_knowledge_and_ocr_are_runtime_only_capabilities(self):
         business_tools = {item["tool_name"] for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
         self.assertTrue(SYSTEM_DEFAULT_TOOL_NAMES.isdisjoint(business_tools))
-        self.assertEqual(SYSTEM_DEFAULT_TOOL_NAMES, {"knowledge.search", "ocr.layout_parsing"})
+        self.assertEqual(
+            SYSTEM_DEFAULT_TOOL_NAMES,
+            {"knowledge.search", "ocr.layout_parsing", "umc.profile.summary"},
+        )
 
     def test_skill_router_modes_and_validation(self):
         catalog = [{"skillId": "license_permit_status", "status": "PUBLISHED", "enabled": True}]
@@ -639,6 +642,24 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertNotIn("AVAILABLE TOOLS FOR THIS SKILL", prompt)
         self.assertNotIn("umc.licenses.list", prompt)
         self.assertIn("Never expose internal Tool names", prompt)
+
+    def test_knowledge_skills_keep_evidence_internal_to_customer_answers(self):
+        knowledge_skill_ids = {
+            "service_discovery",
+            "copyright_guidance",
+            "license_permit_modification_knowledge",
+            "license_application_knowledge",
+            "service_eligibility_info",
+            "license_renewal",
+            "service_fees",
+            "latest_regulations",
+            "fine_payment",
+            "general_knowledge",
+        }
+        for skill_id in knowledge_skill_ids:
+            self.assertIn(CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY, SKILL_GUIDANCE[skill_id])
+        self.assertNotIn("cite the source", SKILL_GUIDANCE["general_knowledge"].lower())
+        self.assertNotIn("cite the retrieved source", SKILL_GUIDANCE["copyright_guidance"].lower())
 
     def test_internal_tool_protocol_is_not_a_public_answer(self):
         self.assertTrue(is_internal_tool_protocol('JSON\n{"tool": "umc.licenses.detail", "args": {"id": "20329"}}'))

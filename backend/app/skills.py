@@ -57,6 +57,22 @@ def _guidance(when: str, boundary: str, prerequisites: str, response: str, navig
     return "\n".join(sections)
 
 
+CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY = (
+    "Use retrieved knowledge only as internal evidence. Do not display sources, references, citations, "
+    "source/reference sections, retrieved-document links, or locators in the customer-facing answer."
+)
+
+
+def _knowledge_guidance(when: str, boundary: str, prerequisites: str, response: str, navigation: str = "") -> str:
+    return _guidance(
+        when,
+        boundary,
+        prerequisites,
+        f"{response} {CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY}",
+        navigation,
+    )
+
+
 SKILL_GUIDANCE: dict[str, str] = {
     "document_ocr": _guidance(
         "the user attaches a PDF/image or asks to extract fields from a document.",
@@ -64,7 +80,7 @@ SKILL_GUIDANCE: dict[str, str] = {
         "an attachment and a trusted caller identity; OCR output must be treated as unverified evidence.",
         "state that extracted values require user confirmation, preserve identifiers as strings, and report uncertainty or unreadable fields.",
     ),
-    "service_discovery": _guidance(
+    "service_discovery": _knowledge_guidance(
         "the user wants to find or compare a media service for a stated activity.",
         "the user asks for a personal application status, issued document status, fee transaction, or legal ruling.",
         "the applicant type and media activity; use knowledge evidence to identify candidate services.",
@@ -88,11 +104,11 @@ SKILL_GUIDANCE: dict[str, str] = {
         "trusted UMC identity, complete draft parameters, and explicit confirmation immediately before the write.",
         "preview the payload first; allow only type=3/isTest=true new drafts or type=2 updates with applicationId; never claim formal submission.",
     ),
-    "copyright_guidance": _guidance(
+    "copyright_guidance": _knowledge_guidance(
         "the user asks about copyright, content permission, or media content compliance.",
         "the user asks for a personal license status, a binding legal opinion, or a guarantee that a use is cleared.",
         "current knowledge-base evidence and the specific content scenario.",
-        "cite the retrieved source, distinguish general guidance from legal advice, and identify when professional review is needed.",
+        "distinguish general guidance from legal advice, and identify when professional review is needed.",
     ),
     "admin_inspection": _guidance(
         "an authorized administrator asks for inspection summaries, risk indicators, or drill-downs.",
@@ -148,7 +164,7 @@ SKILL_GUIDANCE: dict[str, str] = {
         "a current UMC bearer token and live License/Permit APIs; query the current account's issued-record list and never substitute application records.",
         "for a named permit, match it against the returned issued records and report its actual status, effective date, expiry date, number, and available actions. Do not say account access is unavailable when the live lookup succeeds. Do not use public verification or knowledge-base guidance as a substitute for the account result. This Skill is read-only and never renews, modifies, cancels, transfers, or submits.",
     ),
-    "license_permit_modification_knowledge": _guidance(
+    "license_permit_modification_knowledge": _knowledge_guidance(
         "the user asks whether a current License/Permit can be modified, why its Modify action is unavailable, or asks the general modification scope, requirements, documents, fees, or process.",
         "the user asks to actually create, save, submit, cancel, transfer, or pay for a modification; asks for renewal, download, or a My Requests application status.",
         "for a named current document, the live issued-record list; for general process questions, current knowledge evidence.",
@@ -196,19 +212,19 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the available enquiry types; transaction number, error message, and occurrence time are requested only when available.",
         "direct the customer to raise an Enquiry for a payment technical issue, preserving any error details and screenshots. Offer a concise technical-enquiry preview, but do not claim submission or payment resolution.",
     ),
-    "license_application_knowledge": _guidance(
+    "license_application_knowledge": _knowledge_guidance(
         "the user asks how to apply for a named new media license or permit, including its requirements, documents, fees, or process.",
         "the user asks to create, save, submit, modify, pay for, or track an application; asks about an issued document or renewal; or only describes an activity without identifying a license/service.",
         "the named license/service and current knowledge evidence. For an explicit license or permit name, search knowledge before asking for applicant type.",
         "provide evidence-based requirements and process only. Keep service discovery for an unknown service/activity, and keep future application creation or submission in a separate write Skill. Do not invent a personalized approval outcome.",
     ),
-    "service_eligibility_info": _guidance(
+    "service_eligibility_info": _knowledge_guidance(
         "the user asks for general information about who may use media services.",
         "the user asks for a personal eligibility determination or account/profile status.",
         "knowledge-base evidence and the applicant category/activity being discussed.",
         "label the answer as general guidance and direct personal checks to the profile/service eligibility flow.",
     ),
-    "license_renewal": _guidance(
+    "license_renewal": _knowledge_guidance(
         "the user asks which existing License/Permit needs attention or wants read-only renewal/expiry eligibility information.",
         "the user asks to apply for a new service or merely wants the current document count/status.",
         "the document type/number when account lookup is needed, current action-needed data, and the renewal knowledge rule.",
@@ -220,29 +236,29 @@ SKILL_GUIDANCE: dict[str, str] = {
         "trusted UMC identity and the current account's pending-actions/application list.",
         "list only live pending items, identify the related application and status, and do not pay, edit, cancel, duplicate, submit, or otherwise mutate a request.",
     ),
-    "service_fees": _guidance(
+    "service_fees": _knowledge_guidance(
         "the user asks for the fee or processing time of a specific media service.",
         "the service is not identified, or the user asks for a personal payment/receipt.",
         "service name or ID plus current knowledge evidence and effective-date context.",
         "disambiguate service IDs, show currency and effective date, and never combine fees from different services.",
     ),
-    "latest_regulations": _guidance(
+    "latest_regulations": _knowledge_guidance(
         "the user asks for current media regulations, a Cabinet Resolution, or an exact quotation.",
         "the requested instrument/article cannot be identified, or the user asks for a personal legal clearance.",
         "knowledge evidence; exact quotation additionally requires the instrument number/title/date and article or clause.",
-        "identify the source and date, distinguish summary from quotation, and ask a clarification question when the source is ambiguous.",
+        "distinguish summary from quotation, and ask a clarification question when the source is ambiguous.",
     ),
-    "fine_payment": _guidance(
+    "fine_payment": _knowledge_guidance(
         "the user asks about an unpaid media fine and how payment works.",
         "the user asks to appeal, or no violation can be identified.",
         "current pending-violation data and the payment procedure from the knowledge base.",
         "show the violation and amount returned by UMC, require explicit confirmation before payment, and never claim payment completion without a transaction result.",
     ),
-    "general_knowledge": _guidance(
+    "general_knowledge": _knowledge_guidance(
         "no business domain was confidently recalled and the user asks for general NMA or media-service information.",
         "the user asks for a personal application, license, payment, account, or other live record that needs a business Skill.",
         "knowledge-base evidence; ask a focused follow-up only when the question cannot be answered reliably from the available evidence.",
-        "answer from retrieved evidence, cite the source, and clearly state when the knowledge base has no reliable answer. Do not invent personal account results or policy requirements.",
+        "answer from retrieved evidence and clearly state when the knowledge base has no reliable answer. Do not invent personal account results or policy requirements.",
     ),
 }
 
