@@ -10,6 +10,12 @@ def _is_tool_invocation(payload: object) -> bool:
     )
 
 
+def _is_tool_invocation(payload: object) -> bool:
+    return isinstance(payload, dict) and bool({"tool", "toolName", "name"} & set(payload)) and bool(
+        {"args", "arguments", "parameters"} & set(payload)
+    )
+
+
 def is_internal_tool_protocol(content: str) -> bool:
     """Detect a model draft that exposes an internal tool invocation.
 

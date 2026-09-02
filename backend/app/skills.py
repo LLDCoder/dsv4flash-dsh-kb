@@ -135,10 +135,10 @@ SKILL_GUIDANCE: dict[str, str] = {
         "separate recorded facts from review signals, apply RBAC before returning data, and never expose tokens or credentials.",
     ),
     "profile_status": _guidance(
-        "the user asks about a profile review state or whether a profile can apply.",
-        "the user asks for a specific application status or an issued license/permit status.",
-        "profileId when the question is profile-specific; use the caller's application list only for related eligibility context.",
-        "separate profile state from application state and never infer eligibility from draft counts.",
+        "the user asks about their current Profile, available individual or establishment Profiles, whether they have a Profile, Profile review/rejection state, or the validity/expiry of their own identity or establishment documents.",
+        "the user asks for a specific application status, issued License/Permit status, a refund, a violation, or data belonging to another account/Profile.",
+        "a current UMC bearer token. Query only the server-derived current account; never accept a user ID or Profile ID from the model as an authorization scope.",
+        "use only live Profile data. Keep Profile state separate from application state. Do not infer that the Individual Profile is the currently selected establishment Profile: say when current selection is not explicitly returned. Report document expiry only when the live record provides it. This Skill is read-only: never create, edit, upload, submit, cancel, or switch a Profile.",
     ),
     "service_eligibility": _guidance(
         "the user asks which services are available to their account/profile.",
@@ -277,7 +277,7 @@ SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
     "admin_analytics": {"domain": "admin", "aliases": ["analytics", "pivot", "processing time", "分析", "趋势"]},
     "admin_finance": {"domain": "admin", "aliases": ["revenue", "collection", "finance", "收入", "财务"]},
     "admin_audit": {"domain": "admin", "aliases": ["audit", "permissions", "审计", "权限"]},
-    "profile_status": {"domain": "profile", "aliases": ["profile review", "profile status", "资料审核", "档案"]},
+    "profile_status": {"domain": "profile", "aliases": ["my profile", "profile review", "profile status", "profile expiry", "资料审核", "档案", "身份"]},
     "service_eligibility": {"domain": "services", "aliases": ["my eligibility", "eligible for", "资格", "适用服务"]},
     "application_payment": {"domain": "payments", "aliases": ["pending payment", "pay application", "待付款", "付款申请"]},
     "my_requests_pending_actions": {"domain": "applications", "aliases": ["my requests pending", "pending actions", "what needs attention", "待处理事项", "待办申请"]},
@@ -373,9 +373,12 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "skill_id": "profile_status",
-        "name": "Profile status and application eligibility",
-        "allowed_tools": ["umc.applications"],
+        "name": "My Profile status",
+        "allowed_tools": ["umc.profile.summary"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {
+            "defaultToolRequest": {"toolName": "umc.profile.summary", "arguments": {}},
+        },
         "content": SKILL_GUIDANCE["profile_status"],
     },
     {
@@ -929,7 +932,7 @@ def exact_quote_source_sufficient(text: str) -> bool:
 
 def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
     prompt = {
-        "profile_status": "Select an approved profile or provide its profile ID so I can determine whether a new application can be created.",
+        "profile_status": "Query the current account's live Profile summary. Report only returned Individual and establishment Profile records, their available status/review fields, and document expiry fields. Do not ask the customer to provide a user or Profile ID and do not change their selected Profile.",
         "service_eligibility": "Provide the account/profile type and media activity so I can identify candidate services.",
         "application_payment": "Select the Pending Payment application to inspect its read-only payment details; this Skill never starts or confirms payment.",
         "my_requests_pending_actions": "Query the current account's My Requests pending actions and identify the related application; no mutation is allowed.",
