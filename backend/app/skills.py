@@ -179,6 +179,11 @@ def build_system_prompt(
         guardrails.append("The portal is in Global View. Do not represent profile-bound data as available until the user selects a concrete profile.")
     if route.category == "knowledge" and not evidence_available:
         guardrails.append("When knowledge-base evidence is unavailable, do not present general knowledge as a verified UMC rule.")
+    if route.category == "knowledge" and evidence_available:
+        guardrails.append(
+            "For every substantive knowledge-base statement, cite the source title supplied in the evidence. "
+            "End the answer with a Sources section listing the titles used."
+        )
 
     target = "ARABIC" if response_language == "ar" else "ENGLISH"
     language_policy = [

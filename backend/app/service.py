@@ -23,7 +23,7 @@ from .profile_scope import ProfileContext, profile_context_from_payload, profile
 from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
-from .skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives
+from .skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, selection_snapshot_for_tool_result
 from .skills import (
     SkillRoute,
     build_flow_prompt,
@@ -972,6 +972,13 @@ class DSHService:
                         masking_policy = str((tool_definition_by_name.get(tool_name) or {}).get("maskingPolicy") or "default")
                         masked_tool_result = mask_tool_result(tool_result, masking_policy)
                         result_for_event = dict(masked_tool_result)
+                        selection_snapshot = selection_snapshot_for_tool_result(
+                            merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow) if selected_skill else {},
+                            tool_name,
+                            masked_tool_result,
+                        )
+                        if selection_snapshot:
+                            result_for_event["selectionItems"] = selection_snapshot
                         if isinstance(result_for_event.get("result"), dict):
                             result_for_event["result"] = json.dumps(result_for_event["result"], ensure_ascii=False)[:20_000]
                         await self.append_event(db, conversation, "tool.result", result_for_event)

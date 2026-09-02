@@ -1,0 +1,139 @@
+module: content
+portal: admin
+mode: assistant-readonly
+knowledge:
+  folder_id: 34a89aa7b43b473d8326cf6540fc3894
+  folder_path: /umc
+  citations_required: true
+  source_rule: Use only sources directly relevant to Content operations, media permits, copyright, or content-library guidance.
+intents:
+  - id: admin_content_task_reader
+    name: Content task reader
+    domain: admin_content
+    allowed_tools:
+      - admin.content.post-content-mytodopage
+      - admin.content.post-content-mycomplatedpage
+      - admin.content.get-content-myreviewdetail-taskid
+    when_use: List, search, filter, count, compare, or inspect the current officer's Content review tasks, including an item selected from a prior list.
+    when_not_use: Dashboard trends, content-library records, policy-only questions, or any requested write action.
+    filters:
+      keyword: string
+      statuses: string_array
+      service_codes: string_array
+      date_range: date_range
+      limit: integer
+    requests:
+      - intent: todo
+        tool: admin.content.post-content-mytodopage
+        defaults: { pageSize: 25, pageIndex: 1, sortDirection: 1 }
+      - intent: completed
+        tool: admin.content.post-content-mycomplatedpage
+        defaults: { pageSize: 25, pageIndex: 1, sortDirection: 1 }
+      - intent: detail
+        tool: admin.content.get-content-myreviewdetail-taskid
+        defaults: {}
+    selection:
+      source_tool: admin.content.post-content-mytodopage
+      items_path: data.page.items
+      identifier_fields: [taskId, applicationNo, taskNo]
+      value_field: taskId
+      supports_ordinals: true
+
+  - id: admin_content_dashboard_reader
+    name: Content dashboard and SLA reader
+    domain: admin_content
+    allowed_tools:
+      - admin.contentdashboard.get-content-dashboard-overview
+      - admin.contentdashboard.get-content-dashboard-tasklist
+    when_use: Read Content workload summaries, pending-state counts, urgent or blocked attention lists, SLA performance, AI-risk counts, or date-bounded trends.
+    when_not_use: A detailed application record, a content-library record, a policy-only question, reassigning a task, or any mutation.
+    filters:
+      date_range: date_range
+      attention_tab: string
+      list_type: string
+      status: string
+      keyword: string
+      limit: integer
+    requests:
+      - intent: summary
+        tool: admin.contentdashboard.get-content-dashboard-overview
+        defaults: { departmentId: 2, attentionPageSize: 25 }
+      - intent: attention
+        tool: admin.contentdashboard.get-content-dashboard-tasklist
+        defaults: { departmentId: 2, listType: needsYourAttention, tab: all, pageSize: 25, pageIndex: 1 }
+
+  - id: admin_content_library_reader
+    name: Content library reader
+    domain: admin_content
+    allowed_tools:
+      - admin.contentlibrary.get-contentlibrary-getbooklist
+      - admin.contentlibrary.get-contentlibrary-getbookdetailsbyid
+      - admin.contentlibrary.get-contentlibrary-getnewspaperlist
+      - admin.contentlibrary.get-contentlibrary-getnewspaperdetailsbyid
+      - admin.contentlibrary.get-contentlibrary-getcinemalist
+      - admin.contentlibrary.get-contentlibrary-getcinemadetailsbyid
+      - admin.contentlibrary.get-contentlibrary-getvideogameslist
+      - admin.contentlibrary.get-contentlibrary-getvideogamesdetailsbyid
+    when_use: Read books, newspapers or magazines, cinema, and video-game content-library records or their associated application history.
+    when_not_use: Change a library status, classify material, delete an item, or answer a process or regulatory question without needing live library data.
+    filters:
+      library_type: enum
+      keyword: string
+      status_code: integer
+      record_id: integer
+      limit: integer
+    requests:
+      - intent: books
+        tool: admin.contentlibrary.get-contentlibrary-getbooklist
+        defaults: { PageSize: 25, PageIndex: 1, SortDirection: 1 }
+      - intent: book_detail
+        tool: admin.contentlibrary.get-contentlibrary-getbookdetailsbyid
+        defaults: {}
+      - intent: newspapers
+        tool: admin.contentlibrary.get-contentlibrary-getnewspaperlist
+        defaults: { PageSize: 25, PageIndex: 1, SortDirection: 1 }
+      - intent: newspaper_detail
+        tool: admin.contentlibrary.get-contentlibrary-getnewspaperdetailsbyid
+        defaults: {}
+      - intent: cinema
+        tool: admin.contentlibrary.get-contentlibrary-getcinemalist
+        defaults: { PageSize: 25, PageIndex: 1, SortDirection: 1 }
+      - intent: cinema_detail
+        tool: admin.contentlibrary.get-contentlibrary-getcinemadetailsbyid
+        defaults: {}
+      - intent: video_games
+        tool: admin.contentlibrary.get-contentlibrary-getvideogameslist
+        defaults: { PageSize: 25, PageIndex: 1, SortDirection: 1 }
+      - intent: video_game_detail
+        tool: admin.contentlibrary.get-contentlibrary-getvideogamesdetailsbyid
+        defaults: {}
+    selection:
+      source_tool: admin.contentlibrary.get-contentlibrary-getbooklist
+      items_path: data.items
+      identifier_fields: [id, bookId, title]
+      value_field: id
+      supports_ordinals: true
+
+  - id: admin_content_guidance
+    name: Content guidance and regulation
+    domain: admin_content
+    allowed_tools: [knowledge.search]
+    when_use: Answer Content process, media-permit, reporting, copyright, material, or regulation questions from the authorized knowledge collection.
+    when_not_use: The question needs current task facts, a library item detail, a business mutation, or no Content-related source is retrievable.
+    knowledge_scope: [34a89aa7b43b473d8326cf6540fc3894]
+    response_rules:
+      - Cite each substantive process or regulatory statement.
+      - Include source title and version or effective date when the source provides it.
+      - State when retrieval has no relevant authoritative source.
+
+  - id: admin_content_read_only_boundary
+    name: Content read-only boundary
+    domain: admin_content
+    allowed_tools: []
+    when_use: The user asks to approve, reject, request modification, assign, reassign, submit, update material status, classify content, export, download, upload, delete, or otherwise change Content business data.
+    when_not_use: The user asks only to read Content tasks, details, dashboard data, content-library records, or authorized knowledge.
+    routing_locked: true
+    response_rules:
+      - Refuse the requested business mutation.
+      - Explain that the assistant can provide read-only information and cite the relevant Portal workflow when known.
+      - Never invoke a write or export Tool.

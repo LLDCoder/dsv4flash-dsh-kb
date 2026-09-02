@@ -266,6 +266,15 @@ class RegistryAndRoutingTests(unittest.TestCase):
             self.assertIn("PREREQUISITES:", content)
             self.assertIn("RESPONSE RULES:", content)
 
+    def test_knowledge_prompt_requires_source_titles_when_evidence_exists(self):
+        from app.skills import SkillRoute
+
+        prompt = build_system_prompt(
+            SkillRoute("custom_knowledge", "knowledge", "knowledge.search", "summary"),
+            evidence_available=True,
+        )
+        self.assertIn("Sources section", prompt)
+
     def test_configured_workflow_selects_a_prior_list_item(self):
         class Event:
             event_type = "tool.result"
@@ -294,6 +303,36 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(
             build_configured_tool_request(workflow, ["records.detail"], "show detail B-2", [Event()]),
             ("records.detail", {"id": "b"}),
+        )
+
+    def test_selection_snapshot_keeps_follow_up_working_when_result_is_truncated(self):
+        class Event:
+            event_type = "tool.result"
+            event_json = {
+                "toolName": "records.list",
+                "result": "{truncated",
+                "selectionItems": [{"displayId": "A-1", "detailId": "a"}],
+            }
+
+        workflow = {
+            "selection": {
+                "sourceTool": "records.list",
+                "itemsPath": "data.items",
+                "valueField": "detailId",
+                "identifierFields": ["displayId"],
+                "ordinalTerms": {"1": ["first"]},
+                "toolRequest": {
+                    "when": {"anyTerms": ["first"]},
+                    "toolName": "records.detail",
+                    "argumentName": "id",
+                    "argumentValueType": "string",
+                },
+            },
+        }
+        self.assertTrue(matches_configured_selection_follow_up(workflow, "show the first one", [Event()]))
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["records.detail"], "show the first one", [Event()]),
+            ("records.detail", {"id": "a"}),
         )
 
     def test_tool_masking_policy_hides_configured_fields(self):

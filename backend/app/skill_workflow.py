@@ -164,11 +164,49 @@ def _selection_items(history: list[Any], selection: dict[str, Any]) -> list[dict
         payload = getattr(event, "event_json", {}) or {}
         if getattr(event, "event_type", "") != "tool.result" or payload.get("toolName") != source_tool:
             continue
+        snapshot = payload.get("selectionItems")
+        if isinstance(snapshot, list):
+            return [item for item in snapshot if isinstance(item, dict)]
         result = _decode_result(payload.get("result"))
         items = _value_at_path(result, selection.get("itemsPath"))
         if isinstance(items, list):
             return [item for item in items if isinstance(item, dict)]
     return []
+
+
+def selection_snapshot_for_tool_result(
+    workflow: dict[str, Any] | None,
+    tool_name: str,
+    result: Any,
+) -> list[dict[str, Any]] | None:
+    """Keep only configured selection identifiers when a Tool result is large.
+
+    Session events cap serialized Tool evidence. A separately persisted minimal
+    snapshot keeps ordinal and identifier follow-ups usable without retaining
+    complete account records solely for selection.
+    """
+
+    selection = (workflow or {}).get("selection")
+    if not isinstance(selection, dict) or str(selection.get("sourceTool") or "") != tool_name:
+        return None
+    payload = result.get("result") if isinstance(result, dict) else result
+    decoded = _decode_result(payload)
+    items = _value_at_path(decoded, selection.get("itemsPath"))
+    if not isinstance(items, list):
+        return None
+    fields = {
+        str(field)
+        for field in [*selection.get("identifierFields", []), selection.get("valueField")]
+        if str(field).strip()
+    }
+    if not fields:
+        return None
+    snapshot = [
+        {field: item[field] for field in fields if item.get(field) is not None}
+        for item in items
+        if isinstance(item, dict)
+    ]
+    return snapshot or None
 
 
 def _selected_item(selector: object, items: list[dict[str, Any]], selection: dict[str, Any]) -> dict[str, Any] | None:
