@@ -97,6 +97,19 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(resolve_skill("支付失败，查这笔交易").skill_id, "payment_transaction_history")
         self.assertEqual(resolve_skill("payment").skill_id, "payment_transaction_history")
 
+    def test_customer_intent_routes_do_not_get_shadowed_by_neighboring_skills(self):
+        self.assertEqual(
+            resolve_skill("I cannot complete payment. How can I raise a technical enquiry?").skill_id,
+            "technical_enquiry",
+        )
+        self.assertEqual(resolve_skill("I received a fine notification. Can I appeal it?").skill_id, "fine_appeal")
+        self.assertEqual(resolve_skill("My license is expiring soon. What should I do?").skill_id, "license_renewal")
+        self.assertEqual(resolve_skill("Can I reopen my resolved enquiry?").skill_id, "enquiry_reopen")
+        self.assertEqual(
+            resolve_skill("Which services am I eligible to apply for under my current profile?").skill_id,
+            "service_eligibility",
+        )
+
     def test_payment_skill_id_migration_keeps_old_ids_as_aliases(self):
         self.assertEqual(canonical_skill_id("payment_receipt"), "payment_transaction_history")
         self.assertEqual(canonical_skill_id("application_payment"), "application_payment_details")
@@ -363,6 +376,22 @@ class RegistryAndRoutingTests(unittest.TestCase):
         renewal = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "license_renewal")
         renewal_request = build_configured_tool_request(renewal["workflow"], renewal["allowed_tools"], "Which licenses need renewal?", [])
         self.assertEqual(renewal_request, ("umc.licenses.action_needed", {}))
+
+        service_eligibility = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "service_eligibility")
+        self.assertEqual(
+            build_configured_tool_request(service_eligibility["workflow"], service_eligibility["allowed_tools"], "Which services can I apply for?", []),
+            ("umc.collected-services", {}),
+        )
+        fine_appeal = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "fine_appeal")
+        self.assertEqual(
+            build_configured_tool_request(fine_appeal["workflow"], fine_appeal["allowed_tools"], "Can I appeal this fine?", []),
+            ("umc.pending-violations", {}),
+        )
+        technical_enquiry = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "technical_enquiry")
+        self.assertEqual(
+            build_configured_tool_request(technical_enquiry["workflow"], technical_enquiry["allowed_tools"], "I cannot complete payment", []),
+            ("umc.enquiry-types", {}),
+        )
 
         list_event = type("Event", (), {
             "event_type": "tool.result",

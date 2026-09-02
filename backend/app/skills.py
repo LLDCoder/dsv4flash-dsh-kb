@@ -127,8 +127,8 @@ SKILL_GUIDANCE: dict[str, str] = {
     "service_eligibility": _guidance(
         "the user asks which services are available to their account/profile.",
         "the user asks for general policy only, or provides no applicant type and no media activity.",
-        "account/profile type and media activity; use collected services and service categories from the current account.",
-        "return candidate services and missing inputs, not a binding eligibility decision.",
+        "the current account's collected services and service categories; request media activity only when those records do not identify the needed service.",
+        "query the current account before asking the customer to repeat profile information already available in the portal. Return candidate services and only the genuinely missing inputs, not a binding eligibility decision.",
     ),
     "application_payment": _guidance(
         "the user asks which My Requests applications are awaiting payment or asks to inspect the payment details for a selected application.",
@@ -169,8 +169,8 @@ SKILL_GUIDANCE: dict[str, str] = {
     "fine_appeal": _guidance(
         "the user asks to challenge a specific media violation.",
         "no violation is identified, or the user asks to pay the fine instead.",
-        "violation number, an appeal reason from UMC, appeal details, and explicit confirmation before submission.",
-        "show a complete preview, keep the submitted reason/details verbatim where possible, and never claim the appeal was filed without a successful write response.",
+        "the current account's pending violations; a violation number, appeal reason, and details are required only to prepare a later submission.",
+        "first check whether a current violation can be appealed and state the returned eligibility and deadline. For a later submission, show a complete preview, keep the submitted reason/details verbatim where possible, obtain explicit confirmation, and never claim the appeal was filed without a successful write response.",
     ),
     "complaint_create": _guidance(
         "the user wants to prepare a complaint about a delayed application.",
@@ -181,20 +181,20 @@ SKILL_GUIDANCE: dict[str, str] = {
     "enquiry_followup": _guidance(
         "the user wants to follow up on an existing enquiry.",
         "no enquiry reference exists, or the user wants to create a new complaint.",
-        "trusted UMC identity and an enquiry reference selected from the current account.",
-        "show the matching enquiry and its current state; do not claim that a follow-up was sent when only a read operation is available.",
+        "trusted UMC identity and the current account's enquiry list; an enquiry reference is needed only when more than one enquiry must be distinguished.",
+        "first show the matching or most recent enquiry and its current state. Explain the available portal follow-up action without claiming that a follow-up was sent when only a read operation is available.",
     ),
     "enquiry_reopen": _guidance(
         "the user asks what can be done with a resolved enquiry.",
         "the user expects an unsupported one-click reopen operation.",
         "a resolved enquiry reference and the current account's enquiry record.",
-        "explain whether adding a message or creating a linked enquiry is available; never promise reopening without an API result.",
+        "first locate the enquiry by its reference, or list recent resolved enquiries when no reference is supplied. Explain the record's available action; never assume that a resolved enquiry is closed forever or promise reopening without an API result. If reopening is unavailable, offer the verified message or linked-enquiry alternative.",
     ),
     "technical_enquiry": _guidance(
         "the user reports a payment failure and wants a technical enquiry prepared.",
         "the user asks to retry or complete payment directly.",
-        "transaction number, error message, occurrence time, and the available enquiry types.",
-        "show a technical-enquiry preview and preserve the error details; do not claim submission or payment resolution.",
+        "the available enquiry types; transaction number, error message, and occurrence time are requested only when available.",
+        "direct the customer to raise an Enquiry for a payment technical issue, preserving any error details and screenshots. Offer a concise technical-enquiry preview, but do not claim submission or payment resolution.",
     ),
     "license_application_knowledge": _guidance(
         "the user asks how to apply for a named new media license or permit, including its requirements, documents, fees, or process.",
@@ -212,7 +212,7 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks which existing License/Permit needs attention or wants read-only renewal/expiry eligibility information.",
         "the user asks to apply for a new service or merely wants the current document count/status.",
         "the document type/number when account lookup is needed, current action-needed data, and the renewal knowledge rule.",
-        "distinguish renewal from extension/modification, use action validation only as a read-only eligibility check, and never initiate renewal or another write operation. Ask for confirmation only if a later download is requested.",
+        "for a general expiring-soon question, retrieve the renewal rule before asking for a document number; for an account-specific action check, use current action-needed data. Distinguish renewal from extension/modification, use action validation only as a read-only eligibility check, and never initiate renewal or another write operation. Ask for confirmation only if a later download is requested.",
     ),
     "my_requests_pending_actions": _guidance(
         "the user asks what is pending, what needs attention, or which actions are outstanding in My Requests.",
@@ -367,6 +367,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Service eligibility",
         "allowed_tools": ["umc.collected-services", "umc.service-categories"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {"defaultToolRequest": {"toolName": "umc.collected-services", "arguments": {}}},
         "content": SKILL_GUIDANCE["service_eligibility"],
     },
     {
@@ -626,6 +627,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Fine appeal",
         "allowed_tools": ["umc.pending-violations", "umc.appeal-reasons"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {"defaultToolRequest": {"toolName": "umc.pending-violations", "arguments": {}}},
         "content": SKILL_GUIDANCE["fine_appeal"],
     },
     {
@@ -640,6 +642,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Enquiry follow-up",
         "allowed_tools": ["umc.enquiries"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {"defaultToolRequest": {"toolName": "umc.enquiries", "arguments": {}}},
         "content": SKILL_GUIDANCE["enquiry_followup"],
     },
     {
@@ -647,6 +650,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Resolved enquiry follow-up",
         "allowed_tools": ["umc.enquiries"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {"defaultToolRequest": {"toolName": "umc.enquiries", "arguments": {}}},
         "content": SKILL_GUIDANCE["enquiry_reopen"],
     },
     {
@@ -654,6 +658,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Payment technical enquiry",
         "allowed_tools": ["umc.enquiry-types", "umc.payments"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {"defaultToolRequest": {"toolName": "umc.enquiry-types", "arguments": {}}},
         "content": SKILL_GUIDANCE["technical_enquiry"],
     },
     {
@@ -734,9 +739,10 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
     "payment_receipt": [
         {"priority": 970, "anyTerms": ["refund", "退款", "استرداد"], "noneTerms": ["refund in progress", "refund completed", "failed refund", "refund status", "退款中", "退款完成", "交易状态", "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
         {"priority": 970, "anyTerms": ["download", "下载", "تنزيل", "تحميل", "export", "导出", "تصدير"], "anyTermGroups": [["receipt"], ["收据"], ["إيصال"], ["transaction"], ["交易"], ["record"], ["记录"], ["payment"], ["付款"], ["支付"]], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
-        {"priority": 900, "anyTerms": ["payment", "transaction", "receipt", "付款", "支付", "交易", "收据", "إيصال", "إيصال الدفع", "technical enquiry", "cannot complete payment", "技术", "استفسار تقني", "تعذر الدفع", "لا أستطيع إتمام الدفع"], "route": {"category": "data_query", "routingLocked": True}},
+        {"priority": 900, "anyTerms": ["payment", "transaction", "receipt", "付款", "支付", "交易", "收据", "إيصال", "إيصال الدفع"], "route": {"category": "data_query", "routingLocked": True}},
     ],
-    "fine_appeal": [{"priority": 965, "anyTerms": ["appeal", "申诉", "استئناف", "طعن"], "anyTermGroups": [["fine"], ["violation penalty"], ["罚款"], ["违规"], ["غرامة"], ["مخالفة"]], "route": {"category": "api_call", "mode": "collect", "fields": ["violation_number", "appeal_reason", "appeal_details"], "confirmationRequired": True}}],
+    "technical_enquiry": [{"priority": 995, "anyTerms": ["technical enquiry", "technical inquiry", "payment technical issue", "cannot complete payment", "technical support", "技术咨询", "无法完成支付", "استفسار تقني", "تعذر الدفع", "لا أستطيع إتمام الدفع"], "route": {"category": "api_call", "routingLocked": True}}],
+    "fine_appeal": [{"priority": 965, "anyTerms": ["appeal", "challenge", "申诉", "申诉期限", "استئناف", "طعن"], "anyTermGroups": [["fine"], ["violation"], ["violation penalty"], ["fine notification"], ["罚款"], ["违规"], ["违章"], ["غرامة"], ["مخالفة"]], "route": {"category": "data_query", "fields": ["violation_number"], "routingLocked": True}}],
     "fine_payment": [{"priority": 960, "anyTerms": ["fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "route": {"category": "data_query", "routingLocked": True}}],
     "latest_regulations": [
         {"priority": 880, "anyTerms": ["quote", "exactly", "逐字", "原文", "اقتبس", "حرفيًا", "النص الأصلي"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "exact_quote", "fields": ["regulation_or_resolution_reference", "article_number"], "choices": ["Latest updates", "Summary", "Exact quotation"]}},
@@ -744,6 +750,7 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
     ],
     "my_requests_pending_actions": [{"priority": 850, "anyTerms": ["pending actions", "what needs attention", "outstanding actions", "my requests pending", "my pending actions", "待处理事项", "待办申请", "我的待办", "我的待处理", "需要处理"], "noneTerms": ["license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"], "route": {"category": "data_query"}}],
     "license_renewal": [
+        {"priority": 850, "anyTerms": ["expire", "expiring", "expiry", "到期", "ستنتهي", "منتهية"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "noneTerms": ["which licenses", "which licences", "which permits", "how many", "number of licenses", "number of licences", "哪些许可证", "多少许可证"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "fields": ["license_or_permit_type"], "routingLocked": True}},
         {"priority": 860, "anyTerms": ["action needed", "actions needed", "needs renewal", "renewal due", "需要续期", "待处理"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"]}},
         {"priority": 855, "anyTerms": ["renew", "renewal", "extend an existing permit", "续期", "延期", "تجديد", "تمديد"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["license_or_permit_type", "license_number"], "choices": ["Renew licence", "Extend permit"]}},
     ],
@@ -767,11 +774,14 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
     "copyright_guidance": [{"priority": 875, "anyTerms": ["版权", "copyright", "photograph from the internet", "commercial campaign", "حقوق الطبع"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "fields": ["regulation_topic"]}}],
     "service_fees": [{"priority": 780, "anyTerms": ["cost", "processing time", "how much does", "service fees", "fees", "fee", "费用", "الرسوم"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["service_name"]}}],
     "complaint_create": [{"priority": 770, "anyTerms": ["complaint", "投诉", "شكوى"], "route": {"category": "api_call", "mode": "collect", "fields": ["application_number", "complaint_details"], "confirmationRequired": True}}],
-    "enquiry_followup": [{"priority": 770, "anyTerms": ["follow up", "enquiry", "咨询", "متابعة", "استفسار"], "anyTermGroups": [["earlier"], ["submitted"], ["跟进"], ["سابق"], ["مقدم"]], "route": {"category": "data_query", "mode": "collect", "fields": ["enquiry_reference"]}}],
-    "enquiry_reopen": [{"priority": 770, "anyTerms": ["reopen", "resolved enquiry", "重新打开", "إعادة فتح", "استفسار مغلق"], "route": {"category": "api_call", "mode": "collect", "fields": ["enquiry_reference"], "choices": ["Check message option", "Create linked enquiry"]}}],
+    "enquiry_followup": [{"priority": 770, "anyTerms": ["follow up", "enquiry", "咨询", "متابعة", "استفسار"], "anyTermGroups": [["earlier"], ["submitted"], ["跟进"], ["سابق"], ["مقدم"]], "route": {"category": "data_query", "fields": ["enquiry_reference"], "routingLocked": True}}],
+    "enquiry_reopen": [{"priority": 770, "anyTerms": ["reopen", "resolved enquiry", "resolved inquiry", "重新打开", "重新开启", "إعادة فتح", "استفسار مغلق"], "route": {"category": "data_query", "fields": ["enquiry_reference"], "routingLocked": True}}],
     "profile_status": [{"priority": 760, "anyTerms": ["profile is under review", "profile review", "profile 审核", "الملف قيد المراجعة", "ملفي قيد المراجعة", "مراجعة الملف"], "route": {"category": "data_query", "mode": "collect", "fields": ["profile_id"], "choices": ["Individual", "Business"]}}],
     "service_eligibility_info": [{"priority": 750, "anyTerms": ["who is eligible", "eligible for media services", "media service eligibility", "مؤهل", "الأهلية", "الخدمات الإعلامية"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["account_type", "media_activity"], "choices": ["Individual", "Commercial", "Government"]}}],
-    "service_eligibility": [{"priority": 740, "anyTerms": ["eligible", "eligibility", "资格", "مؤهل", "الأهلية"], "route": {"category": "data_query", "mode": "collect", "fields": ["profile_id", "account_type", "media_activity"], "choices": ["Individual", "Commercial", "Government"]}}],
+    "service_eligibility": [
+        {"priority": 825, "allTerms": ["service", "eligible", "apply"], "route": {"category": "data_query", "routingLocked": True}},
+        {"priority": 740, "anyTerms": ["eligible", "eligibility", "资格", "مؤهل", "الأهلية"], "route": {"category": "data_query", "fields": ["profile_id", "account_type", "media_activity"], "choices": ["Individual", "Commercial", "Government"]}},
+    ],
 }
 
 

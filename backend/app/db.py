@@ -249,12 +249,23 @@ async def init_db() -> None:
                 # Apply revisions only while the record is still system-owned;
                 # a Skill edited by an operator is intentionally preserved.
                 if existing_skill.source == "builtin" and existing_skill.updated_by == "system":
-                    for field in ("name", "allowed_tools", "dependencies", "domain", "aliases", "positive_examples", "negative_examples", "workflow", "content"):
+                    for field in ("name", "allowed_tools", "dependencies", "domain", "aliases", "positive_examples", "negative_examples", "content"):
                         # New declarative fields may be absent while a development
                         # reloader is between module versions.
                         desired = definition.get(field, {} if field == "workflow" else getattr(existing_skill, field))
                         if getattr(existing_skill, field) != desired:
                             setattr(existing_skill, field, desired)
+                            changed = True
+                    # Some earlier built-ins contain richer request workflows
+                    # than the current baseline. Keep those request details,
+                    # but always refresh deterministic routing so obsolete
+                    # keyword rules cannot override a corrected system route.
+                    desired_routing = list((definition.get("workflow") or {}).get("deterministicRouting") or [])
+                    if desired_routing:
+                        workflow = dict(existing_skill.workflow or {})
+                        if workflow.get("deterministicRouting") != desired_routing:
+                            workflow["deterministicRouting"] = desired_routing
+                            existing_skill.workflow = workflow
                             changed = True
                 continue
             session.add(

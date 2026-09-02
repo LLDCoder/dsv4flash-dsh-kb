@@ -1,79 +1,98 @@
-# Chatbot Structured Retrieval Regression
+# Chatbot Business Response Contracts
 
-Use this suite after changing a Skill workflow, the router, Tool Registry, or response safety. Run each multi-turn case in one new conversation unless the case says otherwise. Verify user-visible output and the matching `skill.route` / `tool.call` audit events.
+This document defines stable customer-facing contracts for the UMC chatbot.
+It intentionally does not contain record counts, application numbers, dates,
+amounts, audit events, test-account data, or verification history. Those values
+change with the signed-in customer and must come only from live evidence.
 
-Do not assert a fixed record count. The UMC account data changes; compare each answer with the matching portal filter and current account records.
+## Shared Portal Link Contract
 
-## Licenses and Permits
+Business Skills own the decision to direct a customer to a portal page. They
+must use standard Markdown links with a business label and a same-origin path:
 
-| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
-| --- | --- | --- | --- | --- |
-| LP-01 | `Do I have expired license?` | Lists only the current account's expired issued records. The total and displayed records match the Licenses & Permits page filtered to `Expired`. | `skillId=license_permit_status`, `intentId=expired`; `umc.licenses.list` receives `statuses=["EXPIRED"]`. | Browser + audit verified 2026-08-31. |
-| LP-02 | After LP-01: `show me the first detail` | Describes the first record from LP-01 in natural language. It must not show JSON, tool names, request arguments, URLs, passwords, or API envelopes. | Routes in the active license domain with `intentId=detail`. When the selection is resolved, the audit must identify the selected record's read-only lookup or source-list evidence. | Browser verified 2026-08-31. |
-| LP-03 | After LP-02: `download this license` | Directs the customer to `/permits-license` and the selected record's `Download` action. It must not download a file, expose a URL/access code/password, or claim that a download started. | `permit_download` is portal-only: no document-download tool call. | Browser verified 2026-08-31. |
-| LP-04 | `How many licenses are about to expire?` | Counts only records in the portal's `Expiring Soon` scope. Already expired records must not be included. The count matches the portal filtered to `Expiring Soon`. | `skillId=license_permit_status`, `intentId=expiring_soon`; `umc.licenses.list` receives `statuses=["EXPIRE_SOON","205"]`. | Browser + workflow/audit configuration verified 2026-08-31. |
-| LP-05 | After a license list with at least two records: `show me the second detail` | Describes the second record from the immediately preceding list and does not switch to general knowledge. | Selection uses the active Skill's `record` filter with ordinal 2 and only reads the selected record. | Unit coverage; keep as a manual browser regression when an account has two matching records. |
-| LP-06 | `How about my Social Media Advertiser Permit?` | Looks up the current account's issued permits. If the named permit is absent, states that no matching issued record was found; it must not claim that account data is inaccessible or direct the user to Public Verify. | `skillId=license_permit_status`, `intentId=named_permit`; first tool is `umc.licenses.list`. No `knowledge.search` or public-verification tool is called. | Browser + audit verified 2026-09-01. |
+```text
+[Link label](/portal-path)
+```
 
-## Renewal Status
+Do not emit a bare path, a code-formatted path, an absolute deployment hostname,
+or an unsafe external URL. The Customer Portal frontend renders safe same-origin
+paths as links, so `/refund` resolves under whichever customer portal hostname is
+currently deployed.
 
-| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
-| --- | --- | --- | --- | --- |
-| LR-01 | After selecting an issued permit: `How do I renew the second permit?` | Separates the issued permit's status from its renewal application's status. An application is a renewal only when UMC returns `Request Type = Renew` or an official renewal service name. A completed `Modify` or `New` application must never be presented as a renewal. | `skillId=license_renewal`, `intentId=personal_renewal_status`; `umc.applications` is the first account lookup. `umc.application_detail` is used only after an application is selected. | Workflow configuration verified 2026-09-01; run as a live browser regression with a current UMC token. |
-| LR-02 | `What documents do I need to renew a Social Media Advertiser Permit?` | Gives general renewal guidance from the knowledge base only. It does not claim a personal permit or renewal status. | `skillId=license_renewal`, `intentId=general_guidance`; calls `knowledge.search` only. | Workflow routing verified 2026-08-31. |
+## Profile Scope
 
-## License and Permit Modification
-
-| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
-| --- | --- | --- | --- | --- |
-| LPM-01 | `What documents do I need to modify a Media License?` | Gives evidence-based general modification documents, rules, fees, and process. It does not claim that a modification was created or submitted. | `skillId=license_permit_modification_knowledge`; calls `knowledge.search` only. | Browser + audit verified 2026-09-01. |
-| LPM-02 | `Can I modify my Media License?` | Reads the current issued records and states Modify availability only from each returned record's actions. It never starts a modification. | `skillId=license_permit_modification_knowledge`; calls `umc.licenses.list`, not `knowledge.search`. | Browser + audit verified 2026-09-01. |
-
-## License Application Knowledge
-
-| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
-| --- | --- | --- | --- | --- |
-| LAK-01 | `How do I apply for a Social Media Advertiser Permit?` | Gives knowledge-base guidance for the named permit's requirements and process. It may ask a follow-up only after answering when a personal condition affects applicability. It must not begin by classifying the user into an unrelated public-service category. | `skillId=license_application_knowledge`; calls `knowledge.search`. It must not route to `service_discovery` solely because the question contains `social media` or `advertiser permit`. | Browser + audit verified 2026-09-01. |
+| Business issue | Target Skill or guard | Expected response contract |
+| --- | --- | --- |
+| A customer asks about profile-bound data for the selected profile. | Any profile-bound Skill, including `application_status`, `application_payment`, `license_permit_status`, and `license_renewal`. | Use only the profile currently selected in the Customer Portal. State the result scope where it helps avoid ambiguity. |
+| A customer names a different known profile. | `ProfileScopeGuard` before Tool execution. | Do not query, filter, or aggregate the other profile. Ask the customer to switch profile in the portal before continuing. |
+| The portal is in Global View for a profile-bound request. | `ProfileScopeGuard` before Tool execution. | Do not present profile-bound data. Ask the customer to select a concrete profile first. |
 
 ## My Requests
 
-| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
+| Business issue | Target Skill | Expected response contract |
+| --- | --- | --- |
+| A customer asks for request status, history, filters, counts, or a request list. | `application_status` | Present only live My Requests data in the selected profile. For a list or summary, the only portal handoff is `[My Requests](/my-requests)`. Do not mention or link an application detail page. |
+| A customer asks for pending actions. | `my_requests_pending_actions` | Present only live action-needed items. Keep pending actions separate from request history and issued documents. Use `[My Requests](/my-requests)` when a portal handoff is needed. |
+| A customer selects an application by number or ordinal and asks for its detail. | `umc_application_detail` | Describe only the selected application's live detail. A detail link is allowed only when the live detail result provides the selected record's positive numeric `applicationId`; the link must use that actual ID. Never show a placeholder or guessed detail URL. |
+| A customer asks which applications await payment or asks for payment detail of a selected application. | `application_payment` | Keep the response read-only. Preserve the public application number from the selected request and do not relabel an internal ID as that number. Use `[My Requests](/my-requests)` for a portal handoff. |
+
+## Licenses and Permits
+
+| Business issue | Target Skill | Expected response contract |
+| --- | --- | --- |
+| A customer asks for issued License/Permit status, validity, expiry, count, or a named issued document. | `license_permit_status` | Return only live issued-document information; do not substitute application records. Use `[Licenses & Permits](/permits-license)` for a portal handoff. Do not output an application-detail link in a License/Permit list or status response. |
+| A customer asks whether an issued document can be modified. | `license_permit_modification_knowledge` | Distinguish live action availability from general process guidance. Do not start a modification. Use `[Licenses & Permits](/permits-license)` when directing to the record action. |
+| A customer asks to download an issued document. | `permit_download` | Explain the customer-performed portal action only. Do not download a file or expose a document URL, credential, or access code. Use `[Licenses & Permits](/permits-license)`. |
+| A customer asks about renewal or expiry action. | `license_renewal` | Keep issued-document status and any renewal application status separate. Use `[Licenses & Permits](/permits-license)` for document actions and `[My Requests](/my-requests)` for an existing renewal application. A request-detail link follows the selected-record rule above. |
+| A customer asks how to apply for a named license or permit. | `license_application_knowledge` | Provide evidence-based service requirements and process only. Do not create or submit an application. Use `[Services](/services)` for a service handoff. |
+
+## Payments, Refunds, and Enquiries
+
+| Business issue | Target Skill | Expected response contract |
+| --- | --- | --- |
+| A customer asks for a completed-payment receipt. | `payment_receipt` | Use only live transaction evidence. Do not fabricate a receipt URL or claim a download completed. Use `[Payments](/payments)` for the portal handoff. |
+| A customer asks to request a refund. | `payment_transaction_history` or the customer deployment's refund Skill. | Explain the applicable portal action without claiming that a refund was submitted. When a portal handoff is configured, render `[Refunds](/refund)`. |
+| A customer asks to create a complaint for a delayed application. | `complaint_create` | Collect the required context and show a preview before any write action. When the customer must continue in the portal, render `[Enquiries and Complaints](/complaints)`. |
+| A customer asks to follow up on or reopen an enquiry. | `enquiry_followup` or `enquiry_reopen` | Describe only the available enquiry action and do not claim it completed without a successful write response. Use `[Enquiries and Complaints](/complaints)` for a portal handoff. |
+
+## Skill Authoring Checklist
+
+For every new or changed business Skill:
+
+1. State the business issue it owns and the issue boundaries it does not own.
+2. Describe the response contract, not sample account data or a fixed answer.
+3. Add a portal handoff only when the customer can usefully continue there.
+4. Use `[Business label](/same-origin-path)` for a handoff link.
+5. For a record-detail link, require both an explicit customer selection and a
+   real identifier from live evidence. Keep the URL template only in that
+   selected-record Skill, never in a list or summary Skill.
+
+## Customer Intent Regression Cases
+
+Run each case in a new conversation with an authenticated customer session.
+Assert the target Skill and the stated customer-facing behaviour, but do not
+assert a fixed record count or account-specific outcome. When a required record
+is absent, the response must clearly say so, remain within the selected profile,
+and request a reference or profile switch only when needed.
+
+| ID | Customer question | Natural-language intent | Target Skill | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| MR-01 | `Show my requests submitted from 2026-08-01 to 2026-08-31 with status Under Review.` | Lists only the current account's `Under Review` applications in the inclusive date range. Each shown submission date and status matches the My Requests page. | `skillId=application_status`, `intentId=list`; `umc.applications` receives `applicationStatusId="102"`, `startTime="2026-08-01"`, and `endTime="2026-08-31"`. | Browser + audit verified 2026-08-31. |
-| MR-02 | After MR-01 with at least two records: `show me the second detail` | Describes the second application from the preceding result; no internal JSON or tool arguments are shown. | Uses `application_status` selection (`record.ordinal=2`) and the configured read-only detail path. | Unit coverage; keep as a manual browser regression when the result has at least two records. |
-| MR-03 | `What pending actions do I have?` | Lists only the Pending Actions summary for the current account. It does not describe the Application table total or present it as history. | `skillId=my_requests_pending_actions`; the first tool is `umc.pending-actions`. `umc.applications` may be used only to enrich a pending record. | Browser + audit verified against `localhost:18085` on 2026-09-01: 23 total actions, split 2 Pending Payment, 6 Pending Modification, and 15 Draft. |
-| MR-04 | `Which applications are pending payment?` then `show payment details for the first one` | The first turn lists only Pending Payment applications. The second reports only returned amount, currency, payment status, due date, and timeline; it does not start payment. It preserves the selected list's Application No. and never relabels an internal numeric ID as that number. | `skillId=application_payment_details`; first tool is `umc.applications` with `applicationStatusId="103"`. The detail call binds its `applicationId` argument to the selected prior-list item's `id`. The published Tool Registry record masks `applicationId` and `serviceApplicationId` before evidence reaches the model. | Browser + audit verified against `localhost:18085` on 2026-09-01: two Pending Payment applications; detail used `umc.application_payment_detail` and returned its fee breakdown and due date. |
-| MR-05 | `Check ML-2-...` | Treats the value as an application number keyword, never as an internal `applicationId`. A unique match may then be selected for detail. | `skillId=application_status`; the list request binds it to `keyword`. No direct numeric detail request is made from the string. | Routing unit coverage; live verification requires an authenticated portal session. |
-| MR-06 | `What is the status of my renewal application ML-2-...?` | Uses My Requests and calls it a renewal only when the returned Request Type is `Renew`. A completed `Modify` or `New` application is not presented as a renewal. | `skillId=application_status`; response preserves `Request Type` separately from status. | Routing/workflow unit coverage; live verification requires an authenticated portal session. |
-| MR-07 | `Show my newest requests` | Lists newest first, matching the portal's default Submission Time order. | `umc.applications` uses `sortBy="createdOn"` and `sortDirection=0` (descending); ascending uses `sortDirection=1`. | Local-portal source and rendered-table verified 2026-09-01. |
-| MR-08 | After listing a `Modify` or `Cancel` application: `show its detail` | Preserves the public Application No., Request Type, status, times, and only the type-specific detail fields returned by UMC. A `Modify` detail may contain change/activity information; a `Cancel` detail may contain cancellation information. | Both selections use the same read-only `umc.application_detail` tool, bound to the preceding list item's `id`; Request Type must not select a different endpoint. | Browser Network verified against `localhost:18085` on 2026-09-01: Modify and Cancel both called `GET /api/MyRequest/ApplicationDetail/{id}` with HTTP 200. Unit coverage verifies both selection bindings. |
-
-## Payments
-
-Before running these cases, create and publish the three read-only Tools in the Tools console, then bind them to `payment_transaction_history` in the Skills console. The backend does not seed these business Tool definitions:
-
-- `umc.payment_statistics`: `GET /api/payment-center/transactions/statistics`
-- `umc.payment_transaction_types`: `GET /api/Wallet/Transaction/Type`
-- `umc.payment_transaction_statuses`: `GET /api/Wallet/Transaction/Status`
-
-| ID | Conversation | Expected user-visible result | Expected audit behavior | Coverage |
-| --- | --- | --- | --- | --- |
-| PAY-01 | `我一共支付了多少？` | Reports only the five summary values returned by Payments statistics, with returned currency/sign context. It does not call Total Spending a balance or calculate a total. | `skillId=payment_transaction_history`; only `umc.payment_statistics` is called. | Console configuration + live regression. |
-| PAY-02 | `Find transaction number XXX` | Returns only the exact matching transaction, or states that no matching transaction appears in the returned page. It states the page, total, and active filters. | `umc.payments` receives `keyWord="XXX"`, `pageIndex=1`, `pageSize=10`, `sortBy="createdOn"`, and `sortDirection=1`. | Console configuration + live regression; Portal request mapping verified 2026-09-01. |
-| PAY-03 | `Which refunds are in progress?` | Lists only records matching the returned Refund type and Refund in Progress status; it does not imply the customer may request a refund. | `umc.payments` receives `transactionTypeId=4` and `statusId=6` with the default page/sort fields. | Console configuration + live regression; IDs verified from Portal transaction filters. |
-| PAY-04 | `Where is the receipt for transaction XXX?` | Checks the transaction history only. For a Completed transaction, says that the Portal displays `Download Receipt`; it never emits a URL or downloads a file. | `skillId=payment_transaction_history`; read-only transaction query only. | Manual Portal regression after each response-template change. |
-| PAY-05 | `Download receipt`, `I want a refund`, or `Export my transactions` | Explains the corresponding visible Portal action. It does not create a refund, download a receipt, export data, or start payment. | `skillId=payment_transaction_history`, `mode=portal_action`; no `tool.call`. | Routing unit coverage. |
-| PAY-06 | `申请 ML-2-... 待付款` | Uses the selected My Requests application's read-only payment detail, not the transaction history. | `skillId=application_payment_details`. | Routing unit coverage. |
-| PAY-07 | `待缴罚款有哪些？` | Lists current unpaid fines and describes the Portal flow only. | `skillId=fine_payment_guidance`; `umc.pending-violations` only. | Console configuration + live regression. |
-
-## Cross-Domain Safety
-
-| ID | Conversation | Expected result | Coverage |
-| --- | --- | --- | --- |
-| CD-01 | Any successful data-query response that uses a tool | The final assistant response contains only customer-facing business information. It never contains a tool invocation such as `{"tool": ..., "args": ...}`, an API envelope, hidden URL, or credential. | Browser verified for LP-02; unit coverage verifies protocol detection. |
-| CD-02 | A follow-up such as `show me the first detail` after a business list | Keeps the active business domain and does not fall back to the general knowledge base merely because the follow-up has no domain keyword. | Unit coverage; LP-02 is the live browser check. |
-| CD-03 | A UMC-backed tool returns `401` | Operators can correlate the WebSocket-authenticated token, the dispatched tool call, and the Customer Portal response without exposing a raw token. | `backend` and `platform-gateway` logs share `request_id` and a SHA-256 token-hash prefix across `umc_ws_authenticated`, `umc_tool_*`, and `customer_*` records. | Controlled gateway check verified 2026-09-01. |
-
-## Not Yet Included
-
-Complaints and Refund have not yet been given structured retrieval workflows with verified server-side filters. Add cases only after their Skills declare the applicable intents, filters, and Tool Registry parameter bindings.
+| CI-01 | `My profile is under review. Can I start a new application?` | Determine whether the current profile can start a new request. | `profile_status` | Explain the profile-review constraint without treating application counts as profile approval. If another profile is relevant, direct the customer to switch profiles. |
+| CI-02 | `Which services am I eligible to apply for under my current profile?` | List services available for the selected profile. | `service_eligibility` | Query the current account's collected services first. Return candidate services and request only genuinely missing activity details; do not ask the customer to repeat known profile data. |
+| CI-03 | `My application is showing as Pending Payment. What should I do next?` | Find the pending-payment request and explain the next portal step. | `application_payment` | Query only Pending Payment applications. Preserve the public application number, provide returned payment details where available, and never start, retry, or confirm a payment. |
+| CI-04 | `Can you check the latest status of my application?` | Retrieve the newest request status in the selected profile. | `application_status` | Query My Requests in the default newest-first order. State the selected-profile scope and request an application number only if a specific record cannot be identified. |
+| CI-05 | `Where can I download my issued permit?` | Direct the customer to download an issued document. | `permit_download` | Direct the customer to `[Licenses & Permits](/permits-license)`. Do not download the file, expose its URL, or retrieve or reveal an access code. |
+| CI-06 | `Was my latest payment successful, and where can I find the receipt?` | Check the latest payment and identify the receipt action. | `payment_receipt` | Use only live transaction evidence. Confirm success only when returned by the transaction record, and describe the portal's receipt action without fabricating a URL or downloading the receipt. |
+| CI-07 | `My license is expiring soon. What should I do?` | Give renewal and expiry guidance. | `license_renewal` | Retrieve renewal evidence and explain the renewal deadline, post-expiry restriction, and portal next step. Keep general renewal guidance distinct from the status of a particular issued document. |
+| CI-08 | `I received a fine notification. Can I appeal it?` | Check whether a notified violation may be appealed. | `fine_appeal` | Route to appeal, not fine payment. Check available appeal or violation evidence first; ask for a violation reference when required, and do not submit an appeal. |
+| CI-09 | `I cannot find the right service for my business. Can you help?` | Recommend the appropriate service for a business activity. | `service_discovery` | Request the activity, establishment type, and emirate when missing. Separate federal candidates from any local-authority handoff and do not represent candidates as a final eligibility decision. |
+| CI-10 | `I have a complaint about a delayed application. How can I submit it?` | Explain how to prepare and submit a delay complaint. | `complaint_create` | Identify the Complaint type, required application reference and supporting information. Provide a portal handoff or preview only; do not submit, update, or cancel the complaint. |
+| CI-11 | `I want to follow up on an enquiry I submitted earlier.` | Find an existing enquiry and explain the follow-up action. | `enquiry_followup` | Query the current account's enquiries first. Show the matching or most recent enquiry when possible, then request a reference only to disambiguate; do not claim a follow-up was sent. |
+| CI-12 | `Can I reopen my resolved enquiry?` | Determine the available action for a resolved enquiry. | `enquiry_reopen` | Query the current account's enquiries first. Do not assume a resolved enquiry can or cannot be reopened before checking the record; explain the verified related-message or linked-enquiry alternative when reopening is unavailable. |
+| CI-13 | `I cannot complete payment. How can I raise a technical enquiry?` | Raise a technical support enquiry for a payment problem. | `technical_enquiry` | Route to technical enquiry, not payment history or receipt. Retrieve the available enquiry type, ask for any available transaction/error evidence and screenshots, and do not retry payment or submit the enquiry automatically. |
+| CI-14 | `I want to renew licence number <issued-document-number-in-current-profile>.` | Find a specific current issued document and report its renewal state. | `license_renewal` | Query issued License/Permit records before using knowledge. If exactly one record matches, report only its returned type, number, status, dates, and available actions. Do not require the customer to provide the document type after they supplied a unique number. |
+| CI-15 | `I want to renew licence number <nonexistent-document-number>.` | Handle an unmatched document identifier safely. | `license_renewal` | State concisely that no issued record with that number exists in the currently selected profile. Offer `[Licenses & Permits](/permits-license)`. Do not cite any unrelated application, renewal request, count, or generic policy as if it concerns the supplied number. |
+| CI-16 | In Global View: `I want to renew licence number <issued-document-number>.` | Enforce the selected-profile boundary before a personal lookup. | `license_renewal` with `ProfileScopeGuard` | Ask the customer to select a concrete profile, and do not also demand the document type. Do not expose or infer profile-bound document data until the profile is selected. |
+| CI-17 | `What documents do I need to renew a Commercial Media Licence?` | Provide general renewal requirements without treating them as the customer's record. | `license_renewal` | Use knowledge evidence for the general process. Do not claim that the customer has a matching document, a renewal application, or an available action without live issued-document evidence. |
+| CI-18 | `How do I apply for a Text Permit?` | Look up a named new-application service and safely handle an unknown service name. | `license_application_knowledge` | Use knowledge search. When no verified service guidance exists, say so without guessing requirements, then ask for the intended media activity and offer `[Services](/services)`. The final answer must not expose tool names, parameters, protocol text, or partial tool output. |
+| CI-19 | `How many requests do I have?` / `我有多少个申请？` / `كم طلبًا لدي؟` | Count the selected profile's My Requests across supported languages. | `application_status` | Return only live My Requests evidence and, when useful, a status breakdown. Do not route to general knowledge, treat the question as a licence count, or assert a fixed count in the test. |
