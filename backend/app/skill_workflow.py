@@ -238,6 +238,57 @@ def deterministic_route_directives(
     return normalize_route_directives(workflow, intent_id, supplied)
 
 
+def matches_configured_follow_up_route(workflow: dict[str, Any] | None, text: str) -> bool:
+    """Whether an active Skill claims a configured non-selection follow-up."""
+
+    return any(
+        isinstance(rule, dict) and _matches(text, rule.get("when"))
+        for rule in (workflow or {}).get("followUpRouting", [])
+    )
+
+
+def inherit_declared_filters(
+    workflow: dict[str, Any] | None,
+    filters: dict[str, Any] | None,
+    text: str,
+    history: list[Any],
+    *,
+    skill_id: str,
+) -> dict[str, Any]:
+    """Reuse a prior date window for an explicit relative follow-up.
+
+    The behavior is intentionally structural: it applies only to a published
+    Skill's declared ``date_range`` filter, only for a same-window reference,
+    and only from a prior route for that exact Skill.
+    """
+
+    merged = dict(filters or {})
+    if not re.search(r"\b(?:same|that)\s+(?:period|range|timeframe|window)\b", text.casefold()):
+        return merged
+    routing = (workflow or {}).get("routing")
+    if not isinstance(routing, dict):
+        return merged
+    date_filters = {
+        str(name): specification
+        for name, specification in dict(routing.get("filters") or {}).items()
+        if isinstance(specification, dict) and specification.get("type") == "date_range" and str(name) not in merged
+    }
+    if not date_filters:
+        return merged
+    for event in reversed(history):
+        if getattr(event, "event_type", "") != "skill.route":
+            continue
+        payload = getattr(event, "event_json", {}) or {}
+        if payload.get("skillId") != skill_id or not isinstance(payload.get("filters"), dict):
+            continue
+        for name, specification in date_filters.items():
+            value = _normalized_filter_value(specification, payload["filters"].get(name))
+            if value is not None:
+                merged[name] = value
+        return merged
+    return merged
+
+
 def _selection_sources(selection: dict[str, Any]) -> list[dict[str, Any]]:
     sources = selection.get("sources")
     if isinstance(sources, list):
@@ -349,6 +400,24 @@ def _selected_item(selector: object, items: list[dict[str, Any]], selection: dic
     return None
 
 
+def _prior_selected_item(
+    history: list[Any],
+    items: list[dict[str, Any]],
+    selection: dict[str, Any],
+    source: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Find the latest explicit selection in the same Skill's conversation."""
+
+    for event in reversed(history):
+        if getattr(event, "event_type", "") != "user.message":
+            continue
+        content = (getattr(event, "event_json", {}) or {}).get("content")
+        item = _selected_item(content, items, selection, source)
+        if item is not None:
+            return item
+    return None
+
+
 def _coerce_argument_value(value: Any, value_type: object) -> Any:
     """Apply a declarative argument type without business-specific branching."""
 
@@ -416,7 +485,12 @@ def matches_configured_selection_follow_up(
         return False
     source, _ = context
     request = _selection_value(selection, source, "toolRequest") or _selection_value(selection, source, "detailRequest")
-    return isinstance(request, dict) and _matches(text, request.get("when"))
+    if isinstance(request, dict) and _matches(text, request.get("when")):
+        return True
+    return any(
+        isinstance(rule, dict) and _matches(text, rule.get("when"))
+        for rule in _selection_value(selection, source, "toolRequestRules") or []
+    )
 
 
 def build_configured_tool_request(
@@ -456,6 +530,8 @@ def build_configured_tool_request(
             if selector is None:
                 selector = text
             item = _selected_item(selector, items, selection, source)
+            if item is None and re.search(r"\b(?:it|its|this|that|the\s+selected)\b", text.casefold()):
+                item = _prior_selected_item(history, items, selection, source)
             tool_name = str(selected_request.get("toolName") or "")
             argument_name = str(selected_request.get("argumentName") or "")
             value_field = str(_selection_value(selection, source, "valueField") or "")

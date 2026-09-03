@@ -6,12 +6,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.skills import build_system_prompt, resolve_configured_skill, resolve_skill
-from app.skill_workflow import build_configured_tool_request, deterministic_route_directives, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
+from app.skill_workflow import build_configured_tool_request, deterministic_route_directives, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
 from app.profile_scope import profile_context_from_payload, requires_profile_switch
-from app.response_safety import is_internal_tool_protocol
+from app.response_safety import is_internal_tool_protocol, strip_unverified_links
 from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 class RegistryAndRoutingTests(unittest.TestCase):
     def test_published_admin_skill_configuration_drives_recall_and_read_only_boundary(self):
@@ -363,6 +363,30 @@ class RegistryAndRoutingTests(unittest.TestCase):
             "22",
         )
 
+    def test_declared_follow_up_inherits_only_the_same_skill_date_range(self):
+        class Event:
+            def __init__(self, event_type, event_json):
+                self.event_type = event_type
+                self.event_json = event_json
+
+        workflow = {
+            "followUpRouting": [{"when": {"allTerms": ["team", "performance"]}}],
+            "routing": {"filters": {"dateRange": {"type": "date_range"}}},
+        }
+        history = [
+            Event("skill.route", {"skillId": "other_skill", "filters": {"dateRange": {"start": "2026-08-01", "end": "2026-08-31"}}}),
+            Event("skill.route", {"skillId": "analytics", "filters": {"dateRange": {"start": "2026-08-05", "end": "2026-09-03"}}}),
+        ]
+        self.assertTrue(matches_configured_follow_up_route(workflow, "Show team performance in the same period."))
+        self.assertEqual(
+            inherit_declared_filters(workflow, {}, "Show team performance in the same period.", history, skill_id="analytics"),
+            {"dateRange": {"start": "2026-08-05", "end": "2026-09-03"}},
+        )
+        self.assertEqual(
+            inherit_declared_filters(workflow, {}, "Show team performance.", history, skill_id="analytics"),
+            {},
+        )
+
     def test_business_tools_are_not_seeded_from_code(self):
         self.assertEqual(DEFAULT_TOOL_DEFINITIONS, ())
         self.assertEqual(DEFAULT_BUSINESS_TOOL_DEFINITIONS, ())
@@ -567,6 +591,23 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertNotIn("umc.licenses.list", prompt)
         self.assertIn("Never expose internal Tool names", prompt)
 
+    def test_global_view_prompt_allows_token_scoped_tool_evidence(self):
+        context = profile_context_from_payload(
+            {
+                "activeProfileId": "0",
+                "isGlobalView": True,
+                "profiles": [{"id": "0", "name": "Global View"}],
+            },
+            trusted_profile_id="0",
+        )
+        prompt = build_system_prompt(
+            resolve_skill("Show Finance payment-method statistics."),
+            evidence_available=True,
+            profile_context=context,
+        )
+        self.assertIn("token-scoped Tools may return the caller's authorized role view", prompt)
+        self.assertNotIn("Do not represent profile-bound data as available", prompt)
+
     def test_knowledge_fallback_does_not_contain_business_specific_guidance(self):
         from app.skills import DEFAULT_SKILL_DEFINITIONS
 
@@ -582,6 +623,56 @@ class RegistryAndRoutingTests(unittest.TestCase):
             '<｜｜DSML｜｜parameter name="query" string="true">Text Permit application</｜｜DSML｜｜parameter>'
         ))
         self.assertFalse(is_internal_tool_protocol('{"total": 2, "status": "EXPIRED"}'))
+
+    def test_response_links_require_tool_evidence(self):
+        content = (
+            "See [Portal page](http://localhost:18086/fabricated) and "
+            "[the returned record](https://portal.example.test/records/42). "
+            "Also omit [a relative fake](/). Do not use https://portal.example.test/invented."
+        )
+        evidence = {"recordUrl": "https://portal.example.test/records/42"}
+
+        self.assertEqual(
+            strip_unverified_links(content, evidence),
+            "See Portal page and [the returned record](https://portal.example.test/records/42). Also omit a relative fake. Do not use .",
+        )
+
+    def test_selection_specialized_tool_rule_keeps_active_skill(self):
+        workflow = {
+            "selection": {
+                "sourceTool": "example.list",
+                "itemsPath": "items",
+                "valueField": "id",
+                "ordinalTerms": {"1": ["first"]},
+                "toolRequestRules": [
+                    {
+                        "when": {"allTerms": ["workflow"]},
+                        "toolName": "example.workflow",
+                        "argumentName": "id",
+                        "argumentValueType": "integer",
+                    },
+                ],
+            },
+        }
+        history = [
+            type("Event", (), {"event_type": "tool.result", "event_json": {
+                "toolName": "example.list", "selectionItems": [{"id": 1}],
+            }})(),
+            type("Event", (), {"event_type": "user.message", "event_json": {
+                "content": "Show the first item details.",
+            }})(),
+        ]
+
+        self.assertTrue(matches_configured_selection_follow_up(workflow, "Show its workflow.", history))
+        self.assertEqual(
+            build_configured_tool_request(
+                workflow,
+                ["example.workflow"],
+                "Show its workflow.",
+                history,
+            ),
+            ("example.workflow", {"id": 1}),
+        )
 
     def test_legacy_knowledge_and_new_license_tool_boundaries(self):
         class Knowledge:

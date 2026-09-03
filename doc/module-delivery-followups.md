@@ -11,7 +11,7 @@ record identifiers, or live counts.
 
 | ID | Finding | Required handling | Status |
 | --- | --- | --- | --- |
-| OPS-01 | On 2026-09-03, the Admin DSH backend (`8001`), audit frontend (`18112`), and Admin API (`5207`) were listening while the Admin Portal Vite entry point (`18086`) was not. This establishes an unavailable local entry point, not a proven causal link to a module change. | Run the four-listener and proxy health check before and after each module delivery. Recover only the missing process. | Open |
+| OPS-01 | On 2026-09-03, `18086` was initially unavailable and port `8001` served the Customer DSH stack rather than the Admin stack. The Admin compose launch procedure restored the expected Admin backend (`8001`), audit frontend (`18112`), Admin API (`5207`), and Portal entry point (`18086`). | Before each module delivery, verify all four listeners and assert the gateway is configured for `UMC_PORTAL=admin`; recover only the missing or incorrectly scoped runtime. | Adopted |
 | OPS-02 | Published Skill changes made through the DSH API invalidate the Skill catalog immediately. A direct database update can remain cached for up to 60 seconds. | Do not restart services for ordinary database-managed Skill or Tool changes. Publish through the API where possible; otherwise wait for cache expiry and verify routing. | Adopted |
 | OPS-03 | Backend code, Admin API code, and Portal frontend each have different lifecycle requirements. | Rebuild/restart only the changed runtime: DSH backend for backend code, `5207` for Admin API code, and `18086` only when Vite is absent or requires recovery. Vite hot reload is expected for normal frontend edits. | Adopted |
 | OPS-04 | A module test can appear to fail because the selected role has no suitable fixtures, rather than because routing or a Tool is broken. | Record actor alias, required fixture type, and no-data outcome for every E2E case. Treat an authorized empty result as a valid response, not an automatic product defect. | Adopted |
@@ -69,7 +69,7 @@ or a Portal API change.
 | Licensing | Licensing Officer; Licensing Manager/Admin | Officer flow has live task fixtures. Licensing Manager sees Licensing and Customer Happiness; personal tasks are empty while team performance, task-state, overdue, and license-distribution summaries are populated. | Distinguish personal no-data from team aggregates during the deferred Dashboard phase. |
 | Content | Content Staff; Content Manager/Admin | Staff task, dashboard, library, and knowledge flows have been exercised; Content Manager sees Content/Inspection/Customer Happiness and has live Content service-application, overdue-task, and team-performance dashboard fixtures. | Verify manager dashboard and attention-list permissions during the deferred Dashboard phase. |
 | Inspection | Inspection Admin; Inspector Staff; Committee Staff | Admin and Inspector Staff have authorized, non-empty task fixtures; Committee Staff sees Inspection and Customer Happiness, with no current Inspection tasks but authorized Appeals data. | Complete the remaining declared analytics, hybrid, count, and no-data cases before final module sign-off. |
-| Customer Happiness | Role aliases still to be discovered from the protected source and Portal permissions | Not yet verified. | Identify roles with representative task and dashboard fixtures before implementation. |
+| Customer Happiness | Happiness Leader; Happiness Staff | Leader has live refund, appeal, team, and analytics fixtures; both Leader and Staff have authorized empty enquiry responses. | Complete hybrid/filter correction when a compatible non-empty enquiry fixture is available; defer Dashboard comparison. |
 
 Account details stay only in the protected test-account source. Contracts and
 regression files use role aliases, never credentials.
@@ -85,7 +85,7 @@ regression files use role aliases, never credentials.
 | CNT-05 | The hybrid task-detail plus external-approval guidance conversation is designed but not finally accepted. | Assert both the selected live task detail and cited Content knowledge evidence. |
 | CNT-06 | Content knowledge currently scopes retrieval to the shared `/umc` collection. Source-title rules reduce cross-module answers but do not make the collection module-exclusive. | Add authoritative Content metadata or a dedicated folder when the knowledge corpus supports it, then rerun citation relevance checks. |
 | CNT-07 | Four concurrent protocol conversations passed, but this was a correctness check, not a load test. | Keep load testing out of the current scope; revisit only when performance acceptance criteria are defined. |
-| CNT-08 | During the Cinema list/detail E2E, the model inserted an unsolicited relative “Portal page” link although the read Tool evidence supplied no navigable URL. | Add an answer-level regression assertion that live-record responses do not invent links or citations; decide whether to enforce it in the response-safety layer after observing it in another module. |
+| CNT-08 | During the Cinema list/detail E2E, the model inserted an unsolicited relative “Portal page” link although the read Tool evidence supplied no navigable URL. | Resolved with the generic response-safety check: only URLs present in Tool evidence may remain linked in a generated response. |
 | CNT-09 | Content Team Management summary and date-bounded members E2E paths passed with the Content Manager. Its live team-task fixtures still use a read-only endpoint that is not registered as a Tool. | Register the existing task query with full Tool ownership review before enabling task list/detail prompts. |
 | CNT-10 | Content Permit analytics and date-bounded list E2E paths passed with the Content Manager. No registered permit-detail Tool exists. | Register a detail endpoint before enabling ordinal permit detail. |
 
@@ -94,22 +94,27 @@ regression files use role aliases, never credentials.
 | ID | Gap or risk | Completion evidence |
 | --- | --- | --- |
 | INS-01 | A staff query for a live personal task list fell back to general knowledge when the LLM router was unavailable. A knowledge answer must never substitute for live, authorized operational data. | A narrowly scoped, database-managed deterministic route for “my Inspection tasks” now locks the task reader and its existing read Tool. The real staff E2E list and ordinal-detail turns both produced successful Tool calls. |
-| INS-02 | The current manager and staff E2E evidence covers task list/detail, violation list/detail, operational analytics, knowledge guidance, and the write boundary, but not every declared regression case. | Run remaining status-count, risk, team-performance, hybrid, date/filter-correction, and authorized-no-data cases with trace assertions. |
+| INS-02 | The current manager and staff E2E evidence covers task list/detail, violation list/detail, task counts, risk insights, team performance, knowledge guidance, and the write boundary. | Run remaining hybrid, date/filter-correction, and authorized-no-data cases with trace assertions. |
+| INS-03 | Risk insights, team performance, and task-count prompts previously depended on LLM intent selection and could fall back to general knowledge or a list Tool. | Resolved with database-declared deterministic routes and intents. Real Manager E2E now locks the appropriate reader, passes the requested date window where applicable, and invokes the registered read Tool. |
 
 ## Customer Happiness Follow-ups
 
 | ID | Gap or risk | Completion evidence |
 | --- | --- | --- |
-| CH-01 | The Happiness Leader Portal page returns active enquiry/complaint rows, while the same authenticated DSH Tool call to `/api/Enquiry/Management/List` returns an authorized empty result. The Portal's `IsEnquiryComplete=false` and list defaults were mirrored in the Skill and the mismatch remains. | Compare the downstream identity/profile headers and service-side scope used by the Portal request versus the DSH platform gateway. Do not treat the empty Tool result as a valid no-data fixture until the scopes agree. |
-| CH-02 | When the LLM router is unavailable, deterministic routing can protect a live analytics request from falling back to knowledge, but the current route directive does not extract relative-date filters into Tool parameters. | Add or restore a general, database-contract-driven relative-date parameter path, then assert `startDate` and `endDate` for each module's date-range regressions. |
+| CH-01 | The Happiness Leader page initially displayed eight ticket rows, while a same-bearer browser GET and the Admin DSH Tool both returned a successful empty `/api/Enquiry/Management/List` result with identical default parameters. Browser instrumentation observed no live list XHR when filtering the displayed rows. | Treat the screen rows as non-authoritative local UI state until the Portal data-loading path is independently traced. The live endpoint's authorized empty result is a valid no-data fixture; do not make the Chatbot fabricate ticket rows. |
+| CH-02 | Locked routing previously did not retain a prior date window for an explicit multi-turn same-period request. | Resolved generically for database-declared `date_range` filters. Happiness Leader E2E now maps “operational insights for last 30 days” then “team performance in the same period” to the team-performance Tool with inherited `startDate` and `endDate`. |
 | CH-03 | The Portal Team Management page has a read-only task query endpoint, but the Tool Registry has only team summary/member/metadata Tools. | Register the existing read endpoint through normal Tool ownership, including side-effect, profile-scope, response schema, and masking review. Then extend the team Skill and its multi-turn task-detail regression. |
-| CH-04 | Real E2E evidence currently covers the portal role inventory, enquiry Tool invocation and mismatch, operational analytics Tool invocation, and the write boundary. | Run refund, appeal, team-summary/member, knowledge, hybrid, and Happiness Staff cases after CH-01 is resolved or explicitly classified. |
+| CH-04 | Real E2E evidence now covers Happiness Leader enquiry no-data, refunds and appeals list-to-detail, operational analytics with same-period follow-up, team summary/member, cited guidance, and the write boundary; Happiness Staff also returns an authorized empty enquiry result through the live Tool. | Run hybrid enquiry-plus-guidance and explicit status/date-filter correction cases when compatible non-empty enquiry fixtures are available. |
+| CH-05 | The Customer Happiness refund list-to-detail selection configuration used `id` and a string parameter type, while the registered schema exposes an integer `refundId`. | Resolved: Happiness Leader E2E now calls the refund-detail Tool with a stable integer `refundId` from the first list result. |
+| CH-06 | Successful refund/member answers inserted “Portal page” links even when Tool evidence contained no navigable record URL. | Resolved generically: response safety now removes unverified Markdown and bare links while preserving URLs returned by Tool evidence; the rule is unit tested. |
 
 ## Finance Follow-ups
 
 | ID | Gap or risk | Completion evidence |
 | --- | --- | --- |
 | FIN-01 | Finance transactions were initially inferred as profile-bound because the OpenAPI schema contains an optional `ProfileId`, despite the Finance Admin Portal page supporting global view. | Resolved: declared the transaction Tool's profile scope as `not_applicable` in the registry. Finance Admin list and ordinal-detail E2E then completed with successful read Tool traces; the write boundary also refused without a Tool call. |
+| FIN-02 | Finance aggregate statistics and payment-method/recharge breakdown Tools expose no date parameters in Swagger. | Do not promise a date-bounded aggregate. Use date-bounded transaction/refund lists where appropriate and register a date-filtered aggregate endpoint before adding that capability. |
+| FIN-03 | A generic Global View prompt caused the model to refuse a successful token-scoped payment-method Tool result, even though no profile binding was required. | Resolved: profile selection remains gateway-enforced only for `bind_parameter` Tools. Finance Admin Global View payment-method E2E now returns the authorized current snapshot. |
 
 ## CMS Follow-ups
 
@@ -117,6 +122,20 @@ regression files use role aliases, never credentials.
 | --- | --- | --- |
 | CMS-01 | The CMS frontend exposes read endpoints for News, Events, Jobs, and page configuration, but no corresponding read Tool is published in the Tool Registry. | Register the existing read operations through normal Tool ownership, including schema, side effect, RBAC, masking, and profile-scope review. Do not substitute Content Library tools. |
 | CMS-02 | The protected `CMS Staff` account authenticates, but direct navigation to `/cms/NewsManagement` is permission-routed to Notifications. | Provide or authorize an account with CMS menu read access, then perform the intended role-aware Portal and Chatbot E2E suite. |
+
+## Service Configuration Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| SC-01 | The Service Configuration list Tool had no deterministic synonym for “service configurations”, so an unavailable LLM router fell back to knowledge despite an available live reader. | Resolved with a database-declared reader route; the staff E2E list applies the requested Top-N parameter and returns live Tool evidence. |
+| SC-02 | The service-detail selection bound `Id` as a string although the registered Tool schema requires an integer. | Resolved in the database workflow; list-to-first-detail E2E now calls the detail Tool with an integer. |
+| SC-03 | A specialized selected-service follow-up such as “its workflow configuration” could re-run the list Tool because the framework did not retain a previous explicit ordinal selection. | Resolved generically for declared selection Tool rules. E2E inherited the first selected service and invoked the workflow Tool with its integer serviceId. |
+
+## Service Categories Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| SCAT-01 | The Service Configuration Staff Portal page displays authorized category cards, but the registered category list Tool returns `502` for the same actor. | Routing, Top-N binding, and error handling were verified. Treat list/detail functionality as blocked by the upstream API until the Tool endpoint is restored; do not substitute page data. |
 
 ## System Management Follow-ups
 

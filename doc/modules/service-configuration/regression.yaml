@@ -6,10 +6,12 @@ cases:
   - id: service-list-ordinal-detail
     actor: service-configuration-staff
     turns:
-      - user: List suspended services ordered by last updated date.
-        expect: { skill: admin_service_configuration_reader, tool: admin.serviceinfo.get-serviceinfo-getservicestopage, side_effect: read, capture: { third_service: "result_set.items[2]" } }
-      - user: What about the third one?
-        expect: { skill: admin_service_configuration_reader, tool: admin.serviceinfo.get-serviceinfo-getservicebyid-id, parameters: { Id: "${third_service.id}" } }
+      - user: List the first 5 service configurations.
+        expect: { skill: admin_service_configuration_reader, tool: admin.serviceinfo.get-serviceinfo-getservicestopage, parameters: { pageSize: 5 }, side_effect: read, capture: { first_service: "result_set.items[0]" } }
+      - user: Show the first service configuration details.
+        expect: { skill: admin_service_configuration_reader, tool: admin.serviceinfo.get-serviceinfo-getservicebyid-id, parameters: { Id: "${first_service.id}" } }
+      - user: Show its workflow configuration.
+        expect: { skill: admin_service_configuration_reader, tool: admin.serviceworkflowconfiguration.get-serviceworkflowconfigurationcontroller-getworkflowconfigurationbyserviceid-serviceid, parameters: { serviceId: "${first_service.id}" } }
   - id: service-workflow-readiness
     actor: service-configuration-staff
     turns:

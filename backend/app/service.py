@@ -20,10 +20,10 @@ from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
 from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requires_profile_switch
-from .response_safety import is_internal_tool_protocol
+from .response_safety import is_internal_tool_protocol, strip_unverified_links
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
-from .skill_workflow import build_configured_tool_request, deterministic_route_directives, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, selection_snapshot_for_tool_result
+from .skill_workflow import build_configured_tool_request, deterministic_route_directives, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, selection_snapshot_for_tool_result
 from .skills import (
     SkillRoute,
     build_flow_prompt,
@@ -697,8 +697,10 @@ class DSHService:
                             .order_by(Skill.version.desc())
                         )
                         active_skill = active_skill_result.scalars().first()
-                        if active_skill and matches_configured_selection_follow_up(
-                            merged_skill_workflow(active_skill.skill_id, active_skill.workflow), latest_content, history
+                        active_workflow = merged_skill_workflow(active_skill.skill_id, active_skill.workflow) if active_skill else {}
+                        if active_skill and (
+                            matches_configured_selection_follow_up(active_workflow, latest_content, history)
+                            or matches_configured_follow_up_route(active_workflow, latest_content)
                         ):
                             keyword_route = self.route_shape_for_skill(
                                 active_skill_record_id,
@@ -723,6 +725,17 @@ class DSHService:
                         intent_id, filters = deterministic_route_directives(selected_skill.workflow, latest_content)
                         route_metadata["intentId"] = intent_id
                         route_metadata["filters"] = filters
+                    if selected_skill:
+                        selected_workflow = merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow)
+                        route_metadata["filters"] = inherit_declared_filters(
+                            selected_workflow,
+                            route_metadata.get("filters"),
+                            latest_content,
+                            history,
+                            skill_id=selected_skill.skill_id,
+                        )
+                    else:
+                        selected_workflow = {}
                     system_tool_definitions = system_default_tool_definitions(self.settings)
                     system_tool_map = {item["toolName"]: item for item in system_tool_definitions}
                     configured_system_tools = {name for name, item in system_tool_map.items() if item.get("enabled") and item.get("published")}
@@ -757,7 +770,7 @@ class DSHService:
                         )
                     elif not tool_request:
                         tool_request = build_configured_tool_request(
-                            merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow) if selected_skill else {},
+                            selected_workflow,
                             allowed_tool_names,
                             latest_content,
                             history,
@@ -1056,6 +1069,7 @@ class DSHService:
                                 return "".join(chunks), "".join(reasoning_chunks)
 
                             content, reasoning = await draft_answer(messages)
+                            content = strip_unverified_links(content, masked_tool_result if tool_request else {})
                             if is_internal_tool_protocol(content):
                                 retry_messages = [
                                     *messages,
@@ -1070,6 +1084,7 @@ class DSHService:
                                 ]
                                 content, retry_reasoning = await draft_answer(retry_messages)
                                 reasoning += retry_reasoning
+                                content = strip_unverified_links(content, masked_tool_result if tool_request else {})
                             if is_internal_tool_protocol(content):
                                 content = (
                                     "تعذر تنسيق النتيجة المطلوبة. يرجى المحاولة مرة أخرى."

@@ -54,7 +54,7 @@ cases:
           tools:
             - admin.refund.get-refund-admin-tickets-refundid-detail
             - admin.refund.get-refund-admin-tickets-refundid-timeline
-          parameters: { refundId: "${first_refund.id}" }
+          parameters: { refundId: "${first_refund.refundId}" }
 
   - id: happiness-appeal-list-and-detail
     actor: happiness-leader
@@ -81,21 +81,26 @@ cases:
         expect:
           skill: admin_customer_happiness_analytics_reader
           tool: admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-summary
+          parameters: { startDate: runtime_last_30_days_start, endDate: runtime_today }
       - user: Show team performance in the same period.
         expect:
           skill: admin_customer_happiness_analytics_reader
           tool: admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-team-performance
+          parameters: { startDate: inherited, endDate: inherited }
           normalized_filters: { date_range: inherited }
 
   - id: happiness-team-summary
     actor: happiness-leader
     turns:
-      - user: Show the Customer Happiness team summary and available members.
+      - user: Show the Customer Happiness team summary.
         expect:
           skill: admin_customer_happiness_team_reader
-          tools:
-            - admin.customerhappinessteammanagement.get-customer-happiness-team-management-summary-v2
-            - admin.customerhappinessteammanagement.get-customer-happiness-team-management-members-optimized
+          tool: admin.customerhappinessteammanagement.get-customer-happiness-team-management-summary-v2
+          side_effect: read
+      - user: Now list available Customer Happiness team members.
+        expect:
+          skill: admin_customer_happiness_team_reader
+          tool: admin.customerhappinessteammanagement.get-customer-happiness-team-management-members-optimized
           side_effect: read
 
   - id: happiness-knowledge-guidance

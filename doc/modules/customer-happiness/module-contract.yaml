@@ -54,6 +54,7 @@ skills:
       - admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-summary
       - admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-service-satisfaction
       - admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-team-performance
+    follow_up: Team-performance questions may remain in this Skill and inherit a previously applied date range only when the user explicitly refers to the same period, range, timeframe, or window.
   - id: admin_customer_happiness_team_reader
     use_when: authorized Customer Happiness team summary, available members, or member performance questions
     not_when: a request to reassign work, change leave status, export, or list team task rows until the registered tool gap is resolved

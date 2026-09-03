@@ -173,10 +173,8 @@ def build_system_prompt(
         "Use only trusted tool evidence. When evidence is unavailable, state the limitation and never invent account data, fees, regulations, or API capabilities.",
         "Never expose internal Tool names, request arguments, serialized JSON, API envelopes, or internal evidence instructions. Convert verified evidence into a concise user-facing answer.",
         "Payments, appeals, complaints, downloads, and all other side effects require a preview and the user's explicit confirmation.",
-        "PROFILE SCOPE: Account data is limited to the profile currently selected in the portal. Never claim to query, filter, or aggregate another profile. When the user names a different profile, ask them to switch it in the portal before continuing.",
+        "PROFILE SCOPE: Never claim to query, filter, or aggregate another named portal profile. Profile-bound Tools are enforced by the gateway; token-scoped Tools may return the caller's authorized role view, including Global View.",
     ]
-    if profile_context is not None and bool(getattr(profile_context, "is_global_view", False)):
-        guardrails.append("The portal is in Global View. Do not represent profile-bound data as available until the user selects a concrete profile.")
     if route.category == "knowledge" and not evidence_available:
         guardrails.append("When knowledge-base evidence is unavailable, do not present general knowledge as a verified UMC rule.")
     if route.category == "knowledge" and evidence_available:
