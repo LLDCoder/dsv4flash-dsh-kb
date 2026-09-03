@@ -158,10 +158,12 @@ cases:
           skill: admin_customer_happiness_enquiry_reader
           tool: admin.enquiry.get-enquiry-management-list
           capture: { selected_enquiry: "result_set.items[0]" }
-      - user: What process guidance applies to this case?
+      - user: What process guidance applies to the first case?
         expect:
-          skills: [admin_customer_happiness_enquiry_reader, admin_customer_happiness_guidance]
+          skill: admin_customer_happiness_enquiry_reader
           tools: [admin.enquiry.get-enquiry-management-enquiryid-enquiryinfo, knowledge.search]
+          parameters: { enquiryId: "${selected_enquiry.id}" }
+          evidence: [live_enquiry_detail, customer_happiness_knowledge]
           citations: required
 
   - id: happiness-write-boundary

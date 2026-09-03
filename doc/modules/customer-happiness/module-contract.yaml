@@ -33,6 +33,15 @@ skills:
       - admin.enquiry.get-enquiry-management-status-count
       - admin.enquiry.get-enquiry-management-enquiryid-enquiryinfo
       - admin.enquiry.get-enquiry-management-enquiryid-timeline
+    hybrid_guidance:
+      when_use: a selected enquiry or complaint plus a question about its applicable process guidance
+      primary_tool: admin.enquiry.get-enquiry-management-enquiryid-enquiryinfo
+      knowledge_tool: knowledge.search
+      knowledge_scope: [/umc]
+      response_rules:
+        - Require an explicit ordinal or stable enquiry identifier before reading a detail.
+        - Distinguish verified case facts from general Customer Happiness process guidance.
+        - An authorized empty list must not be replaced with Portal-rendered rows.
   - id: admin_customer_happiness_refund_reader
     use_when: authorized refund task lists, totals, filters, selected refund detail, or timeline questions
     not_when: enquiries, appeals, analytics-only, policy-only, or requested decision/transfer/send-back changes
