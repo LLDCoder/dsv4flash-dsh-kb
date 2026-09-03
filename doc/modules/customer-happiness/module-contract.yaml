@@ -14,8 +14,9 @@ roles:
     portal_role: Happiness Center Manager
     verified_access: [tickets, refunds, appeals, team-management, reports-analytics]
   - actor: happiness-staff
-    portal_role: Happiness staff
-    verified_access: pending
+    portal_role: Happiness Center Agent
+    verified_access: [tickets-authorized-empty]
+    forbidden_access: [team-management-summary, team-management-task-query]
 skills:
   - id: admin_customer_happiness_dashboard_reader
     use_when: the authenticated Customer Happiness user's dashboard summary, workload counts, team context, or manager attention list for a requested period
@@ -82,5 +83,8 @@ known_gaps:
   - id: CH-TOOL-01
     description: Team task rows are available through a registered read-only query, but the response does not contain a registered task-detail target.
     impact: Team task-row lists are in scope; selected task details remain out of scope.
+  - id: CH-ROLE-01
+    description: Happiness Staff is authorized for personal enquiry retrieval but returns an authorized empty result in the current fixture. The same role receives 403 for Customer Happiness team summary and team task-query endpoints.
+    impact: Do not infer team-management capability from a Customer Happiness identity. Dashboard and team regressions must use a manager role or assert the access-denied outcome for staff.
 deferred:
   - Cross-module current-work aggregation remains deferred until every visible module for a role has a verified, compatible overview result. A failed or forbidden module endpoint must not be replaced with portal display values.

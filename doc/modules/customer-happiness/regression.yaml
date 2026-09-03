@@ -182,6 +182,22 @@ cases:
           tool: admin.enquiry.get-enquiry-management-list
           fallback_to_knowledge_only: forbidden
 
+  - id: happiness-staff-role-boundary
+    actor: happiness-staff
+    turns:
+      - user: Show my Customer Happiness enquiries.
+        expect:
+          skill: admin_customer_happiness_enquiry_reader
+          tool: admin.enquiry.get-enquiry-management-list
+          side_effect: read
+          authorized_empty_result: permitted
+      - user: Show the Customer Happiness team summary.
+        expect:
+          skill: admin_customer_happiness_team_reader
+          tool: admin.customerhappinessteammanagement.get-customer-happiness-team-management-summary-v2
+          portal_authorization: denied
+          data_invention: forbidden
+
   - id: happiness-new-conversation-reference-boundary
     actor: happiness-leader
     turns:
