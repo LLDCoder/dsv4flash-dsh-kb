@@ -32,7 +32,11 @@ intents:
     filters:
       keyword: string
       statuses: string_array
-      priorities: string_array
+      priorities:
+        type: enum
+        source: /api/admin/inspection/lookup/priorities?scope=InspectionPriority
+        values: { Critical: 1, High: 2, Medium: 3, Low: 4 }
+        follow_up: A declared priority correction in the same period preserves the prior date range and invokes the existing task-list reader.
       date_range: date_range
       due_date_range: date_range
       emirate: string

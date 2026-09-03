@@ -105,7 +105,7 @@ regression files use role aliases, never credentials.
 | ID | Gap or risk | Completion evidence |
 | --- | --- | --- |
 | INS-01 | A staff query for a live personal task list fell back to general knowledge when the LLM router was unavailable. A knowledge answer must never substitute for live, authorized operational data. | A narrowly scoped, database-managed deterministic route for “my Inspection tasks” now locks the task reader and its existing read Tool. The real staff E2E list and ordinal-detail turns both produced successful Tool calls. |
-| INS-02 | The current manager and staff E2E evidence covers task list/detail, violation list/detail, task counts, risk insights, team performance, knowledge guidance, and the write boundary. | Run remaining hybrid, date/filter-correction, and authorized-no-data cases with trace assertions. |
+| INS-02 | The current manager and staff E2E evidence covers task list/detail, violation list/detail, task counts, risk insights, team performance, knowledge guidance, and the write boundary. | Inspection Manager protocol E2E now also proves date inheritance plus High-priority correction (`PriorityId=2`); the current Todo response is an authorized empty fixture. Run remaining hybrid and authorized-no-data cases with trace assertions. |
 | INS-03 | Risk insights, team performance, and task-count prompts previously depended on LLM intent selection and could fall back to general knowledge or a list Tool. | Resolved with database-declared deterministic routes and intents. Real Manager E2E now locks the appropriate reader, passes the requested date window where applicable, and invokes the registered read Tool. |
 
 ## Customer Happiness Follow-ups

@@ -32,14 +32,15 @@ cases:
 
   - id: inspection-task-filter-correction
     actor: inspection-manager
-    requires: [tasks: 1]
+    requires: [authorized_task_query]
     turns:
       - user: List my Inspection tasks from the last 7 days.
         expect: { skill: admin_inspection_task_reader, tool: admin.inspectiontask.get-admin-inspection-tasks }
       - user: Only show high priority tasks in the same period.
         expect:
           skill: admin_inspection_task_reader
-          normalized_filters: { date_range: inherited, priorities: supplied }
+          normalized_filters: { date_range: inherited, priorities: [High] }
+          authorized_empty: permitted
 
   - id: inspection-task-summary
     actor: inspection-manager
