@@ -130,12 +130,26 @@ regression files use role aliases, never credentials.
 | SC-01 | The Service Configuration list Tool had no deterministic synonym for “service configurations”, so an unavailable LLM router fell back to knowledge despite an available live reader. | Resolved with a database-declared reader route; the staff E2E list applies the requested Top-N parameter and returns live Tool evidence. |
 | SC-02 | The service-detail selection bound `Id` as a string although the registered Tool schema requires an integer. | Resolved in the database workflow; list-to-first-detail E2E now calls the detail Tool with an integer. |
 | SC-03 | A specialized selected-service follow-up such as “its workflow configuration” could re-run the list Tool because the framework did not retain a previous explicit ordinal selection. | Resolved generically for declared selection Tool rules. E2E inherited the first selected service and invoked the workflow Tool with its integer serviceId. |
+| SC-04 | A compound requested write, “configure and publish … service”, bypassed the short phrase boundary and fell back to knowledge. | Resolved with a database-declared action-plus-service boundary pattern. The E2E refusal invokes no Tool. |
 
 ## Service Categories Follow-ups
 
 | ID | Gap or risk | Completion evidence |
 | --- | --- | --- |
 | SCAT-01 | The Service Configuration Staff Portal page displays authorized category cards, but the registered category list Tool returns `502` for the same actor. | Routing, Top-N binding, and error handling were verified. Treat list/detail functionality as blocked by the upstream API until the Tool endpoint is restored; do not substitute page data. |
+
+## Service Reports And Analytics Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| SRA-01 | A generic “service ranking” prompt did not recall the analytics Skill and fell back to knowledge even though a registered ranking Tool exists. | Resolved with a database-declared `service + ranking` route. The real E2E invokes the service-list Tool and carries the requested Top-N page size. |
+| SRA-02 | An export request was safely refused but routed to Customer Happiness due to that module's broad export boundary. | Resolved with a higher-priority, module-specific Service Operations Analytics export boundary. The E2E refusal uses no Tool call. |
+
+## Message Log Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| MSG-01 | The Message Log list reader, limit binding, and read-only Tool are registered and reachable through DSH, but the upstream list endpoint returns `502`. | Treat list/detail cases as an upstream API blocker until the endpoint is restored. Do not substitute knowledge-base content for live delivery records. |
 
 ## System Management Follow-ups
 
