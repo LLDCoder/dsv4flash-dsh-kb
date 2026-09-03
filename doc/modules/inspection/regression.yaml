@@ -141,3 +141,12 @@ cases:
         expect:
           clarification: required
           tools: []
+
+  - id: inspection-new-conversation-deictic-reference-boundary
+    actor: inspection-manager
+    turns:
+      - user: What reporting guidance applies to this task?
+        expect:
+          skill: reference_clarification
+          clarification: required
+          tools: []

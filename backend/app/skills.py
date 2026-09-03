@@ -150,6 +150,19 @@ def exact_quote_source_sufficient(text: str) -> bool:
     )
 
 
+def requires_reference_context(text: str) -> bool:
+    """Recognize an item reference that cannot stand alone in a new conversation."""
+
+    return bool(
+        re.search(
+            r"\b(?:this|that|the\s+(?:first|second|third|fourth|fifth)|(?:first|second|third|fourth|fifth))\s+"
+            r"(?:one|item|record|row|task|application|request|case)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
     return {
         "required": True,
@@ -181,6 +194,10 @@ def build_system_prompt(
         guardrails.append(
             "For every substantive knowledge-base statement, cite the source title supplied in the evidence. "
             "End the answer with a Sources section listing the titles used."
+        )
+    if route.mode == "clarification":
+        guardrails.append(
+            "The user referred to a record without a verified conversation selection. Ask them to identify the item; do not retrieve unrelated records or general guidance."
         )
 
     target = "ARABIC" if response_language == "ar" else "ENGLISH"

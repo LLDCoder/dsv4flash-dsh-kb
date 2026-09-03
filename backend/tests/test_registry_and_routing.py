@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.skills import build_system_prompt, resolve_configured_skill, resolve_skill
+from app.skills import build_system_prompt, requires_reference_context, resolve_configured_skill, resolve_skill
 from app.skill_workflow import build_configured_tool_request, deterministic_route_directives, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
@@ -95,6 +95,11 @@ class RegistryAndRoutingTests(unittest.TestCase):
         _, filters = normalize_route_directives(workflow, "list", {"limit": 0, "statuses": "Pending Review"})
         self.assertNotIn("limit", filters)
         self.assertNotIn("statuses", filters)
+
+    def test_unresolved_reference_requires_conversation_context(self):
+        self.assertTrue(requires_reference_context("What guidance applies to this task?"))
+        self.assertTrue(requires_reference_context("What about the third one?"))
+        self.assertFalse(requires_reference_context("What reporting guidance applies to an inspection task?"))
 
     def test_locked_route_extracts_only_declared_generic_date_and_limit_filters(self):
         workflow = {

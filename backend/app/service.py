@@ -32,6 +32,7 @@ from .skills import (
     canonical_skill_id,
     exact_quote_source_sufficient,
     merged_skill_workflow,
+    requires_reference_context,
     resolve_configured_skill,
     resolve_skill,
     response_language_for,
@@ -673,6 +674,14 @@ class DSHService:
                     if route_context.get("recentMessages") and route_context["recentMessages"][-1].get("role") == "user" and route_context["recentMessages"][-1].get("content") == latest_content:
                         route_context["recentMessages"] = route_context["recentMessages"][:-1]
                     active_skill_id = str(route_context.get("activeSkillId") or "")
+                    if not active_skill_id and requires_reference_context(latest_content):
+                        keyword_route = SkillRoute(
+                            "reference_clarification",
+                            "data_query",
+                            mode="clarification",
+                            fields=("referenced_item",),
+                            routing_locked=True,
+                        )
                     if active_skill_id:
                         active_catalog_entry = next(
                             (item for item in route_catalog if str(item.get("skillId") or "") == active_skill_id),
