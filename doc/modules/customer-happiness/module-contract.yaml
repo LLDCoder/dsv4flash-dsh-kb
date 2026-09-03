@@ -63,11 +63,13 @@ skills:
       - admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-team-performance
     follow_up: Team-performance questions may remain in this Skill and inherit a previously applied date range only when the user explicitly refers to the same period, range, timeframe, or window.
   - id: admin_customer_happiness_team_reader
-    use_when: authorized Customer Happiness team summary, available members, or member performance questions
-    not_when: a request to reassign work, change leave status, export, or list team task rows until the registered tool gap is resolved
+    use_when: authorized Customer Happiness team summary, available members, member performance, or filtered team task row questions
+    not_when: a request for a task detail, to reassign work, change leave status, export, or make any Portal data change
     tools:
       - admin.customerhappinessteammanagement.get-customer-happiness-team-management-summary-v2
       - admin.customerhappinessteammanagement.get-customer-happiness-team-management-members-optimized
+      - admin.customerhappinessteammanagement.post-customer-happiness-team-management-tasks-query
+    response_boundary: A selected-task detail follow-up returns the registered-detail boundary without invoking a list or summary Tool.
   - id: admin_customer_happiness_guidance
     use_when: Customer Happiness process, service, policy, or regulatory guidance requiring cited knowledge evidence
     not_when: live operational data is requested without a knowledge component
@@ -78,7 +80,7 @@ skills:
     tools: []
 known_gaps:
   - id: CH-TOOL-01
-    description: The Portal Team Management task query endpoint is read-only but has no registered Tool. Do not invent a Tool or substitute a dashboard endpoint.
-    impact: Team task-row lists and selected task details remain out of scope until the registry owns that endpoint.
+    description: Team task rows are available through a registered read-only query, but the response does not contain a registered task-detail target.
+    impact: Team task-row lists are in scope; selected task details remain out of scope.
 deferred:
   - Cross-module current-work aggregation remains deferred until every visible module for a role has a verified, compatible overview result. A failed or forbidden module endpoint must not be replaced with portal display values.

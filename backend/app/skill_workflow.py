@@ -507,6 +507,9 @@ def build_configured_tool_request(
     workflow = workflow or {}
     allowed = set(allowed_tools)
     filters = filters or {}
+    for rule in workflow.get("noToolRequestRules", []):
+        if isinstance(rule, dict) and _matches(text, rule.get("when")):
+            return None
     selection = workflow.get("selection")
     if isinstance(selection, dict):
         context = _selection_context(history, selection)

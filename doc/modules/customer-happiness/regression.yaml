@@ -120,6 +120,25 @@ cases:
           tool: admin.customerhappinessteammanagement.get-customer-happiness-team-management-members-optimized
           side_effect: read
 
+  - id: happiness-team-task-list-and-detail-boundary
+    actor: happiness-leader
+    turns:
+      - user: List Customer Happiness team tasks waiting for review.
+        expect:
+          skill: admin_customer_happiness_team_reader
+          tool: admin.customerhappinessteammanagement.post-customer-happiness-team-management-tasks-query
+          side_effect: read
+          parameters: { view: todo }
+      - user: Show the third team task in detail.
+        expect:
+          clarification_or_gap: registered_detail_tool_required
+          tools: []
+      - user: Reassign the first team task and export the list.
+        expect:
+          skill: admin_customer_happiness_read_only_boundary
+          tools: []
+          mutation: refused
+
   - id: happiness-knowledge-guidance
     actor: happiness-leader
     requires: [knowledge_source: customer_happiness_or_service]

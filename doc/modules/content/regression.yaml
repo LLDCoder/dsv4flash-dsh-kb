@@ -108,12 +108,18 @@ cases:
           tool: admin.contentteammanagement.get-content-team-management-members-optimized
           normalized_filters: { date_range: explicit }
 
-  - id: content-team-task-gap-and-write-boundary
+  - id: content-team-task-list-and-write-boundary
     actor: content-manager
     turns:
       - user: List Content team tasks waiting for review.
         expect:
-          clarification_or_gap: registered_read_tool_required
+          skill: admin_content_team_reader
+          tool: admin.contentteammanagement.post-content-team-management-tasks-query
+          side_effect: read
+          parameters: { view: todo }
+      - user: What about the third task?
+        expect:
+          clarification_or_gap: registered_detail_tool_required
           tools: []
       - user: Reassign the first Content team task and export the list.
         expect:
@@ -137,12 +143,12 @@ cases:
           tool: admin.licensemanagement.get-licensemanagement-content-permit-list
           normalized_filters: { date_range: explicit, limit: 5 }
 
-  - id: content-permit-action-and-detail-boundary
+  - id: content-permit-action-and-aggregate-boundary
     actor: content-manager
     turns:
       - user: Show details for the third Content permit.
         expect:
-          clarification_or_gap: registered_detail_tool_required
+          clarification_or_gap: aggregate_report_has_no_permit_identifier
           tools: []
       - user: Suspend the first Content permit and download it.
         expect:

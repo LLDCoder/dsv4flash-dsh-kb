@@ -494,6 +494,21 @@ class RegistryAndRoutingTests(unittest.TestCase):
             ("records.list", {"pageSize": 20}),
         )
 
+    def test_published_no_tool_rule_blocks_unsupported_detail_follow_up(self):
+        workflow = {
+            "noToolRequestRules": [
+                {"when": {"allTerms": ["task"], "anyTerms": ["detail", "third"]}},
+            ],
+            "defaultToolRequest": {"toolName": "records.list", "arguments": {"pageSize": 20}},
+        }
+        self.assertIsNone(
+            build_configured_tool_request(workflow, ["records.list"], "What about the third task?", []),
+        )
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["records.list"], "List the first 3 tasks.", []),
+            ("records.list", {"pageSize": 20}),
+        )
+
     def test_knowledge_and_ocr_are_runtime_only_capabilities(self):
         business_tools = {item["tool_name"] for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
         self.assertTrue(SYSTEM_DEFAULT_TOOL_NAMES.isdisjoint(business_tools))
