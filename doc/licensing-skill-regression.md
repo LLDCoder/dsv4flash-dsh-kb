@@ -42,6 +42,8 @@ registered with `sideEffect=read`; it must not be treated as a write action.
 | LIC-26 | `كم عدد مهام الترخيص العاجلة؟` | `admin_licensing_operational_summary_reader` | Recognize Arabic Licensing urgency/count language and return a live summary. |
 | LIC-27 | `ما هي مهام الترخيص الأكثر إلحاحًا؟` | `admin_licensing_sla_reader` | Recognize Arabic urgency language and use the prioritized read feed. |
 
+| LIC-28 | `What is the Licensing application process?` | `admin_licensing_guidance` | Retrieve only authoritative Licensing process guidance from the scoped knowledge collection and cite substantive statements. |
+
 ## Follow-up Cases
 
 | ID | Conversation | Expected behavior |
@@ -70,5 +72,6 @@ Questions were sent through isolated NMA AI Assistant browser conversations. No 
 | LIC-13 expiring licenses | Blocked by router availability | Chinese expiry wording now recalls `admin_licensing`, but the LLM classifier did not respond within the 30-second routing timeout and correctly fell back to `general_knowledge`. |
 | LIC-17 analytics | Passed after fix | Chinese approval-rate/SLA wording selected `admin_licensing_analytics_reader`, used the read-only application statistics Tool, and rendered live metrics. |
 | LIC-23 approval request | Passed after fix | The request selected `admin_licensing_read_only_boundary`; no Tool was invoked and the Portal rendered the read-only refusal. |
+| LIC-28 Licensing guidance | Passed | The Chatbot selected `admin_licensing_guidance` and called only the scoped `knowledge.search` Tool. |
 
 The E2E run identified and fixed a Portal delivery defect: some completed backend turns were shown as an empty assistant bubble despite a persisted `assistant.message`. The Portal now reloads conversation history after `turn.completed` when no streamed content has been received.
