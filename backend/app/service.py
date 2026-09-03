@@ -1026,10 +1026,13 @@ class DSHService:
                         masking_policy = str((tool_definition_by_name.get(tool_name) or {}).get("maskingPolicy") or "default")
                         masked_tool_result = mask_tool_result(tool_result, masking_policy)
                         result_for_event = dict(masked_tool_result)
+                        # Selection state is persisted separately from the LLM
+                        # evidence. A Tool may hide its stable internal ID from
+                        # responses while still supporting an ordinal follow-up.
                         selection_snapshot = selection_snapshot_for_tool_result(
                             merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow) if selected_skill else {},
                             tool_name,
-                            masked_tool_result,
+                            tool_result,
                         )
                         if selection_snapshot:
                             selection_order_available = True

@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.skills import build_system_prompt, requires_reference_context, resolve_configured_skill, resolve_skill
-from app.skill_workflow import build_configured_hybrid_knowledge_request, build_configured_tool_request, configured_clarification_follow_up_skill, deterministic_route_directives, inherit_configured_clarification_filters, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
+from app.skill_workflow import build_configured_hybrid_knowledge_request, build_configured_tool_request, configured_clarification_follow_up_skill, deterministic_route_directives, inherit_configured_clarification_filters, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, routing_contract, selection_snapshot_for_tool_result
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
@@ -197,6 +197,20 @@ class RegistryAndRoutingTests(unittest.TestCase):
             ),
             {"dateRange": {"start": "2026-08-28", "end": "2026-09-03"}},
         )
+
+    def test_selection_snapshot_preserves_hidden_internal_identifier_for_ordinal_follow_up(self):
+        workflow = {
+            "selection": {
+                "sourceTool": "profiles.list",
+                "itemsPath": "data.items",
+                "valueField": "profileId",
+                "identifierFields": ["profileId"],
+            },
+        }
+        raw = {"result": {"data": {"items": [{"profileId": 7, "profileNo": "P-7"}]}}}
+        masked = mask_tool_result(raw, "hide:profileId,profileNo")
+        self.assertEqual(masked["result"]["data"]["items"][0], {"profileId": "[redacted]", "profileNo": "[redacted]"})
+        self.assertEqual(selection_snapshot_for_tool_result(workflow, "profiles.list", raw), [{"profileId": 7}])
 
     def test_locked_route_extracts_only_declared_generic_date_and_limit_filters(self):
         workflow = {
