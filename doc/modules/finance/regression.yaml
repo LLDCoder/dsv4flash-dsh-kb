@@ -42,6 +42,23 @@ cases:
     turns:
       - user: What is the payment refund process?
         expect: { skill: admin_finance_guidance, tool: knowledge.search, citations: required }
+  - id: finance-hybrid-refund-guidance
+    actor: finance-admin
+    requires: [refunds: 1, knowledge_source: payment_or_refund]
+    turns:
+      - user: List Finance refunds and their current status.
+        expect:
+          skill: admin_finance_refund_reader
+          tool: admin.adminpaymentsrefunds.get-admin-payments-refunds
+          capture: { first_refund: "result_set.items[0]" }
+          selection_order: tool_result_order
+      - user: What refund process applies to the first refund?
+        expect:
+          skill: admin_finance_refund_reader
+          tools: [admin.adminpaymentsrefunds.get-admin-payments-refunds-refundno, knowledge.search]
+          parameters: { refundNo: "${first_refund.refundNo}" }
+          evidence: [live_refund_detail, finance_knowledge]
+          citations: required
   - id: finance-write-boundary
     actor: finance-admin
     turns:

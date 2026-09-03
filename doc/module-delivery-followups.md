@@ -127,6 +127,7 @@ regression files use role aliases, never credentials.
 | FIN-01 | Finance transactions were initially inferred as profile-bound because the OpenAPI schema contains an optional `ProfileId`, despite the Finance Admin Portal page supporting global view. | Resolved: declared the transaction Tool's profile scope as `not_applicable` in the registry. Finance Admin list and ordinal-detail E2E then completed with successful read Tool traces; the write boundary also refused without a Tool call. |
 | FIN-02 | Finance aggregate statistics and payment-method/recharge breakdown Tools expose no date parameters in Swagger. | Do not promise a date-bounded aggregate. Use date-bounded transaction/refund lists where appropriate and register a date-filtered aggregate endpoint before adding that capability. |
 | FIN-03 | A generic Global View prompt caused the model to refuse a successful token-scoped payment-method Tool result, even though no profile binding was required. | Resolved: profile selection remains gateway-enforced only for `bind_parameter` Tools. Finance Admin Global View payment-method E2E now returns the authorized current snapshot. |
+| FIN-04 | An ordinal follow-up can become ambiguous if an LLM groups or reorders a live list before asking the user to select an item. | Resolved generically. Finance Admin browser E2E preserves the read Tool's refund order, calls detail with the actual first refund number, then combines the record with scoped refund-process knowledge. |
 
 ## CMS Follow-ups
 

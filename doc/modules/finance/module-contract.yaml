@@ -15,6 +15,14 @@ skills:
   - id: admin_finance_refund_reader
     use_when: authorized finance refund lists, totals, filters, and selected refund detail
     not_when: transaction, policy-only, or requested refund change/export
+    hybrid_guidance:
+      when_use: a selected Finance refund plus a question about the refund process
+      primary_tool: admin.adminpaymentsrefunds.get-admin-payments-refunds-refundno
+      knowledge_tool: knowledge.search
+      knowledge_scope: [/umc]
+      response_rules:
+        - Distinguish verified refund facts from general refund-process guidance.
+        - Preserve the source list order whenever ordinal follow-up is available.
   - id: admin_finance_analytics_reader
     use_when: finance revenue, payment-method, and recharge aggregates for the current authorized scope
     not_when: a date-bounded aggregate, live record detail, policy-only question, or requested data change

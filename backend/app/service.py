@@ -905,6 +905,7 @@ class DSHService:
                         messages.insert(1, {"role": "system", "content": "FLOW INTERACTION CONSTRAINTS: " + json.dumps(build_flow_prompt(route), ensure_ascii=False)})
                     document_failure_message: str | None = None
                     hybrid_knowledge_attempted = False
+                    selection_order_available = False
                     if tool_request:
                         tool_name, arguments = tool_request
                         tool_definition = tool_definition_by_name.get(tool_name) or {}
@@ -1009,6 +1010,7 @@ class DSHService:
                             masked_tool_result,
                         )
                         if selection_snapshot:
+                            selection_order_available = True
                             result_for_event["selectionItems"] = selection_snapshot
                         if isinstance(result_for_event.get("result"), dict):
                             result_for_event["result"] = json.dumps(result_for_event["result"], ensure_ascii=False)[:20_000]
@@ -1109,6 +1111,18 @@ class DSHService:
                                             "retrieved source; if the retrieval has no relevant authoritative source, "
                                             "say that explicitly. Do not treat an empty record-detail payload as a "
                                             "reason to omit the knowledge result."
+                                        ),
+                                    }
+                                )
+                            if selection_order_available:
+                                messages.append(
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            "SELECTION ORDER REQUIREMENT: This Tool result is retained for ordinal "
+                                            "follow-ups. When presenting its items, preserve the Tool-returned order "
+                                            "and do not regroup or reorder them. If you cannot show that order, do not "
+                                            "describe a displayed item as first, second, or third."
                                         ),
                                     }
                                 )
