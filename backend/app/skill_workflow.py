@@ -235,6 +235,26 @@ def deterministic_route_directives(
         if match:
             supplied[limit_filter] = int(match.group(1))
 
+    # Enum labels belong to the published Skill contract. Matching them here
+    # keeps deterministic routing useful during router outages without adding
+    # business statuses or categories to platform code.
+    for name, specification in filters.items():
+        if not isinstance(specification, dict) or specification.get("type") not in {"enum", "enum_array"}:
+            continue
+        matches: list[str] = []
+        for option in specification.get("options", []):
+            if not isinstance(option, dict):
+                continue
+            option_id = str(option.get("id") or "").strip()
+            labels = [option.get(key) for key in ("value", "label", "name", "id")]
+            if option_id and any(
+                isinstance(label, str) and label.strip() and label.strip().casefold() in lowered
+                for label in labels
+            ):
+                matches.append(option_id)
+        if matches:
+            supplied[str(name)] = matches if specification.get("type") == "enum_array" else matches[0]
+
     return normalize_route_directives(workflow, intent_id, supplied)
 
 

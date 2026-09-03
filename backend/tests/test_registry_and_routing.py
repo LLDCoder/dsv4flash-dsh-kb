@@ -122,6 +122,26 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(intent, "security")
         self.assertEqual(filters, {"dateRange": {"start": "2026-08-28", "end": "2026-09-03"}, "limit": 5})
 
+    def test_locked_route_extracts_only_database_declared_enum_labels(self):
+        workflow = {
+            "routing": {
+                "defaultIntentId": "list",
+                "intents": [{"id": "list", "description": "List records."}],
+                "filters": {
+                    "statuses": {
+                        "type": "enum_array",
+                        "options": [
+                            {"id": "pending_modification", "value": "Pending Modification"},
+                            {"id": "pending_review", "value": "Pending Review"},
+                        ],
+                    },
+                },
+            },
+        }
+        intent, filters = deterministic_route_directives(workflow, "Only show Pending Modification records.")
+        self.assertEqual(intent, "list")
+        self.assertEqual(filters, {"statuses": ["pending_modification"]})
+
     def test_published_selection_workflow_claims_only_its_declared_follow_up(self):
         class Event:
             event_type = "tool.result"

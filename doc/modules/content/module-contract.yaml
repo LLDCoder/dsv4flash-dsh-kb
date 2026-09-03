@@ -18,7 +18,10 @@ intents:
     when_not_use: Dashboard trends, content-library records, policy-only questions, or any requested write action.
     filters:
       keyword: string
-      statuses: string_array
+      statuses:
+        type: enum_array
+        source: Portal-declared Content workflow statuses
+        follow_up: A declared status correction in the same period preserves the prior date range and invokes the existing to-do reader.
       service_codes: string_array
       date_range: date_range
       limit: integer
