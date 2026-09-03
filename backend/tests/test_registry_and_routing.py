@@ -212,6 +212,21 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(masked["result"]["data"]["items"][0], {"profileId": "[redacted]", "profileNo": "[redacted]"})
         self.assertEqual(selection_snapshot_for_tool_result(workflow, "profiles.list", raw), [{"profileId": 7}])
 
+    def test_allow_masking_policy_redacts_unlisted_nested_fields(self):
+        raw = {
+            "isSuccess": True,
+            "data": {
+                "profileStatusObj": {"nameEn": "Approved", "id": 2},
+                "personalEmail": "private@example.test",
+                "documentCount": 4,
+            },
+        }
+        masked = mask_tool_result(raw, "allow:isSuccess,data,profileStatusObj,nameEn,id")
+        self.assertEqual(masked["isSuccess"], True)
+        self.assertEqual(masked["data"]["profileStatusObj"], {"nameEn": "Approved", "id": 2})
+        self.assertNotIn("personalEmail", masked["data"])
+        self.assertNotIn("documentCount", masked["data"])
+
     def test_locked_route_extracts_only_declared_generic_date_and_limit_filters(self):
         workflow = {
             "deterministicIntentRules": [

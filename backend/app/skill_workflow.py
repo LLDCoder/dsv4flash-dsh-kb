@@ -670,16 +670,29 @@ def build_configured_hybrid_knowledge_request(
 
 
 def mask_tool_result(value: Any, policy: object, depth: int = 0) -> Any:
-    """Apply a Tool-configured ``hide:fieldA,fieldB`` masking policy."""
+    """Apply a Tool-configured ``hide:`` or ``allow:`` masking policy."""
 
-    if depth > 8 or not isinstance(policy, str) or not policy.startswith("hide:"):
+    if depth > 8 or not isinstance(policy, str):
         return value
-    fields = {item.strip().casefold() for item in policy.removeprefix("hide:").split(",") if item.strip()}
+    mode, separator, configured_fields = policy.partition(":")
+    if mode not in {"hide", "allow"} or not separator:
+        return value
+    fields = {item.strip().casefold() for item in configured_fields.split(",") if item.strip()}
     if not fields:
         return value
     if isinstance(value, dict):
+        if mode == "allow":
+            return {
+                str(key): mask_tool_result(item, policy, depth + 1)
+                for key, item in value.items()
+                if str(key).casefold() in fields
+            }
         return {
-            str(key): "[redacted]" if str(key).casefold() in fields else mask_tool_result(item, policy, depth + 1)
+            str(key): (
+                "[redacted]"
+                if str(key).casefold() in fields
+                else mask_tool_result(item, policy, depth + 1)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):

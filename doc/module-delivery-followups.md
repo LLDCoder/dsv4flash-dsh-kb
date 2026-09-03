@@ -74,6 +74,7 @@ or a Portal API change.
 | DASH-03 | Content Manager has visible Dashboard UI state, but the source-defined `Content/Dashboard/Overview` request returns `Content.Dashboard.Section.Forbidden` directly with the same browser bearer token. | Keep Content out of cross-module aggregation; repair the Portal endpoint's permitted-section contract before enabling the dashboard Skill result. Do not copy UI values into Chatbot output. |
 | DASH-02 | Broad module-level write-boundary aliases can incorrectly claim an unrelated operational action even while safely refusing it. | Current-work action requests now have a higher-priority, database-declared overview-specific boundary. Future boundary rules must include module context or a more specific intent before using generic action terms. |
 | DASH-04 | A generic "my current task overview" matched the Licensing reader even for a Customer Happiness dashboard user, because its deterministic phrase had no department boundary. | Resolved by database configuration and a generic clarification-follow-up workflow: Licensing routing now requires an explicit Licensing term; the no-Tool clarification asks for a department; the chosen Dashboard Skill inherits only the declared date range. Real two-turn Happiness E2E invoked only its overview Tool with the original range. No cross-module aggregate is inferred. |
+| DASH-05 | Cross-module dashboard aggregation is not yet safe for the observed role scopes. Licensing Manager can see Licensing and Customer Happiness; Content Manager can see Content, Inspection, and Customer Happiness; Inspection Committee can see Inspection and Customer Happiness; the current Happiness Leader session exposes only Customer Happiness dashboard evidence. The overview endpoints return department-specific schemas and scopes, and Content remains `Forbidden`/`502`. | Keep the database-declared department clarification and single-module overview routes. Do not compose or normalize cross-module totals until a single role has compatible, authorized, healthy overview evidence for every visible module. |
 
 ## Role And Fixture Matrix
 
@@ -86,6 +87,30 @@ or a Portal API change.
 
 Account details stay only in the protected test-account source. Contracts and
 regression files use role aliases, never credentials.
+
+## Licensing Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| LIC-02 | The historical Final Approval task case has not been rerun under a Licensing role in the current browser session. | On 2026-09-03 the available authenticated session was Happiness Leader; direct navigation to `/licensing/applications` was permission-routed back to Dashboard. This is an actor/fixture block, not evidence of a Licensing routing or Tool defect. Rerun with the protected Licensing Officer session and assert `admin_licensing_task_reader` plus the read-only task Tool. |
+| LIC-13 | The historical monthly-expiry license case has not been rerun under a Licensing role in the current browser session. | The same role-bound redirect prevents a valid Tool/API conclusion. Rerun with the protected Licensing Officer session and assert `admin_licensing_license_reader`, the expiry-date binding, and an authorized empty result when no current-month records exist. |
+
+## Customer Management Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| CM-02 | The original Customer Profile detail masking policy exposed non-essential document, establishment, partner, Emirate, VIP, and self-monitoring metadata. | Resolved on 2026-09-03 with a generic `allow:` Tool masking policy and a minimal Customer Management detail projection. Browser list-to-third-detail E2E now shows only Profile type, status, and list-authorized active/registration context; audit retains the read Tool identity and the selection snapshot. |
+| CM-03 | The compound activation/export request originally matched the general Customer Management reader because action terms were interrupted by natural-language modifiers. | Resolved with a higher-priority database-declared action-plus-Customer/Profile boundary. New-conversation E2E selected `admin_customer_management_read_only_boundary` and recorded zero Tool calls. |
+
+## Contract Audit Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| AUD-01 | The declared Broadcast guidance Skill has no direct case in its regression matrix. | Add and run a cited `admin_broadcast_guidance` knowledge case with an authorized Communications actor. |
+| AUD-02 | The declared Message Templates guidance Skill has no direct case in its regression matrix. | Add and run a cited `admin_message_template_guidance` knowledge case with an authorized IT Management actor. |
+| AUD-03 | The Finance date-bounded aggregate limitation has no direct case in its regression matrix. | Add a no-Tool regression that confirms `admin_finance_date_aggregate_limitation` does not present an unfiltered aggregate as a requested period. |
+| AUD-04 | The Service Configuration workflow-reader Skill has no direct case in its regression matrix. | Add and run a selected-service workflow read case with an authorized Service Configuration actor. |
+| AUD-05 | Licensing operational-summary and SLA readers were initially absent from the normalized YAML regression. | Added to `doc/modules/licensing/regression.yaml`; execution remains blocked until the protected Licensing Officer session is available. |
 
 ## Content Follow-ups
 

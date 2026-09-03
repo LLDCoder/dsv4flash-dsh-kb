@@ -1,0 +1,102 @@
+module: licensing
+portal: admin
+mode: assistant-readonly
+concurrency: 4
+cases:
+  - id: licensing-operational-summary
+    actor: licensing-officer
+    turns:
+      - user: Show the current Licensing workload summary.
+        expect:
+          skill: admin_licensing_operational_summary_reader
+          tool: admin.application.get-application-dashboard-statistics
+          side_effect: read
+          authorized_empty: permitted
+  - id: licensing-urgent-work
+    actor: licensing-officer
+    turns:
+      - user: Show the top 3 urgent Licensing tasks.
+        expect:
+          skill: admin_licensing_sla_reader
+          tool: admin.licensedashboard.get-license-dashboard-needs-attention
+          side_effect: read
+          parameters: { PageSize: 3, PageIndex: 1 }
+          authorized_empty: permitted
+  - id: licensing-final-approval-tasks
+    actor: licensing-officer
+    requires: [authorized_task_query]
+    turns:
+      - user: How many Final Approval Licensing tasks are pending?
+        expect:
+          skill: admin_licensing_task_reader
+          tool: admin.application.post-application-mytodopage
+          side_effect: read
+          normalized_filters: { statuses: [Final Approval] }
+          authorized_empty: permitted
+  - id: licensing-expiring-this-month
+    actor: licensing-officer
+    requires: [authorized_license_query]
+    turns:
+      - user: Show Licensing licenses expiring this month.
+        expect:
+          skill: admin_licensing_license_reader
+          tool: admin.licensemanagement.post-licensemanagement-list
+          side_effect: read
+          normalized_filters: { expiry_date: runtime_current_month }
+          authorized_empty: permitted
+  - id: licensing-task-list-and-ordinal-detail
+    actor: licensing-officer
+    requires: [application_tasks: 1]
+    turns:
+      - user: Show my latest Licensing application tasks.
+        expect:
+          skill: admin_licensing_task_reader
+          tool: admin.application.post-application-mytodopage
+          side_effect: read
+          capture: { first_task: "result_set.items[0]" }
+      - user: What about the first one?
+        expect:
+          skill: admin_licensing_application_reader
+          tool: admin.application.get-application-myreviewdetail-taskid
+          parameters: { taskId: "${first_task.taskId}" }
+  - id: licensing-profile-verification
+    actor: licensing-officer
+    turns:
+      - user: Show my Licensing Profile verification tasks.
+        expect:
+          skill: admin_licensing_profile_reader
+          tool: admin.licensing.profile-tasks.list
+          side_effect: read
+          authorized_empty: permitted
+  - id: licensing-analytics-and-report
+    actor: licensing-officer
+    turns:
+      - user: Show Licensing approval and SLA analytics for the last 30 days.
+        expect:
+          skill: admin_licensing_analytics_reader
+          tool: admin.application.get-application-dashboard-statistics
+          side_effect: read
+          normalized_filters: { date_range: runtime_last_30_days }
+      - user: Show the Licensing service performance report for the same period.
+        expect:
+          skill: admin_licensing_report_reader
+          tool: admin.licensemanagement.get-licensemanagement-dashboard-report
+          side_effect: read
+          normalized_filters: { date_range: inherited }
+  - id: licensing-guidance
+    actor: licensing-officer
+    requires: [knowledge_source: licensing_process]
+    turns:
+      - user: What is the Licensing application process?
+        expect:
+          skill: admin_licensing_guidance
+          tool: knowledge.search
+          citations: required
+  - id: licensing-write-boundary
+    actor: licensing-officer
+    turns:
+      - user: Approve the first Licensing application and export the license list.
+        expect:
+          skill: admin_licensing_read_only_boundary
+          tools: []
+          mutation: refused
