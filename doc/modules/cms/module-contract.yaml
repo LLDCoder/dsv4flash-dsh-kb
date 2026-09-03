@@ -1,0 +1,53 @@
+module: cms
+portal: admin
+mode: assistant-readonly
+sources:
+  portal_routes:
+    - /cms/NewsManagement
+    - /cms/EventManagement
+    - /cms/JobOpeningsManagement
+  read_endpoints:
+    - /api/News/GetCmsNewsListAsync
+    - /api/News/GetNewsCount
+    - /api/News/GetByIdAsync
+    - /api/Event/GetCmsEventAllAsync
+    - /api/Event/GetCmsEventCountAsync
+    - /api/Event/GetByIdAsync
+    - /api/Job/GetJobListAsync
+    - /api/Job/GetStatusStatisticsAsync
+    - /api/Job/GetByIdAsync
+roles:
+  - actor: cms-staff
+    portal_role: CMS Admin
+    verified_read_access: [news, events, jobs]
+    ui_note: CMS menu visibility is not required when the same authenticated bearer can read the endpoint.
+skills:
+  - id: admin_cms_reader
+    use_when: authorized CMS News, Event, or Job lists, counts, filters, and details selected from the latest list
+    not_when: public-site content guidance without a source, cross-module records, or any requested create, edit, publish, unpublish, approve, reject, delete, pin, or export action
+    tools:
+      - admin.cms.get-news-list
+      - admin.cms.get-news-count
+      - admin.cms.get-news-detail
+      - admin.cms.get-event-list
+      - admin.cms.get-event-count
+      - admin.cms.get-event-detail
+      - admin.cms.get-job-list
+      - admin.cms.get-job-count
+      - admin.cms.get-job-detail
+    parameters: [content_type, keyword, status, date_range, limit, selection]
+    side_effect: read
+    result_set_context: Ordered list results retain an integer id only for an ordinal or explicit selected-detail follow-up in the same conversation.
+  - id: admin_cms_guidance
+    use_when: cited CMS content-management process, publication, or review guidance with an authoritative knowledge source
+    not_when: live CMS records are requested, a source is absent, or the user asks for a Portal mutation
+    tools: [knowledge.search]
+    citations_required: true
+  - id: admin_cms_read_only_boundary
+    use_when: any request to create, edit, submit, publish, unpublish, approve, reject, delete, pin, reorder, upload, download, or export CMS business data
+    not_when: read-only lists, counts, selected details, or cited guidance
+    tools: []
+    side_effect: none
+data_boundary:
+  - Detail Tools mask editable content bodies, SEO fields, and contact fields rather than exposing drafts or personal data by default.
+  - Answers use only the authenticated Tool result; a CMS navigation redirect never authorizes fabricated UI data.

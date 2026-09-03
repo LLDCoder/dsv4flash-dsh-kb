@@ -130,8 +130,16 @@ regression files use role aliases, never credentials.
 
 | ID | Gap or risk | Completion evidence |
 | --- | --- | --- |
-| CMS-01 | The CMS frontend exposes read endpoints for News, Events, Jobs, and page configuration, but no corresponding read Tool is published in the Tool Registry. | Register the existing read operations through normal Tool ownership, including schema, side effect, RBAC, masking, and profile-scope review. Do not substitute Content Library tools. |
-| CMS-02 | The protected `CMS Staff` account authenticates, but direct navigation to `/cms/NewsManagement` is permission-routed to Notifications. | Provide or authorize an account with CMS menu read access, then perform the intended role-aware Portal and Chatbot E2E suite. |
+| CMS-01 | News, Event, and Job read endpoints are frontend-owned and absent from the Admin Swagger document, so no generated Tool existed. | Resolved: nine manual, token-scoped, read-only Tool Registry entries plus `admin_cms_reader` now support list, count, and selected detail paths. CMS Staff real Chatbot E2E covers News list-to-third-detail and Event count. |
+| CMS-02 | The protected `CMS Staff` account authenticates, but direct navigation to `/cms/NewsManagement` is permission-routed to Notifications. | The same authenticated bearer returns `200` for News, Event, and Job read endpoints, so the module is verified through authenticated API/Chatbot E2E. UI menu visibility remains a Portal permission issue, not a read-Tool blocker. |
+
+## Communications Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| COM-01 | Message Templates and Broadcast reuse `/api/SignalR/GetTemplateList` and `/api/SignalR/GetTemplateById`; the list endpoint is `POST` and `type` selects the business domain. | Resolved: shared manual read Tools are token-scoped and require a declared type. Separate database Skills bind template type `1` and broadcast type `2`; IT Management E2E covers both list-to-third-detail paths. |
+| COM-02 | A selected detail request needed fixed domain context in addition to the item identifier. | Resolved generically: selection requests merge database-declared static arguments with the selected value. The behavior is unit tested and prevents the shared endpoint from crossing template/broadcast type. |
+| COM-03 | An inherited selection context could execute a detail Tool when a new explicit write request should be refused. | Resolved generically: a current locked route now outranks active selection context. Broadcast publish/export E2E selected the read-only boundary and produced no Tool call. |
 
 ## Service Configuration Follow-ups
 

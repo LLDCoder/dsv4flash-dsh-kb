@@ -1,12 +1,28 @@
 module: broadcast
+portal: admin
 mode: assistant-readonly
-status: blocked-by-tool-registry
 actor_aliases: [it-management]
-discovery:
+sources:
   portal_routes: [/communications/broadcast]
-  observed_read_endpoints:
+  read_endpoints:
     - /api/SignalR/GetTemplateList
     - /api/SignalR/GetTemplateById
-blocker:
-  reason: Broadcast reads reuse the unregistered SignalR template endpoints; registered Broadcast endpoints are write operations and are prohibited.
-  required_resolution: Register the existing read endpoints with a broadcast-safe schema and read-only metadata, then implement list/detail/guidance/boundary Skills.
+skills:
+  - id: admin_broadcast_reader
+    use_when: authorized broadcast lists, filters, list totals, and a selected broadcast's safe metadata
+    not_when: message-template records, policy-only guidance, or a request to create, duplicate, edit, publish, unpublish, send, delete, export, or modify a broadcast
+    tools: [admin.communications.post-template-list, admin.communications.get-template-detail]
+    parameters: [keyword, status, channel, recipient, user_type, department, date_range, limit, selection]
+    side_effect: read
+  - id: admin_broadcast_guidance
+    use_when: cited broadcast-management process or policy guidance with authoritative source evidence
+    not_when: live broadcasts or a requested business action
+    tools: [knowledge.search]
+    citations_required: true
+  - id: admin_broadcast_read_only_boundary
+    use_when: requests to create, duplicate, edit, publish, unpublish, send, test, delete, export, download, or upload broadcast data
+    not_when: read-only lists, selected metadata, or cited guidance
+    tools: []
+data_boundary:
+  - Broadcast bodies, subjects, recipients, departments, and channel payloads are masked in selected details.
+  - The configured reader fixes the shared endpoint type to broadcast; it does not infer template visibility.

@@ -674,6 +674,38 @@ class RegistryAndRoutingTests(unittest.TestCase):
             ("example.workflow", {"id": 1}),
         )
 
+    def test_selection_detail_rule_merges_declared_static_arguments(self):
+        workflow = {
+            "selection": {
+                "sourceTool": "example.list",
+                "itemsPath": "items",
+                "valueField": "id",
+                "ordinalTerms": {"1": ["first"]},
+                "toolRequest": {
+                    "when": {"anyTerms": ["first"]},
+                    "toolName": "example.detail",
+                    "argumentName": "id",
+                    "argumentValueType": "integer",
+                    "arguments": {"recordType": "read_only"},
+                },
+            },
+        }
+        history = [
+            type("Event", (), {"event_type": "tool.result", "event_json": {
+                "toolName": "example.list", "selectionItems": [{"id": 1}],
+            }})(),
+        ]
+
+        self.assertEqual(
+            build_configured_tool_request(
+                workflow,
+                ["example.detail"],
+                "Show the first one.",
+                history,
+            ),
+            ("example.detail", {"recordType": "read_only", "id": 1}),
+        )
+
     def test_explicit_tool_rule_overrides_default_intent_request(self):
         workflow = {
             "routing": {"intents": [{"id": "overview"}], "defaultIntentId": "overview"},

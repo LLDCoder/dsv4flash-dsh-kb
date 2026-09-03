@@ -536,11 +536,11 @@ def build_configured_tool_request(
             argument_name = str(selected_request.get("argumentName") or "")
             value_field = str(_selection_value(selection, source, "valueField") or "")
             if item and tool_name in allowed and argument_name and value_field and item.get(value_field) is not None:
-                return tool_name, {
-                    argument_name: _coerce_argument_value(
-                        item[value_field], selected_request.get("argumentValueType")
-                    )
-                }
+                arguments = dict(selected_request.get("arguments") or {})
+                arguments[argument_name] = _coerce_argument_value(
+                    item[value_field], selected_request.get("argumentValueType")
+                )
+                return tool_name, arguments
 
     # A published explicit text rule is more specific than the router's
     # default intent. This lets a declared follow-up such as "blocked items"

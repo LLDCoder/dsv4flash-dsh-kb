@@ -698,7 +698,11 @@ class DSHService:
                         )
                         active_skill = active_skill_result.scalars().first()
                         active_workflow = merged_skill_workflow(active_skill.skill_id, active_skill.workflow) if active_skill else {}
-                        if active_skill and (
+                        # A current, locked route is more specific than an
+                        # inherited selection context. In particular, a
+                        # read-only action boundary must never trigger a
+                        # prior record-detail Tool before refusing the action.
+                        if active_skill and not keyword_route.routing_locked and (
                             matches_configured_selection_follow_up(active_workflow, latest_content, history)
                             or matches_configured_follow_up_route(active_workflow, latest_content)
                         ):

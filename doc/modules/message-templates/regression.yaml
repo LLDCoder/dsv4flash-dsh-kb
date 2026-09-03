@@ -1,7 +1,31 @@
 module: message-templates
+portal: admin
 mode: assistant-readonly
-status: blocked-by-tool-registry
-planned_cases:
-  - template list filtered by portal/date/search followed by selected-template detail
-  - cited template-management guidance
-  - edit/publish/delete boundary with no Tool call
+concurrency: 4
+cases:
+  - id: message-template-list-and-ordinal-detail
+    actor: it-management
+    requires: [templates: 3]
+    turns:
+      - user: Show the first 3 message templates.
+        expect:
+          skill: admin_message_template_reader
+          tool: admin.communications.post-template-list
+          side_effect: read
+          parameters: { type: "1", pageIndex: 1, pageSize: 3 }
+          capture: { third_template: "result_set.items[2]" }
+      - user: What about the third one?
+        expect:
+          skill: admin_message_template_reader
+          tool: admin.communications.get-template-detail
+          side_effect: read
+          parameters: { id: "${third_template.id}", type: "1" }
+          masked_fields: [emailBodyEn, emailBodyAr, smsen, smsar, inAppMessageEn, inAppMessageAr, recipients]
+  - id: message-template-write-boundary
+    actor: it-management
+    turns:
+      - user: Publish and send the first message template, then export it.
+        expect:
+          skill: admin_message_template_read_only_boundary
+          tools: []
+          mutation: refused
