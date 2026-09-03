@@ -119,9 +119,11 @@ cases:
           capture: { selected_task: "result_set.items[0]" }
       - user: What reporting guidance applies to this task?
         expect:
-          skills: [admin_inspection_task_reader, admin_inspection_guidance]
-          tools: [admin.inspectiontask.get-admin-inspection-tasks-id, knowledge.search]
-          citations: required
+          clarification: required
+          tools: []
+      - user: What reporting guidance applies to the first task?
+        expect:
+          blocked_by: generic_hybrid_evidence_orchestration
 
   - id: inspection-write-boundary
     actor: inspection-manager
