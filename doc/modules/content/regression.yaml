@@ -185,10 +185,12 @@ cases:
           skill: admin_content_task_reader
           tool: admin.content.post-content-mytodopage
           capture: { selected_task: "result_set.items[0]" }
-      - user: What does the external approval process require for this task?
+      - user: What does the external approval process require for the first task?
         expect:
-          skills: [admin_content_task_reader, admin_content_guidance]
+          skill: admin_content_task_reader
           tools: [admin.content.get-content-myreviewdetail-taskid, knowledge.search]
+          parameters: { taskId: "${selected_task.taskId}" }
+          evidence: [live_task_detail, content_knowledge]
           citations: required
 
   - id: content-write-boundary

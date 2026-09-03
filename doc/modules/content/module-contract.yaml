@@ -14,6 +14,7 @@ intents:
       - admin.content.post-content-mytodopage
       - admin.content.post-content-mycomplatedpage
       - admin.content.get-content-myreviewdetail-taskid
+      - knowledge.search
     when_use: List, search, filter, count, compare, or inspect the current officer's Content review tasks, including an item selected from a prior list.
     when_not_use: Dashboard trends, content-library records, policy-only questions, or any requested write action.
     filters:
@@ -41,6 +42,15 @@ intents:
       identifier_fields: [taskId, applicationNo, taskNo]
       value_field: taskId
       supports_ordinals: true
+    hybrid_guidance:
+      when_use: A user selects a Content task and asks what External Approval requires for that task.
+      primary_tool: admin.content.get-content-myreviewdetail-taskid
+      knowledge_tool: knowledge.search
+      knowledge_scope: [34a89aa7b43b473d8326cf6540fc3894]
+      response_rules:
+        - Distinguish verified task-detail facts from the general External Approval guidance.
+        - If the authorized detail response is empty, say so without omitting the retrieved guidance.
+        - Do not run the hybrid flow without an explicit ordinal or stable task identifier.
 
   - id: admin_content_dashboard_reader
     name: Content dashboard and SLA reader
