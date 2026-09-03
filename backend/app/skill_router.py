@@ -21,6 +21,25 @@ LLM_ROUTER_MIN_CONFIDENCE = 0.60
 DOMAIN_HISTORY_WEIGHTS = (0.25, 0.10, 0.05)
 
 
+def latest_skill_versions(items: list[Any]) -> list[Any]:
+    """Return one enabled published definition per Skill ID.
+
+    The Skill table is versioned.  Catalog recall must not count historical
+    versions as independent candidates, otherwise a frequently edited domain
+    can dominate lexical recall simply because it has more history.
+    """
+
+    latest: dict[str, Any] = {}
+    for item in items:
+        skill_id = str(getattr(item, "skill_id", "") or "").strip()
+        if not skill_id:
+            continue
+        current = latest.get(skill_id)
+        if current is None or int(getattr(item, "version", 0) or 0) > int(getattr(current, "version", 0) or 0):
+            latest[skill_id] = item
+    return [latest[skill_id] for skill_id in sorted(latest)]
+
+
 class SkillCatalogCache:
     """Cache published Skill summaries and complete definitions in Redis.
 
@@ -88,7 +107,7 @@ class SkillCatalogCache:
             .where(Skill.scope == "system", Skill.enabled.is_(True), Skill.status == "PUBLISHED")
             .order_by(Skill.skill_id, Skill.version.desc())
         )
-        items = list(result.scalars().all())
+        items = latest_skill_versions(list(result.scalars().all()))
         catalog = [self._summary(item) for item in items]
         if self.redis:
             try:

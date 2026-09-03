@@ -12,8 +12,28 @@ from app.tool_gateway import ToolGateway
 from app.principal import Principal
 from app.profile_scope import profile_context_from_payload, requires_profile_switch
 from app.response_safety import is_internal_tool_protocol, strip_unverified_links
-from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
+from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, latest_skill_versions, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 class RegistryAndRoutingTests(unittest.TestCase):
+    def test_catalog_keeps_only_latest_version_per_skill(self):
+        class Record:
+            def __init__(self, skill_id, version):
+                self.skill_id = skill_id
+                self.version = version
+
+        selected = latest_skill_versions(
+            [
+                Record("admin_service_category_reader", 1),
+                Record("admin_content_dashboard_reader", 4),
+                Record("admin_service_category_reader", 2),
+                Record("admin_content_dashboard_reader", 1),
+            ]
+        )
+
+        self.assertEqual(
+            [(item.skill_id, item.version) for item in selected],
+            [("admin_content_dashboard_reader", 4), ("admin_service_category_reader", 2)],
+        )
+
     def test_published_admin_skill_configuration_drives_recall_and_read_only_boundary(self):
         catalog = [
             {

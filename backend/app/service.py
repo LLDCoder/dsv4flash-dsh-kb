@@ -230,9 +230,12 @@ class DSHService:
             try:
                 llm_result = await self.llm.route_skill(question, candidates, context)
                 valid, fallback_reason = valid_llm_route(llm_result, candidates)
-            except Exception:
+            except Exception as exc:
                 valid = False
                 fallback_reason = "router_unavailable"
+                # Keep route failures diagnosable without recording provider
+                # responses, credentials, or user content in the audit trail.
+                metadata["routerErrorType"] = type(exc).__name__
         llm_skill_id = llm_result.get("skillId") if isinstance(llm_result, dict) else None
         metadata.update(
             {
