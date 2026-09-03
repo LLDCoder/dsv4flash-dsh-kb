@@ -561,6 +561,19 @@ def make_router(service: DSHService) -> APIRouter:
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(get_principal)):
         """Submit a conversation turn with read-only cross-Skill handoff support.
 
+        A valid ``attachment`` always takes priority over text-only Skill
+        routing: the turn is locked to ``document_ocr`` and invokes document
+        analysis before any knowledge retrieval.  If OCR is unavailable, the
+        response is a controlled document-analysis error and is never
+        redirected to a knowledge Skill.
+
+        Attachment OCR is privacy-preserving by default: document text stays
+        inside the DSH service, is not sent to an external LLM, and is not
+        persisted in the conversation audit.  The service may extract bounded
+        reference identifiers locally and use them only for an eligible
+        read-only business lookup.  Attachment turns return a deterministic
+        local response rather than an external-LLM drafted response.
+
         When a Refund or Complaints detail has a verified related application,
         a follow-up explicitly asking for that application's status or details
         is routed to the existing My Requests Skill.  If the identifier is not
