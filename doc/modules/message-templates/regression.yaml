@@ -1,0 +1,7 @@
+module: message-templates
+mode: assistant-readonly
+status: blocked-by-tool-registry
+planned_cases:
+  - template list filtered by portal/date/search followed by selected-template detail
+  - cited template-management guidance
+  - edit/publish/delete boundary with no Tool call

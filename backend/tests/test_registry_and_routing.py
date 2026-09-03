@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.skills import build_system_prompt, resolve_configured_skill, resolve_skill
-from app.skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
+from app.skill_workflow import build_configured_tool_request, deterministic_route_directives, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
@@ -96,6 +96,32 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertNotIn("limit", filters)
         self.assertNotIn("statuses", filters)
 
+    def test_locked_route_extracts_only_declared_generic_date_and_limit_filters(self):
+        workflow = {
+            "deterministicIntentRules": [
+                {"when": {"allTerms": ["security", "log"]}, "intentId": "security"},
+            ],
+            "routing": {
+                "defaultIntentId": "list",
+                "intents": [
+                    {"id": "list", "description": "List records."},
+                    {"id": "security", "description": "List security records."},
+                ],
+                "filters": {
+                    "dateRange": {"type": "date_range"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "status": {"type": "string"},
+                },
+            },
+        }
+        intent, filters = deterministic_route_directives(
+            workflow,
+            "Show the latest 5 security logs from the last 7 days with active status.",
+            today=__import__("datetime").date(2026, 9, 3),
+        )
+        self.assertEqual(intent, "security")
+        self.assertEqual(filters, {"dateRange": {"start": "2026-08-28", "end": "2026-09-03"}, "limit": 5})
+
     def test_published_selection_workflow_claims_only_its_declared_follow_up(self):
         class Event:
             event_type = "tool.result"
@@ -113,6 +139,91 @@ class RegistryAndRoutingTests(unittest.TestCase):
         }
         self.assertTrue(matches_configured_selection_follow_up(workflow, "inspect selected record", [Event()]))
         self.assertFalse(matches_configured_selection_follow_up(workflow, "show a different report", [Event()]))
+
+    def test_selection_prefers_explicit_ordinal_over_generic_one(self):
+        class Event:
+            event_type = "tool.result"
+            event_json = {
+                "toolName": "records.list",
+                "selectionItems": [
+                    {"id": "one"},
+                    {"id": "two"},
+                    {"id": "three"},
+                ],
+            }
+
+        workflow = {
+            "selection": {
+                "sourceTool": "records.list",
+                "valueField": "id",
+                "identifierFields": ["id"],
+                "ordinalTerms": {
+                    "1": ["first", "one"],
+                    "2": ["second", "two"],
+                    "3": ["third", "three"],
+                },
+                "toolRequest": {
+                    "when": {"anyTerms": ["first", "second", "third"]},
+                    "toolName": "records.detail",
+                    "argumentName": "id",
+                },
+            },
+        }
+        request = build_configured_tool_request(
+            workflow,
+            ["records.list", "records.detail"],
+            "What about the third one?",
+            [Event()],
+        )
+        self.assertEqual(request, ("records.detail", {"id": "three"}))
+
+    def test_selection_can_route_declared_follow_up_intent_to_another_read_tool(self):
+        class Event:
+            event_type = "tool.result"
+            event_json = {"toolName": "records.list", "selectionItems": [{"id": "one"}, {"id": "two"}, {"id": "three"}]}
+
+        workflow = {
+            "selection": {
+                "sourceTool": "records.list", "valueField": "id", "ordinalTerms": {"3": ["third"]},
+                "toolRequest": {"when": {"anyTerms": ["third"]}, "toolName": "records.detail", "argumentName": "id"},
+                "toolRequestRules": [{"when": {"allTerms": ["workflow", "third"]}, "toolName": "records.workflow", "argumentName": "serviceId"}],
+            },
+        }
+        request = build_configured_tool_request(workflow, ["records.list", "records.detail", "records.workflow"], "Show the workflow for the third record.", [Event()])
+        self.assertEqual(request, ("records.workflow", {"serviceId": "three"}))
+
+    def test_selection_uses_the_latest_declared_list_source_for_ordinal_detail(self):
+        class Event:
+            def __init__(self, tool_name, items):
+                self.event_type = "tool.result"
+                self.event_json = {"toolName": tool_name, "selectionItems": items}
+
+        workflow = {
+            "selection": {
+                "ordinalTerms": {"3": ["third"]},
+                "sources": [
+                    {
+                        "sourceTool": "books.list",
+                        "valueField": "bookId",
+                        "toolRequest": {"when": {"anyTerms": ["third"]}, "toolName": "books.detail", "argumentName": "bookId"},
+                    },
+                    {
+                        "sourceTool": "cinema.list",
+                        "valueField": "cinemaId",
+                        "toolRequest": {"when": {"anyTerms": ["third"]}, "toolName": "cinema.detail", "argumentName": "cinemaId"},
+                    },
+                ],
+            },
+        }
+        history = [
+            Event("books.list", [{"bookId": 1}, {"bookId": 2}, {"bookId": 3}]),
+            Event("cinema.list", [{"cinemaId": 10}, {"cinemaId": 20}, {"cinemaId": 30}]),
+        ]
+        self.assertTrue(matches_configured_selection_follow_up(workflow, "What about the third one?", history))
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["books.detail", "cinema.detail"], "What about the third one?", history),
+            ("cinema.detail", {"cinemaId": 30}),
+        )
 
     def test_deterministic_routing_is_driven_by_published_skill_configuration(self):
         catalog = [{

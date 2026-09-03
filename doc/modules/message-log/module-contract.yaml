@@ -1,0 +1,28 @@
+module: message-log
+mode: assistant-readonly
+actor_aliases: [it-management]
+intents:
+  - id: message-log.operations.query
+    skill: admin_message_log_reader
+    when_use: Read authorized message delivery records, filters, totals, and a selected log metadata detail.
+    when_not_use: Do not use to send, retry, export, delete, or otherwise operate on messages or templates.
+    tools:
+      - admin.messagelog.post-messagelog-getlist
+      - admin.messagelog.get-messagelog-getbyid
+    parameters: [search, type, portal, channel, status, sent_from, sent_to, sent_by, limit, selection]
+    side_effect: read
+  - id: message-log.guidance.search
+    skill: admin_message_log_guidance
+    when_use: Find cited communication policy or message-delivery guidance.
+    when_not_use: Do not infer policy from message records or perform a requested operation.
+    tools: [knowledge.search]
+    knowledge_scope: [communications]
+    citations_required: true
+  - id: message-log.actions.refuse
+    skill: admin_message_log_read_only_boundary
+    when_use: Refuse any Portal message, template, broadcast, retry, export, or deletion action.
+    tools: []
+    side_effect: none
+data_boundary:
+  - Detail output masks recipient addresses, mobile numbers, CC addresses, and message bodies.
+  - Answers use only live authorized Tool evidence and state applied filters.

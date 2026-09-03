@@ -23,7 +23,7 @@ from .profile_scope import ProfileContext, profile_context_from_payload, profile
 from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
-from .skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, selection_snapshot_for_tool_result
+from .skill_workflow import build_configured_tool_request, deterministic_route_directives, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, selection_snapshot_for_tool_result
 from .skills import (
     SkillRoute,
     build_flow_prompt,
@@ -719,6 +719,10 @@ class DSHService:
                         .order_by(Skill.version.desc())
                     )
                     selected_skill = selected_skill_result.scalars().first()
+                    if selected_skill and route_metadata.get("routingLocked"):
+                        intent_id, filters = deterministic_route_directives(selected_skill.workflow, latest_content)
+                        route_metadata["intentId"] = intent_id
+                        route_metadata["filters"] = filters
                     system_tool_definitions = system_default_tool_definitions(self.settings)
                     system_tool_map = {item["toolName"]: item for item in system_tool_definitions}
                     configured_system_tools = {name for name, item in system_tool_map.items() if item.get("enabled") and item.get("published")}

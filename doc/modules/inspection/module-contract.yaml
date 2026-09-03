@@ -1,0 +1,96 @@
+module: inspection
+portal: admin
+mode: assistant-readonly
+knowledge:
+  folder_id: 34a89aa7b43b473d8326cf6540fc3894
+  folder_path: /umc
+  citations_required: true
+  source_rule: Use only sources directly relevant to inspection operations, violations, compliance, appeals, or inspection reporting.
+intents:
+  - id: admin_inspection_task_reader
+    name: Inspection task reader
+    domain: admin_inspection
+    allowed_tools:
+      - admin.inspectiontask.get-admin-inspection-tasks
+      - admin.inspectiontask.get-admin-inspection-tasks-id
+      - admin.inspectiontask.get-admin-inspection-tasks-stats
+    when_use: List, search, filter, count, compare, or inspect authorized inspection tasks, including an item selected from a prior list.
+    when_not_use: Violation records, management analytics, policy-only questions, or any requested mutation.
+    filters:
+      keyword: string
+      statuses: string_array
+      priorities: string_array
+      date_range: date_range
+      due_date_range: date_range
+      emirate: string
+      scope: string
+      limit: integer
+    selection:
+      source_tool: admin.inspectiontask.get-admin-inspection-tasks
+      items_path: data.items
+      identifier_fields: [id, taskId, taskNo]
+      value_field: id
+      supports_ordinals: true
+
+  - id: admin_inspection_violation_reader
+    name: Inspection violation reader
+    domain: admin_inspection
+    allowed_tools:
+      - admin.inspectionviolation.get-admin-inspection-violations
+      - admin.inspectionviolation.get-admin-inspection-violations-id
+      - admin.inspectionviolation.get-admin-inspection-violations-stats
+    when_use: List, filter, count, compare, or inspect authorized inspection violations and their read-only history.
+    when_not_use: Task-only questions, policy-only questions, payment or appeal actions, or any mutation.
+    filters:
+      keyword: string
+      statuses: string_array
+      violation_type: string
+      date_range: date_range
+      scope: string
+      limit: integer
+    selection:
+      source_tool: admin.inspectionviolation.get-admin-inspection-violations
+      items_path: data.items
+      identifier_fields: [id, violationId, violationNo]
+      value_field: id
+      supports_ordinals: true
+
+  - id: admin_inspection_analytics_reader
+    name: Inspection analytics reader
+    domain: admin_inspection
+    allowed_tools:
+      - admin.inspectionreportsanalytics.get-inspection-reportsanalytics-operationalinsights
+      - admin.inspectionreportsanalytics.get-inspection-reportsanalytics-riskinsights
+      - admin.inspectionreportsanalytics.get-inspection-reportsanalytics-teamperformance
+    when_use: Read inspection workload summaries, counts, urgency, SLA, risk, operational trends, or team performance for an authorized reporting period.
+    when_not_use: One task or violation detail, process-only questions, or any requested assignment, approval, export, or mutation.
+    filters:
+      date_range: date_range
+      keyword: string
+      limit: integer
+      sort_field: string
+      sort_order: string
+
+  - id: admin_inspection_guidance
+    name: Inspection guidance and compliance
+    domain: admin_inspection
+    allowed_tools: [knowledge.search]
+    when_use: Answer inspection process, compliance, violation, reporting, appeal, or regulatory questions from authoritative knowledge.
+    when_not_use: The question needs a live task or violation, requests a business action, or lacks a relevant authoritative source.
+    knowledge_scope: [34a89aa7b43b473d8326cf6540fc3894]
+    response_rules:
+      - Cite each substantive policy, process, or regulatory statement.
+      - Include source title and version or effective date when supplied.
+      - State when no relevant authoritative source is retrieved.
+
+  - id: admin_inspection_read_only_boundary
+    name: Inspection read-only boundary
+    domain: admin_inspection
+    allowed_tools: []
+    when_use: The user asks to create, generate, assign, reassign, start, continue, cancel, duplicate, submit, approve, modify, transfer, decide, pay, export, download, upload, delete, or otherwise change Inspection business data.
+    when_not_use: The user asks only to read authorized tasks, violations, analytics, or knowledge.
+    routing_locked: true
+    response_rules:
+      - Refuse the requested business mutation.
+      - Explain that the assistant can provide read-only information and relevant guidance.
+      - Never invoke a write, export, download, upload, or deletion Tool.

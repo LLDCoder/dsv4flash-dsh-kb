@@ -1,0 +1,27 @@
+module: finance
+portal: admin
+mode: assistant-readonly
+sources:
+  portal_pages: [/financial-payment/transactions, /financial-payment/refunds, /financial-payment/reports-analytics]
+  knowledge_folder: /umc
+roles:
+  - actor: finance-admin
+    portal_role: Finance Officer
+    verified_access: [transactions, refunds, reports-analytics]
+skills:
+  - id: admin_finance_transaction_reader
+    use_when: authorized transaction lists, payment totals, payment-method breakdowns, filters, and selected transaction detail
+    not_when: refund, policy-only, or requested financial change/export
+  - id: admin_finance_refund_reader
+    use_when: authorized finance refund lists, totals, filters, and selected refund detail
+    not_when: transaction, policy-only, or requested refund change/export
+  - id: admin_finance_analytics_reader
+    use_when: finance revenue, payment, recharge, refund, and date-range analytics
+    not_when: live record detail, policy-only, or requested data changes
+  - id: admin_finance_guidance
+    use_when: cited finance/payment process or policy guidance
+    not_when: live financial records without a knowledge component
+  - id: admin_finance_read_only_boundary
+    use_when: requested payment/refund actions, exports, downloads, uploads, or deletes
+    not_when: authorized read-only queries
+deferred: [dashboard-overview]

@@ -1,0 +1,51 @@
+module: system-management
+mode: assistant-readonly
+actor_aliases:
+  - it-management
+intents:
+  - id: system-management.users.query
+    skill: admin_system_management_user_reader
+    when_use: Read authorized administrator user lists, filters, totals, and a user selected from the latest list.
+    when_not_use: Do not use for customer profiles, password resets, activation changes, role assignment, user creation, deletion, export, or any other mutation.
+    tools:
+      - admin.usermanagement.get-usermanagement-getadminuserlistasync
+      - admin.usermanagement.get-usermanagement-getadminuserasync
+    parameters: [keyword, status, department, role_id, limit, selection]
+    side_effect: read
+  - id: system-management.roles.query
+    skill: admin_system_management_role_reader
+    when_use: Read authorized role lists, filters, totals, and a role selected from the latest list.
+    when_not_use: Do not use to create, edit, delete, enable, disable, grant, or revoke roles or permissions.
+    tools:
+      - admin.role.post-role-getrolelist
+      - admin.role.get-role-getrolebyid
+    parameters: [keyword, status, limit, selection]
+    side_effect: read
+  - id: system-management.logs.query
+    skill: admin_system_management_log_reader
+    when_use: Read authorized User Activity, System Operations, or Security Logs with date, status, event, source, and text filters.
+    when_not_use: Do not use to export logs, open an external log system, or modify audit/security settings.
+    tools:
+      - admin.log.post-log-useractivitylogpage
+      - admin.log.post-log-systemoperationlogpage
+      - admin.log.post-log-securitylogpage
+    parameters: [log_kind, date_from, date_to, status, event_type, source, keyword, limit]
+    side_effect: read
+  - id: system-management.guidance.search
+    skill: admin_system_management_guidance
+    when_use: Find authoritative System Management process, access, or audit guidance.
+    when_not_use: Do not infer policy from live records or use it for a requested Portal mutation.
+    tools: [knowledge.search]
+    knowledge_scope: [system-management]
+    citations_required: true
+  - id: system-management.actions.refuse
+    skill: admin_system_management_read_only_boundary
+    when_use: Refuse requested Portal mutations while keeping the user in the normal Portal workflow.
+    tools: []
+    side_effect: none
+role_boundary:
+  - All live data comes from the authenticated IT Management principal and existing Portal authorization.
+  - User and log answers must use the minimum fields necessary for the request; do not expose customer profile data through this module.
+knowledge_boundary:
+  - Knowledge answers require a scoped authoritative source and citation.
+  - When no source is indexed, say that authoritative guidance was not found rather than inventing a process.

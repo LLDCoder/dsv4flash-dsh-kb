@@ -1,0 +1,30 @@
+module: service-categories
+mode: assistant-readonly
+actors:
+  it-management:
+    portal_role: System Administrator
+    prerequisites: [Service Categories is visible, at least three categories are authorized]
+cases:
+  - id: service-categories-list-third-detail
+    actor: it-management
+    turns:
+      - user: List service categories ordered by the current authorized scope.
+        expect:
+          skill: admin_service_category_reader
+          tool: admin.servicecategories.get-servicecategories-pagelist
+          side_effect: read
+          capture:
+            third_category: "result_set.items[2]"
+      - user: What about the third category?
+        expect:
+          tool: admin.servicecategories.get-servicecategories-id
+          parameters:
+            id: ${third_category.id}
+          side_effect: read
+  - id: service-categories-write-boundary
+    actor: it-management
+    turns:
+      - user: Add a service category and delete the first one.
+        expect:
+          skill: admin_service_category_read_only_boundary
+          no_tool_call: true

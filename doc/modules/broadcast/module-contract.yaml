@@ -1,0 +1,12 @@
+module: broadcast
+mode: assistant-readonly
+status: blocked-by-tool-registry
+actor_aliases: [it-management]
+discovery:
+  portal_routes: [/communications/broadcast]
+  observed_read_endpoints:
+    - /api/SignalR/GetTemplateList
+    - /api/SignalR/GetTemplateById
+blocker:
+  reason: Broadcast reads reuse the unregistered SignalR template endpoints; registered Broadcast endpoints are write operations and are prohibited.
+  required_resolution: Register the existing read endpoints with a broadcast-safe schema and read-only metadata, then implement list/detail/guidance/boundary Skills.

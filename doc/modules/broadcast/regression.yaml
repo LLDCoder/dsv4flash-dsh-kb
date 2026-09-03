@@ -1,0 +1,7 @@
+module: broadcast
+mode: assistant-readonly
+status: blocked-by-tool-registry
+planned_cases:
+  - list broadcasts by recipient/status and inspect a selected broadcast
+  - cited broadcast policy guidance
+  - send/publish/unpublish/duplicate boundary with no Tool call

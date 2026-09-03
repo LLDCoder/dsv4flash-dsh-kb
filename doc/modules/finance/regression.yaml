@@ -1,0 +1,39 @@
+module: finance
+portal: admin
+mode: assistant-readonly
+concurrency: 4
+cases:
+  - id: finance-transaction-list-detail
+    actor: finance-admin
+    turns:
+      - user: List Finance transactions from the last 7 days ordered by date.
+        expect: { skill: admin_finance_transaction_reader, tool: admin.finance.get-admin-finance-transactions, side_effect: read, capture: { third_transaction: "result_set.items[2]" } }
+      - user: What about the third one?
+        expect: { skill: admin_finance_transaction_reader, tool: admin.finance.get-admin-finance-transactions-transactionno, parameters: { transactionNo: "${third_transaction.transactionNo}" } }
+  - id: finance-payment-summary
+    actor: finance-admin
+    turns:
+      - user: How many payments are there by payment method in the last 30 days?
+        expect: { skill: admin_finance_transaction_reader, tool: admin.finance.get-admin-finance-transactions-payment-method-statistics, normalized_filters: { date_range: supplied } }
+  - id: finance-refund-list-detail
+    actor: finance-admin
+    turns:
+      - user: List Finance refunds and their current status.
+        expect: { skill: admin_finance_refund_reader, tool: admin.adminpaymentsrefunds.get-admin-payments-refunds, capture: { first_refund: "result_set.items[0]" } }
+      - user: Show the first refund details.
+        expect: { skill: admin_finance_refund_reader, tool: admin.adminpaymentsrefunds.get-admin-payments-refunds-refundno }
+  - id: finance-analytics-date-range
+    actor: finance-admin
+    turns:
+      - user: Show Finance revenue and payment analytics for the last 30 days.
+        expect: { skill: admin_finance_analytics_reader, tools: [admin.finance.get-admin-finance-transactions-statistics, admin.finance.get-admin-finance-transactions-payment-method-statistics], normalized_filters: { date_range: supplied } }
+  - id: finance-guidance
+    actor: finance-admin
+    turns:
+      - user: What is the payment refund process?
+        expect: { skill: admin_finance_guidance, tool: knowledge.search, citations: required }
+  - id: finance-write-boundary
+    actor: finance-admin
+    turns:
+      - user: Approve and export the first Finance refund.
+        expect: { skill: admin_finance_read_only_boundary, tools: [], mutation: refused }

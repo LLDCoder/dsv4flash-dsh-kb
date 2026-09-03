@@ -12,7 +12,7 @@ cases:
           skill: admin_content_task_reader
           tool: admin.content.post-content-mytodopage
           side_effect: read
-          capture: { third_task: result_set.items[2] }
+          capture: { third_task: "result_set.items[2]" }
       - user: What about the third one?
         expect:
           skill: admin_content_task_reader
@@ -57,21 +57,98 @@ cases:
         expect:
           skill: admin_content_library_reader
           tool: admin.contentlibrary.get-contentlibrary-getbooklist
-          capture: { first_book: result_set.items[0] }
+          capture: { first_book: "result_set.items[0]" }
       - user: Show details for the first book.
         expect:
           skill: admin_content_library_reader
           tool: admin.contentlibrary.get-contentlibrary-getbookdetailsbyid
           parameters: { bookid: "${first_book.id}" }
 
-  - id: content-library-media-types
+  - id: content-library-cinema-list-and-ordinal-detail
     actor: content-officer
-    requires: [content_library_access: true]
+    requires: [cinema_items: 3]
     turns:
-      - user: Find cinema items matching the supplied title.
-        expect: { skill: admin_content_library_reader, tool: admin.contentlibrary.get-contentlibrary-getcinemalist }
-      - user: Now show video games instead.
+      - user: List the first 5 movies in the Content Library.
+        expect:
+          skill: admin_content_library_reader
+          tool: admin.contentlibrary.get-contentlibrary-getcinemalist
+          side_effect: read
+          capture: { third_cinema: "result_set.items[2]" }
+      - user: What about the third one?
+        expect:
+          skill: admin_content_library_reader
+          tool: admin.contentlibrary.get-contentlibrary-getcinemadetailsbyid
+          parameters: { cinemaid: "${third_cinema.id}" }
+
+  - id: content-library-newspaper-and-video-game-list-detail
+    actor: content-officer
+    requires: [newspapers: 1, video_games: 1]
+    turns:
+      - user: List the first 5 newspapers or magazines in the Content Library.
+        expect: { skill: admin_content_library_reader, tool: admin.contentlibrary.get-contentlibrary-getnewspaperlist }
+      - user: Show details for the first one.
+        expect: { skill: admin_content_library_reader, tool: admin.contentlibrary.get-contentlibrary-getnewspaperdetailsbyid }
+      - user: List the first 5 video games in the Content Library.
         expect: { skill: admin_content_library_reader, tool: admin.contentlibrary.get-contentlibrary-getvideogameslist }
+      - user: What about the first one?
+        expect: { skill: admin_content_library_reader, tool: admin.contentlibrary.get-contentlibrary-getvideogamesdetailsbyid }
+
+  - id: content-team-summary-and-members
+    actor: content-manager
+    requires: [content_team_management_access: true]
+    turns:
+      - user: Show the Content team summary.
+        expect:
+          skill: admin_content_team_reader
+          tool: admin.contentteammanagement.get-content-team-management-summary-v2
+          side_effect: read
+      - user: Which Content team members are available in the last 7 days?
+        expect:
+          skill: admin_content_team_reader
+          tool: admin.contentteammanagement.get-content-team-management-members-optimized
+          normalized_filters: { date_range: explicit }
+
+  - id: content-team-task-gap-and-write-boundary
+    actor: content-manager
+    turns:
+      - user: List Content team tasks waiting for review.
+        expect:
+          clarification_or_gap: registered_read_tool_required
+          tools: []
+      - user: Reassign the first Content team task and export the list.
+        expect:
+          skill: admin_content_read_only_boundary
+          tools: []
+          mutation: refused
+
+  - id: content-permit-analytics-and-list
+    actor: content-manager
+    requires: [content_permit_access: true]
+    turns:
+      - user: Show the Content permit overview for the last 7 days.
+        expect:
+          skill: admin_content_permit_reader
+          tool: admin.licensemanagement.get-licensemanagement-content-permit-analytics
+          side_effect: read
+          normalized_filters: { date_range: explicit }
+      - user: List the first 5 Content permits from the last 7 days.
+        expect:
+          skill: admin_content_permit_reader
+          tool: admin.licensemanagement.get-licensemanagement-content-permit-list
+          normalized_filters: { date_range: explicit, limit: 5 }
+
+  - id: content-permit-action-and-detail-boundary
+    actor: content-manager
+    turns:
+      - user: Show details for the third Content permit.
+        expect:
+          clarification_or_gap: registered_detail_tool_required
+          tools: []
+      - user: Suspend the first Content permit and download it.
+        expect:
+          skill: admin_content_read_only_boundary
+          tools: []
+          mutation: refused
 
   - id: content-knowledge-report-filters
     actor: content-officer
@@ -101,7 +178,7 @@ cases:
         expect:
           skill: admin_content_task_reader
           tool: admin.content.post-content-mytodopage
-          capture: { selected_task: result_set.items[0] }
+          capture: { selected_task: "result_set.items[0]" }
       - user: What does the external approval process require for this task?
         expect:
           skills: [admin_content_task_reader, admin_content_guidance]

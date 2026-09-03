@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+import re
+from datetime import date, timedelta
 from typing import Any
 
 
@@ -158,8 +159,100 @@ def normalize_route_directives(
     return normalized_intent, normalized_filters
 
 
-def _selection_items(history: list[Any], selection: dict[str, Any]) -> list[dict[str, Any]]:
-    source_tool = str(selection.get("sourceTool") or "")
+def deterministic_route_directives(
+    workflow: dict[str, Any] | None,
+    text: str,
+    *,
+    today: date | None = None,
+) -> tuple[str | None, dict[str, Any]]:
+    """Extract only generic, declared filters for a locked database route.
+
+    This keeps fallback execution useful when the LLM router is unavailable
+    without embedding domain statuses, labels, or Tool parameters in code.
+    """
+
+    routing = (workflow or {}).get("routing")
+    if not isinstance(routing, dict):
+        return None, {}
+    filters = dict(routing.get("filters") or {})
+    lowered = text.casefold()
+    supplied: dict[str, Any] = {}
+    reference_day = today or date.today()
+    intent_id = str(routing.get("defaultIntentId") or "").strip() or None
+    for rule in (workflow or {}).get("deterministicIntentRules", []):
+        if not isinstance(rule, dict) or not _matches(text, rule.get("when")):
+            continue
+        candidate = str(rule.get("intentId") or "").strip()
+        if candidate:
+            intent_id = candidate
+            break
+
+    date_filter = next(
+        (
+            name
+            for name, specification in filters.items()
+            if isinstance(specification, dict) and specification.get("type") == "date_range"
+        ),
+        None,
+    )
+    if date_filter:
+        explicit_range = re.search(
+            r"\bfrom\s+(\d{4}-\d{2}-\d{2})\s+(?:to|until|through)\s+(\d{4}-\d{2}-\d{2})\b",
+            lowered,
+        )
+        relative_days = re.search(r"\b(?:last|past)\s+(\d{1,3})\s+days?\b", lowered)
+        if explicit_range:
+            supplied[date_filter] = {"start": explicit_range.group(1), "end": explicit_range.group(2)}
+        elif relative_days:
+            days = int(relative_days.group(1))
+            if days > 0:
+                supplied[date_filter] = {
+                    "start": (reference_day - timedelta(days=days - 1)).isoformat(),
+                    "end": reference_day.isoformat(),
+                }
+        elif re.search(r"\b(?:last|past)\s+week\b", lowered):
+            supplied[date_filter] = {
+                "start": (reference_day - timedelta(days=6)).isoformat(),
+                "end": reference_day.isoformat(),
+            }
+        elif re.search(r"\btoday\b", lowered):
+            supplied[date_filter] = {"start": reference_day.isoformat(), "end": reference_day.isoformat()}
+        elif re.search(r"\byesterday\b", lowered):
+            yesterday = (reference_day - timedelta(days=1)).isoformat()
+            supplied[date_filter] = {"start": yesterday, "end": yesterday}
+
+    limit_filter = next(
+        (
+            name
+            for name, specification in filters.items()
+            if isinstance(specification, dict) and specification.get("type") == "integer"
+            and name.casefold() in {"limit", "topn", "page_size", "pagesize"}
+        ),
+        None,
+    )
+    if limit_filter:
+        match = re.search(r"\b(?:top|first|latest|recent)\s+(\d{1,3})\b", lowered)
+        if match:
+            supplied[limit_filter] = int(match.group(1))
+
+    return normalize_route_directives(workflow, intent_id, supplied)
+
+
+def _selection_sources(selection: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = selection.get("sources")
+    if isinstance(sources, list):
+        configured = [item for item in sources if isinstance(item, dict) and str(item.get("sourceTool") or "").strip()]
+        if configured:
+            return configured
+    return [selection] if str(selection.get("sourceTool") or "").strip() else []
+
+
+def _selection_value(selection: dict[str, Any], source: dict[str, Any], name: str) -> Any:
+    return source.get(name, selection.get(name))
+
+
+def _selection_items(history: list[Any], selection: dict[str, Any], source: dict[str, Any]) -> list[dict[str, Any]]:
+    source_tool = str(source.get("sourceTool") or "")
     for event in reversed(history):
         payload = getattr(event, "event_json", {}) or {}
         if getattr(event, "event_type", "") != "tool.result" or payload.get("toolName") != source_tool:
@@ -168,10 +261,24 @@ def _selection_items(history: list[Any], selection: dict[str, Any]) -> list[dict
         if isinstance(snapshot, list):
             return [item for item in snapshot if isinstance(item, dict)]
         result = _decode_result(payload.get("result"))
-        items = _value_at_path(result, selection.get("itemsPath"))
+        items = _value_at_path(result, _selection_value(selection, source, "itemsPath"))
         if isinstance(items, list):
             return [item for item in items if isinstance(item, dict)]
     return []
+
+
+def _selection_context(history: list[Any], selection: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    for event in reversed(history):
+        payload = getattr(event, "event_json", {}) or {}
+        if getattr(event, "event_type", "") != "tool.result":
+            continue
+        for source in _selection_sources(selection):
+            if payload.get("toolName") != source.get("sourceTool"):
+                continue
+            items = _selection_items([event], selection, source)
+            if items:
+                return source, items
+    return None
 
 
 def selection_snapshot_for_tool_result(
@@ -187,16 +294,19 @@ def selection_snapshot_for_tool_result(
     """
 
     selection = (workflow or {}).get("selection")
-    if not isinstance(selection, dict) or str(selection.get("sourceTool") or "") != tool_name:
+    if not isinstance(selection, dict):
+        return None
+    source = next((item for item in _selection_sources(selection) if str(item.get("sourceTool") or "") == tool_name), None)
+    if source is None:
         return None
     payload = result.get("result") if isinstance(result, dict) else result
     decoded = _decode_result(payload)
-    items = _value_at_path(decoded, selection.get("itemsPath"))
+    items = _value_at_path(decoded, _selection_value(selection, source, "itemsPath"))
     if not isinstance(items, list):
         return None
     fields = {
         str(field)
-        for field in [*selection.get("identifierFields", []), selection.get("valueField")]
+        for field in [*(_selection_value(selection, source, "identifierFields") or []), _selection_value(selection, source, "valueField")]
         if str(field).strip()
     }
     if not fields:
@@ -209,27 +319,33 @@ def selection_snapshot_for_tool_result(
     return snapshot or None
 
 
-def _selected_item(selector: object, items: list[dict[str, Any]], selection: dict[str, Any]) -> dict[str, Any] | None:
+def _selected_item(selector: object, items: list[dict[str, Any]], selection: dict[str, Any], source: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(selector, dict):
         ordinal = selector.get("ordinal")
         if isinstance(ordinal, int):
             return items[ordinal - 1] if ordinal <= len(items) else None
         selector = str(selector.get("identifier") or "")
     normalized = str(selector or "").casefold()
-    identifier_fields = [str(field) for field in selection.get("identifierFields", []) if str(field).strip()]
+    ordinal_matches: list[tuple[int, str]] = []
+    for index, terms in dict(_selection_value(selection, source, "ordinalTerms") or {}).items():
+        if not isinstance(terms, list):
+            continue
+        for term in terms:
+            candidate = str(term).strip().casefold()
+            if candidate and re.search(r"(?<!\w)" + re.escape(candidate) + r"(?!\w)", normalized):
+                ordinal_matches.append((int(index), candidate))
+    for index, _ in sorted(ordinal_matches, key=lambda match: len(match[1]), reverse=True):
+        try:
+            return items[index - 1]
+        except (IndexError, TypeError, ValueError):
+            return None
+    identifier_fields = [str(field) for field in _selection_value(selection, source, "identifierFields") or [] if str(field).strip()]
     matches = [
         item for item in items
         if any(str(item.get(field)).casefold() in normalized for field in identifier_fields if item.get(field) not in (None, ""))
     ]
     if len(matches) == 1:
         return matches[0]
-    for index, terms in dict(selection.get("ordinalTerms", {})).items():
-        if not isinstance(terms, list) or not any(str(term).casefold() in normalized for term in terms):
-            continue
-        try:
-            return items[int(index) - 1]
-        except (IndexError, TypeError, ValueError):
-            return None
     return None
 
 
@@ -293,9 +409,13 @@ def matches_configured_selection_follow_up(
     """Whether a published selection workflow claims this follow-up turn."""
 
     selection = (workflow or {}).get("selection")
-    if not isinstance(selection, dict) or not _selection_items(history, selection):
+    if not isinstance(selection, dict):
         return False
-    request = selection.get("toolRequest") or selection.get("detailRequest")
+    context = _selection_context(history, selection)
+    if context is None:
+        return False
+    source, _ = context
+    request = _selection_value(selection, source, "toolRequest") or _selection_value(selection, source, "detailRequest")
     return isinstance(request, dict) and _matches(text, request.get("when"))
 
 
@@ -315,22 +435,34 @@ def build_configured_tool_request(
     filters = filters or {}
     selection = workflow.get("selection")
     if isinstance(selection, dict):
-        selection_request = selection.get("toolRequest") or selection.get("detailRequest")
+        context = _selection_context(history, selection)
+        source, items = context if context else ({}, [])
+        selection_request = _selection_value(selection, source, "toolRequest") or _selection_value(selection, source, "detailRequest")
         selection_filter = str(selection.get("filter") or "")
-        matches_intent = intent_id and intent_id == selection.get("intentId")
+        matches_intent = intent_id and intent_id == _selection_value(selection, source, "intentId")
         matches_legacy_text = isinstance(selection_request, dict) and _matches(text, selection_request.get("when"))
-        if isinstance(selection_request, dict) and (matches_intent or matches_legacy_text):
+        selected_request = next(
+            (
+                rule
+                for rule in _selection_value(selection, source, "toolRequestRules") or []
+                if isinstance(rule, dict) and _matches(text, rule.get("when"))
+            ),
+            None,
+        )
+        if selected_request is None and isinstance(selection_request, dict) and (matches_intent or matches_legacy_text):
+            selected_request = selection_request
+        if isinstance(selected_request, dict):
             selector = filters.get(selection_filter) if selection_filter else None
             if selector is None:
                 selector = text
-            item = _selected_item(selector, _selection_items(history, selection), selection)
-            tool_name = str(selection_request.get("toolName") or "")
-            argument_name = str(selection_request.get("argumentName") or "")
-            value_field = str(selection.get("valueField") or "")
+            item = _selected_item(selector, items, selection, source)
+            tool_name = str(selected_request.get("toolName") or "")
+            argument_name = str(selected_request.get("argumentName") or "")
+            value_field = str(_selection_value(selection, source, "valueField") or "")
             if item and tool_name in allowed and argument_name and value_field and item.get(value_field) is not None:
                 return tool_name, {
                     argument_name: _coerce_argument_value(
-                        item[value_field], selection_request.get("argumentValueType")
+                        item[value_field], selected_request.get("argumentValueType")
                     )
                 }
 

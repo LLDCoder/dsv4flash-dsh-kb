@@ -1,0 +1,36 @@
+module: message-log
+mode: assistant-readonly
+actors:
+  it-management:
+    portal_role: System Administrator
+    prerequisites:
+      - Communications > Message Log is visible.
+      - At least three authorized log rows exist for ordinal verification.
+cases:
+  - id: message-log-recent-failed-third-detail
+    actor: it-management
+    turns:
+      - user: Show failed message logs from the last 7 days.
+        expect:
+          skill: admin_message_log_reader
+          tool: admin.messagelog.post-messagelog-getlist
+          side_effect: read
+          parameters: [status, sentFrom, sentTo]
+          capture:
+            third_log: "result_set.items[2]"
+      - user: What about the third one?
+        expect:
+          tool: admin.messagelog.get-messagelog-getbyid
+          parameters:
+            id: ${third_log.id}
+          side_effect: read
+          masked_fields: [recipientEmail, recipientMobile, ccEmails, emailBodyEn, emailBodyAr, smsContentEn, smsContentAr]
+  - id: message-log-write-boundary
+    actor: it-management
+    turns:
+      - user: Resend the first failed message and export the logs.
+        expect:
+          skill: admin_message_log_read_only_boundary
+          no_tool_call: true
+fixture_policy:
+  insufficient_results: blocked-by-fixture

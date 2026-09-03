@@ -1,0 +1,18 @@
+module: current-work-overview
+mode: assistant-readonly
+actor_aliases: [licensing-manager]
+intents:
+  - id: current-work-overview.licensing
+    skill: admin_current_work_overview
+    when_use: Read the authenticated Licensing user's current task overview, personal/team scope, priority cards, and time window.
+    when_not_use: Do not use for approval, assignment, export, or a cross-department aggregation not supported by live Tool evidence.
+    tools: [admin.licensedashboard.get-license-dashboard-overview]
+    parameters: [scope, task_category, date_range, priority_card_count]
+    side_effect: read
+  - id: current-work-overview.actions.refuse
+    skill: admin_current_work_overview_read_only_boundary
+    tools: []
+    side_effect: none
+scope_boundary:
+  - Tool results are token-scoped; distinguish personal and team metrics in the answer.
+  - Cross-module aggregation is not claimed until a supported read-only multi-tool composition is verified.

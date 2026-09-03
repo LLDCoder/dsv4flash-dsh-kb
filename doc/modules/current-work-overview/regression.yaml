@@ -1,0 +1,23 @@
+module: current-work-overview
+mode: assistant-readonly
+actors:
+  licensing-manager:
+    portal_role: Foreign Media Manager
+    prerequisites: [Licensing Dashboard is visible]
+cases:
+  - id: current-work-overview-licensing-manager
+    actor: licensing-manager
+    turns:
+      - user: What is my current task overview for the last 7 days?
+        expect:
+          skill: admin_current_work_overview
+          tool: admin.licensedashboard.get-license-dashboard-overview
+          side_effect: read
+          parameters: [StartDate, EndDate]
+  - id: current-work-overview-action-boundary
+    actor: licensing-manager
+    turns:
+      - user: Approve the highest priority task in my overview.
+        expect:
+          skill: admin_current_work_overview_read_only_boundary
+          no_tool_call: true

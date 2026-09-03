@@ -1,0 +1,76 @@
+module: customer-happiness
+portal: admin
+mode: assistant-readonly
+sources:
+  portal_pages:
+    - /happiness/tickets
+    - /happiness/refunds
+    - /happiness/appeals
+    - /happiness/team-management
+    - /happiness/reports-analytics
+  knowledge_folder: /umc
+roles:
+  - actor: happiness-leader
+    portal_role: Happiness Center Manager
+    verified_access: [tickets, refunds, appeals, team-management, reports-analytics]
+  - actor: happiness-staff
+    portal_role: Happiness staff
+    verified_access: pending
+skills:
+  - id: admin_customer_happiness_enquiry_reader
+    use_when: authorized enquiries or complaints, status totals, filters, selected details, and timeline questions
+    not_when: refund, inspection appeal, analytics-only, policy-only, or requested message/status/action changes
+    tools:
+      - admin.enquiry.get-enquiry-management-list
+      - admin.enquiry.get-enquiry-management-status-count
+      - admin.enquiry.get-enquiry-management-enquiryid-enquiryinfo
+      - admin.enquiry.get-enquiry-management-enquiryid-timeline
+  - id: admin_customer_happiness_refund_reader
+    use_when: authorized refund task lists, totals, filters, selected refund detail, or timeline questions
+    not_when: enquiries, appeals, analytics-only, policy-only, or requested decision/transfer/send-back changes
+    tools:
+      - admin.refund.get-refund-admin-tickets-customerservice
+      - admin.refund.get-refund-admin-tickets-statistics
+      - admin.refund.get-refund-admin-tickets-refundid-detail
+      - admin.refund.get-refund-admin-tickets-refundid-timeline
+  - id: admin_customer_happiness_appeal_reader
+    use_when: authorized Customer Happiness appeal lists, totals, filters, selected appeal detail, violation items, messages, or timeline questions
+    not_when: ticket, refund, analytics-only, policy-only, or requested appeal processing/messages/status changes
+    tools:
+      - admin.inspectionappeal.get-admin-inspection-appeals-customer-happiness-todo
+      - admin.inspectionappeal.get-admin-inspection-appeals-customer-happiness-completed
+      - admin.inspectionappeal.get-admin-inspection-appeals-customer-happiness-stats
+      - admin.inspectionappeal.get-admin-inspection-appeals-appealid
+      - admin.inspectionappeal.get-admin-inspection-appeals-appealid-violation-items
+      - admin.inspectionappeal.get-admin-inspection-appeals-appealid-messages
+      - admin.inspectionappeal.get-admin-inspection-appeals-appealid-timeline
+  - id: admin_customer_happiness_analytics_reader
+    use_when: Customer Happiness customer or operational insight questions with an explicit or relative date range
+    not_when: live case lookup, team task list/detail, policy-only, or requested data changes
+    tools:
+      - admin.customerhappinessanalytics.post-customer-happiness-analytics-customer-insights-summary
+      - admin.customerhappinessanalytics.post-customer-happiness-analytics-customer-insights-top-customers
+      - admin.customerhappinessanalytics.post-customer-happiness-analytics-customer-insights-top-profiles
+      - admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-summary
+      - admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-service-satisfaction
+      - admin.customerhappinessanalytics.post-customer-happiness-analytics-operational-insights-team-performance
+  - id: admin_customer_happiness_team_reader
+    use_when: authorized Customer Happiness team summary, available members, or member performance questions
+    not_when: a request to reassign work, change leave status, export, or list team task rows until the registered tool gap is resolved
+    tools:
+      - admin.customerhappinessteammanagement.get-customer-happiness-team-management-summary-v2
+      - admin.customerhappinessteammanagement.get-customer-happiness-team-management-members-optimized
+  - id: admin_customer_happiness_guidance
+    use_when: Customer Happiness process, service, policy, or regulatory guidance requiring cited knowledge evidence
+    not_when: live operational data is requested without a knowledge component
+    tools: [knowledge.search]
+  - id: admin_customer_happiness_read_only_boundary
+    use_when: the request asks to create, edit, assign, reassign, transfer, message, decide, approve, reject, resolve, cancel, refund, export, download, upload, or delete Portal business data
+    not_when: read-only lists, counts, details, timelines, analytics, team summaries, or cited guidance
+    tools: []
+known_gaps:
+  - id: CH-TOOL-01
+    description: The Portal Team Management task query endpoint is read-only but has no registered Tool. Do not invent a Tool or substitute a dashboard endpoint.
+    impact: Team task-row lists and selected task details remain out of scope until the registry owns that endpoint.
+deferred:
+  - Module dashboard overview and cross-module current-work overview are implemented after account comparison across all modules.

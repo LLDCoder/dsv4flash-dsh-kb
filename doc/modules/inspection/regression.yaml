@@ -1,0 +1,129 @@
+module: inspection
+portal: admin
+mode: assistant-readonly
+concurrency: 4
+cases:
+  - id: inspection-task-status-and-ordinal-detail
+    actor: inspection-manager
+    requires: [tasks: 3]
+    turns:
+      - user: Show queued Inspection tasks ordered by due date.
+        expect:
+          skill: admin_inspection_task_reader
+          tool: admin.inspectiontask.get-admin-inspection-tasks
+          side_effect: read
+          capture: { third_task: "result_set.items[2]" }
+      - user: What about the third one?
+        expect:
+          skill: admin_inspection_task_reader
+          tool: admin.inspectiontask.get-admin-inspection-tasks-id
+          parameters: { id: "${third_task.id}" }
+
+  - id: inspection-task-filter-correction
+    actor: inspection-manager
+    requires: [tasks: 1]
+    turns:
+      - user: List my Inspection tasks from the last 7 days.
+        expect: { skill: admin_inspection_task_reader, tool: admin.inspectiontask.get-admin-inspection-tasks }
+      - user: Only show high priority tasks in the same period.
+        expect:
+          skill: admin_inspection_task_reader
+          normalized_filters: { date_range: inherited, priorities: supplied }
+
+  - id: inspection-task-summary
+    actor: inspection-manager
+    turns:
+      - user: How many queued, pending visit, and in-progress Inspection tasks are there?
+        expect:
+          skill: admin_inspection_task_reader
+          tool: admin.inspectiontask.get-admin-inspection-tasks-stats
+          side_effect: read
+
+  - id: inspection-violation-list-and-detail
+    actor: inspection-manager
+    requires: [violations: 3]
+    turns:
+      - user: List current Inspection violations.
+        expect:
+          skill: admin_inspection_violation_reader
+          tool: admin.inspectionviolation.get-admin-inspection-violations
+          capture: { first_violation: "result_set.items[0]" }
+      - user: Show the first violation details.
+        expect:
+          skill: admin_inspection_violation_reader
+          tool: admin.inspectionviolation.get-admin-inspection-violations-id
+          parameters: { id: "${first_violation.id}" }
+
+  - id: inspection-violation-count
+    actor: inspection-manager
+    turns:
+      - user: How many Inspection violations are currently open?
+        expect:
+          skill: admin_inspection_violation_reader
+          tool: admin.inspectionviolation.get-admin-inspection-violations-stats
+          side_effect: read
+
+  - id: inspection-analytics-risk-and-trend
+    actor: inspection-manager
+    requires: [reports_analytics_access: true]
+    turns:
+      - user: Show Inspection operational and risk insights for the last 30 days.
+        expect:
+          skill: admin_inspection_analytics_reader
+          tool: admin.inspectionreportsanalytics.get-inspection-reportsanalytics-operationalinsights
+      - user: What are the main risk indicators in the same period?
+        expect:
+          skill: admin_inspection_analytics_reader
+          tool: admin.inspectionreportsanalytics.get-inspection-reportsanalytics-riskinsights
+          normalized_filters: { date_range: inherited }
+
+  - id: inspection-team-performance
+    actor: inspection-manager
+    requires: [reports_analytics_access: true]
+    turns:
+      - user: Show Inspection team performance for the last 30 days.
+        expect:
+          skill: admin_inspection_analytics_reader
+          tool: admin.inspectionreportsanalytics.get-inspection-reportsanalytics-teamperformance
+
+  - id: inspection-knowledge-guidance
+    actor: inspection-manager
+    requires: [knowledge_source: inspection_or_compliance]
+    turns:
+      - user: What is the Inspection process for documenting a violation?
+        expect:
+          skill: admin_inspection_guidance
+          tool: knowledge.search
+          citations: required
+
+  - id: inspection-hybrid-task-guidance
+    actor: inspection-manager
+    requires: [tasks: 1, knowledge_source: inspection_or_compliance]
+    turns:
+      - user: List my queued Inspection tasks.
+        expect:
+          skill: admin_inspection_task_reader
+          tool: admin.inspectiontask.get-admin-inspection-tasks
+          capture: { selected_task: "result_set.items[0]" }
+      - user: What reporting guidance applies to this task?
+        expect:
+          skills: [admin_inspection_task_reader, admin_inspection_guidance]
+          tools: [admin.inspectiontask.get-admin-inspection-tasks-id, knowledge.search]
+          citations: required
+
+  - id: inspection-write-boundary
+    actor: inspection-manager
+    turns:
+      - user: Assign the first Inspection task to an inspector.
+        expect:
+          skill: admin_inspection_read_only_boundary
+          tools: []
+          mutation: refused
+
+  - id: inspection-new-conversation-reference-boundary
+    actor: inspection-manager
+    turns:
+      - user: What about the third one?
+        expect:
+          clarification: required
+          tools: []

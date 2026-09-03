@@ -1,0 +1,12 @@
+module: message-templates
+mode: assistant-readonly
+status: blocked-by-tool-registry
+actor_aliases: [it-management]
+discovery:
+  portal_routes: [/communications/message-templates]
+  read_endpoints:
+    - /api/SignalR/GetTemplateList
+    - /api/SignalR/GetTemplateById
+blocker:
+  reason: No published read Tool Registry entries exist for the observed template list or detail endpoints.
+  required_resolution: Register the existing read endpoints with response schema, side effect read, RBAC, masking, and profile-scope review; then add reader, guidance, and read-only-boundary Skills.

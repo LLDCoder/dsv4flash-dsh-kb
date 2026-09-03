@@ -1,0 +1,27 @@
+module: service-configuration
+portal: admin
+mode: assistant-readonly
+concurrency: 4
+cases:
+  - id: service-list-ordinal-detail
+    actor: service-configuration-staff
+    turns:
+      - user: List suspended services ordered by last updated date.
+        expect: { skill: admin_service_configuration_reader, tool: admin.serviceinfo.get-serviceinfo-getservicestopage, side_effect: read, capture: { third_service: "result_set.items[2]" } }
+      - user: What about the third one?
+        expect: { skill: admin_service_configuration_reader, tool: admin.serviceinfo.get-serviceinfo-getservicebyid-id, parameters: { Id: "${third_service.id}" } }
+  - id: service-workflow-readiness
+    actor: service-configuration-staff
+    turns:
+      - user: List services, then show the first service workflow versions and readiness.
+        expect: { skills: [admin_service_configuration_reader, admin_service_workflow_reader], tools: [admin.serviceinfo.get-serviceinfo-getservicestopage, admin.serviceworkflowconfiguration.get-serviceworkflowconfigurationversionsbyserviceid-serviceid, admin.serviceengineconfiguration.get-admin-services-serviceid-engine-config-readiness] }
+  - id: service-guidance
+    actor: service-configuration-staff
+    turns:
+      - user: What is the service configuration process for publishing a service?
+        expect: { skill: admin_service_configuration_guidance, tool: knowledge.search, citations: required }
+  - id: service-write-boundary
+    actor: service-configuration-staff
+    turns:
+      - user: Configure and publish the first suspended service.
+        expect: { skill: admin_service_configuration_read_only_boundary, tools: [], mutation: refused }

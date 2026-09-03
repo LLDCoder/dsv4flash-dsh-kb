@@ -108,11 +108,76 @@ intents:
         tool: admin.contentlibrary.get-contentlibrary-getvideogamesdetailsbyid
         defaults: {}
     selection:
-      source_tool: admin.contentlibrary.get-contentlibrary-getbooklist
-      items_path: data.items
-      identifier_fields: [id, bookId, title]
-      value_field: id
+      sources:
+        - source_tool: admin.contentlibrary.get-contentlibrary-getbooklist
+          items_path: data.items
+          identifier_fields: [id, bookId, title]
+          value_field: id
+          detail_tool: admin.contentlibrary.get-contentlibrary-getbookdetailsbyid
+          detail_parameter: bookid
+        - source_tool: admin.contentlibrary.get-contentlibrary-getnewspaperlist
+          items_path: data.items
+          identifier_fields: [id, newspaperId, title]
+          value_field: id
+          detail_tool: admin.contentlibrary.get-contentlibrary-getnewspaperdetailsbyid
+          detail_parameter: newspaperid
+        - source_tool: admin.contentlibrary.get-contentlibrary-getcinemalist
+          items_path: data.items
+          identifier_fields: [id, cinemaId, title]
+          value_field: id
+          detail_tool: admin.contentlibrary.get-contentlibrary-getcinemadetailsbyid
+          detail_parameter: cinemaid
+        - source_tool: admin.contentlibrary.get-contentlibrary-getvideogameslist
+          items_path: data.items
+          identifier_fields: [id, videoGamesId, title]
+          value_field: id
+          detail_tool: admin.contentlibrary.get-contentlibrary-getvideogamesdetailsbyid
+          detail_parameter: videoGamesid
       supports_ordinals: true
+
+  - id: admin_content_team_reader
+    name: Content team summary and member reader
+    domain: admin_content
+    allowed_tools:
+      - admin.contentteammanagement.get-content-team-management-summary-v2
+      - admin.contentteammanagement.get-content-team-management-members-optimized
+    when_use: Read the authorized Content team workload summary, member roster, availability, and date-bounded member metrics.
+    when_not_use: Do not use for team task rows or details until their read endpoint is registered, or for reassignment, leave, resume-work, export, or any other change.
+    filters:
+      date_range: date_range
+      member_id: string
+    requests:
+      - intent: summary
+        tool: admin.contentteammanagement.get-content-team-management-summary-v2
+        defaults: { applicationTaskOnly: true }
+      - intent: members
+        tool: admin.contentteammanagement.get-content-team-management-members-optimized
+        defaults: { applicationTaskOnly: false }
+    known_gap:
+      - The Portal's `/api/content/team-management/tasks/query` is read-only but has no registered Tool. Do not invent it or substitute a summary or member endpoint.
+
+  - id: admin_content_permit_reader
+    name: Content permit list and analytics reader
+    domain: admin_content
+    allowed_tools:
+      - admin.licensemanagement.get-licensemanagement-content-permit-analytics
+      - admin.licensemanagement.get-licensemanagement-content-permit-list
+    when_use: Read authorized Content permit totals, trends, lists, keyword matches, pagination, and date-window analytics.
+    when_not_use: Do not use for a permit detail, status change, suspension, download, export, or any action.
+    filters:
+      date_range: date_range
+      keyword: string
+      limit: integer
+      page: integer
+    requests:
+      - intent: analytics
+        tool: admin.licensemanagement.get-licensemanagement-content-permit-analytics
+        defaults: { days: 30 }
+      - intent: list
+        tool: admin.licensemanagement.get-licensemanagement-content-permit-list
+        defaults: { days: 30, pageSize: 25, pageIndex: 1, sort: desc }
+    known_gap:
+      - No registered Content permit detail Tool exists. Do not claim detail or enable ordinal follow-up until it is registered.
 
   - id: admin_content_guidance
     name: Content guidance and regulation
