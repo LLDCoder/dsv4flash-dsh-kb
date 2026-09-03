@@ -527,9 +527,6 @@ def build_configured_tool_request(
     workflow = workflow or {}
     allowed = set(allowed_tools)
     filters = filters or {}
-    for rule in workflow.get("noToolRequestRules", []):
-        if isinstance(rule, dict) and _matches(text, rule.get("when")):
-            return None
     selection = workflow.get("selection")
     if isinstance(selection, dict):
         context = _selection_context(history, selection)
@@ -565,6 +562,10 @@ def build_configured_tool_request(
                 )
                 return tool_name, arguments
 
+    for rule in workflow.get("noToolRequestRules", []):
+        if isinstance(rule, dict) and _matches(text, rule.get("when")):
+            return None
+
     # A published explicit text rule is more specific than the router's
     # default intent. This lets a declared follow-up such as "blocked items"
     # replace an overview request without adding module-specific code.
@@ -584,6 +585,34 @@ def build_configured_tool_request(
     default_request = workflow.get("defaultToolRequest")
     if isinstance(default_request, dict):
         return _request_from_definition(workflow, default_request, allowed, filters)
+    return None
+
+
+def build_configured_hybrid_knowledge_request(
+    workflow: dict[str, Any] | None,
+    allowed_tools: list[str],
+    text: str,
+    *,
+    primary_tool_name: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Return a database-declared knowledge supplement after a read Tool."""
+
+    if "knowledge.search" not in set(allowed_tools):
+        return None
+    for rule in (workflow or {}).get("hybridKnowledgeRules", []):
+        if not isinstance(rule, dict) or not _matches(text, rule.get("when")):
+            continue
+        allowed_after = {str(item) for item in rule.get("afterTools", []) if str(item).strip()}
+        if allowed_after and primary_tool_name not in allowed_after:
+            continue
+        folder_id = str(rule.get("folderId") or "").strip()
+        if not folder_id:
+            continue
+        return "knowledge.search", {
+            "query": text,
+            "folder_id": folder_id,
+            "top_k": int(rule.get("topK") or 32),
+        }
     return None
 
 

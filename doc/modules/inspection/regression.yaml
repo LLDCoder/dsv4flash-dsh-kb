@@ -123,7 +123,13 @@ cases:
           tools: []
       - user: What reporting guidance applies to the first task?
         expect:
-          blocked_by: generic_hybrid_evidence_orchestration
+          skill: admin_inspection_task_reader
+          tools:
+            - admin.inspectiontask.get-admin-inspection-tasks-id
+            - knowledge.search
+          parameters: { id: "${selected_task.id}" }
+          evidence: [live_task_detail, inspection_knowledge]
+          side_effect: read
 
   - id: inspection-write-boundary
     actor: inspection-manager

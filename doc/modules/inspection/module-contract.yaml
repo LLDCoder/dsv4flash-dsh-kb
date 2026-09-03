@@ -27,6 +27,7 @@ intents:
       - admin.inspectiontask.get-admin-inspection-tasks
       - admin.inspectiontask.get-admin-inspection-tasks-id
       - admin.inspectiontask.get-admin-inspection-tasks-stats
+      - knowledge.search
     when_use: List, search, filter, count, compare, or inspect authorized inspection tasks, including an item selected from a prior list.
     when_not_use: Violation records, management analytics, policy-only questions, or any requested mutation.
     filters:
@@ -48,6 +49,14 @@ intents:
       identifier_fields: [id, taskId, taskNo]
       value_field: id
       supports_ordinals: true
+    hybrid_guidance:
+      when_use: A user selects an Inspection task and asks for reporting guidance about that selected task.
+      primary_tool: admin.inspectiontask.get-admin-inspection-tasks-id
+      knowledge_tool: knowledge.search
+      knowledge_scope: [34a89aa7b43b473d8326cf6540fc3894]
+      response_rules:
+        - Combine the live task detail with authoritative Inspection guidance; do not substitute one for the other.
+        - Do not run the hybrid flow without an explicit task selection or stable task identifier.
 
   - id: admin_inspection_violation_reader
     name: Inspection violation reader

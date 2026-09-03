@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.skills import build_system_prompt, requires_reference_context, resolve_configured_skill, resolve_skill
-from app.skill_workflow import build_configured_tool_request, deterministic_route_directives, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
+from app.skill_workflow import build_configured_hybrid_knowledge_request, build_configured_tool_request, deterministic_route_directives, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
@@ -100,6 +100,66 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertTrue(requires_reference_context("What guidance applies to this task?"))
         self.assertTrue(requires_reference_context("What about the third one?"))
         self.assertFalse(requires_reference_context("What reporting guidance applies to an inspection task?"))
+
+    def test_hybrid_knowledge_request_requires_declared_primary_tool_and_scope(self):
+        workflow = {
+            "hybridKnowledgeRules": [{
+                "when": {"allTerms": ["reporting", "guidance"]},
+                "afterTools": ["records.detail"],
+                "folderId": "inspection-guidance",
+                "topK": 8,
+            }],
+        }
+        self.assertEqual(
+            build_configured_hybrid_knowledge_request(
+                workflow,
+                ["records.detail", "knowledge.search"],
+                "What reporting guidance applies?",
+                primary_tool_name="records.detail",
+            ),
+            ("knowledge.search", {"query": "What reporting guidance applies?", "folder_id": "inspection-guidance", "top_k": 8}),
+        )
+        self.assertIsNone(
+            build_configured_hybrid_knowledge_request(
+                workflow,
+                ["records.detail", "knowledge.search"],
+                "What reporting guidance applies?",
+                primary_tool_name="records.list",
+            )
+        )
+
+    def test_explicit_selection_precedes_declared_no_tool_rule(self):
+        class Event:
+            event_type = "tool.result"
+            event_json = {
+                "toolName": "records.list",
+                "result": json.dumps({"data": {"items": [{"id": 7}]}}),
+            }
+
+        workflow = {
+            "selection": {
+                "sourceTool": "records.list",
+                "itemsPath": "data.items",
+                "valueField": "id",
+                "filter": "selection",
+                "ordinalTerms": {"1": ["first"]},
+                "toolRequest": {
+                    "when": {"anyTerms": ["first"]},
+                    "toolName": "records.detail",
+                    "argumentName": "id",
+                },
+            },
+            "noToolRequestRules": [{"when": {"allTerms": ["reporting", "guidance"]}}],
+        }
+        self.assertEqual(
+            build_configured_tool_request(
+                workflow,
+                ["records.detail"],
+                "What reporting guidance applies to the first record?",
+                [Event()],
+            ),
+            ("records.detail", {"id": 7}),
+        )
 
     def test_locked_route_extracts_only_declared_generic_date_and_limit_filters(self):
         workflow = {
