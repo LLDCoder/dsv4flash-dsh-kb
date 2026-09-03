@@ -542,18 +542,21 @@ def build_configured_tool_request(
                     )
                 }
 
-    for definition in workflow.get("requests", []):
-        if isinstance(definition, dict) and definition.get("intentId") == intent_id:
-            request = _request_from_definition(workflow, definition, allowed, filters)
-            if request:
-                return request
-
+    # A published explicit text rule is more specific than the router's
+    # default intent. This lets a declared follow-up such as "blocked items"
+    # replace an overview request without adding module-specific code.
     for rule in workflow.get("toolRequestRules", []):
         if not isinstance(rule, dict) or not _matches(text, rule.get("when")):
             continue
         tool_name = str(rule.get("toolName") or "")
         if tool_name in allowed:
             return tool_name, dict(rule.get("arguments") or {})
+
+    for definition in workflow.get("requests", []):
+        if isinstance(definition, dict) and definition.get("intentId") == intent_id:
+            request = _request_from_definition(workflow, definition, allowed, filters)
+            if request:
+                return request
 
     default_request = workflow.get("defaultToolRequest")
     if isinstance(default_request, dict):

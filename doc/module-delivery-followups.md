@@ -36,16 +36,17 @@ read-only endpoints:
 
 | Module | Overview endpoint | Drill-down endpoint | Registry status |
 | --- | --- | --- | --- |
-| Licensing | `/api/license/dashboard/overview` | `/api/license/dashboard/needs-attention` | Available |
-| Content | `/api/Content/Dashboard/Overview` | `/api/Content/Dashboard/TaskList` | Available |
-| Inspection | `/api/Inspection/Dashboard/Overview` | `/api/Inspection/Dashboard/TaskList` | Available |
-| Customer Happiness | `/api/CustomerHappiness/Dashboard/Overview` | `/api/CustomerHappiness/Dashboard/TaskList` | Available |
+| Licensing | `/api/license/dashboard/overview` | `/api/license/dashboard/needs-attention` | Registered and E2E verified after binding scope and task-category enums as numeric values |
+| Content | `/api/Content/Dashboard/Overview` | `/api/Content/Dashboard/TaskList` | Registered, but the Content Manager receives `Content.Dashboard.Section.Forbidden` for the source-defined manager overview request |
+| Inspection | `/api/Inspection/Dashboard/Overview` | `/api/Inspection/Dashboard/TaskList` | Registered and Manager overview E2E verified |
+| Customer Happiness | `/api/CustomerHappiness/Dashboard/Overview` | `/api/CustomerHappiness/Dashboard/TaskList` | Registered and Manager overview plus same-period blocked-list E2E verified |
 
 ### Proposed Cross-Module Capability
 
-Add one database-managed, read-only `admin_current_work_overview` Skill after
-the role/fixture checks are complete. It should answer requests such as “my
-current task overview”, “what needs my attention”, and “overall work status”.
+Use database-managed, department-specific Dashboard Skills for each endpoint
+contract. They answer requests such as “my current task overview”, “what needs
+my attention”, and a department's overall work status without a code-defined
+business router.
 
 - Select only Dashboard Tools for modules visible to the current authenticated
   user; never infer access from the question.
@@ -55,12 +56,21 @@ current task overview”, “what needs my attention”, and “overall work sta
   authorized modules distinct.
 - Do not call export, assignment, approval, rejection, or any business-write
   operation.
-- Start with a single-module answer when the user names a module; use a bounded
-  cross-module aggregation only for an explicit whole-work question.
+- Start with a single-module answer when the user names a module. Cross-module
+  aggregation remains deferred until every visible module for the same role
+  returns compatible authorized read evidence.
 
 This must be configured in the database and added to each relevant module's
 contract/regression suite. It does not require a new hard-coded business Skill
 or a Portal API change.
+
+## Dashboard Follow-ups
+
+| ID | Gap or risk | Completion evidence |
+| --- | --- | --- |
+| DASH-01 | The Licensing Dashboard Tool originally passed display labels for scope and task category, while the Portal endpoint expects numeric enums. | Resolved: publish the numeric bindings in `admin_current_work_overview`; real Chatbot E2E now returns the authenticated overview. |
+| DASH-03 | Content Manager has visible Dashboard UI state, but the source-defined `Content/Dashboard/Overview` request returns `Content.Dashboard.Section.Forbidden` directly with the same browser bearer token. | Keep Content out of cross-module aggregation; repair the Portal endpoint's permitted-section contract before enabling the dashboard Skill result. Do not copy UI values into Chatbot output. |
+| DASH-02 | Broad module-level write-boundary aliases can incorrectly claim an unrelated operational action even while safely refusing it. | Current-work action requests now have a higher-priority, database-declared overview-specific boundary. Future boundary rules must include module context or a more specific intent before using generic action terms. |
 
 ## Role And Fixture Matrix
 

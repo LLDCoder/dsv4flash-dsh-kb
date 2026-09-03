@@ -674,6 +674,32 @@ class RegistryAndRoutingTests(unittest.TestCase):
             ("example.workflow", {"id": 1}),
         )
 
+    def test_explicit_tool_rule_overrides_default_intent_request(self):
+        workflow = {
+            "routing": {"intents": [{"id": "overview"}], "defaultIntentId": "overview"},
+            "requests": [{
+                "intentId": "overview",
+                "toolName": "dashboard.overview",
+                "arguments": {"tab": "all"},
+            }],
+            "toolRequestRules": [{
+                "when": {"anyTerms": ["blocked"]},
+                "toolName": "dashboard.tasks",
+                "arguments": {"tab": "blocked"},
+            }],
+        }
+
+        self.assertEqual(
+            build_configured_tool_request(
+                workflow,
+                ["dashboard.overview", "dashboard.tasks"],
+                "What about the blocked items?",
+                [],
+                intent_id="overview",
+            ),
+            ("dashboard.tasks", {"tab": "blocked"}),
+        )
+
     def test_legacy_knowledge_and_new_license_tool_boundaries(self):
         class Knowledge:
             async def search(self, query, folder_id, top_k, *, umc_token=None):

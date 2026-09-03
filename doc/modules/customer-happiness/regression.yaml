@@ -3,6 +3,23 @@ portal: admin
 mode: assistant-readonly
 concurrency: 4
 cases:
+  - id: happiness-dashboard-overview-and-blocked-follow-up
+    actor: happiness-leader
+    requires: [customer_happiness_dashboard_access: true]
+    turns:
+      - user: Show my Customer Happiness dashboard overview for the last 7 days.
+        expect:
+          skill: admin_customer_happiness_dashboard_reader
+          tool: admin.customerhappinessdashboard.get-customerhappiness-dashboard-overview
+          side_effect: read
+          parameters: { StartDate: runtime_last_7_days_start, EndDate: runtime_today }
+      - user: List the first 3 blocked Customer Happiness items in the same period.
+        expect:
+          skill: admin_customer_happiness_dashboard_reader
+          tool: admin.customerhappinessdashboard.get-customerhappiness-dashboard-tasklist
+          side_effect: read
+          normalized_filters: { date_range: inherited, limit: supplied }
+
   - id: happiness-enquiry-status-and-ordinal-detail
     actor: happiness-leader
     requires: [enquiries: 3]

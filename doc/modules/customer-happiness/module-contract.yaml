@@ -17,6 +17,13 @@ roles:
     portal_role: Happiness staff
     verified_access: pending
 skills:
+  - id: admin_customer_happiness_dashboard_reader
+    use_when: the authenticated Customer Happiness user's dashboard summary, workload counts, team context, or manager attention list for a requested period
+    not_when: one live enquiry, refund, appeal, policy-only question, cross-department aggregate, or any request to assign, resolve, message, export, or change business data
+    tools:
+      - admin.customerhappinessdashboard.get-customerhappiness-dashboard-overview
+      - admin.customerhappinessdashboard.get-customerhappiness-dashboard-tasklist
+    follow_up: Urgent or blocked attention follow-ups keep the prior date range only when the user explicitly refers to the same period, range, timeframe, or window.
   - id: admin_customer_happiness_enquiry_reader
     use_when: authorized enquiries or complaints, status totals, filters, selected details, and timeline questions
     not_when: refund, inspection appeal, analytics-only, policy-only, or requested message/status/action changes
@@ -74,4 +81,4 @@ known_gaps:
     description: The Portal Team Management task query endpoint is read-only but has no registered Tool. Do not invent a Tool or substitute a dashboard endpoint.
     impact: Team task-row lists and selected task details remain out of scope until the registry owns that endpoint.
 deferred:
-  - Module dashboard overview and cross-module current-work overview are implemented after account comparison across all modules.
+  - Cross-module current-work aggregation remains deferred until every visible module for a role has a verified, compatible overview result. A failed or forbidden module endpoint must not be replaced with portal display values.
