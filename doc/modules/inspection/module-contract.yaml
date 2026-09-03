@@ -13,12 +13,26 @@ intents:
     allowed_tools:
       - admin.inspectiondashboard.get-inspection-dashboard-overview
       - admin.inspectiondashboard.get-inspection-dashboard-tasklist
-    when_use: Read the authenticated Inspection user's dashboard summary, counts, workload, SLA, team context, or declared attention list for a requested period.
+    when_use: Read the authenticated Inspection user's dashboard summary, counts, workload, SLA, team context, or declared attention list for a requested period. An unqualified attention or focus question must read the Needs Your Attention overview summary first.
     when_not_use: A single task or violation detail, policy-only guidance, a cross-department aggregate, or any requested mutation, assignment, approval, export, or download.
     filters:
       date_range: date_range
       limit: integer
       attention_task_type: string
+    attention_workflow:
+      overview:
+        when: The user asks generally what needs attention or what they should focus on.
+        tool: admin.inspectiondashboard.get-inspection-dashboard-overview
+        response_fields: [needsAttentionSummary.inspectionTasksCount, needsAttentionSummary.otherTasksCount, needsAttentionSummary.totalCount]
+        rule: Do not call a task list or knowledge search for this unqualified request.
+      inspection_list:
+        when: The user explicitly asks for the Inspection Tasks attention category.
+        tool: admin.inspectiondashboard.get-inspection-dashboard-tasklist
+        parameters: { listType: needsAttentionInspection }
+      other_list:
+        when: The user explicitly asks for the Other Tasks attention category.
+        tool: admin.inspectiondashboard.get-inspection-dashboard-tasklist
+        parameters: { listType: needsAttentionOther }
 
   - id: admin_inspection_task_reader
     name: Inspection task reader

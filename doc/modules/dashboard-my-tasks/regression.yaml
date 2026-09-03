@@ -1,0 +1,37 @@
+module: dashboard-my-tasks
+portal: admin
+mode: assistant-readonly
+cases:
+  - id: dashboard-my-tasks-overview-to-category-drilldown
+    actor: licensing-officer
+    requires: [licensing_dashboard_access: true]
+    turns:
+      - user: What tasks do I currently need to complete?
+        expect:
+          skill: admin_dashboard_my_tasks
+          tool: admin.licensedashboard.get-license-dashboard-overview
+          side_effect: read
+          not_skill: general_knowledge
+          parameters: { Scope: 0, TaskCategory: 0, PriorityCardCount: 10 }
+          response_fields: [taskTabCounts, priorityCards]
+      - user: Show my Refunds tasks.
+        expect:
+          skill: admin_dashboard_my_tasks
+          tool: admin.licensedashboard.get-license-dashboard-overview
+          side_effect: read
+          parameters: { Scope: 0, TaskCategory: 3, PriorityCardCount: 10 }
+          response_fields: [priorityCards]
+  - id: dashboard-my-tasks-department-boundary
+    actor: licensing-officer
+    turns:
+      - user: Show my Content tasks.
+        expect:
+          skill: admin_content_task_reader
+          tool: admin.content.post-content-mytodopage
+          side_effect: read
+  - id: dashboard-my-tasks-read-only-boundary
+    actor: licensing-officer
+    turns:
+      - user: Approve my next task.
+        expect:
+          no_tool_call: true

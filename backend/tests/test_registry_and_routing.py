@@ -2,6 +2,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -12,7 +13,7 @@ from app.tool_gateway import ToolGateway
 from app.principal import Principal
 from app.profile_scope import profile_context_from_payload, requires_profile_switch
 from app.response_safety import is_internal_tool_protocol, strip_unverified_links
-from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, latest_skill_versions, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
+from app.skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, latest_skill_versions, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 class RegistryAndRoutingTests(unittest.TestCase):
     def test_catalog_keeps_only_latest_version_per_skill(self):
         class Record:
@@ -32,6 +33,45 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(
             [(item.skill_id, item.version) for item in selected],
             [("admin_content_dashboard_reader", 4), ("admin_service_category_reader", 2)],
+        )
+
+    def test_catalog_summary_normalizes_legacy_json_string_lists(self):
+        summary = SkillCatalogCache._summary(
+            SimpleNamespace(
+                skill_id="admin_content_dashboard_reader",
+                name="Content dashboard",
+                version=1,
+                status="PUBLISHED",
+                enabled=True,
+                content="",
+                allowed_tools='["admin.content.dashboard"]',
+                dependencies="[]",
+                domain="admin_content",
+                aliases='["content dashboard", "content workload"]',
+                positive_examples='["How many Content tasks need attention today?"]',
+                negative_examples="[]",
+                workflow={},
+            )
+        )
+        self.assertEqual(summary["aliases"], ["content dashboard", "content workload"])
+        self.assertEqual(summary["allowedTools"], ["admin.content.dashboard"])
+        self.assertEqual(recall_skill_candidates("how many expired licenses?", [summary]).candidates, [])
+
+    def test_expired_license_route_is_locked_to_the_license_reader(self):
+        catalog = [{
+            "skillId": "admin_licensing_license_reader",
+            "workflow": {
+                "deterministicRouting": [{
+                    "priority": 990,
+                    "patterns": [r"\b(?:expired|expiring)\s+licenses?\b"],
+                    "route": {"category": "api_call", "mode": "answer", "routingLocked": True},
+                }],
+            },
+        }]
+        route = resolve_configured_skill("How many expired licenses?", catalog, canonicalize=False)
+        self.assertEqual(
+            (route.skill_id, route.category, route.routing_locked),
+            ("admin_licensing_license_reader", "api_call", True),
         )
 
     def test_published_admin_skill_configuration_drives_recall_and_read_only_boundary(self):
@@ -109,6 +149,177 @@ class RegistryAndRoutingTests(unittest.TestCase):
                 },
             ),
         )
+
+    def test_dashboard_my_tasks_uses_overview_counts_and_category_follow_up(self):
+        catalog = [{
+            "skillId": "admin_dashboard_my_tasks",
+            "deterministicRouting": [
+                {
+                    "priority": 1200,
+                    "patterns": [r"\bwhat\s+tasks?\s+(?:do\s+i|i)\s+(?:currently\s+)?need\s+to\s+complete\b"],
+                    "noneTerms": ["licensing", "content", "inspection", "customer happiness"],
+                    "route": {"category": "api_call", "mode": "answer", "routingLocked": True},
+                },
+                {
+                    "priority": 1200,
+                    "patterns": [r"\b(?:show|list|tell\s+me)\s+(?:my\s+)?(?:current\s+)?tasks?\b"],
+                    "noneTerms": ["licensing", "content", "inspection", "customer happiness"],
+                    "route": {"category": "api_call", "mode": "answer", "routingLocked": True},
+                },
+            ],
+        }]
+        workflow = {
+            "routing": {
+                "defaultIntentId": "overview",
+                "intents": [
+                    {"id": "overview", "description": "Read all Dashboard My Tasks counts."},
+                    {"id": "category", "description": "Read one Dashboard My Tasks category."},
+                ],
+                "filters": {
+                    "taskCategory": {
+                        "type": "enum",
+                        "options": [
+                            {"id": "service_application", "value": 0, "label": "service application"},
+                            {"id": "refunds", "value": 3, "label": "refunds"},
+                        ],
+                    },
+                },
+            },
+            "requests": [
+                {
+                    "intentId": "overview",
+                    "toolName": "admin.licensedashboard.get-license-dashboard-overview",
+                    "arguments": {"Scope": 0, "TaskCategory": 0, "PriorityCardCount": 10},
+                },
+                {
+                    "intentId": "category",
+                    "toolName": "admin.licensedashboard.get-license-dashboard-overview",
+                    "arguments": {"Scope": 0, "PriorityCardCount": 10},
+                    "bindings": [{"filter": "taskCategory", "argument": "TaskCategory"}],
+                },
+            ],
+            "defaultToolRequest": {
+                "toolName": "admin.licensedashboard.get-license-dashboard-overview",
+                "arguments": {"Scope": 0, "TaskCategory": 0, "PriorityCardCount": 10},
+            },
+            "deterministicIntentRules": [{
+                "when": {"anyTerms": ["service application", "refunds"]},
+                "intentId": "category",
+            }],
+            "followUpRouting": [{
+                "when": {"anyTerms": ["service application", "refunds"]},
+            }],
+        }
+
+        route = resolve_configured_skill(
+            "What tasks do I currently need to complete?", catalog, canonicalize=False
+        )
+        self.assertEqual(
+            (route.skill_id, route.category, route.routing_locked),
+            ("admin_dashboard_my_tasks", "api_call", True),
+        )
+        self.assertEqual(
+            build_configured_tool_request(
+                workflow,
+                ["admin.licensedashboard.get-license-dashboard-overview"],
+                "What tasks do I currently need to complete?",
+                [],
+                intent_id="overview",
+            ),
+            (
+                "admin.licensedashboard.get-license-dashboard-overview",
+                {"Scope": 0, "TaskCategory": 0, "PriorityCardCount": 10},
+            ),
+        )
+        category_intent, category_filters = deterministic_route_directives(
+            workflow, "Show my Refunds tasks."
+        )
+        self.assertEqual(category_intent, "category")
+        self.assertEqual(category_filters, {"taskCategory": "refunds"})
+        self.assertTrue(matches_configured_follow_up_route(workflow, "Show my Refunds tasks."))
+        self.assertEqual(
+            build_configured_tool_request(
+                workflow,
+                ["admin.licensedashboard.get-license-dashboard-overview"],
+                "Show my Refunds tasks.",
+                [],
+                intent_id=category_intent,
+                filters=category_filters,
+            ),
+            (
+                "admin.licensedashboard.get-license-dashboard-overview",
+                {"Scope": 0, "PriorityCardCount": 10, "TaskCategory": 3},
+            ),
+        )
+
+    def test_inspection_attention_uses_overview_before_a_declared_tab_list(self):
+        catalog = [{
+            "skillId": "admin_inspection_dashboard_reader",
+            "workflow": {
+                "deterministicRouting": [{
+                    "priority": 1300,
+                    "patterns": [r"\bwhat\s+(?:tasks?|work|items?)\s+(?:do\s+i\s+)?need\s+(?:my\s+)?attention\b"],
+                    "route": {"category": "api_call", "mode": "answer", "routingLocked": True},
+                }],
+            },
+        }]
+        workflow = {
+            "routing": {
+                "defaultIntentId": "attention_overview",
+                "intents": [
+                    {"id": "attention_overview", "description": "Read Needs Your Attention counts only."},
+                    {"id": "attention_inspection", "description": "List Inspection Tasks that need attention."},
+                    {"id": "attention_other", "description": "List Other Tasks that need attention."},
+                ],
+            },
+            "requests": [
+                {
+                    "intentId": "attention_overview",
+                    "toolName": "admin.inspectiondashboard.get-inspection-dashboard-overview",
+                    "arguments": {"departmentId": 6, "sections": "needsAttentionSummary"},
+                },
+                {
+                    "intentId": "attention_inspection",
+                    "toolName": "admin.inspectiondashboard.get-inspection-dashboard-tasklist",
+                    "arguments": {"departmentId": 6, "listType": "needsAttentionInspection", "pageIndex": 1, "pageSize": 10},
+                },
+                {
+                    "intentId": "attention_other",
+                    "toolName": "admin.inspectiondashboard.get-inspection-dashboard-tasklist",
+                    "arguments": {"departmentId": 6, "listType": "needsAttentionOther", "pageIndex": 1, "pageSize": 10},
+                },
+            ],
+            "deterministicIntentRules": [
+                {"when": {"anyTerms": ["other tasks", "other task"]}, "intentId": "attention_other"},
+                {"when": {"allTerms": ["inspection", "task"]}, "intentId": "attention_inspection"},
+            ],
+        }
+
+        route = resolve_configured_skill("What tasks need my attention?", catalog, canonicalize=False)
+        self.assertEqual(
+            (route.skill_id, route.category, route.routing_locked),
+            ("admin_inspection_dashboard_reader", "api_call", True),
+        )
+        overview_intent, overview_filters = deterministic_route_directives(
+            workflow, "What tasks need my attention?"
+        )
+        self.assertEqual(overview_intent, "attention_overview")
+        self.assertEqual(overview_filters, {})
+        self.assertEqual(
+            build_configured_tool_request(
+                workflow,
+                [
+                    "admin.inspectiondashboard.get-inspection-dashboard-overview",
+                    "admin.inspectiondashboard.get-inspection-dashboard-tasklist",
+                ],
+                "What tasks need my attention?",
+                [],
+                intent_id=overview_intent,
+            ),
+            ("admin.inspectiondashboard.get-inspection-dashboard-overview", {"departmentId": 6, "sections": "needsAttentionSummary"}),
+        )
+        other_intent, _ = deterministic_route_directives(workflow, "Show the Other Tasks that need attention.")
+        self.assertEqual(other_intent, "attention_other")
 
     def test_published_filter_validation_rejects_invalid_top_n_and_array_types(self):
         workflow = {"routing": {"filters": {"limit": {"type": "integer", "minimum": 1}, "statuses": {"type": "string_array"}}}}

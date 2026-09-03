@@ -14,7 +14,8 @@ except ImportError:  # pragma: no cover - exercised only without the optional de
     Redis = None  # type: ignore[assignment,misc]
 
 
-SKILL_CATALOG_KEY = "dsh:skills:catalog:system:v2"
+# v3 normalizes legacy JSON-string fields and excludes superseded versions.
+SKILL_CATALOG_KEY = "dsh:skills:catalog:system:v3"
 SKILL_CACHE_TTL_SECONDS = 60
 LLM_ROUTER_MODES = {"keyword", "shadow", "llm"}
 LLM_ROUTER_MIN_CONFIDENCE = 0.60
@@ -55,18 +56,31 @@ class SkillCatalogCache:
             await self.redis.aclose()
 
     @staticmethod
+    def _text_list(value: Any) -> list[str]:
+        """Return a valid list when an older registry row stores JSON as text."""
+
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                return []
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    @staticmethod
     def _summary(item: Any) -> dict[str, Any]:
         content = str(item.content or "").strip()
         return {
             "skillId": item.skill_id,
             "name": item.name,
             "description": content[:800],
-            "allowedTools": list(item.allowed_tools or []),
-            "dependencies": list(item.dependencies or []),
+            "allowedTools": SkillCatalogCache._text_list(item.allowed_tools),
+            "dependencies": SkillCatalogCache._text_list(item.dependencies),
             "domain": getattr(item, "domain", "general") or "general",
-            "aliases": list(getattr(item, "aliases", None) or []),
-            "positiveExamples": list(getattr(item, "positive_examples", None) or []),
-            "negativeExamples": list(getattr(item, "negative_examples", None) or []),
+            "aliases": SkillCatalogCache._text_list(getattr(item, "aliases", None)),
+            "positiveExamples": SkillCatalogCache._text_list(getattr(item, "positive_examples", None)),
+            "negativeExamples": SkillCatalogCache._text_list(getattr(item, "negative_examples", None)),
             "routing": routing_contract(dict(getattr(item, "workflow", None) or {})),
             # The full routing rule is intentionally included for runtime
             # evaluation. The shorter `routing` field remains the LLM contract.

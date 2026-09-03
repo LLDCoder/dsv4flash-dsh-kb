@@ -3,6 +3,25 @@ portal: admin
 mode: assistant-readonly
 concurrency: 4
 cases:
+  - id: inspection-needs-attention-overview-to-tab-drilldown
+    actor: inspection-manager
+    requires: [inspection_dashboard_access: true]
+    turns:
+      - user: What tasks need my attention?
+        expect:
+          skill: admin_inspection_dashboard_reader
+          tool: admin.inspectiondashboard.get-inspection-dashboard-overview
+          side_effect: read
+          not_skill: general_knowledge
+          parameters: { departmentId: 6, sections: needsAttentionSummary }
+          response_fields: [needsAttentionSummary.inspectionTasksCount, needsAttentionSummary.otherTasksCount, needsAttentionSummary.totalCount]
+      - user: Show the Other Tasks that need attention.
+        expect:
+          skill: admin_inspection_dashboard_reader
+          tool: admin.inspectiondashboard.get-inspection-dashboard-tasklist
+          side_effect: read
+          parameters: { departmentId: 6, listType: needsAttentionOther, pageIndex: 1 }
+
   - id: inspection-dashboard-overview
     actor: inspection-manager
     requires: [inspection_dashboard_access: true]
