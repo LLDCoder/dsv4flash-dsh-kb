@@ -8,12 +8,26 @@ cases:
   - id: current-work-overview-licensing-manager
     actor: licensing-manager
     turns:
-      - user: What is my current task overview for the last 7 days?
+      - user: What is my current Licensing task overview for the last 7 days?
         expect:
           skill: admin_current_work_overview
           tool: admin.licensedashboard.get-license-dashboard-overview
           side_effect: read
           parameters: [StartDate, EndDate]
+  - id: current-work-overview-department-required
+    actor: happiness-leader
+    turns:
+      - user: What is my current task overview for the last 7 days?
+        expect:
+          skill: admin_dashboard_scope_clarification
+          no_tool_call: true
+          response: Ask which department dashboard is needed; do not default to Licensing or aggregate modules.
+      - user: Customer Happiness.
+        expect:
+          skill: admin_customer_happiness_dashboard_reader
+          tool: admin.customerhappinessdashboard.get-customerhappiness-dashboard-overview
+          side_effect: read
+          parameters: { StartDate: runtime_last_7_days_start, EndDate: runtime_today }
   - id: current-work-overview-action-boundary
     actor: licensing-manager
     turns:

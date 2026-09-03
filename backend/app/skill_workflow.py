@@ -267,6 +267,59 @@ def matches_configured_follow_up_route(workflow: dict[str, Any] | None, text: st
     )
 
 
+def configured_clarification_follow_up_skill(
+    workflow: dict[str, Any] | None,
+    text: str,
+) -> str | None:
+    """Return a database-declared target Skill after a clarification turn.
+
+    This is intentionally generic: the active Skill owns its answer choices
+    and target Skill IDs, so runtime code never encodes business departments.
+    """
+
+    for rule in (workflow or {}).get("clarificationFollowUps", []):
+        if not isinstance(rule, dict) or not _matches(text, rule.get("when")):
+            continue
+        target_skill_id = str(rule.get("targetSkillId") or "").strip()
+        if target_skill_id:
+            return target_skill_id
+    return None
+
+
+def inherit_configured_clarification_filters(
+    workflow: dict[str, Any] | None,
+    filters: dict[str, Any] | None,
+    history: list[Any],
+    *,
+    source_skill_id: str,
+) -> dict[str, Any]:
+    """Carry compatible filters from a declared clarification into its target.
+
+    Only target filters that are also explicitly declared on the clarification
+    route are copied. This preserves context such as a requested date range
+    without making arbitrary conversation data part of a Tool request.
+    """
+
+    merged = dict(filters or {})
+    target_filters = dict(((workflow or {}).get("routing") or {}).get("filters") or {})
+    if not target_filters or not source_skill_id:
+        return merged
+    for event in reversed(history):
+        if getattr(event, "event_type", "") != "skill.route":
+            continue
+        payload = getattr(event, "event_json", {}) or {}
+        if payload.get("skillId") != source_skill_id or not isinstance(payload.get("filters"), dict):
+            continue
+        for name, value in payload["filters"].items():
+            specification = target_filters.get(name)
+            if name not in merged and isinstance(specification, dict):
+                normalized = _normalized_filter_value(specification, value)
+                if normalized is not None:
+                    merged[name] = normalized
+        return merged
+    return merged
+
+
 def inherit_declared_filters(
     workflow: dict[str, Any] | None,
     filters: dict[str, Any] | None,

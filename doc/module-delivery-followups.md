@@ -56,9 +56,11 @@ business router.
   authorized modules distinct.
 - Do not call export, assignment, approval, rejection, or any business-write
   operation.
-- Start with a single-module answer when the user names a module. Cross-module
-  aggregation remains deferred until every visible module for the same role
-  returns compatible authorized read evidence.
+- Start with a single-module answer when the user names a module. An unqualified
+  "my current overview" must ask which department is intended; it must not
+  silently default to Licensing. Cross-module aggregation remains deferred until
+  every visible module for the same role returns compatible authorized read
+  evidence.
 
 This must be configured in the database and added to each relevant module's
 contract/regression suite. It does not require a new hard-coded business Skill
@@ -71,6 +73,7 @@ or a Portal API change.
 | DASH-01 | The Licensing Dashboard Tool originally passed display labels for scope and task category, while the Portal endpoint expects numeric enums. | Resolved: publish the numeric bindings in `admin_current_work_overview`; real Chatbot E2E now returns the authenticated overview. |
 | DASH-03 | Content Manager has visible Dashboard UI state, but the source-defined `Content/Dashboard/Overview` request returns `Content.Dashboard.Section.Forbidden` directly with the same browser bearer token. | Keep Content out of cross-module aggregation; repair the Portal endpoint's permitted-section contract before enabling the dashboard Skill result. Do not copy UI values into Chatbot output. |
 | DASH-02 | Broad module-level write-boundary aliases can incorrectly claim an unrelated operational action even while safely refusing it. | Current-work action requests now have a higher-priority, database-declared overview-specific boundary. Future boundary rules must include module context or a more specific intent before using generic action terms. |
+| DASH-04 | A generic "my current task overview" matched the Licensing reader even for a Customer Happiness dashboard user, because its deterministic phrase had no department boundary. | Resolved by database configuration and a generic clarification-follow-up workflow: Licensing routing now requires an explicit Licensing term; the no-Tool clarification asks for a department; the chosen Dashboard Skill inherits only the declared date range. Real two-turn Happiness E2E invoked only its overview Tool with the original range. No cross-module aggregate is inferred. |
 
 ## Role And Fixture Matrix
 
@@ -105,7 +108,7 @@ regression files use role aliases, never credentials.
 | ID | Gap or risk | Completion evidence |
 | --- | --- | --- |
 | INS-01 | A staff query for a live personal task list fell back to general knowledge when the LLM router was unavailable. A knowledge answer must never substitute for live, authorized operational data. | A narrowly scoped, database-managed deterministic route for “my Inspection tasks” now locks the task reader and its existing read Tool. The real staff E2E list and ordinal-detail turns both produced successful Tool calls. |
-| INS-02 | The current manager and staff E2E evidence covers task list/detail, violation list/detail, task counts, risk insights, team performance, knowledge guidance, and the write boundary. | Inspection Manager protocol E2E now also proves date inheritance plus High-priority correction (`PriorityId=2`); the current Todo response is an authorized empty fixture. Run remaining hybrid and authorized-no-data cases with trace assertions. |
+| INS-02 | The current manager and staff E2E evidence covers task list/detail, violation list/detail, task counts, risk insights, team performance, knowledge guidance, and the write boundary. | Inspection Manager protocol E2E now also proves date inheritance plus High-priority correction (`PriorityId=2`); the current Todo response is an authorized empty fixture. The selected-task hybrid guidance E2E is complete; retain only authorized no-data fixtures for future re-check. |
 | INS-03 | Risk insights, team performance, and task-count prompts previously depended on LLM intent selection and could fall back to general knowledge or a list Tool. | Resolved with database-declared deterministic routes and intents. Real Manager E2E now locks the appropriate reader, passes the requested date window where applicable, and invokes the registered read Tool. |
 | INS-04 | A vague “What reporting guidance applies to this task?” follow-up had no selected task identifier and incorrectly re-ran the Todo list Tool. | Resolved generically. A browser E2E without context routes to `reference_clarification` with no Tool call. A selected-item follow-up now calls the read-only task-detail Tool for the captured ID, then `knowledge.search` restricted to the Inspection folder. The answer combines both evidence sources and does not write Portal data. |
 

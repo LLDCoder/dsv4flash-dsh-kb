@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.skills import build_system_prompt, requires_reference_context, resolve_configured_skill, resolve_skill
-from app.skill_workflow import build_configured_hybrid_knowledge_request, build_configured_tool_request, deterministic_route_directives, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
+from app.skill_workflow import build_configured_hybrid_knowledge_request, build_configured_tool_request, configured_clarification_follow_up_skill, deterministic_route_directives, inherit_configured_clarification_filters, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
@@ -159,6 +159,43 @@ class RegistryAndRoutingTests(unittest.TestCase):
                 [Event()],
             ),
             ("records.detail", {"id": 7}),
+        )
+
+    def test_database_declared_clarification_follow_up_selects_only_its_target_skill(self):
+        workflow = {
+            "clarificationFollowUps": [
+                {
+                    "when": {"anyTerms": ["customer happiness", "happiness"]},
+                    "targetSkillId": "admin_customer_happiness_dashboard_reader",
+                },
+            ],
+        }
+        self.assertEqual(
+            configured_clarification_follow_up_skill(workflow, "Customer Happiness"),
+            "admin_customer_happiness_dashboard_reader",
+        )
+        self.assertIsNone(configured_clarification_follow_up_skill(workflow, "Licensing"))
+
+    def test_database_declared_clarification_carries_only_target_declared_filters(self):
+        class Event:
+            event_type = "skill.route"
+            event_json = {
+                "skillId": "dashboard.scope",
+                "filters": {
+                    "dateRange": {"start": "2026-08-28", "end": "2026-09-03"},
+                    "unrelated": "must not carry",
+                },
+            }
+
+        workflow = {"routing": {"filters": {"dateRange": {"type": "date_range"}}}}
+        self.assertEqual(
+            inherit_configured_clarification_filters(
+                workflow,
+                {},
+                [Event()],
+                source_skill_id="dashboard.scope",
+            ),
+            {"dateRange": {"start": "2026-08-28", "end": "2026-09-03"}},
         )
 
     def test_locked_route_extracts_only_declared_generic_date_and_limit_filters(self):

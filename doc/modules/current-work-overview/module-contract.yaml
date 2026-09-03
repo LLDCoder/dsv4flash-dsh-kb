@@ -4,15 +4,23 @@ actor_aliases: [licensing-manager]
 intents:
   - id: current-work-overview.licensing
     skill: admin_current_work_overview
-    when_use: Read the authenticated Licensing user's current task overview, personal/team scope, priority cards, and time window. Portal enum parameters are database-bound as numeric values rather than display labels.
-    when_not_use: Do not use for approval, assignment, export, or a cross-department aggregation not supported by live Tool evidence.
+    when_use: Read the authenticated Licensing user's explicitly requested Licensing task overview, personal/team scope, priority cards, and time window. Portal enum parameters are database-bound as numeric values rather than display labels.
+    when_not_use: Do not use for an unspecified department, another named department, approval, assignment, export, or a cross-department aggregation not supported by live Tool evidence.
     tools: [admin.licensedashboard.get-license-dashboard-overview]
     parameters: [scope, task_category, date_range, priority_card_count]
     side_effect: read
+  - id: current-work-overview.department-required
+    skill: admin_dashboard_scope_clarification
+    when_use: The user asks for a current task, work, or dashboard overview without naming a department and there is no supported, verified cross-department aggregate.
+    when_not_use: The user names Licensing, Content, Inspection, or Customer Happiness; route to that department's dashboard reader instead.
+    tools: []
+    side_effect: none
   - id: current-work-overview.actions.refuse
     skill: admin_current_work_overview_read_only_boundary
     tools: []
     side_effect: none
 scope_boundary:
   - Tool results are token-scoped; distinguish personal and team metrics in the answer.
+  - An unqualified overview must ask for a department. It must not silently default to Licensing based on a shared dashboard phrase.
+  - A department selected in the immediately following turn is a database-declared clarification follow-up and invokes only that department's registered overview Tool.
   - Cross-module aggregation is not claimed until a supported read-only multi-tool composition is verified.

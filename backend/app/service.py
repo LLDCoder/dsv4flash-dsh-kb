@@ -23,7 +23,7 @@ from .profile_scope import ProfileContext, profile_context_from_payload, profile
 from .response_safety import is_internal_tool_protocol, strip_unverified_links
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
-from .skill_workflow import build_configured_hybrid_knowledge_request, build_configured_tool_request, deterministic_route_directives, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, selection_snapshot_for_tool_result
+from .skill_workflow import build_configured_hybrid_knowledge_request, build_configured_tool_request, configured_clarification_follow_up_skill, deterministic_route_directives, inherit_configured_clarification_filters, inherit_declared_filters, mask_tool_result, matches_configured_follow_up_route, matches_configured_selection_follow_up, normalize_route_directives, selection_snapshot_for_tool_result
 from .skills import (
     SkillRoute,
     build_flow_prompt,
@@ -674,6 +674,7 @@ class DSHService:
                     if route_context.get("recentMessages") and route_context["recentMessages"][-1].get("role") == "user" and route_context["recentMessages"][-1].get("content") == latest_content:
                         route_context["recentMessages"] = route_context["recentMessages"][:-1]
                     active_skill_id = str(route_context.get("activeSkillId") or "")
+                    clarification_source_skill_id: str | None = None
                     if not active_skill_id and requires_reference_context(latest_content):
                         keyword_route = SkillRoute(
                             "reference_clarification",
@@ -707,11 +708,25 @@ class DSHService:
                         )
                         active_skill = active_skill_result.scalars().first()
                         active_workflow = merged_skill_workflow(active_skill.skill_id, active_skill.workflow) if active_skill else {}
+                        clarification_target = configured_clarification_follow_up_skill(
+                            active_workflow,
+                            latest_content,
+                        )
+                        if clarification_target and any(
+                            str(item.get("skillId") or "") == clarification_target
+                            for item in route_catalog
+                        ):
+                            clarification_source_skill_id = active_skill_record_id
+                            keyword_route = self.route_shape_for_skill(
+                                clarification_target,
+                                route_catalog,
+                                routing_locked=True,
+                            )
                         # A current, locked route is more specific than an
                         # inherited selection context. In particular, a
                         # read-only action boundary must never trigger a
                         # prior record-detail Tool before refusing the action.
-                        if active_skill and not keyword_route.routing_locked and (
+                        elif active_skill and not keyword_route.routing_locked and (
                             matches_configured_selection_follow_up(active_workflow, latest_content, history)
                             or matches_configured_follow_up_route(active_workflow, latest_content)
                         ):
@@ -740,6 +755,13 @@ class DSHService:
                         route_metadata["filters"] = filters
                     if selected_skill:
                         selected_workflow = merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow)
+                        if clarification_source_skill_id:
+                            route_metadata["filters"] = inherit_configured_clarification_filters(
+                                selected_workflow,
+                                route_metadata.get("filters"),
+                                history,
+                                source_skill_id=clarification_source_skill_id,
+                            )
                         route_metadata["filters"] = inherit_declared_filters(
                             selected_workflow,
                             route_metadata.get("filters"),
