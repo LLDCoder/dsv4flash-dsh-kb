@@ -10,7 +10,6 @@ from .console_auth import ConsoleAuthMiddleware
 from .db import ConfigEntry, SessionLocal, init_db
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
-from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .runtime import RuntimeManager
 from .service import DSHService, EventBroker
@@ -21,16 +20,14 @@ settings = get_settings()
 runtime_manager = RuntimeManager(settings.runtime_idle_ttl_seconds)
 broker = EventBroker()
 llm = LLMAdapter(settings)
-ocr = OCRGatewayClient(settings)
 knowledge = KnowledgeGatewayClient(settings)
 platform = PlatformGatewayClient(settings)
-service = DSHService(runtime_manager, llm, broker, ocr, knowledge, platform)
+service = DSHService(runtime_manager, llm, broker, knowledge, platform)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    await service.skill_catalog.invalidate()
     # Re-apply operator-managed live settings after every container restart.
     # The DB/Redis URLs remain restart-only because their pools are constructed
     # before the application lifespan begins.
@@ -64,7 +61,6 @@ async def lifespan(app: FastAPI):
         await task
     with suppress(asyncio.CancelledError):
         await audit_task
-    await service.skill_catalog.close()
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
@@ -81,7 +77,6 @@ async def healthz():
         "runtimeMode": "embedded-lease-mvp",
         "umcPortal": settings.umc_portal_name,
         "umcBaseUrl": settings.umc_base_url,
-        "ocrGateway": settings.ocr_gateway_url,
         "knowledgeGateway": settings.knowledge_gateway_url,
         "platformGateway": settings.platform_gateway_url,
     }

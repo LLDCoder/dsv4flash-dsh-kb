@@ -1,0 +1,177 @@
+captured_at: 2026-09-04
+source: serialized_browser_sessions_and_get_user_info
+accounts_checked: 18
+credential_material_stored: false
+identity_verification: get_user_info_email_matched_source_account
+
+fingerprints:
+  - id: L1
+    accounts: 1
+    roles: [Foreign Media Manager, Licensing Manager]
+    roots: [Dashboard, Licensing, Customer Happiness]
+    dashboard_scope: team
+    dashboard_regions: [My Tasks, Team Performance, task statistics, license status distribution, coaching, emergency, needs attention]
+
+  - id: L2_L3
+    accounts: 2
+    roles: [Licensing Officer]
+    roots: [Dashboard, Licensing]
+    licensing_pages: [Applications, Licenses, Profile Verification, Reports, Analytics]
+    button_permissions: 19
+    dashboard_scope: personal
+    dashboard_regions: [My Tasks, personal performance, performance trend, needs attention]
+
+  - id: L4
+    accounts: 1
+    roles: [Foreign Media Officer]
+    licensing_pages: [Applications, Licenses, Profile Verification, Reports, Analytics]
+    button_permissions: 16
+
+  - id: L5
+    accounts: 1
+    roles: [Foreign Media Manager]
+    licensing_pages: [Applications, Licenses, Profile Verification, Reports, Analytics, Team Management]
+    button_permissions: 22
+    dashboard_scope: team
+
+  - id: C1
+    accounts: 1
+    roles: [Content Manager]
+    roots: [Dashboard, Content, Inspection, Customer Happiness]
+    distinguishing_pages: [Content Team Management, Customer Reports]
+    dashboard_scope: team
+
+  - id: C2
+    accounts: 1
+    roles: [Content Supervisor]
+    roots: [Dashboard, Content, Inspection, Customer Happiness]
+    distinguishing_pages: [Content read pages, Inspection Violations, Customer Tickets, Customer Refunds, Customer Appeals]
+    customer_reports: false
+
+  - id: C3
+    accounts: 1
+    roles: [Content Officer]
+    roots: [Dashboard, Content, Inspection, Customer Happiness]
+    distinguishing_pages: [Content read pages, Inspection Violations, Customer Tickets, Customer Refunds, Customer Appeals]
+
+  - id: H1
+    accounts: 1
+    roles: [Customer Happiness Manager]
+    roots: [Dashboard, Customer Happiness, Communications]
+    distinguishing_pages: [Team Management, Customer Management, Reports]
+    dashboard_scope: team
+
+  - id: H2
+    accounts: 1
+    roles: [Customer Happiness Agent]
+    roots: [Dashboard, Customer Happiness, Communications]
+    team_management: false
+    dashboard_scope: personal
+
+  - id: I1
+    accounts: 1
+    roles: [Inspection Manager]
+    roots: [Dashboard, Inspection, Customer Happiness]
+    inspection_pages: [Team Management, Tasks, Violations, Reports]
+    dashboard_scope: team
+
+  - id: I2
+    accounts: 1
+    roles: [Inspector]
+    roots: [Dashboard, Inspection, Customer Happiness]
+    inspection_pages: [Tasks, Violations]
+    dashboard_scope: personal
+
+  - id: I3
+    accounts: 1
+    roles: [Compliance Committee]
+    roots: [Dashboard, Inspection, Customer Happiness]
+    inspection_pages: [Violations]
+    common_menu: false
+
+  - id: F1
+    accounts: 1
+    roles: [Finance Officer]
+    roots: [Customer Happiness, Finance]
+    dashboard_access: false
+    distinguishing_pages: [Customer Refunds, Finance Transactions, Finance Refunds, Finance Reports]
+
+  - id: T1
+    accounts: 1
+    roles: [Super Administrator]
+    roots: [Dashboard, all business root modules]
+    dashboard_scope: global
+
+  - id: T2_T4
+    accounts: 2
+    roles: [System Administrator]
+    roots: [Service, Communications, Settings]
+    dashboard_access: false
+
+  - id: T3
+    accounts: 1
+    roles: [CMS Staff]
+    get_user_info_roles: []
+    get_user_info_permissions: []
+    observed_menu: [Admin, Notifications]
+    classification: permission_source_mismatch
+    required_reader_behavior: do_not_trust_menu_or_navigate_without_get_user_info_permission
+
+licensing_first_release:
+  task_list:
+    path: /licensing/applications
+    regions: [To Do, Completed, search, type filter, status filter, pagination]
+    detail_navigation: row_to_application_details
+    forbidden_controls: [Export]
+  profile_verification:
+    path: /licensing/profile
+    regions: [type statistics, search, status filter, type filter, last updated date filter, pagination]
+    detail_regions: [summary, establishment, documents, address]
+    forbidden_controls: [Approve, Reject]
+  licenses:
+    path: /licensing/licenses
+    regions: [status statistics, search, date filter, status filter, pagination]
+    detail_regions: [status, dates, related application, profile overview, application overview]
+    forbidden_controls: [Export, Download, Suspend]
+
+network_policy_evidence:
+  source_confirmed_get_paths:
+    - /api/license/dashboard/overview
+    - /api/license/dashboard/license-distribution
+    - /api/license/dashboard/performance
+    - /api/license/dashboard/performance-trend
+    - /api/license/dashboard/members-needing-coaching
+    - /api/license/dashboard/members-on-leave
+    - /api/license/dashboard/needs-attention
+    - /api/Content/Dashboard/Overview
+    - /api/Content/Dashboard/TaskList
+    - /api/Inspection/Dashboard/Overview
+    - /api/Inspection/Dashboard/TaskList
+    - /api/CustomerHappiness/Dashboard/Overview
+    - /api/CustomerHappiness/Dashboard/TaskList
+    - /api/AdminUser/LoginMethod
+    - /api/UserManagement/GetAdminUserAsync
+    - /api/TypeDictionary/GetTypeDictionaries/ServiceConfigServiceType
+    - /api/Application/UrgenCount
+    - /api/UserManagement/UserProfile/Approves
+    - /api/UserManagement/UserProfile/UserTypes
+    - /api/UserManagement/UserProfile/Status
+    - /api/UserManagement/UserProfile/Type/Count
+    - /api/LicenseManagement/statistics
+    - /api/TypeDictionary/GetTypeDictionaries/CertificateStatus
+    - /api/Application/MyReviewDetail/:taskId
+    - /api/UserManagement/UserProfile/:id/Personal
+    - /api/UserManagement/UserProfile/:id/Establishment
+    - /api/UserManagement/UserProfile/:id/Partners
+    - /api/LicenseManagement/:id
+  allowed_static_fetch_paths:
+    - /config.json
+  allowed_post_paths:
+    - /api/AdminUser/GetUserInfo
+    - /api/Application/MyComplatedPage
+    - /api/Application/MyTodoPage
+    - /api/LicenseManagement/list
+  explicitly_blocked_automatic_calls:
+    - POST /api/Document/OriginalNames
+    - POST /api/clientlog/report
+    - GET /api/Document/Dowload

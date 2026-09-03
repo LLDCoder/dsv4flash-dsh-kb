@@ -13,7 +13,6 @@ class Principal:
     tenant_id: str
     request_id: str
     token_ref: str | None = None
-    profile_id: str | None = None
     # The caller's UMC token is kept in memory for the lifetime of one
     # request/turn only. It is never serialized into session events or logs.
     umc_token: str | None = None

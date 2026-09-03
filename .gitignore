@@ -1,5 +1,6 @@
 .env
 .env.lite
+.env.admin.postgres18.local
 __pycache__/
 *.py[cod]
 .pytest_cache/

@@ -1,32 +1,25 @@
 import asyncio
-import base64
 import hmac
 import json
 import logging
-from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import parse_qs
 from uuid import uuid4
 
 import httpx
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import String, cast, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError
 
 from .config import config_catalog, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
-from .customer_documents import CustomerDocumentNotConfigured
-from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, Tool, get_db
+from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
-from .profile_scope import normalize_profile_scope
-from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
+from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
-from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key, is_system_default_tool, system_default_tool_definitions
-from .umc_auth import UMCAuthError
 
 # Uvicorn configures this logger at INFO for container output. Using it keeps
 # correlation records visible without changing the global logging policy.
@@ -36,58 +29,11 @@ logger = logging.getLogger("uvicorn.error")
 def make_router(service: DSHService) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
 
-    def token_profile_id(token: str | None) -> str | None:
-        if not token:
-            return None
-        try:
-            part = token.split(".")[1]
-            part += "=" * (-len(part) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(part).decode("utf-8"))
-            value = claims.get("UserProFileId")
-            return str(value).strip() if isinstance(value, (str, int)) and str(value).strip() else None
-        except (ValueError, KeyError, IndexError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-
     def raw_config_value(item: ConfigEntry) -> object:
         value = item.value
         if isinstance(value, dict) and "value" in value and len(value) == 1:
             return value["value"]
         return value
-
-    async def chat_principal(
-        request: Request,
-        x_user_id: str | None = Header(default=None),
-        x_tenant_id: str | None = Header(default=None),
-        x_request_id: str | None = Header(default=None),
-        authorization: str | None = Header(default=None),
-    ) -> Principal:
-        """Compatibility identity for the 18085 customer chatbot contract.
-
-        The gateway normally injects X-User-Id.  The browser chatbot only has
-        the UMC bearer token, so derive a stable user id from its JWT claims
-        when the trusted header is absent.  The token itself is still kept
-        request-scoped and forwarded to UMC tools by DSHService.
-        """
-        user_id = x_user_id
-        raw = _bearer_token(authorization)
-        if not user_id and raw:
-            try:
-                part = raw.split(".")[1]
-                part += "=" * (-len(part) % 4)
-                claims = json.loads(base64.urlsafe_b64decode(part).decode("utf-8"))
-                user_id = claims.get("umc_user_id") or claims.get("user_id") or claims.get("UserID") or claims.get("sub")
-            except (ValueError, KeyError, IndexError, UnicodeDecodeError, json.JSONDecodeError):
-                user_id = None
-        if not user_id:
-            raise HTTPException(status_code=401, detail="missing chatbot session token")
-        return Principal(
-            user_id=str(user_id),
-            tenant_id=x_tenant_id or f"umc:global:{user_id}",
-            request_id=x_request_id or str(uuid4()),
-            token_ref=_token_reference(authorization),
-            umc_token=raw,
-            profile_id=token_profile_id(raw),
-        )
 
     async def stored_console_password(db: AsyncSession) -> str:
         result = await db.execute(
@@ -145,149 +91,10 @@ def make_router(service: DSHService) -> APIRouter:
         response.delete_cookie(key=CONSOLE_SESSION_COOKIE, path="/")
         return response
 
-    @router.get("/ai-chat/config", tags=["Chatbot compatibility"])
-    async def ai_chat_config(principal: Principal = Depends(chat_principal)):
-        return {
-            "enabled": True,
-            "streaming": True,
-            "name": "NMA Assistant",
-            "description": "National Media Authority assistant",
-            "suggested_questions": [],
-        }
-
-    @router.get("/ai-chat/conversations", tags=["Chatbot compatibility"])
-    async def ai_chat_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
-        result = await db.execute(select(Conversation).where(Conversation.tenant_id == principal.tenant_id, Conversation.user_id == principal.user_id).order_by(Conversation.last_activity_at.desc()))
-        return {"conversations": [service.conversation_json(item) for item in result.scalars().all()]}
-
-    @router.get("/ai-chat/conversations/{conversation_id}/messages", tags=["Chatbot compatibility"])
-    async def ai_chat_messages(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
-        try:
-            conversation = await service.get_owned_conversation(db, principal, conversation_id)
-        except LookupError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        events = await service.list_events(db, conversation, after_seq=0)
-        messages = []
-        for event in events:
-            if event.event_type not in {"user.message", "assistant.message"}:
-                continue
-            messages.append({"id": f"{conversation_id}:{event.seq}", "role": "user" if event.event_type == "user.message" else "assistant", "content": event.event_json.get("content", ""), "created_at": event.created_at.isoformat() if event.created_at else None})
-        return {"conversation_id": conversation_id, "messages": messages}
-
-    @router.delete("/ai-chat/conversations/{conversation_id}", tags=["Chatbot compatibility"])
-    async def ai_chat_delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
-        try:
-            conversation = await service.get_owned_conversation(db, principal, conversation_id)
-        except LookupError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        await db.execute(delete(SessionEvent).where(SessionEvent.conversation_id == conversation_id))
-        await db.execute(delete(AuditRecord).where(AuditRecord.conversation_id == conversation_id))
-        await db.execute(delete(MessageIdempotency).where(MessageIdempotency.conversation_id == conversation_id))
-        await db.delete(conversation)
-        await db.commit()
-        return {"deleted": True, "conversation_id": conversation_id}
-
-    @router.post("/ai-chat/messages/stream", tags=["Chatbot compatibility"])
-    async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
-        payload = await request.json()
-        content = str(payload.get("message") or "").strip()
-        if not content:
-            raise HTTPException(status_code=422, detail="message is required")
-        conversation_id = request.headers.get("X-FF-Conversation-ID") or payload.get("conversation_id")
-        if conversation_id:
-            try:
-                conversation = await service.get_owned_conversation(db, principal, str(conversation_id))
-            except LookupError as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
-        else:
-            conversation = await service.create_conversation(db, principal, "default", "default", "default")
-            conversation_id = conversation.conversation_id
-        client_message_id = str(payload.get("request_id") or uuid4())
-        queue = service.broker.subscribe(str(conversation_id))
-        try:
-            accepted = await service.submit_message(principal, str(conversation_id), content, client_message_id)
-        except LookupError as exc:
-            service.broker.unsubscribe(str(conversation_id), queue)
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        async def stream() -> AsyncIterator[str]:
-            yield f"event: accepted\ndata: {json.dumps(accepted, ensure_ascii=False)}\n\n"
-            try:
-                while True:
-                    event = await asyncio.wait_for(queue.get(), timeout=max(120.0, service.settings.llm_timeout_seconds + 30.0))
-                    event_type = event.get("eventType")
-                    data = event.get("data") or {}
-                    if event_type == "assistant.chunk":
-                        yield f"event: token\ndata: {data.get('content', '')}\n\n"
-                    elif event_type == "assistant.status":
-                        # Additive, safe progress event for SSE clients. It
-                        # contains no prompts, tool arguments, or raw reasoning.
-                        yield f"event: status\ndata: {json.dumps({'phase': data.get('phase'), 'state': data.get('state'), 'message': data.get('message')}, ensure_ascii=False)}\n\n"
-                    elif event_type == "runtime.error":
-                        yield f"event: error\ndata: {json.dumps({'detail': data.get('error', 'runtime error')}, ensure_ascii=False)}\n\n"
-                        yield "event: end\ndata: [DONE]\n\n"
-                        break
-                    elif event_type in {"turn.completed", "turn.cancelled"}:
-                        yield "event: end\ndata: [DONE]\n\n"
-                        break
-            except asyncio.TimeoutError:
-                yield "event: error\ndata: {\"detail\":\"chat response timed out\"}\n\n"
-                yield "event: end\ndata: [DONE]\n\n"
-            finally:
-                service.broker.unsubscribe(str(conversation_id), queue)
-
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "X-FF-Conversation-ID": str(conversation_id)})
-
     @router.post("/conversations")
     async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        conversation = await service.create_conversation(db, principal, payload.workspace, payload.skill_profile, payload.runtime_profile)
+        conversation = await service.create_conversation(db, principal, payload.workspace)
         return service.conversation_json(conversation)
-
-    @router.post("/umc/session")
-    async def get_umc_session(refresh: bool = Query(default=False), principal: Principal = Depends(get_principal)):
-        """Return a cached UMC token for the configured service account.
-
-        The raw token is necessary for the browser WebSocket and upload proxy,
-        but it is held only in the page and backend memory; it is not stored in
-        conversation events or returned by the configuration API.
-        """
-        try:
-            session = await service.umc_auth.get_session(force_refresh=refresh)
-            token = session.get("token") if isinstance(session, dict) else None
-            logger.info(
-                "umc_session_issued request_id=%s token_ref=%s refresh=%s",
-                principal.request_id,
-                _token_reference(f"Bearer {token}") if isinstance(token, str) else None,
-                refresh,
-            )
-            return session
-        except UMCAuthError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    @router.post("/umc/documents/upload")
-    async def upload_umc_document(file: UploadFile = File(...), principal: Principal = Depends(get_principal)):
-        """Proxy attachment uploads through the selected UMC portal backend."""
-
-        if not principal.umc_token:
-            raise HTTPException(status_code=401, detail="UMC authentication is required to upload a document")
-        try:
-            content = await file.read()
-            status_code, payload = await service.documents.upload(
-                file.filename or "attachment",
-                content,
-                mime_type=file.content_type,
-                umc_token=principal.umc_token,
-            )
-        except CustomerDocumentNotConfigured as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except PermissionError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"UMC upload failed: {exc.__class__.__name__}") from exc
-        if status_code >= 400:
-            detail = payload if isinstance(payload, (dict, list, str)) else "UMC upload failed"
-            raise HTTPException(status_code=status_code, detail=detail)
-        return payload if isinstance(payload, (dict, list)) else {"data": payload}
 
     def pagination_json(total: int, page: int, page_size: int) -> dict[str, int]:
         return {
@@ -558,8 +365,6 @@ def make_router(service: DSHService) -> APIRouter:
                 conversation_id,
                 payload.content,
                 payload.client_message_id,
-                payload.attachment.model_dump(by_alias=True) if payload.attachment else None,
-                payload.profile_context,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -642,7 +447,6 @@ def make_router(service: DSHService) -> APIRouter:
     async def get_config(scope: str = "system", db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
         result = await db.execute(select(ConfigEntry).where(ConfigEntry.scope == scope))
         entries = {item.key: item for item in result.scalars().all()}
-        fallback_options = await knowledge_fallback_options(db)
         settings = get_settings()
         items: list[dict[str, object]] = []
         for spec in config_catalog():
@@ -659,7 +463,7 @@ def make_router(service: DSHService) -> APIRouter:
                     "env": spec.get("env"),
                     "secret": secret,
                     "multiline": bool(spec.get("multiline")),
-                    "options": fallback_options if spec.get("dynamicOptions") == "knowledge_fallback_skills" else list(spec.get("options", [])),
+                    "options": list(spec.get("options", [])),
                     "description": spec.get("description"),
                     "restartRequired": bool(spec.get("restartRequired")),
                     "configured": configured,
@@ -682,10 +486,6 @@ def make_router(service: DSHService) -> APIRouter:
                     status_code=403,
                     detail="audit administrator scope can only be changed by an existing audit administrator",
                 )
-            if key == "skill_router_fallback_skill_id":
-                valid_ids = {item["value"] for item in await knowledge_fallback_options(db)}
-                if not isinstance(value, str) or value not in valid_ids:
-                    raise HTTPException(status_code=422, detail={"code": "invalid_knowledge_fallback", "message": "fallback Skill must be published, enabled, and only bind knowledge.search"})
             spec = next(item for item in config_catalog() if item["key"] == key)
             # A blank secret or the display mask means “leave the existing
             # credential unchanged”; operators can replace it by entering a
@@ -727,246 +527,16 @@ def make_router(service: DSHService) -> APIRouter:
         query = select(Skill).order_by(Skill.skill_id, Skill.version.desc())
         if scope:
             query = query.where(Skill.scope == scope)
-        skill_match = text_match(search, Skill.skill_id, Skill.name, Skill.source, Skill.status, Skill.scope, Skill.domain, Skill.content, cast(Skill.aliases, String))
+        skill_match = text_match(search, Skill.skill_id, Skill.name, Skill.source, Skill.status, Skill.scope, Skill.content)
         if skill_match is not None:
             query = query.where(skill_match)
         items, total = await paged_items(db, query, page=page, page_size=page_size)
         return {
-            "items": [{"skillId": item.skill_id, "name": item.name, "version": item.version, "source": item.source, "status": item.status, "scope": item.scope, "enabled": item.enabled, "allowedTools": item.allowed_tools, "dependencies": item.dependencies, "domain": item.domain, "aliases": item.aliases, "positiveExamples": item.positive_examples, "negativeExamples": item.negative_examples, "workflow": item.workflow, "content": item.content, "updatedBy": item.updated_by} for item in items],
+            "items": [{"skillId": item.skill_id, "name": item.name, "version": item.version, "source": item.source, "status": item.status, "scope": item.scope, "enabled": item.enabled, "allowedTools": item.allowed_tools, "dependencies": item.dependencies, "content": item.content, "updatedBy": item.updated_by} for item in items],
             "search": (search or "").strip() or None,
             **pagination_json(total, page, page_size),
         }
 
-    def tool_json(item: Tool) -> dict[str, Any]:
-        return {
-            "toolName": item.tool_name,
-            "displayName": item.display_name,
-            "description": item.description,
-            "operationId": item.operation_id,
-            "httpMethod": item.http_method,
-            "httpPath": item.http_path,
-            "interfaceKey": item.interface_key,
-            "parameters": item.parameters,
-            "responseSchema": item.response_schema,
-            "authStrategy": item.auth_strategy,
-            "sideEffect": item.side_effect,
-            "confirmationRequired": item.confirmation_required,
-            "rbacPolicy": item.rbac_policy,
-            "maskingPolicy": item.masking_policy,
-            "profileScope": item.profile_scope,
-            "swaggerSource": item.swagger_source,
-            "source": item.source,
-            "version": item.version,
-            "enabled": item.enabled,
-            "published": item.published,
-            "updatedBy": item.updated_by,
-            "toolType": "business",
-            "mutable": True,
-        }
-
-    def system_tool_json(item: dict[str, Any]) -> dict[str, Any]:
-        return dict(item)
-
-    async def available_published_tools(db: AsyncSession) -> set[str]:
-        result = await db.execute(
-            select(Tool.tool_name).where(
-                ~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES),
-                Tool.enabled.is_(True),
-                Tool.published.is_(True),
-            )
-        )
-        available = set(result.scalars().all())
-        available.update(
-            item["toolName"]
-            for item in system_default_tool_definitions(service.settings)
-            if item.get("enabled") and item.get("published")
-        )
-        return available
-
-    async def knowledge_fallback_options(db: AsyncSession) -> list[dict[str, str]]:
-        result = await db.execute(
-            select(Skill)
-            .where(Skill.scope == "system", Skill.status == "PUBLISHED", Skill.enabled.is_(True))
-            .order_by(Skill.name, Skill.skill_id)
-        )
-        return [
-            {"value": item.skill_id, "label": f"{item.name} ({item.skill_id})"}
-            for item in result.scalars().all()
-            if set(item.allowed_tools or []) == {"knowledge.search"}
-        ]
-
-    async def fetch_swagger(swagger_url: str) -> dict[str, Any]:
-        if not swagger_url.lower().startswith(("http://", "https://")):
-            raise HTTPException(status_code=422, detail="swaggerUrl must use http:// or https://")
-        try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                response = await client.get(swagger_url, headers={"Accept": "application/json"})
-                response.raise_for_status()
-                document = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise HTTPException(status_code=502, detail=f"unable to read Swagger document: {exc}") from exc
-        if not isinstance(document, dict) or not isinstance(document.get("paths"), dict):
-            raise HTTPException(status_code=422, detail="Swagger document must contain an OpenAPI paths object")
-        return document
-
-    @router.get("/tools")
-    async def list_tools(
-        search: str | None = Query(default=None, max_length=160),
-        page: int = Query(default=1, ge=1),
-        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
-        db: AsyncSession = Depends(get_db),
-        _: None = Depends(require_console_session),
-    ):
-        term = (search or "").strip().lower()
-        system_items = [system_tool_json(item) for item in system_default_tool_definitions(service.settings)]
-        if term:
-            system_items = [
-                item for item in system_items
-                if term in " ".join(str(item.get(key, "")) for key in ("toolName", "displayName", "description", "httpMethod", "httpPath", "operationId")).lower()
-            ]
-        system_items.sort(key=lambda item: str(item.get("toolName", "")))
-        query = (
-            select(Tool)
-            .where(~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES))
-            .order_by(Tool.tool_name, Tool.version.desc())
-        )
-        tool_match = text_match(search, Tool.tool_name, Tool.display_name, Tool.description, Tool.operation_id, Tool.http_method, Tool.http_path)
-        if tool_match is not None:
-            query = query.where(tool_match)
-        business_total = int((await db.execute(select(func.count()).select_from(query.order_by(None).subquery()))).scalar_one())
-        offset = (page - 1) * page_size
-        items = system_items[offset:offset + page_size]
-        remaining = page_size - len(items)
-        if remaining:
-            business_offset = max(0, offset - len(system_items))
-            result = await db.execute(query.offset(business_offset).limit(remaining))
-            items.extend(tool_json(item) for item in result.scalars().all())
-        total = len(system_items) + business_total
-        return {"items": items, "search": (search or "").strip() or None, **pagination_json(total, page, page_size)}
-
-    @router.get("/tools/swagger")
-    async def inspect_swagger(swagger_url: str = Query(alias="swaggerUrl"), _: None = Depends(require_console_session)):
-        document = await fetch_swagger(swagger_url)
-        return {"swaggerUrl": swagger_url, "items": extract_operations(document, swagger_url)}
-
-    @router.post("/tools", status_code=201)
-    async def create_tool(payload: ToolCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal), _: None = Depends(require_console_session)):
-        if is_system_default_tool(payload.tool_name):
-            raise HTTPException(status_code=422, detail="system default capabilities are managed by runtime configuration")
-        key = payload.interface_key or interface_key(payload.http_method, payload.http_path)
-        if (await db.execute(select(Tool).where((Tool.tool_name == payload.tool_name) | (Tool.interface_key == key)))).scalars().first():
-            raise HTTPException(status_code=409, detail="tool name or HTTP interface already exists")
-        values = payload.model_dump(exclude={"tool_name", "interface_key"})
-        values["profile_scope"] = normalize_profile_scope(values.get("profile_scope"), parameters=values.get("parameters"), http_path=str(values.get("http_path") or ""))
-        item = Tool(tool_name=payload.tool_name, updated_by=principal.user_id, interface_key=key, **values)
-        db.add(item)
-        await db.commit()
-        return tool_json(item)
-
-    @router.post("/tools/import", status_code=201)
-    async def import_tool(payload: SwaggerImportRequest, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal), _: None = Depends(require_console_session)):
-        document = await fetch_swagger(payload.swagger_url)
-        operations = extract_operations(document, payload.swagger_url)
-        operation = next((item for item in operations if item["operationId"] == payload.operation_id), None)
-        if not operation:
-            raise HTTPException(status_code=404, detail=f"operationId {payload.operation_id} not found in Swagger document")
-        tool_name = payload.tool_name or f"swagger.{operation['operationId']}"
-        if is_system_default_tool(tool_name):
-            raise HTTPException(status_code=422, detail="system default capabilities cannot be imported into the business Tool Registry")
-        result = await db.execute(select(Tool).where((Tool.tool_name == tool_name) | (Tool.interface_key == operation["interfaceKey"])))
-        if result.scalars().first():
-            raise HTTPException(status_code=409, detail="this HTTP interface or tool name is already registered")
-        item = Tool(
-            tool_name=tool_name,
-            display_name=payload.display_name or operation["displayName"],
-            description=payload.description or operation["description"],
-            operation_id=operation["operationId"],
-            http_method=operation["httpMethod"],
-            http_path=operation["httpPath"],
-            interface_key=operation["interfaceKey"],
-            parameters=operation["parameters"],
-            response_schema=operation["responseSchema"],
-            profile_scope=operation["profileScope"],
-            side_effect=payload.side_effect,
-            confirmation_required=payload.confirmation_required,
-            swagger_source=payload.swagger_url,
-            enabled=payload.enabled,
-            published=payload.published,
-            updated_by=principal.user_id,
-        )
-        db.add(item)
-        await db.commit()
-        return tool_json(item)
-
-    @router.put("/tools/{tool_name:path}")
-    async def update_tool(tool_name: str, payload: ToolUpsert, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal), _: None = Depends(require_console_session)):
-        if is_system_default_tool(tool_name):
-            raise HTTPException(status_code=422, detail="system default capabilities are managed by runtime configuration")
-        result = await db.execute(select(Tool).where(Tool.tool_name == tool_name))
-        item = result.scalar_one_or_none()
-        if not item:
-            raise HTTPException(status_code=404, detail="tool not found")
-        key = payload.interface_key or interface_key(payload.http_method, payload.http_path)
-        duplicate = await db.execute(select(Tool).where(Tool.interface_key == key, Tool.tool_name != tool_name))
-        if duplicate.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="this HTTP interface is already registered by another tool")
-        values = payload.model_dump(exclude={"interface_key"})
-        values["profile_scope"] = normalize_profile_scope(values.get("profile_scope"), parameters=values.get("parameters"), http_path=str(values.get("http_path") or ""))
-        for field, value in values.items():
-            setattr(item, field, value)
-        item.interface_key = key
-        item.updated_by = principal.user_id
-        await db.commit()
-        return tool_json(item)
-
-    @router.post("/skills", status_code=201)
-    async def create_skill(payload: SkillCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        if payload.status == "PUBLISHED" and payload.allowed_tools:
-            available = await available_published_tools(db)
-            missing = sorted(set(payload.allowed_tools) - available)
-            if missing:
-                raise HTTPException(status_code=422, detail={"code": "unpublished_tools", "tools": missing})
-        result = await db.execute(select(Skill).where(Skill.skill_id == payload.skill_id, Skill.version == payload.version))
-        if result.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail=f"skill {payload.skill_id} v{payload.version} already exists")
-        values = payload.model_dump(exclude={"skill_id"})
-        item = Skill(skill_id=payload.skill_id, updated_by=principal.user_id, **values)
-        db.add(item)
-        try:
-            await db.commit()
-        except IntegrityError as exc:
-            await db.rollback()
-            raise HTTPException(status_code=409, detail=f"skill {payload.skill_id} v{payload.version} already exists") from exc
-        await service.skill_catalog.invalidate()
-        return {"skillId": item.skill_id, "version": item.version, "status": item.status, "enabled": item.enabled}
-
-    @router.put("/skills/{skill_id}")
-    async def upsert_skill(skill_id: str, payload: SkillUpsert, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        if payload.status == "PUBLISHED" and payload.allowed_tools:
-            available = await available_published_tools(db)
-            missing = sorted(set(payload.allowed_tools) - available)
-            if missing:
-                raise HTTPException(status_code=422, detail={"code": "unpublished_tools", "tools": missing})
-        result = await db.execute(select(Skill).where(Skill.skill_id == skill_id, Skill.version == payload.version))
-        item = result.scalar_one_or_none()
-        values = payload.model_dump()
-        if item:
-            for key, value in values.items():
-                setattr(item, key, value)
-            item.updated_by = principal.user_id
-        else:
-            item = Skill(skill_id=skill_id, updated_by=principal.user_id, **values)
-            db.add(item)
-        await db.commit()
-        await service.skill_catalog.invalidate()
-        return {"skillId": item.skill_id, "version": item.version, "status": item.status, "enabled": item.enabled}
-
-    @router.delete("/skills/{skill_id}")
-    async def delete_skill(skill_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        result = await db.execute(delete(Skill).where(Skill.skill_id == skill_id))
-        await db.commit()
-        await service.skill_catalog.invalidate()
-        return {"deleted": result.rowcount > 0, "skillId": skill_id}
 
     @router.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -1016,36 +586,20 @@ def make_router(service: DSHService) -> APIRouter:
                         await send({"type": "error", "code": "umc_token_required"})
                         continue
                     claims_user_id = None
-                    if not claims_user_id:
-                        settings = get_settings()
-                        # Use the portal-aware derived URL. It honors an explicit
-                        # document-service override and otherwise falls back to
-                        # the selected customer/admin portal base URL.
-                        try:
-                            async with httpx.AsyncClient(timeout=settings.umc_login_timeout_seconds) as client:
-                                response = await client.post(
-                                    settings.umc_user_info_endpoint,
-                                    headers={"Authorization": f"Bearer {token}"},
-                                    json={},
-                                )
-                            payload = response.json()
-                            def find_user_id(value):
-                                if isinstance(value, dict):
-                                    for key in ("UserID", "UserId", "userId", "userID", "id"):
-                                        candidate = value.get(key)
-                                        if isinstance(candidate, (str, int)) and str(candidate).strip():
-                                            return str(candidate)
-                                    for child in value.values():
-                                        found = find_user_id(child)
-                                        if found: return found
-                                elif isinstance(value, list):
-                                    for child in value:
-                                        found = find_user_id(child)
-                                        if found: return found
-                                return None
-                            claims_user_id = find_user_id(payload)
-                        except (httpx.HTTPError, ValueError, TypeError):
-                            claims_user_id = None
+                    settings = get_settings()
+                    try:
+                        async with httpx.AsyncClient(timeout=settings.platform_timeout_seconds) as client:
+                            response = await client.post(
+                                settings.umc_user_info_endpoint,
+                                headers={"Authorization": f"Bearer {token}"},
+                                json={},
+                            )
+                        payload = response.json()
+                        data = payload.get("data") if isinstance(payload, dict) else None
+                        candidate = data.get("id") if isinstance(data, dict) else None
+                        claims_user_id = str(candidate).strip() if isinstance(candidate, (str, int)) else None
+                    except (httpx.HTTPError, ValueError, TypeError):
+                        claims_user_id = None
                     if not claims_user_id:
                         await send({"type": "error", "code": "missing_user_identity"})
                         continue
@@ -1063,7 +617,6 @@ def make_router(service: DSHService) -> APIRouter:
                         request_id=principal.request_id,
                         token_ref=_token_reference(f"Bearer {token}"),
                         umc_token=token,
-                        profile_id=token_profile_id(token),
                     )
                     logger.info(
                         "umc_ws_authenticated request_id=%s token_ref=%s",
@@ -1094,8 +647,6 @@ def make_router(service: DSHService) -> APIRouter:
                             message.conversation_id,
                             message.content or "",
                             message.client_message_id,
-                            message.attachment.model_dump(by_alias=True) if message.attachment else None,
-                            message.profile_context,
                         )
                     except LookupError:
                         await send({"type": "error", "code": "conversation_not_found"})

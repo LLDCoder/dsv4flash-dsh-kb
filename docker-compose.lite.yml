@@ -1,16 +1,15 @@
 name: dsh-external-service
 
-# Local development mode: keeps the conversation stack and remote knowledge
-# retrieval available without the PaddleOCR GPU images.
+# Local Admin development mode with remote read-only knowledge retrieval.
 services:
   postgres:
-    image: public.ecr.aws/docker/library/postgres:16-alpine
+    image: postgres:18
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-dsh}
       POSTGRES_USER: ${POSTGRES_USER:-dsh}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dsh}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -33,10 +32,8 @@ services:
       context: ./platform-gateway
     environment:
       PLATFORM_BASE_URL: ${PLATFORM_BASE_URL:-http://77.242.240.158:18085/api/platform}
-      UMC_PORTAL: ${UMC_PORTAL:-customer}
-      UMC_CUSTOMER_BASE_URL: ${UMC_CUSTOMER_BASE_URL:-https://umc-customerportal.sol.daypop.ai}
+      UMC_PORTAL: admin
       UMC_ADMIN_BASE_URL: ${UMC_ADMIN_BASE_URL:-https://umc-adminportal.sol.daypop.ai}
-      UMC_PUBLIC_BASE_URL: ${UMC_PUBLIC_BASE_URL:-}
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
       PLATFORM_RETRY_ATTEMPTS: ${PLATFORM_RETRY_ATTEMPTS:-2}
     expose:
@@ -79,20 +76,8 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
-      SKILL_ROUTER_MODE: ${SKILL_ROUTER_MODE:-llm}
-      SKILL_ROUTER_TIMEOUT_SECONDS: ${SKILL_ROUTER_TIMEOUT_SECONDS:-10}
-      # OCR remains intentionally absent from the lightweight stack.
-      OCR_GATEWAY_URL: ""
-      UMC_PORTAL: ${UMC_PORTAL:-customer}
-      UMC_CUSTOMER_BASE_URL: ${UMC_CUSTOMER_BASE_URL:-https://umc-customerportal.sol.daypop.ai}
+      UMC_PORTAL: admin
       UMC_ADMIN_BASE_URL: ${UMC_ADMIN_BASE_URL:-https://umc-adminportal.sol.daypop.ai}
-      UMC_PUBLIC_BASE_URL: ${UMC_PUBLIC_BASE_URL:-}
-      UMC_DOCUMENT_BASE_URL: ${UMC_DOCUMENT_BASE_URL:-}
-      UMC_DOCUMENT_TIMEOUT_SECONDS: ${UMC_DOCUMENT_TIMEOUT_SECONDS:-60}
-      UMC_LOGIN_URL: ${UMC_LOGIN_URL:-}
-      UMC_LOGIN_EMAIL: ${UMC_LOGIN_EMAIL:-}
-      UMC_LOGIN_PASSWORD: ${UMC_LOGIN_PASSWORD:-}
-      UMC_LOGIN_TIMEOUT_SECONDS: ${UMC_LOGIN_TIMEOUT_SECONDS:-30}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-30}
       AUDIT_CLEANUP_INTERVAL_SECONDS: ${AUDIT_CLEANUP_INTERVAL_SECONDS:-3600}
       AUDIT_ADMIN_ENABLED: ${AUDIT_ADMIN_ENABLED:-false}
@@ -104,7 +89,6 @@ services:
       KNOWLEDGE_TOP_K: ${KNOWLEDGE_TOP_K:-32}
       PLATFORM_GATEWAY_URL: http://platform-gateway:8102
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
-      EXTERNAL_TOOLS_ENABLED: ${EXTERNAL_TOOLS_ENABLED:-true}
     depends_on:
       postgres:
         condition: service_healthy

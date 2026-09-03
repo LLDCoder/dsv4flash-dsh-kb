@@ -2,13 +2,13 @@ name: dsh-external-service
 
 services:
   postgres:
-    image: public.ecr.aws/docker/library/postgres:16-alpine
+    image: postgres:18
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-dsh}
       POSTGRES_USER: ${POSTGRES_USER:-dsh}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dsh}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -25,44 +25,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-
-  ocr-gateway:
-    build:
-      context: ./ocr-gateway
-    environment:
-      OCR_VL_URL: ${OCR_VL_URL:-http://ocr-cpu:8080}
-      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
-      OCR_MODEL_NAME: ${OCR_MODEL_NAME:-PP-OCRv4}
-    depends_on:
-      ocr-cpu:
-        condition: service_healthy
-    expose:
-      - "8100"
-    command: uvicorn app:app --host 0.0.0.0 --port 8100
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/readyz')"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  ocr-cpu:
-    build:
-      context: ./ocr-cpu
-    environment:
-      OCR_MODEL_NAME: ${OCR_MODEL_NAME:-PP-OCRv4}
-      OCR_LANG: ${OCR_LANG:-en}
-    expose:
-      - "8080"
-    command: uvicorn app:app --host 0.0.0.0 --port 8080
-    restart: unless-stopped
-    cpus: "2.0"
-    mem_limit: 8g
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
-      interval: 15s
-      timeout: 10s
-      retries: 20
-      start_period: 30s
 
   knowledge-gateway:
     build:
@@ -91,10 +53,8 @@ services:
       context: ./platform-gateway
     environment:
       PLATFORM_BASE_URL: ${PLATFORM_BASE_URL:-http://77.242.240.158:18085/api/platform}
-      UMC_PORTAL: ${UMC_PORTAL:-customer}
-      UMC_CUSTOMER_BASE_URL: ${UMC_CUSTOMER_BASE_URL:-https://umc-customerportal.sol.daypop.ai}
+      UMC_PORTAL: admin
       UMC_ADMIN_BASE_URL: ${UMC_ADMIN_BASE_URL:-https://umc-adminportal.sol.daypop.ai}
-      UMC_PUBLIC_BASE_URL: ${UMC_PUBLIC_BASE_URL:-}
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
       PLATFORM_RETRY_ATTEMPTS: ${PLATFORM_RETRY_ATTEMPTS:-2}
     expose:
@@ -118,20 +78,8 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
-      SKILL_ROUTER_MODE: ${SKILL_ROUTER_MODE:-llm}
-      SKILL_ROUTER_TIMEOUT_SECONDS: ${SKILL_ROUTER_TIMEOUT_SECONDS:-10}
-      OCR_GATEWAY_URL: ${OCR_GATEWAY_URL:-http://ocr-gateway:8100}
-      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
-      UMC_PORTAL: ${UMC_PORTAL:-customer}
-      UMC_CUSTOMER_BASE_URL: ${UMC_CUSTOMER_BASE_URL:-https://umc-customerportal.sol.daypop.ai}
+      UMC_PORTAL: admin
       UMC_ADMIN_BASE_URL: ${UMC_ADMIN_BASE_URL:-https://umc-adminportal.sol.daypop.ai}
-      UMC_PUBLIC_BASE_URL: ${UMC_PUBLIC_BASE_URL:-}
-      UMC_DOCUMENT_BASE_URL: ${UMC_DOCUMENT_BASE_URL:-}
-      UMC_DOCUMENT_TIMEOUT_SECONDS: ${UMC_DOCUMENT_TIMEOUT_SECONDS:-60}
-      UMC_LOGIN_URL: ${UMC_LOGIN_URL:-}
-      UMC_LOGIN_EMAIL: ${UMC_LOGIN_EMAIL:-}
-      UMC_LOGIN_PASSWORD: ${UMC_LOGIN_PASSWORD:-}
-      UMC_LOGIN_TIMEOUT_SECONDS: ${UMC_LOGIN_TIMEOUT_SECONDS:-30}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-30}
       AUDIT_CLEANUP_INTERVAL_SECONDS: ${AUDIT_CLEANUP_INTERVAL_SECONDS:-3600}
       AUDIT_ADMIN_ENABLED: ${AUDIT_ADMIN_ENABLED:-false}
@@ -143,13 +91,10 @@ services:
       KNOWLEDGE_TOP_K: ${KNOWLEDGE_TOP_K:-32}
       PLATFORM_GATEWAY_URL: ${PLATFORM_GATEWAY_URL:-http://platform-gateway:8102}
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
-      EXTERNAL_TOOLS_ENABLED: ${EXTERNAL_TOOLS_ENABLED:-true}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      ocr-gateway:
         condition: service_healthy
       knowledge-gateway:
         condition: service_healthy
@@ -174,62 +119,6 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-18080}:80"
-
-  # Official PaddleOCR-VL-1.6 production API and VLM inference services.
-  # The model is pinned explicitly so image defaults cannot select another VLM.
-  ocr-vl-api:
-    profiles: ["gpu"]
-    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-vl:${OCR_API_IMAGE_TAG_SUFFIX:-latest-nvidia-gpu-offline}
-    expose:
-      - "8080"
-    depends_on:
-      ocr-vlm-server:
-        condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${OCR_GPU_DEVICE:-0}"]
-              capabilities: [gpu]
-    shm_size: 64g
-    user: root
-    restart: unless-stopped
-    environment:
-      VLM_BACKEND: ${OCR_VLM_BACKEND:-vllm}
-    command: /bin/bash -c "paddlex --serve --pipeline /home/paddleocr/pipeline_config_${OCR_VLM_BACKEND:-vllm}.yaml"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 40
-      start_period: 300s
-
-  ocr-vlm-server:
-    profiles: ["gpu"]
-    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-${OCR_VLM_BACKEND:-vllm}-server:${OCR_VLM_IMAGE_TAG_SUFFIX:-latest-nvidia-gpu-offline}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${OCR_GPU_DEVICE:-0}"]
-              capabilities: [gpu]
-    shm_size: 64g
-    user: root
-    restart: unless-stopped
-    command: >-
-      paddleocr genai_server
-      --model_name ${OCR_MODEL_NAME:-PaddleOCR-VL-1.6-0.9B}
-      --host 0.0.0.0
-      --port 8080
-      --backend ${OCR_VLM_BACKEND:-vllm}
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 40
-      start_period: 300s
 
 volumes:
   postgres_data:

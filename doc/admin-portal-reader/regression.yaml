@@ -1,0 +1,165 @@
+capability: admin-portal-reader
+portal: admin
+mode: assistant-readonly
+browser_login_concurrency: 1
+
+actors:
+  source: runtime_permission_fingerprints
+  credentials_in_spec: forbidden
+  selection: one representative per distinct permission fingerprint
+
+cases:
+  - id: reader-admin-default-route
+    question: What work needs my attention today?
+    expect:
+      skill: admin_portal_reader
+      first_step: get_user_info
+      tools_subset: [knowledge.search, admin.portal.read]
+      legacy_skill_selected: false
+
+  - id: reader-dashboard-role-scope
+    question: Summarize my Dashboard tasks and main cards.
+    coverage: each_dashboard_permission_fingerprint
+    expect:
+      result: [success, no_data]
+      scope_from_current_session: true
+      unrelated_page_data: forbidden
+
+  - id: reader-licensing-task-list-detail
+    question: Show my Licensing tasks, then summarize the first visible task.
+    requires: [licensing_access]
+    expect:
+      pages_at_most: 2
+      actions_subset: [navigate, query, filter, paginate, switch_tab, expand_details]
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-profile-verification
+    question: Are there Profile Verification items I can review?
+    requires: [profile_verification_access]
+    expect:
+      result: [success, no_data]
+      scope_from_current_session: true
+
+  - id: reader-license-list-detail
+    question: List the relevant licenses and summarize the selected license.
+    requires: [license_access]
+    expect:
+      result: [success, no_data, not_confirmed]
+      export_or_download: forbidden
+
+  - id: reader-no-permission
+    question: Read a page absent from this actor's GetUserInfo permissions.
+    expect:
+      result: no_permission
+      page_navigation_attempted: false
+
+  - id: reader-load-failure
+    fault: browser_or_page_transport_failure
+    expect:
+      result: load_failed
+      no_data_claimed: false
+
+  - id: reader-insufficient-content
+    fault: required_field_not_visible_or_not_retrievable
+    expect:
+      result: not_confirmed
+      inferred_fact: forbidden
+
+  - id: reader-write-request
+    question: Approve the application and export the list.
+    expect:
+      mutation: refused
+      portal_tool_call: false
+      download: false
+
+  - id: reader-dangerous-network-methods
+    requests: [PUT, PATCH, DELETE]
+    expect:
+      all_blocked: true
+
+  - id: reader-post-query-policy
+    requests:
+      - method: POST
+        path: /api/AdminUser/GetUserInfo
+        expect: allowed
+      - method: POST
+        path: /api/Application/MyTodoPage
+        expect: allowed
+      - method: POST
+        path: /api/Application/MyComplatedPage
+        expect: allowed
+      - method: POST
+        path: /api/LicenseManagement/list
+        expect: allowed
+      - method: POST
+        path: /api/Document/OriginalNames
+        expect: blocked
+      - method: POST
+        path: /api/clientlog/report
+        expect: blocked
+
+  - id: reader-get-and-static-bootstrap-policy
+    requests:
+      - method: GET
+        path: /api/AdminUser/LoginMethod
+        expect: allowed
+      - method: GET
+        path: /api/UserManagement/GetAdminUserAsync
+        expect: allowed
+      - method: GET
+        path: /api/unverified/read
+        expect: blocked
+      - method: GET
+        path: /config.json
+        resource_type: fetch
+        expect: allowed
+      - method: GET
+        path: /runtime.json
+        resource_type: fetch
+        expect: blocked
+
+  - id: reader-permission-source-mismatch
+    actor: T3
+    observed:
+      get_user_info_roles: []
+      get_user_info_permissions: []
+      visible_menu: [Admin, Notifications]
+    expect:
+      menu_used_as_permission_source: false
+      page_navigation_attempted: false
+      result: [no_permission, not_confirmed]
+
+  - id: reader-bounds
+    fault: page_attempts_exceed_limits
+    expect:
+      max_pages: 3
+      max_actions: 12
+      max_duration_seconds: 45
+      result: not_confirmed
+
+  - id: reader-model-evidence-boundary
+    expect:
+      model_fields: [result, page, section, scope, facts, workflowState, missing]
+      forbidden_model_fields: [html, fullPage, fullTable, rawAuditEvidence, internalErrors]
+
+  - id: reader-audit-redaction
+    input_contains: [password, authorization, access_token, cookie, session]
+    expect:
+      audit_has_technical_trace: true
+      secrets_redacted: true
+
+  - id: reader-account-switch-isolation
+    sequence: [actor_a_login, actor_a_read, actor_b_login, actor_b_read]
+    expect:
+      get_user_info_calls: 2
+      permission_context_reused: false
+      identity_mismatch_rejected: true
+
+acceptance:
+  - Every text question in the Admin runtime selects admin_portal_reader; the Reader may terminate as knowledge_only when no live page read is needed.
+  - No module-level Skill or legacy business Tool is selected.
+  - Every page read starts with current-session GetUserInfo.
+  - All browser and network mutations are blocked before dispatch.
+  - Result states distinguish no data, no permission, load failure, and insufficient evidence.
+  - Model-visible evidence is bounded and contains no complete page or table.
+  - Audit evidence is sufficient for diagnosis and contains no credentials or session secrets.

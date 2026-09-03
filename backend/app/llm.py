@@ -10,44 +10,62 @@ class LLMAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def route_skill(
+    async def plan_admin_portal_read(
         self,
         question: str,
-        catalog: list[dict[str, object]],
-        context: dict[str, object] | None = None,
+        permission_context: dict[str, object],
+        knowledge_context: dict[str, object],
     ) -> dict[str, object]:
-        """Ask the configured model for a classification-only Skill choice.
+        """Run the bounded Reader subagent planning step.
 
-        This endpoint is classification-only. It receives bounded recent
-        context and a recalled candidate set, never executable tool schemas.
+        The planner can select pages and read interactions, but it never sees
+        credentials, cookies, executable business Tool schemas, or arbitrary
+        network origins.
         """
 
         if not self.settings.llm_base_url or not self.settings.llm_api_key:
-            raise RuntimeError("LLM Router is not configured")
+            raise RuntimeError("Reader planner is not configured")
         system = (
-            "You are a strict intent classifier for the NMA DSH assistant. "
-            "Choose exactly one skillId from the supplied candidate catalog. "
-            "Prefer the latest user message; use recent context only to resolve references. "
-            "If the user clearly changes topic, ignore the previous active domain. "
-            "Do not call tools, do not answer the user, and do not invent a skill. "
-            "When the chosen candidate declares routing intents, return its intentId. "
-            "When it declares routing filters, return only supported filters using their configured IDs and shapes. "
-            "Return JSON only with keys skillId, intentId, filters, confidence, needsClarification, clarifyingQuestion. "
-            "Use needsClarification=true when the scope or intent is ambiguous."
+            "You are the read-only Admin Portal Reader subagent. GetUserInfo has already been obtained. "
+            "Use the supplied permissions and knowledge to answer with exactly one closed mode. "
+            "If bounded knowledge fully answers a general question, return JSON only as "
+            "{mode:'knowledge_only',result:'success|no_data|not_confirmed',page:'',section:'',"
+            "scope:'personal|team|global|unknown',facts:[strings],workflowState:'',missing:[strings]}. "
+            "Otherwise return exactly {mode:'portal_read',portalRequest:{startPath,actions,expectedFields}}. "
+            "If the request is ambiguous or the evidence cannot support either mode, return knowledge_only "
+            "with result not_confirmed and a concise missing list. Do not add keys outside these schemas. "
+            "Allowed action types are observe, navigate, query, filter, paginate, switch_tab, expand_details. "
+            "When semantic page structure is not present in knowledgeContext, use an observe action first. "
+            "After an observation is supplied, actions may use role, name, field, section, label, value, emptyState, "
+            "and permissionCode. Use semantic role/name/field/section locators; never guess broad CSS. "
+            "Paths must be relative paths on the Admin Portal. Never request another host. "
+            "Never approve, reject, submit, modify, create, delete, assign, send, export, upload, "
+            "download, pay, refund, publish, save, or perform any other mutation. "
+            "Use at most 3 pages and 12 actions, and request only fields needed to answer. "
+            "Do not supply POST, PUT, PATCH or DELETE methods; query means reading or filtering the loaded page UI."
         )
         payload = {
             "model": self.settings.llm_model,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": json.dumps({"question": question, "context": context or {}, "candidates": catalog}, ensure_ascii=False)},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "question": question[:10_000],
+                            "permissionContext": permission_context,
+                            "knowledgeContext": knowledge_context,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
             ],
             "stream": False,
             "response_format": {"type": "json_object"},
         }
-        timeout = max(1.0, float(getattr(self.settings, "skill_router_timeout_seconds", 10.0)))
         url = self.settings.llm_base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {self.settings.llm_api_key}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             body = response.json()
@@ -55,30 +73,23 @@ class LLMAdapter:
         if isinstance(content, list):
             content = "".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
         if not isinstance(content, str) or not content.strip():
-            raise ValueError("LLM Router returned empty output")
+            raise ValueError("Reader planner returned empty output")
         raw = content.strip()
         if raw.startswith("```"):
             raw = raw.strip("`").removeprefix("json").strip()
         result = json.loads(raw)
         if not isinstance(result, dict):
-            raise ValueError("LLM Router output must be a JSON object")
-        skill_id = result.get("skillId") or result.get("skill_id")
-        confidence = float(result.get("confidence", 0.0))
-        if not isinstance(skill_id, str) or not skill_id.strip() or not 0 <= confidence <= 1:
-            raise ValueError("LLM Router output has invalid skillId or confidence")
-        return {
-            "skillId": skill_id.strip(),
-            "intentId": str(result.get("intentId") or result.get("intent_id") or "").strip() or None,
-            "filters": result.get("filters") if isinstance(result.get("filters"), dict) else {},
-            "confidence": confidence,
-            "needsClarification": bool(result.get("needsClarification", False)),
-            "clarifyingQuestion": str(result.get("clarifyingQuestion", "")).strip() or None,
-        }
+            raise ValueError("Reader planner output must be an object")
+        return result
 
     async def stream(self, messages: list[dict[str, str]], *, on_reasoning: Callable[[str], Awaitable[None]] | None = None) -> AsyncIterator[str]:
         if not self.settings.llm_base_url or not self.settings.llm_api_key:
-            latest = messages[-1]["content"] if messages else ""
-            response = f"收到你的消息：{latest}\n\n当前为 Docker MVP。已完成事件持久化，并会按 conversation 维度维护运行租约。"
+            language = "ar" if any("Required response language: ARABIC" in item.get("content", "") for item in messages) else "en"
+            response = (
+                "تعذر تأكيد النتيجة لأن نموذج الإجابة غير مهيأ."
+                if language == "ar"
+                else "The result could not be confirmed because the response model is not configured."
+            )
             for token in response:
                 yield token
             return

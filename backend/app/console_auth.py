@@ -74,8 +74,8 @@ def cookie_value(headers: list[tuple[bytes, bytes]]) -> str | None:
 def has_bearer_authorization(headers: list[tuple[bytes, bytes]]) -> bool:
     """Return whether the request carries a non-empty Bearer credential.
 
-    The customer-facing chatbot uses the UMC access token rather than the
-    test-console session cookie.  This check only decides whether the request
+    The embedded Admin client uses its UMC access token rather than the
+    test-console session cookie. This check only decides whether the request
     may reach the route; the route's own Principal/auth-frame validation still
     remains authoritative.
     """
@@ -103,12 +103,12 @@ def requires_console_auth(path: str) -> bool:
     return path.startswith(protected_prefixes)
 
 
-def allows_customer_auth(
+def allows_portal_auth(
     scope: dict[str, Any],
     path: str,
     headers: list[tuple[bytes, bytes]],
 ) -> bool:
-    """Allow the customer chatbot to share the conversation transport.
+    """Allow the authenticated Admin client to use conversation transport.
 
     REST calls carry the UMC token in ``Authorization``.  Browser WebSockets
     cannot set that header, so the endpoint must be reachable before it can
@@ -149,11 +149,11 @@ class ConsoleAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # The customer portal does not have the operator's console cookie.
+        # The embedded Admin client does not have the operator console cookie.
         # Let its bearer-authenticated conversation requests (and the WS
         # handshake that will authenticate in its first frame) reach the
         # normal route-level Principal checks.
-        if allows_customer_auth(scope, path, headers):
+        if allows_portal_auth(scope, path, headers):
             await self.app(scope, receive, send)
             return
 

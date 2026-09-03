@@ -1,0 +1,156 @@
+capability: admin-portal-reader
+portal: admin
+mode: assistant-readonly
+
+routing:
+  default_skill: admin_portal_reader
+  retained_skills:
+    - admin_portal_reader
+    - general_knowledge
+  removed_behavior:
+    - module_skill_routing
+    - business_domain_recall
+    - keyword_skill_selection
+    - module_workflow_dispatch
+    - business_tool_fallback
+
+admin_portal_reader:
+  purpose: Answer Admin Portal questions from the current user's authorized page view and the knowledge-base user manual.
+  allowed_tools:
+    - knowledge.search
+    - admin.portal.read
+  execution_order:
+    - get_user_info
+    - retrieve_relevant_manual
+    - plan_bounded_page_read
+    - read_authorized_pages
+    - reduce_to_relevant_facts
+  first_release_coverage:
+    - dashboard
+    - licensing_tasks
+    - licensing_profile_verification
+    - licensing_licenses
+  limits:
+    max_pages: 3
+    max_actions: 12
+    max_duration_seconds: 45
+    max_facts: 20
+    max_fact_characters: 500
+    max_missing_items: 10
+    max_result_characters: 12000
+
+general_knowledge:
+  purpose: Answer non-Portal general knowledge or document questions.
+  allowed_tools:
+    - knowledge.search
+
+tools:
+  knowledge.search:
+    side_effect: read
+    use: Retrieve the relevant Admin user manual and role-difference guidance.
+  admin.portal.read:
+    side_effect: read
+    auth: current_umc_session
+    user_info_source: /api/AdminUser/GetUserInfo
+    allowed_actions:
+      - navigate
+      - query
+      - filter
+      - paginate
+      - switch_tab
+      - expand_details
+    forbidden_actions:
+      - approve
+      - submit
+      - modify
+      - delete
+      - assign
+      - send
+      - upload
+      - download
+      - export
+    network_policy:
+      conditionally_allowed_methods: [GET, POST, OPTIONS]
+      condition: API and XHR requests must match the server-owned first-release read allowlist; static document, script, stylesheet, font, and image GET/HEAD requests remain same-origin only.
+      allowed_get_paths:
+        - /api/license/dashboard/overview
+        - /api/license/dashboard/license-distribution
+        - /api/license/dashboard/performance
+        - /api/license/dashboard/performance-trend
+        - /api/license/dashboard/members-needing-coaching
+        - /api/license/dashboard/members-on-leave
+        - /api/license/dashboard/needs-attention
+        - /api/Content/Dashboard/Overview
+        - /api/Content/Dashboard/TaskList
+        - /api/Inspection/Dashboard/Overview
+        - /api/Inspection/Dashboard/TaskList
+        - /api/CustomerHappiness/Dashboard/Overview
+        - /api/CustomerHappiness/Dashboard/TaskList
+        - /api/AdminUser/LoginMethod
+        - /api/UserManagement/GetAdminUserAsync
+        - /api/TypeDictionary/GetTypeDictionaries/ServiceConfigServiceType
+        - /api/Application/UrgenCount
+        - /api/UserManagement/UserProfile/Approves
+        - /api/UserManagement/UserProfile/UserTypes
+        - /api/UserManagement/UserProfile/Status
+        - /api/UserManagement/UserProfile/Type/Count
+        - /api/LicenseManagement/statistics
+        - /api/TypeDictionary/GetTypeDictionaries/CertificateStatus
+        - /api/Application/MyReviewDetail/:taskId
+        - /api/UserManagement/UserProfile/:id/Personal
+        - /api/UserManagement/UserProfile/:id/Establishment
+        - /api/UserManagement/UserProfile/:id/Partners
+        - /api/LicenseManagement/:id
+      allowed_static_fetch_paths:
+        - /config.json
+      allowed_post_paths:
+        - /api/AdminUser/GetUserInfo
+        - /api/Application/MyComplatedPage
+        - /api/Application/MyTodoPage
+        - /api/LicenseManagement/list
+      explicitly_blocked_automatic_calls:
+        - POST /api/Document/OriginalNames
+        - POST /api/clientlog/report
+        - GET /api/Document/Dowload
+      blocked_methods: [PUT, PATCH, DELETE]
+
+result_contract:
+  result:
+    enum: [success, no_data, no_permission, load_failed, not_confirmed]
+  fields:
+    page: string
+    section: string
+    scope:
+      enum: [personal, team, global, unknown]
+    facts: string_array
+    workflowState: string
+    missing: string_array
+  model_visibility:
+    allow: [result, page, section, scope, facts, workflowState, missing]
+    forbid: [html, fullPage, fullTable, credentials, cookies, tokens, internalErrors, rawAuditEvidence]
+
+audit:
+  retain:
+    - normalized_page_address
+    - permission_fingerprint
+    - role_and_department
+    - applied_filters
+    - observation_time
+    - bounded_raw_extraction
+    - error_classification
+    - action_trace
+  redact:
+    - password
+    - authorization
+    - access_token
+    - refresh_token
+    - cookie
+    - session
+  user_response: Natural-language conclusion only; do not expose internal Tool names, page parameters, or audit evidence.
+
+session_isolation:
+  multi_account_login_concurrency: 1
+  requirements:
+    - Revalidate GetUserInfo after every login or account switch.
+    - Reject a read when the observed identity does not match the expected session.
+    - Do not reuse permission context across identities.

@@ -3,12 +3,12 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, UniqueConstraint, delete, func, select, text
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, UniqueConstraint, delete, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from .config import DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID, get_settings
+from .config import get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 
 
@@ -127,44 +127,7 @@ class Skill(Base):
     enabled: Mapped[bool] = mapped_column(default=False)
     allowed_tools: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
     dependencies: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
-    domain: Mapped[str] = mapped_column(String(128), default="general", server_default="general")
-    aliases: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
-    positive_examples: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
-    negative_examples: Mapped[list[str]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list)
-    workflow: Mapped[dict[str, Any]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
     content: Mapped[str] = mapped_column(Text, default="")
-    updated_by: Mapped[str] = mapped_column(String(128), default="system")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-
-
-class Tool(Base):
-    __tablename__ = "tool_registry"
-    __table_args__ = (
-        UniqueConstraint("tool_name", name="uq_tool_name"),
-        UniqueConstraint("interface_key", name="uq_tool_interface"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tool_name: Mapped[str] = mapped_column(String(160), index=True)
-    display_name: Mapped[str] = mapped_column(String(256))
-    description: Mapped[str] = mapped_column(Text, default="")
-    operation_id: Mapped[str] = mapped_column(String(256), default="")
-    http_method: Mapped[str] = mapped_column(String(16))
-    http_path: Mapped[str] = mapped_column(String(512))
-    interface_key: Mapped[str] = mapped_column(String(600), index=True)
-    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
-    response_schema: Mapped[dict[str, Any]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
-    auth_strategy: Mapped[str] = mapped_column(String(128), default="current_umc_bearer_token")
-    side_effect: Mapped[str] = mapped_column(String(32), default="read")
-    confirmation_required: Mapped[bool] = mapped_column(default=False)
-    rbac_policy: Mapped[str] = mapped_column(String(512), default="trusted_principal")
-    masking_policy: Mapped[str] = mapped_column(String(512), default="default")
-    profile_scope: Mapped[dict[str, Any]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
-    swagger_source: Mapped[str] = mapped_column(String(1024), default="")
-    source: Mapped[str] = mapped_column(String(64), default="swagger")
-    version: Mapped[int] = mapped_column(Integer, default=1)
-    enabled: Mapped[bool] = mapped_column(default=False)
-    published: Mapped[bool] = mapped_column(default=False)
     updated_by: Mapped[str] = mapped_column(String(128), default="system")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -182,22 +145,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def init_db() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        # create_all does not alter an existing PostgreSQL table. These
-        # additive columns keep deployments upgraded in place, including the
-        # local database imported from the previous environment.
-        if connection.dialect.name == "postgresql":
-            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS domain VARCHAR(128) NOT NULL DEFAULT 'general'"))
-            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS aliases JSONB NOT NULL DEFAULT '[]'::jsonb"))
-            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS positive_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
-            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS negative_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
-            await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS workflow JSONB NOT NULL DEFAULT '{}'::jsonb"))
-            await connection.execute(text("ALTER TABLE tool_registry ADD COLUMN IF NOT EXISTS profile_scope JSONB NOT NULL DEFAULT '{}'::jsonb"))
 
-    # Seed the routing skills once so the Skill API and the runtime share the
-    # same guardrails. Existing operator-managed versions are preserved.
+    # Seed the two fixed generic runtime Skills.
     from .skills import DEFAULT_SKILL_DEFINITIONS
-    from .profile_scope import infer_profile_scope
-    from .tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, interface_key
 
     async with SessionLocal() as session:
         changed = False
@@ -218,55 +168,32 @@ async def init_db() -> None:
                 )
             )
             changed = True
-        fallback_skill = await session.execute(
-            select(ConfigEntry).where(
-                ConfigEntry.scope == "system",
-                ConfigEntry.key == "skill_router_fallback_skill_id",
-            )
+        retained_skill_ids = tuple(definition["skill_id"] for definition in DEFAULT_SKILL_DEFINITIONS)
+        removed = await session.execute(delete(Skill).where(~Skill.skill_id.in_(retained_skill_ids)))
+        changed = changed or bool(removed.rowcount)
+        removed_versions = await session.execute(
+            delete(Skill).where(Skill.skill_id.in_(retained_skill_ids), Skill.version != 1)
         )
-        if fallback_skill.scalar_one_or_none() is None:
-            session.add(
-                ConfigEntry(
-                    scope="system",
-                    key="skill_router_fallback_skill_id",
-                    version=1,
-                    value={"value": DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID},
-                    updated_by="system",
-                )
-            )
-            changed = True
-        # Knowledge and OCR are runtime-configured system capabilities, not
-        # business Tool Registry rows. Remove rows created by older versions.
-        removed_defaults = await session.execute(
-            delete(Tool).where(Tool.tool_name.in_((*SYSTEM_DEFAULT_TOOL_NAMES, "umc.licenses")))
-        )
-        changed = changed or bool(removed_defaults.rowcount)
+        changed = changed or bool(removed_versions.rowcount)
         for definition in DEFAULT_SKILL_DEFINITIONS:
             result = await session.execute(select(Skill).where(Skill.skill_id == definition["skill_id"], Skill.version == 1))
             existing_skill = result.scalar_one_or_none()
             if existing_skill:
-                # Builtin definitions are the deployable business baseline.
-                # Apply revisions only while the record is still system-owned;
-                # a Skill edited by an operator is intentionally preserved.
-                if existing_skill.source == "builtin" and existing_skill.updated_by == "system":
-                    for field in ("name", "allowed_tools", "dependencies", "domain", "aliases", "positive_examples", "negative_examples", "content"):
-                        # New declarative fields may be absent while a development
-                        # reloader is between module versions.
-                        desired = definition.get(field, {} if field == "workflow" else getattr(existing_skill, field))
-                        if getattr(existing_skill, field) != desired:
-                            setattr(existing_skill, field, desired)
-                            changed = True
-                    # Some earlier built-ins contain richer request workflows
-                    # than the current baseline. Keep those request details,
-                    # but always refresh deterministic routing so obsolete
-                    # keyword rules cannot override a corrected system route.
-                    desired_routing = list((definition.get("workflow") or {}).get("deterministicRouting") or [])
-                    if desired_routing:
-                        workflow = dict(existing_skill.workflow or {})
-                        if workflow.get("deterministicRouting") != desired_routing:
-                            workflow["deterministicRouting"] = desired_routing
-                            existing_skill.workflow = workflow
-                            changed = True
+                desired_values = {
+                    "name": definition["name"],
+                    "source": "builtin",
+                    "status": "PUBLISHED",
+                    "scope": "system",
+                    "enabled": True,
+                    "allowed_tools": definition["allowed_tools"],
+                    "dependencies": definition["dependencies"],
+                    "content": definition["content"],
+                    "updated_by": "system",
+                }
+                for field, desired in desired_values.items():
+                    if getattr(existing_skill, field) != desired:
+                        setattr(existing_skill, field, desired)
+                        changed = True
                 continue
             session.add(
                 Skill(
@@ -279,44 +206,10 @@ async def init_db() -> None:
                     enabled=True,
                     allowed_tools=definition["allowed_tools"],
                     dependencies=definition["dependencies"],
-                    domain=definition.get("domain", "general"),
-                    aliases=definition.get("aliases", []),
-                    positive_examples=definition.get("positive_examples", []),
-                    negative_examples=definition.get("negative_examples", []),
-                    workflow=definition.get("workflow", {}),
                     content=definition["content"],
                     updated_by="system",
                 )
             )
-            changed = True
-        for definition in DEFAULT_BUSINESS_TOOL_DEFINITIONS:
-            result = await session.execute(select(Tool).where(Tool.tool_name == definition["tool_name"]))
-            existing = result.scalar_one_or_none()
-            if existing:
-                # Upgrade the original hard-coded read adapters to their
-                # Swagger-backed Registry definition without overwriting
-                # operator-edited descriptions or lifecycle flags.
-                if existing.updated_by == "system" and definition.get("source") == "swagger":
-                    existing.operation_id = str(definition["operation_id"])
-                    existing.http_method = str(definition["http_method"])
-                    existing.http_path = str(definition["http_path"])
-                    existing.interface_key = interface_key(definition["http_method"], definition["http_path"])
-                    existing.parameters = dict(definition.get("parameters", {}))
-                    existing.masking_policy = str(definition.get("masking_policy", "default"))
-                    existing.profile_scope = dict(definition.get("profile_scope") or infer_profile_scope(existing.parameters, existing.http_path))
-                    existing.source = "swagger"
-                    changed = True
-                continue
-            tool_values = dict(definition)
-            tool_values["profile_scope"] = dict(tool_values.get("profile_scope") or infer_profile_scope(
-                tool_values.get("parameters"),
-                str(tool_values.get("http_path") or ""),
-            ))
-            tool_values["interface_key"] = interface_key(definition["http_method"], definition["http_path"])
-            tool_values.setdefault("published", True)
-            tool_values.setdefault("enabled", True)
-            tool_values.setdefault("updated_by", "system")
-            session.add(Tool(**tool_values))
             changed = True
         if changed:
             await session.commit()
