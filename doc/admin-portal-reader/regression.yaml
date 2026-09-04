@@ -134,7 +134,7 @@ cases:
     expect:
       max_pages: 3
       max_actions: 12
-      max_duration_seconds: 45
+      max_duration_seconds: 90
       result: not_confirmed
 
   - id: reader-model-evidence-boundary

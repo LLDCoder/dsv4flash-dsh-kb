@@ -1,6 +1,7 @@
 import asyncio
 import httpx
 import json
+import math
 import re
 import time
 from collections import defaultdict
@@ -16,8 +17,16 @@ from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
-from .portal_reader import AdminPortalReader, bounded_json
+from .portal_reader import AdminPortalReader, ReaderTimeoutBudget, bounded_json
 from .principal import Principal
+from .reader_limits import (
+    MAX_PLATFORM_TIMEOUT_SECONDS,
+    MAX_READER_TOTAL_TIMEOUT_SECONDS,
+    MIN_PLATFORM_TIMEOUT_SECONDS,
+    MIN_READER_TOTAL_TIMEOUT_SECONDS,
+    bounded_reader_total_timeout,
+    effective_platform_timeout,
+)
 from .response_safety import is_internal_tool_protocol, strip_unverified_links
 from .runtime import RuntimeManager
 from .skills import response_language_for
@@ -91,6 +100,7 @@ class DSHService:
         restart_only = {"database_url", "redis_url"}
         numeric = {
             "llm_timeout_seconds": float,
+            "reader_total_timeout_seconds": float,
             "knowledge_timeout_seconds": float,
             "knowledge_retry_attempts": int,
             "knowledge_top_k": int,
@@ -114,6 +124,20 @@ class DSHService:
             try:
                 if key in numeric:
                     value = numeric[key](value)
+                    timeout_bounds = {
+                        "reader_total_timeout_seconds": (
+                            MIN_READER_TOTAL_TIMEOUT_SECONDS,
+                            MAX_READER_TOTAL_TIMEOUT_SECONDS,
+                        ),
+                        "platform_timeout_seconds": (
+                            MIN_PLATFORM_TIMEOUT_SECONDS,
+                            MAX_PLATFORM_TIMEOUT_SECONDS,
+                        ),
+                    }
+                    if key in timeout_bounds:
+                        lower, upper = timeout_bounds[key]
+                        if not math.isfinite(value) or not lower <= value <= upper:
+                            continue
                 elif key in bool_keys and isinstance(value, str):
                     value = value.strip().lower() in {"1", "true", "yes", "on", "是"}
             except (TypeError, ValueError):
@@ -129,7 +153,7 @@ class DSHService:
         knowledge.retry_attempts = max(1, int(self.settings.knowledge_retry_attempts))
         platform = self.tool_gateway.platform
         platform.base_url = self.settings.platform_gateway_url.rstrip("/")
-        platform.timeout = self.settings.platform_timeout_seconds
+        platform.timeout = effective_platform_timeout(self.settings.platform_timeout_seconds)
         platform.user_info_url = self.settings.umc_user_info_endpoint
         platform.portal_base_url = self.settings.umc_base_url
     def writer_lock_for(self, conversation_id: str) -> asyncio.Lock:
@@ -509,6 +533,11 @@ class DSHService:
         scope = (
             "You receive only the bounded result produced by the read-only Admin Portal Reader. "
             "Explain its status accurately: success, no_data, no_permission, load_failed, or not_confirmed. "
+            "The facts are a bounded extract, never proof of a complete list. When listing records, say they are "
+            "the records visible in this read or a partial sample; never say they are all current records unless "
+            "the bounded result explicitly includes and supports that completeness. "
+            "Do not mention visible action labels such as Approve, Reject, Export, Download, or Suspend unless the "
+            "user explicitly asks about available actions; never imply that any such action was used. "
             "Never imply that a write, approval, export, download, or other mutation was performed."
             if skill_id == "admin_portal_reader"
             else
@@ -605,9 +634,16 @@ class DSHService:
                             knowledge_folder_id=self.settings.knowledge_default_folder_id,
                             knowledge_top_k=self.settings.knowledge_top_k,
                             allowed_tools=tuple(selected_skill.allowed_tools),
+                            timeout_budget=ReaderTimeoutBudget.from_dependencies(
+                                total_seconds=self.settings.reader_total_timeout_seconds,
+                                llm_timeout_seconds=self.settings.llm_timeout_seconds,
+                                knowledge_timeout_seconds=self.settings.knowledge_timeout_seconds,
+                                platform_timeout_seconds=effective_platform_timeout(self.settings.platform_timeout_seconds),
+                            ),
                         )
                         try:
-                            outcome = await asyncio.wait_for(reader.run(principal, latest_content), timeout=45)
+                            total_timeout = bounded_reader_total_timeout(self.settings.reader_total_timeout_seconds)
+                            outcome = await asyncio.wait_for(reader.run(principal, latest_content), timeout=total_timeout)
                             evidence = outcome.result.public_json()
                             audit_evidence = outcome.audit_evidence
                         except asyncio.TimeoutError:
@@ -620,7 +656,11 @@ class DSHService:
                                 "workflowState": "",
                                 "missing": ["reader_timeout"],
                             }
-                            audit_evidence = {"stage": "timeout", "timeoutSeconds": 45}
+                            audit_evidence = {
+                                "stage": "runtime",
+                                "timeoutKind": "total",
+                                "timeoutSeconds": total_timeout,
+                            }
                         await self.append_audit(
                             db,
                             conversation,

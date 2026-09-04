@@ -9,6 +9,7 @@ audit trail.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import hashlib
 import json
@@ -21,6 +22,7 @@ from urllib.parse import unquote, urlsplit
 import httpx
 
 from .principal import Principal
+from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOUT_SECONDS, bounded_reader_total_timeout
 
 
 ReaderStatus = Literal["success", "no_data", "no_permission", "load_failed", "not_confirmed"]
@@ -44,6 +46,125 @@ SENSITIVE_KEYS = frozenset(
 SENSITIVE_KEY_FRAGMENTS = frozenset(
     {"html", "dom", "screenshot", "base64", "binary", "token", "cookie", "credential", "password", "secret", "session", "authorization", "raw", "pagecontent", "fullpage", "completetable"}
 )
+_CREDENTIAL_NAME = (
+    r"session[_-]?token|access[_-]?token|refresh[_-]?token|umc[_-]?token|token|"
+    r"password|api[_-]?key|"
+    r"provider[_-]?key|secret|credential"
+)
+
+
+def _sanitize_untrusted_text(value: object, *, max_length: int) -> str:
+    decoded = html.unescape(str(value))
+    without_active_markup = re.sub(
+        r"(?is)<(script|style)\b[^>]*>.*?(?:</\1\s*>|$)",
+        " ",
+        decoded,
+    )
+    plain = re.sub(r"<[^>]{1,500}>", " ", without_active_markup)
+    redacted = re.sub(
+        r"(?i)(?P<prefix>\bauthorization(?:header)?\b(?:\s*[:=]\s*|\s+\bis\b\s+|\s+))"
+        r"(?P<value>(?:(?:bearer|basic)\s+)?[^\s,;]+)",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        plain,
+    )
+    redacted = re.sub(
+        r"(?i)\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+",
+        "[redacted-auth]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b",
+        "[redacted-jwt]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(?P<prefix>\bcookie(?:value|header)?\b(?:\s*[:=]\s*|\s+\bis\b\s+))"
+        r"(?P<value>[^\s;,=]+=[^;\s,]+(?:\s*;\s*(?:[^\s;,=]+=[^;\s,]+|secure|httponly|partitioned))*)",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(?P<prefix>\b(?:session|access|refresh|umc)[\s_-]?token\b\s+)"
+        r"(?P<value>(?!(?:policy|status|scope|lifetime|expiry|expiration|format|rotation|required)\b)"
+        r"[a-z0-9._~+/=-]{6,})",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(?P<prefix>\bcookie(?:value|header)?\b(?:\s*[:=]\s*|\s+\bis\b\s+))"
+        r"(?P<value>[^\s,;]+)",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(?P<prefix>\b(?:api[\s_-]?key|provider[\s_-]?key)\b\s+)"
+        r"(?P<value>sk-[a-z0-9_-]{8,}|[a-z0-9._~+/=-]{16,})",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        redacted,
+    )
+    redacted = re.sub(
+        rf"(?i)(?P<key>\b(?:{_CREDENTIAL_NAME}|api[\s_-]?key|provider[\s_-]?key)\b)"
+        r"(?P<closing_quote>[\"']?)(?P<separator>(?:\s*[:=]\s*|\s+\bis\b\s+))"
+        r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
+        lambda match: f"{match.group('key')}{match.group('closing_quote')}{match.group('separator')}[redacted]",
+        redacted,
+    )
+    return re.sub(r"\s+", " ", redacted).strip()[:max_length]
+
+
+@dataclass(frozen=True)
+class ReaderTimeoutBudget:
+    """Total and per-dependency budgets for one Reader turn."""
+
+    total_seconds: float = READER_TOTAL_TIMEOUT_SECONDS
+    get_user_info_seconds: float = 10.0
+    knowledge_search_seconds: float = 15.0
+    planner_seconds: float = 30.0
+    portal_read_seconds: float = 50.0
+
+    @classmethod
+    def from_dependencies(
+        cls,
+        *,
+        total_seconds: float,
+        llm_timeout_seconds: float,
+        knowledge_timeout_seconds: float,
+        platform_timeout_seconds: float,
+    ) -> "ReaderTimeoutBudget":
+        total = bounded_reader_total_timeout(total_seconds)
+        return cls(
+            total_seconds=total,
+            get_user_info_seconds=min(10.0, float(platform_timeout_seconds), total),
+            knowledge_search_seconds=min(15.0, float(knowledge_timeout_seconds), total),
+            planner_seconds=min(30.0, float(llm_timeout_seconds), total),
+            portal_read_seconds=min(float(platform_timeout_seconds), total),
+        )
+
+
+class ReaderStageTimeout(TimeoutError):
+    def __init__(self, stage: str, timeout_seconds: float, *, total_budget: bool) -> None:
+        super().__init__(stage)
+        self.stage = stage
+        self.timeout_seconds = timeout_seconds
+        self.total_budget = total_budget
+
+
+async def _await_reader_stage(awaitable: Any, *, stage: str, cap_seconds: float, deadline: float) -> Any:
+    remaining = max(0.001, deadline - asyncio.get_running_loop().time())
+    timeout_seconds = min(max(0.001, cap_seconds), remaining)
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise ReaderStageTimeout(stage, timeout_seconds, total_budget=remaining <= cap_seconds) from exc
+
+
+def _timeout_evidence(exc: ReaderStageTimeout, budget: ReaderTimeoutBudget) -> dict[str, Any]:
+    return {
+        "stage": exc.stage,
+        "timeoutKind": "total" if exc.total_budget else "stage",
+        "timeoutSeconds": round(exc.timeout_seconds, 3),
+        "totalTimeoutSeconds": budget.total_seconds,
+    }
 
 
 @dataclass(frozen=True)
@@ -73,7 +194,7 @@ class PortalReadRequest:
             "expectedFields": list(self.expected_fields),
             # These limits are server-owned and cannot be raised by the model.
             "maxPages": 3,
-            "timeoutSeconds": 45,
+            "timeoutSeconds": int(PORTAL_EXECUTION_TIMEOUT_SECONDS),
             "maxOutputItems": 20,
         }
 
@@ -92,12 +213,12 @@ class ReaderResult:
     def public_json(self) -> dict[str, Any]:
         result = {
             "result": self.status,
-            "page": self.page[:500],
-            "section": self.section[:300],
+            "page": _sanitize_untrusted_text(self.page, max_length=500),
+            "section": _sanitize_untrusted_text(self.section, max_length=300),
             "scope": self.scope,
-            "facts": [str(item)[:400] for item in self.facts[:20]],
-            "workflowState": self.workflow_state[:500],
-            "missing": [str(item)[:200] for item in self.missing[:10]],
+            "facts": [_sanitize_untrusted_text(item, max_length=400) for item in self.facts[:20]],
+            "workflowState": _sanitize_untrusted_text(self.workflow_state, max_length=500),
+            "missing": [_sanitize_untrusted_text(item, max_length=200) for item in self.missing[:10]],
         }
         while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000 and result["facts"]:
             result["facts"].pop()
@@ -329,12 +450,77 @@ def bounded_json(value: Any, *, max_depth: int = 5, max_items: int = 100, max_st
     if isinstance(value, (list, tuple)):
         return [bounded_json(item, max_depth=max_depth - 1, max_items=max_items, max_string=max_string) for item in list(value)[:max_items]]
     if isinstance(value, str):
-        # Full markup is never useful to the main agent or audit viewer.
-        plain = re.sub(r"<[^>]{1,500}>", " ", html.unescape(value))
-        return re.sub(r"\s+", " ", plain).strip()[:max_string]
+        return _sanitize_untrusted_text(value, max_length=max_string)
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return str(value)[:max_string]
+
+
+def _sanitize_knowledge_text(value: str, *, max_length: int) -> str:
+    return _sanitize_untrusted_text(value, max_length=max_length)
+
+
+def project_knowledge_result(
+    value: Any,
+    *,
+    max_chunks: int = 8,
+    max_content: int = 1_000,
+    max_bytes: int = 10_000,
+) -> dict[str, Any]:
+    """Project the gateway response into bounded planning evidence.
+
+    Knowledge responses are nested more deeply than ordinary audit payloads.
+    An explicit projection preserves useful chunk text while excluding IDs,
+    hashes, graph payloads, and other retrieval internals.
+    """
+
+    if not isinstance(value, dict):
+        return {"ok": False, "code": "knowledge_result_invalid"}
+    projected: dict[str, Any] = {
+        "ok": value.get("ok") is True,
+        "code": str(value.get("code") or "")[:120],
+    }
+    payload = value.get("result")
+    if not isinstance(payload, dict):
+        return projected
+    if isinstance(payload.get("total"), int):
+        projected["total"] = payload["total"]
+    if isinstance(payload.get("degraded"), bool):
+        projected["degraded"] = payload["degraded"]
+    raw_chunks = payload.get("chunks")
+    if not isinstance(raw_chunks, list):
+        raw_chunks = []
+    chunks: list[dict[str, Any]] = []
+    for raw_item in raw_chunks[: max(0, max_chunks)]:
+        if not isinstance(raw_item, dict):
+            continue
+        nested = raw_item.get("chunk") if isinstance(raw_item.get("chunk"), dict) else {}
+        content = raw_item.get("content") or nested.get("content") or raw_item.get("text") or nested.get("text")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        safe_content = _sanitize_knowledge_text(content, max_length=max_content)
+        if not safe_content:
+            continue
+        item: dict[str, Any] = {"content": safe_content}
+        source_name = (
+            raw_item.get("source_name")
+            or nested.get("source_name")
+            or raw_item.get("document_keyword")
+            or nested.get("document_keyword")
+        )
+        if isinstance(source_name, str) and source_name.strip():
+            safe_source_name = _sanitize_knowledge_text(source_name, max_length=300)
+            if safe_source_name:
+                item["source_name"] = safe_source_name
+        score = raw_item.get("score", nested.get("score"))
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            item["score"] = score
+        candidate = {**projected, "chunks": [*chunks, item]}
+        if len(json.dumps(candidate, ensure_ascii=False).encode("utf-8")) > max_bytes:
+            break
+        chunks.append(item)
+    projected["chunks"] = chunks
+    return projected
 
 
 class ReadOnlyPortalPolicy:
@@ -431,14 +617,46 @@ def portal_read_request_from_plan(plan: Any) -> PortalReadRequest | None:
     if not start_path or not isinstance(raw_actions, list):
         return None
     action_keys = {
-        "type", "path", "url", "selector", "label", "role", "name", "field", "section",
+        "type", "action", "path", "url", "selector", "label", "role", "name", "field", "section",
         "emptyState", "permissionCode", "value", "method", "parameters", "filters",
     }
     if any(not isinstance(action, dict) or not set(action).issubset(action_keys) for action in raw_actions):
         return None
-    actions = tuple(dict(action) for action in raw_actions if isinstance(action, dict))
+    actions: list[dict[str, Any]] = []
+    for raw_action in raw_actions:
+        action_type = raw_action.get("type")
+        action_alias = raw_action.get("action")
+        if action_type is not None and action_alias is not None and _key(action_type) != _key(action_alias):
+            return None
+        normalized_action = {name: value for name, value in raw_action.items() if name != "action"}
+        if action_type is None and action_alias is not None:
+            normalized_action["type"] = action_alias
+        actions.append(normalized_action)
     fields = _strings(candidate.get("expectedFields") or candidate.get("expected_fields") or (), limit=30)
-    return PortalReadRequest(start_path=start_path, actions=actions, expected_fields=fields)
+    return PortalReadRequest(start_path=start_path, actions=tuple(actions), expected_fields=fields)
+
+
+def _normalize_initial_observation_request(request: PortalReadRequest) -> PortalReadRequest | None:
+    """Collapse an all-observe plan after its original fields pass policy.
+
+    Returning ``None`` means observe was mixed with another action. Callers
+    must validate the unmodified request first so unsafe metadata cannot be
+    hidden by normalization.
+    """
+
+    action_types = tuple(
+        str(action.get("type") or "").strip().casefold().replace("-", "_")
+        for action in request.actions
+    )
+    if "observe" not in action_types:
+        return request
+    if not action_types or any(action_type != "observe" for action_type in action_types):
+        return None
+    return PortalReadRequest(
+        start_path=request.start_path,
+        actions=({"type": "observe"},),
+        expected_fields=request.expected_fields,
+    )
 
 
 def knowledge_result_from_plan(plan: Any) -> ReaderResult | None:
@@ -456,6 +674,12 @@ def knowledge_result_from_plan(plan: Any) -> ReaderResult | None:
     missing = plan.get("missing") or []
     if not isinstance(facts, list) or not isinstance(missing, list):
         return None
+    if status == "success" and not facts:
+        return None
+    if status == "no_data" and facts:
+        return None
+    if status == "not_confirmed" and not missing:
+        return None
     scope = str(plan.get("scope") or "unknown")
     if scope not in {"personal", "team", "global", "unknown"}:
         return None
@@ -468,6 +692,596 @@ def knowledge_result_from_plan(plan: Any) -> ReaderResult | None:
         facts=tuple(str(item)[:500] for item in facts[:20]),
         workflow_state=str(plan.get("workflowState") or "")[:500],
         missing=tuple(str(item)[:500] for item in missing[:10]),
+    )
+
+
+_DOCUMENTATION_QUESTION_MARKERS = ("manual", "documented", "documentation", "user guide", "手册", "文档", "说明", "دليل")
+_LIVE_TIME_MARKERS = (
+    "current", "currently", "right now", "today", "latest",
+    "当前", "现在", "目前", "今天", "最新", "此刻",
+    "حالي", "حاليًا", "الآن", "اليوم", "الأحدث",
+)
+_LIVE_STATE_MARKERS = (
+    "visible", "which ", "list ", "show ", "how many", "overdue", "due soon",
+    "哪些", "有没有", "多少", "逾期", "到期", "快到期",
+    "اعرض", "كم ", "متأخر", "مستحق",
+)
+_KNOWLEDGE_SENTINELS = ("[truncated]", "knowledge_error", "knowledge timeout", "knowledge_timeout")
+_KNOWLEDGE_PROSE_TERMS = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
+        "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "was", "were",
+        "will", "with",
+    }
+)
+
+
+def question_requires_live_portal(question: str) -> bool:
+    """Identify generic freshness/personalization language without module routing."""
+
+    normalized = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
+    documentation_intent = any(marker in normalized for marker in _DOCUMENTATION_QUESTION_MARKERS)
+    personal_intent = bool(
+        re.search(r"\b(?:my|mine|do i|can i|for me|i have)\b", normalized)
+        or any(marker in normalized for marker in ("我的", "我有", "我能", "我可以", "对我", "لدي", "خاصتي", "هل لدي"))
+    )
+    current_or_visible = any(marker in normalized for marker in (*_LIVE_TIME_MARKERS, "visible", "我能看到", "الظاهرة"))
+    definition_intent = bool(
+        re.search(r"\bwhat (?:does|do)\b.*\bmean\b", normalized)
+        or any(marker in normalized for marker in ("是什么意思", "含义是什么", "ما معنى"))
+    )
+    if documentation_intent and definition_intent and not current_or_visible:
+        return False
+    if current_or_visible or personal_intent:
+        return True
+    if documentation_intent:
+        return False
+    return any(marker in normalized for marker in _LIVE_STATE_MARKERS)
+
+
+def _knowledge_evidence_strings(knowledge_context: Any, *, limit: int = 200) -> tuple[str, ...]:
+    if not isinstance(knowledge_context, dict) or knowledge_context.get("ok") is not True:
+        return ()
+    chunks = knowledge_context.get("chunks")
+    if not isinstance(chunks, list):
+        return ()
+    values: list[str] = []
+    for chunk in chunks[:limit]:
+        content = chunk.get("content") if isinstance(chunk, dict) else None
+        if not isinstance(content, str):
+            continue
+        text = re.sub(r"\s+", " ", content).strip()
+        if text and not any(marker in text.casefold() for marker in _KNOWLEDGE_SENTINELS):
+            values.append(text[:2_000])
+    return tuple(values)
+
+
+def _contains_contiguous_tokens(haystack: list[str], needle: list[str]) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    return any(haystack[index:index + len(needle)] == needle for index in range(len(haystack) - len(needle) + 1))
+
+
+_NEGATION_PATTERN = re.compile(
+    r"(?:\b(?:not|no|never|cannot|without)\b|n't\b|不可以|不能|不可|不得|没有|禁止|尚未|未(?:获|完|通|批)|"
+    r"(?:^|\s)(?:لا|ليس|لن|لم|غير|بدون|ممنوع)(?:\s|$))",
+    re.IGNORECASE,
+)
+
+
+def _negative_polarity(value: str) -> bool:
+    return bool(_NEGATION_PATTERN.search(re.sub(r"\s+", " ", value).strip()))
+
+
+def _knowledge_unit_supports_fact(fact: str, unit: str) -> bool:
+    normalized_fact = re.sub(r"\s+", " ", fact).strip().casefold()
+    normalized_unit = re.sub(r"\s+", " ", unit).strip().casefold()
+    if not normalized_fact or not normalized_unit:
+        return False
+    if _negative_polarity(normalized_fact) != _negative_polarity(normalized_unit):
+        return False
+    if normalized_fact in normalized_unit:
+        return True
+
+    fact_latin = [
+        token
+        for token in re.findall(r"[a-z][a-z0-9_-]*|\d+(?:\.\d+)?", normalized_fact)
+        if token[0].isdigit() or (len(token) >= 2 and token not in _KNOWLEDGE_PROSE_TERMS)
+    ]
+    unit_latin = [
+        token
+        for token in re.findall(r"[a-z][a-z0-9_-]*|\d+(?:\.\d+)?", normalized_unit)
+        if token[0].isdigit() or (len(token) >= 2 and token not in _KNOWLEDGE_PROSE_TERMS)
+    ]
+    fact_han = [
+        sequence[index:index + 2]
+        for sequence in re.findall(r"[\u3400-\u9fff]+", normalized_fact)
+        for index in range(max(0, len(sequence) - 1))
+    ]
+    unit_han = {
+        sequence[index:index + 2]
+        for sequence in re.findall(r"[\u3400-\u9fff]+", normalized_unit)
+        for index in range(max(0, len(sequence) - 1))
+    }
+    fact_arabic = re.findall(r"[\u0621-\u064a]+", normalized_fact)
+    unit_arabic = re.findall(r"[\u0621-\u064a]+", normalized_unit)
+
+    checks: list[bool] = []
+    if fact_latin:
+        checks.append(_contains_contiguous_tokens(unit_latin, fact_latin))
+    if fact_han:
+        checks.append(len(set(fact_han) & unit_han) >= max(1, (len(set(fact_han)) * 3 + 3) // 4))
+    if fact_arabic:
+        checks.append(_contains_contiguous_tokens(unit_arabic, fact_arabic))
+    return bool(checks) and all(checks)
+
+
+def knowledge_supports_result(result: ReaderResult, knowledge_context: Any) -> bool:
+    """Require knowledge-only success facts to be grounded in retrieved content."""
+
+    if result.status != "success" or not result.facts:
+        return False
+    evidence = _knowledge_evidence_strings(knowledge_context)
+    if not evidence:
+        return False
+    for fact in result.facts:
+        normalized_fact = re.sub(r"\s+", " ", fact).strip().casefold()
+        if not normalized_fact or any(marker in normalized_fact for marker in _KNOWLEDGE_SENTINELS):
+            return False
+        supported = False
+        for chunk in evidence:
+            units = [item.strip() for item in re.split(r"[.!?。！？,，،;；\n]+", chunk) if item.strip()]
+            if any(_knowledge_unit_supports_fact(fact, unit) for unit in units):
+                supported = True
+                break
+        if not supported:
+            return False
+    return True
+
+
+_OBSERVATION_PROSE_TERMS = frozenset(
+    {
+        "and", "are", "area", "areas", "card", "cards", "column", "columns", "control", "controls",
+        "count", "counts", "current", "currently", "data", "display", "displayed", "displays", "field",
+        "fields", "filter", "filters", "for", "from", "has", "have", "in", "includes", "including",
+        "information", "is", "label", "labels", "list", "main", "major", "of", "on", "overview",
+        "page", "present", "primary", "region", "regions", "row", "rows", "section", "shown", "shows",
+        "summary", "tab", "tabs", "table", "tables", "task", "the", "this", "to", "value", "values",
+        "with",
+    }
+)
+_EXPLICIT_EMPTY_MARKERS = (
+    "no data", "no records", "no result", "no matching", "nothing found", "暂无数据", "暂无记录", "没有数据",
+)
+_OBSERVATION_FALLBACK_LIST_PATTERNS = (
+    re.compile(r"(?:show|list)(?: me)? (?:my|current|visible|the visible)(?: licensing)? (?:tasks|applications|licenses|records)"),
+    re.compile(r"(?:what|which) (?:tasks|applications|licenses|records) (?:are )?(?:currently )?visible(?: to me)?"),
+    re.compile(r"what are (?:my|the current|the visible) (?:licensing )?(?:tasks|applications|licenses|records)"),
+    re.compile(r"how many (?:tasks|applications|licenses|records) do i have"),
+    re.compile(r"(?:我当前有哪些|我有哪些|我的)(?:任务|申请|许可证|记录)(?:有哪些)?"),
+    re.compile(r"(?:显示|列出)(?:我当前的|我的|当前)(?:任务|申请|许可证|记录)"),
+    re.compile(r"我能看到哪些(?:任务|申请|许可证|记录)"),
+    re.compile(r"我当前有哪些(?: licensing)? 待办任务"),
+    re.compile(r"目前有哪些 profile verification 记录需要我查看"),
+    re.compile(r"(?:اعرض|أظهر) (?:المهام|الطلبات|التراخيص|السجلات) (?:الخاصة بي|لدي|الظاهرة لي)"),
+)
+_OBSERVATION_FALLBACK_OVERVIEW_PATTERNS = (
+    re.compile(r"what is shown on my dashboard"),
+    re.compile(r"what can i see on my dashboard"),
+    re.compile(r"(?:show|display) my dashboard overview"),
+    re.compile(r"my dashboard overview"),
+    re.compile(r"(?:显示|查看)我的(?:仪表盘|看板|概览)"),
+    re.compile(r"我的(?:仪表盘|看板|概览)(?:有什么|显示什么|概览)?"),
+    re.compile(r"(?:اعرض|أظهر) نظرة عامة على لوحة المعلومات الخاصة بي"),
+)
+_OBSERVATION_FALLBACK_STATUS_OVERVIEW_PATTERNS = (
+    re.compile(r"(?:what is )?(?:the )?current (?:license|licensing) status overview"),
+    re.compile(r"(?:what is )?(?:the )?current overview of (?:licenses|licensing) by status"),
+    re.compile(r"当前许可证按状态有什么概况"),
+    re.compile(r"(?:显示|查看)?当前许可证状态概览"),
+    re.compile(r"ما (?:هي )?نظرة عامة على حالة التراخيص الحالية"),
+)
+_STRICT_QUESTION_START_PATHS = (
+    (re.compile(r"我当前有哪些 licensing 待办任务"), "/licensing/applications"),
+    (re.compile(r"目前有哪些 profile verification 记录需要我查看"), "/licensing/profile"),
+    (re.compile(r"当前许可证按状态有什么概况"), "/licensing/licenses"),
+    (re.compile(r"我当前有哪些任务"), "/dashboard"),
+)
+_OBSERVATION_FALLBACK_DISALLOWED_TERMS = frozenset(
+    {
+        *FORBIDDEN_ACTION_TERMS,
+        "attention", "blacklist", "black list", "find", "search", "named", "specific", "particular",
+        "detail", "details", "filter", "status", "type", "category", "pending", "completed", "overdue",
+        "due", "sla", "date", "recent", "between", "before", "after", "manager",
+        "关注", "注意", "黑名单", "查找", "搜索", "指定", "具体", "详情", "明细", "筛选", "过滤",
+        "状态", "类型", "类别", "待处理", "已完成", "逾期", "到期", "日期", "最近", "经理",
+        "اهتمام", "قائمة سوداء", "بحث", "محدد", "تفاصيل", "تصفية", "حالة", "نوع", "فئة", "تاريخ",
+    }
+)
+_OBSERVATION_FALLBACK_MAX_FACTS = 8
+_OBSERVATION_FALLBACK_MAX_FACT_CHARS = 300
+_OBSERVATION_FALLBACK_MAX_FACT_BYTES = 2_400
+_STRICT_LICENSING_PATHS = frozenset({
+    "/licensing/applications",
+    "/licensing/profile",
+    "/licensing/licenses",
+})
+_LICENSE_STATUS_NAMES = (
+    "active", "expire soon", "expired", "cancelled", "canceled", "suspended", "inactive", "revoked",
+)
+
+
+def _strict_question_start_path(question: str) -> str | None:
+    normalized = re.sub(r"[^\w\u3400-\u9fff\u0621-\u064a]+", " ", str(question or "").casefold())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return next(
+        (path for pattern, path in _STRICT_QUESTION_START_PATHS if pattern.fullmatch(normalized)),
+        None,
+    )
+
+
+def _strict_licensing_observation_request(question: str, plan: Any) -> PortalReadRequest | None:
+    """Choose one server-owned observe request for strict Licensing questions."""
+
+    strict_path = _strict_question_start_path(question)
+    if strict_path not in _STRICT_LICENSING_PATHS:
+        return None
+    candidate = portal_read_request_from_plan(plan)
+    if (
+        candidate is not None
+        and (urlsplit(candidate.start_path).path.rstrip("/") or "/") == strict_path
+        and candidate.actions == ({"type": "observe"},)
+    ):
+        return candidate
+    return PortalReadRequest(start_path=strict_path, actions=({"type": "observe"},))
+
+
+def _observation_scalar_strings(value: Any, *, limit: int = 300) -> tuple[str, ...]:
+    values: list[str] = []
+
+    def visit(item: Any) -> None:
+        if len(values) >= limit:
+            return
+        if isinstance(item, str):
+            text = re.sub(r"\s+", " ", item).strip()
+            if text:
+                values.append(text[:1_000])
+        elif isinstance(item, (int, float)) and not isinstance(item, bool):
+            values.append(str(item))
+        elif isinstance(item, dict):
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return tuple(values)
+
+
+def _observation_fallback_intent(question: str) -> Literal["list", "overview", "status_overview"] | None:
+    normalized = re.sub(r"[^\w\u3400-\u9fff\u0621-\u064a]+", " ", str(question or "").casefold())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized or re.search(r"\d", normalized):
+        return None
+    if any(pattern.fullmatch(normalized) for pattern in _OBSERVATION_FALLBACK_STATUS_OVERVIEW_PATTERNS):
+        return "status_overview"
+    latin_words = set(re.findall(r"[a-z]+", normalized))
+    if any(
+        (" " in term and term in normalized)
+        or (term.isascii() and term in latin_words)
+        or (not term.isascii() and term in normalized)
+        for term in _OBSERVATION_FALLBACK_DISALLOWED_TERMS
+    ):
+        return None
+    if any(pattern.fullmatch(normalized) for pattern in _OBSERVATION_FALLBACK_LIST_PATTERNS):
+        return "list"
+    if any(pattern.fullmatch(normalized) for pattern in _OBSERVATION_FALLBACK_OVERVIEW_PATTERNS):
+        return "overview"
+    return None
+
+
+def _data_observation_control(value: str) -> bool:
+    normalized = value.casefold()
+    if not re.search(r"\d", normalized) or not any(character.isalpha() for character in normalized):
+        return False
+    return not any(
+        marker in normalized
+        for marker in ("next", "previous", "page ", "last day", "last week", "last month", "loading", "please wait")
+    )
+
+
+def _observation_has_error_state(observation: Any) -> bool:
+    text = " ".join(_observation_scalar_strings(observation)).casefold()
+    if any(
+        marker in text
+        for marker in (
+            "unauthorized", "forbidden", "access denied", "permission denied", "something went wrong",
+            "internal server error", "page not found", "loading", "please wait", "retry",
+            "未授权", "无权限", "禁止访问", "加载中", "重试",
+        )
+    ):
+        return True
+    return bool(
+        re.search(r"\b(?:http|error|status code)\s*:?[45]\d{2}\b", text)
+        or re.search(r"\b[45]\d{2}\s+(?:error|unauthorized|forbidden|not found|server error)\b", text)
+    )
+
+
+def _normalized_observation_terms(values: tuple[str, ...]) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip() for value in values)
+
+
+def _strict_list_signature(path: str, observation: Any) -> bool:
+    headings = _bounded_observation_field(observation, "headings", limit=12)
+    regions = _bounded_observation_field(observation, "regions", limit=8)
+    columns = _bounded_observation_field(observation, "columnHeaders", limit=20)
+    rows = _bounded_observation_field(observation, "rowSummaries", limit=4)
+    if not rows:
+        return False
+    heading_text = _normalized_observation_terms((*headings, *regions))
+    column_text = _normalized_observation_terms(columns)
+    application_number = "application no" in column_text or "application number" in column_text
+    if path == "/licensing/applications":
+        secondary = sum(term in column_text for term in ("service name", "status", "sla", "type"))
+        return "application" in heading_text and "task" in heading_text and application_number and secondary >= 2
+    if path == "/licensing/profile":
+        secondary = sum(term in column_text for term in ("profile type", "status", "last updated", "applicant"))
+        return "profile verification" in heading_text and application_number and secondary >= 2
+    return True
+
+
+def _license_status_summaries(observation: Any) -> tuple[str, ...]:
+    summaries = tuple(
+        value for value in _bounded_observation_field(observation, "summaries", limit=12)
+        if _data_observation_control(value)
+        and any(re.search(rf"\b{re.escape(name)}\b", value.casefold()) for name in (*_LICENSE_STATUS_NAMES, "total"))
+    )
+    explicit_statuses = {
+        name
+        for value in summaries
+        for name in _LICENSE_STATUS_NAMES
+        if re.search(rf"\b{re.escape(name)}\b", value.casefold())
+    }
+    return summaries if len(explicit_statuses) >= 2 else ()
+
+
+def _bounded_observation_field(observation: Any, name: str, *, limit: int) -> tuple[str, ...]:
+    if not isinstance(observation, dict) or not isinstance(observation.get(name), (list, tuple)):
+        return ()
+    result: list[str] = []
+    for value in observation[name]:
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            continue
+        text = re.sub(r"\s+", " ", str(value)).strip()[:_OBSERVATION_FALLBACK_MAX_FACT_CHARS]
+        if (
+            not text
+            or text in result
+            or any(marker in text.casefold() for marker in _KNOWLEDGE_SENTINELS)
+            or any(marker in text.casefold() for marker in _EXPLICIT_EMPTY_MARKERS)
+        ):
+            continue
+        result.append(text)
+        if len(result) >= limit:
+            break
+    return tuple(result)
+
+
+def observation_fallback_result(
+    question: str,
+    observation: Any,
+    *,
+    page: str = "",
+    scope: Literal["personal", "team", "global", "unknown"] = "unknown",
+) -> ReaderResult | None:
+    """Return exact bounded observation text for a generic list or overview request."""
+
+    intent = _observation_fallback_intent(question)
+    if intent is None:
+        return None
+    expected_path = _strict_question_start_path(question)
+    actual_path = urlsplit(str(page)).path.rstrip("/") or "/"
+    if expected_path is not None and actual_path != expected_path:
+        return None
+    if _observation_has_error_state(observation):
+        return None
+    headings = _bounded_observation_field(observation, "headings", limit=3)
+    controls = tuple(
+        value for value in _bounded_observation_field(observation, "controls", limit=12)
+        if _data_observation_control(value)
+    )[:6]
+    rows = _bounded_observation_field(observation, "rowSummaries", limit=4)
+    columns = _bounded_observation_field(observation, "columnHeaders", limit=8)
+    if actual_path in {"/licensing/applications", "/licensing/profile"} and not _strict_list_signature(actual_path, observation):
+        return None
+    status_summaries = _license_status_summaries(observation) if actual_path == "/licensing/licenses" else ()
+    if intent == "list" and not rows:
+        return None
+    if intent == "overview" and not controls:
+        return None
+    if intent == "status_overview":
+        heading_text = _normalized_observation_terms(
+            (*headings, *_bounded_observation_field(observation, "regions", limit=4))
+        )
+        if "license" not in heading_text or not status_summaries:
+            return None
+
+    if intent == "list":
+        candidates = (*rows, *columns, *headings[:1])
+    elif intent == "status_overview":
+        # Status overview facts come only from the visible stat-card roots.
+        candidates = status_summaries
+    else:
+        candidates = (*controls, *headings[:1])
+    facts: list[str] = []
+    fact_bytes = 0
+    for fact in candidates:
+        if fact in facts:
+            continue
+        encoded_size = len(fact.encode("utf-8"))
+        if fact_bytes + encoded_size > _OBSERVATION_FALLBACK_MAX_FACT_BYTES:
+            break
+        facts.append(fact)
+        fact_bytes += encoded_size
+        if len(facts) >= _OBSERVATION_FALLBACK_MAX_FACTS:
+            break
+    if not facts:
+        return None
+    default_sections = {
+        "/licensing/applications": "My Application Tasks",
+        "/licensing/profile": "My Profile Verification Tasks",
+        "/licensing/licenses": "Status overview",
+    }
+    return ReaderResult(
+        status="success",
+        summary="The bounded portal observation answered the generic request.",
+        page=str(page)[:500],
+        section=default_sections.get(actual_path, headings[0][:300] if headings else ""),
+        scope=scope,
+        facts=tuple(facts),
+    )
+
+
+def _observation_unit_supports_fact(fact: str, value: str, *, structural_tokens: frozenset[str]) -> bool:
+    normalized_fact = re.sub(r"\s+", " ", fact).strip().casefold()
+    normalized_value = re.sub(r"\s+", " ", value).strip().casefold()
+    if not normalized_fact or not normalized_value:
+        return False
+    if _negative_polarity(normalized_fact) != _negative_polarity(normalized_value):
+        return False
+    fact_tokens = re.findall(r"[a-z][a-z0-9_-]*|\d+(?:\.\d+)?", normalized_fact)
+    value_tokens = re.findall(r"[a-z][a-z0-9_-]*|\d+(?:\.\d+)?", normalized_value)
+    concrete_tokens = {
+        token
+        for token in fact_tokens
+        if token not in structural_tokens
+        and (token[0].isdigit() or (len(token) >= 2 and token not in _OBSERVATION_PROSE_TERMS))
+    }
+    if not concrete_tokens:
+        return normalized_fact in normalized_value or normalized_value in normalized_fact
+    if not concrete_tokens.issubset(set(value_tokens)):
+        return False
+    compact_fact = [
+        token for token in fact_tokens
+        if token not in _OBSERVATION_PROSE_TERMS and token not in structural_tokens
+    ]
+    compact_value = [token for token in value_tokens if token not in _OBSERVATION_PROSE_TERMS]
+    supported_numbers: set[str] = set()
+    for index, token in enumerate(compact_fact):
+        if not token[0].isdigit():
+            continue
+        windows = [
+            compact_fact[start:end]
+            for start in range(max(0, index - 2), index + 1)
+            for end in range(index + 1, min(len(compact_fact), index + 3) + 1)
+            if end - start >= 2
+        ]
+        if any(_contains_contiguous_tokens(compact_value, window) for window in windows):
+            supported_numbers.add(token)
+            continue
+        translated_repeat = token in supported_numbers and re.search(
+            rf"{re.escape(token)}\D{{0,40}}[（(][^）)]*{re.escape(token)}(?:\D|$)",
+            fact,
+        )
+        if not translated_repeat:
+            return False
+    return True
+
+
+def _observation_supports_fact(fact: str, observation: Any) -> bool:
+    """Require a fact's labels, values, polarity and numbers in one observed unit.
+
+    Natural-language glue may be translated or paraphrased, while statuses,
+    labels, dates and counts must come directly from the bounded observation.
+    """
+
+    values = _observation_scalar_strings(observation)
+    if not values or not fact.strip():
+        return False
+    structural_values = (
+        *_bounded_observation_field(observation, "columnHeaders", limit=20),
+        *_bounded_observation_field(observation, "labels", limit=20),
+    )
+    structural_tokens = frozenset(
+        token
+        for value in structural_values
+        for token in re.findall(r"[a-z][a-z0-9_-]*", value.casefold())
+    )
+    return any(
+        _observation_unit_supports_fact(fact, value, structural_tokens=structural_tokens)
+        for value in values
+    )
+
+
+def _unconfirmed_observation_fact(fact: str) -> str:
+    normalized = re.sub(r"\s+", " ", fact).strip()
+    return f"unconfirmed_fact: {normalized}"[:500]
+
+
+def _permission_result_scope(context: UserPermissionContext) -> Literal["personal", "team", "global", "unknown"]:
+    values = {re.sub(r"[^a-z]", "", value.casefold()) for value in _strings(context.data_scope, limit=20)}
+    matches: set[str] = set()
+    if values.intersection({"personal", "self", "own"}):
+        matches.add("personal")
+    if values.intersection({"team", "department"}):
+        matches.add("team")
+    if values.intersection({"global", "all"}):
+        matches.add("global")
+    if matches == {"personal"}:
+        return "personal"
+    if matches == {"team"}:
+        return "team"
+    if matches == {"global"}:
+        return "global"
+    return "unknown"
+
+
+def observation_result_from_plan(
+    plan: Any,
+    observation: Any,
+    *,
+    verified_scope: Literal["personal", "team", "global", "unknown"] = "unknown",
+) -> ReaderResult | None:
+    """Keep the observation-grounded subset of a post-observe result."""
+
+    result = knowledge_result_from_plan(plan)
+    if result is None:
+        return None
+    if result.status == "success":
+        supported: list[str] = []
+        unsupported: list[str] = []
+        for fact in result.facts:
+            (supported if _observation_supports_fact(fact, observation) else unsupported).append(fact)
+        supported_facts = tuple(supported)
+        if not supported_facts:
+            return None
+        missing = tuple(
+            [*result.missing, *(_unconfirmed_observation_fact(fact) for fact in unsupported)][:10]
+        )
+        result = ReaderResult(
+            status=result.status,
+            summary=result.summary,
+            page=result.page,
+            section=result.section,
+            scope=result.scope,
+            facts=supported_facts,
+            workflow_state=result.workflow_state,
+            missing=missing,
+        )
+    elif result.status == "no_data":
+        evidence_text = " ".join(_observation_scalar_strings(observation)).casefold()
+        if not any(marker in evidence_text for marker in _EXPLICIT_EMPTY_MARKERS):
+            return None
+
+    return ReaderResult(
+        status=result.status,
+        summary="The portal observation answered the request." if result.status == "success" else result.summary,
+        page=result.page,
+        section=result.section,
+        scope=verified_scope,
+        facts=result.facts,
+        workflow_state=result.workflow_state,
+        missing=result.missing,
     )
 
 
@@ -522,6 +1336,7 @@ class AdminPortalReader:
         knowledge_folder_id: str = "",
         knowledge_top_k: int = 12,
         allowed_tools: tuple[str, ...] = ("knowledge.search", "admin.portal.read"),
+        timeout_budget: ReaderTimeoutBudget | None = None,
     ) -> None:
         self.gateway = gateway
         self.planner = planner
@@ -529,11 +1344,26 @@ class AdminPortalReader:
         self.knowledge_folder_id = knowledge_folder_id
         self.knowledge_top_k = max(1, min(int(knowledge_top_k), 32))
         self.allowed_tools = list(allowed_tools)
+        self.timeout_budget = timeout_budget or ReaderTimeoutBudget()
 
     async def run(self, principal: Principal, question: str) -> ReaderOutcome:
+        budget = self.timeout_budget
+        # Finish just inside the service guard so the current stage can be
+        # recorded instead of collapsing into a generic runtime timeout.
+        deadline = asyncio.get_running_loop().time() + max(0.01, budget.total_seconds - 1.0)
         # This call must remain first. Never use client-provided role, page or
         # button claims as an authorization source.
-        user_info = await self.gateway.get_user_info(principal)
+        try:
+            user_info = await _await_reader_stage(
+                self.gateway.get_user_info(principal),
+                stage="get_user_info",
+                cap_seconds=budget.get_user_info_seconds,
+                deadline=deadline,
+            )
+        except ReaderStageTimeout as exc:
+            missing = "reader_total_timeout" if exc.total_budget else "get_user_info_timeout"
+            result = ReaderResult(status="load_failed", summary="The current Admin Portal permissions could not be loaded in time.", missing=(missing,))
+            return ReaderOutcome(result, _timeout_evidence(exc, budget))
         if not user_info.get("ok"):
             status: ReaderStatus = "no_permission" if user_info.get("code") == "permission_denied" else "load_failed"
             result = ReaderResult(status=status, summary="The current Admin Portal permissions could not be verified.")
@@ -558,15 +1388,37 @@ class AdminPortalReader:
         knowledge_result: dict[str, Any] = {"ok": False, "code": "knowledge_not_configured"}
         if self.knowledge_folder_id:
             search_query = knowledge_search_query(question, permission_context)
-            knowledge_result = await self.gateway.invoke(
-                principal,
-                "knowledge.search",
-                {"query": search_query, "folder_id": self.knowledge_folder_id, "top_k": self.knowledge_top_k},
-                allowed_tools=self.allowed_tools,
-            )
-        knowledge_context = bounded_json(knowledge_result, max_depth=4, max_items=30, max_string=500)
+            try:
+                knowledge_result = await _await_reader_stage(
+                    self.gateway.invoke(
+                        principal,
+                        "knowledge.search",
+                        {"query": search_query, "folder_id": self.knowledge_folder_id, "top_k": self.knowledge_top_k},
+                        allowed_tools=self.allowed_tools,
+                    ),
+                    stage="knowledge_search",
+                    cap_seconds=budget.knowledge_search_seconds,
+                    deadline=deadline,
+                )
+            except ReaderStageTimeout as exc:
+                if exc.total_budget:
+                    result = ReaderResult(status="load_failed", summary="The Admin Portal Reader exhausted its total time budget.", missing=("reader_total_timeout",))
+                    return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit})
+                # A temporary manual-search delay must not prevent a live,
+                # permission-checked portal read.
+                knowledge_result = {"ok": False, "code": "knowledge_timeout"}
+        knowledge_context = project_knowledge_result(knowledge_result)
         try:
-            plan = await self.planner.plan_admin_portal_read(question, permission_context.prompt_json(), knowledge_context)
+            plan = await _await_reader_stage(
+                self.planner.plan_admin_portal_read(question, permission_context.prompt_json(), knowledge_context),
+                stage="planning",
+                cap_seconds=budget.planner_seconds,
+                deadline=deadline,
+            )
+        except ReaderStageTimeout as exc:
+            missing = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+            result = ReaderResult(status="not_confirmed", summary="A bounded read-only portal plan could not be prepared in time.", missing=(missing,))
+            return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit, "knowledge": knowledge_context})
         except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
             result = ReaderResult(status="not_confirmed", summary="I could not determine a bounded read-only portal plan.")
             return ReaderOutcome(
@@ -579,7 +1431,15 @@ class AdminPortalReader:
                 },
             )
         knowledge_result_from_planner = knowledge_result_from_plan(plan)
-        if knowledge_result_from_planner is not None:
+        needs_live_read = question_requires_live_portal(question)
+        strict_licensing_request = _strict_licensing_observation_request(question, plan)
+        if (
+            knowledge_result_from_planner is not None
+            and knowledge_result_from_planner.status == "success"
+            and not needs_live_read
+            and strict_licensing_request is None
+            and knowledge_supports_result(knowledge_result_from_planner, knowledge_context)
+        ):
             return ReaderOutcome(
                 knowledge_result_from_planner,
                 {
@@ -589,25 +1449,149 @@ class AdminPortalReader:
                     "result": knowledge_result_from_planner.public_json(),
                 },
             )
-        request = portal_read_request_from_plan(plan)
-        if request is None:
-            result = ReaderResult(status="not_confirmed", summary="The request did not produce a valid read-only portal plan.")
-            return ReaderOutcome(result, {"stage": "planning", "plan": bounded_json(plan), "permission": permission_audit, "knowledge": knowledge_context})
-        if any(str(action.get("type") or "").casefold() == "observe" for action in request.actions) and len(request.actions) != 1:
-            result = ReaderResult(status="not_confirmed", summary="Portal observation must be a separate bounded step.", missing=("invalid_observation_plan",))
-            return ReaderOutcome(result, {"stage": "planning", "plan": bounded_json(plan), "permission": permission_audit})
-        policy_error = self.policy.validate(request, permission_context)
-        if policy_error:
-            status: ReaderStatus = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
-            result = ReaderResult(status=status, summary="The requested portal operation is not permitted by the read-only reader.", missing=(policy_error,))
-            return ReaderOutcome(result, {"stage": "policy", "plan": bounded_json(request.as_payload()), "policyError": policy_error, "permission": permission_audit})
+        if (
+            strict_licensing_request is None
+            and isinstance(plan, dict)
+            and plan.get("mode") == "knowledge_only"
+        ):
+            force_reason = (
+                "current_portal_state_required"
+                if needs_live_read
+                else "knowledge_result_not_grounded_or_incomplete"
+            )
+            forced_context = {
+                "knowledge": knowledge_context,
+                "planningDirective": {
+                    "requirePortalRead": True,
+                    "reason": force_reason,
+                    "allowedFallback": "knowledge_only:not_confirmed",
+                },
+            }
+            try:
+                plan = await _await_reader_stage(
+                    self.planner.plan_admin_portal_read(
+                        question,
+                        permission_context.prompt_json(),
+                        forced_context,
+                    ),
+                    stage="planning_required_portal",
+                    cap_seconds=budget.planner_seconds,
+                    deadline=deadline,
+                )
+            except ReaderStageTimeout as exc:
+                missing = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+                result = ReaderResult(status="not_confirmed", summary="A required live portal read could not be planned in time.", missing=(missing,))
+                return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit, "knowledge": knowledge_context, "forceReason": force_reason})
+            except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
+                result = ReaderResult(status="not_confirmed", summary="A required live portal read could not be planned.", missing=("portal_read_required",))
+                return ReaderOutcome(result, {"stage": "planning_required_portal", "permission": permission_audit, "knowledge": knowledge_context, "forceReason": force_reason, "errorType": type(exc).__name__})
+            if portal_read_request_from_plan(plan) is None and not (
+                isinstance(plan, dict) and plan.get("mode") == "portal_read"
+            ):
+                result = ReaderResult(status="not_confirmed", summary="The requested current portal state could not be confirmed.", missing=("portal_read_required",))
+                return ReaderOutcome(result, {"stage": "planning_required_portal", "permission": permission_audit, "knowledge": knowledge_context, "forceReason": force_reason, "plan": bounded_json(plan)})
+        expected_start_path = _strict_question_start_path(question)
+        invalid_plan_error: str | None = None
+        if strict_licensing_request is not None:
+            request = strict_licensing_request
+            policy_error = self.policy.validate(request, permission_context)
+            if policy_error:
+                status: ReaderStatus = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
+                result = ReaderResult(status=status, summary="The requested portal operation is not permitted by the read-only reader.", missing=(policy_error,))
+                return ReaderOutcome(result, {"stage": "policy", "plan": bounded_json(request.as_payload()), "policyError": policy_error, "permission": permission_audit})
+        else:
+            request = portal_read_request_from_plan(plan)
+            if request is None and isinstance(plan, dict) and plan.get("mode") == "portal_read":
+                invalid_plan_error = "invalid_closed_plan"
+            elif request is None:
+                result = ReaderResult(status="not_confirmed", summary="The request did not produce a valid read-only portal plan.")
+                return ReaderOutcome(result, {"stage": "planning", "plan": bounded_json(plan), "permission": permission_audit, "knowledge": knowledge_context})
+            if request is not None:
+                initial_path = urlsplit(request.start_path).path.rstrip("/") or "/"
+                if expected_start_path is not None and initial_path != expected_start_path:
+                    # A strict non-Licensing question may ask for one correction.
+                    invalid_plan_error = "unexpected_start_path"
+                else:
+                    # Validate the original plan before discarding observe metadata.
+                    # This prevents normalization from concealing unsafe fields.
+                    policy_error = self.policy.validate(request, permission_context)
+                    if policy_error:
+                        status = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
+                        result = ReaderResult(status=status, summary="The requested portal operation is not permitted by the read-only reader.", missing=(policy_error,))  # type: ignore[arg-type]
+                        return ReaderOutcome(result, {"stage": "policy", "plan": bounded_json(request.as_payload()), "policyError": policy_error, "permission": permission_audit})
+                    normalized_request = _normalize_initial_observation_request(request)
+                    if normalized_request is None:
+                        invalid_plan_error = "invalid_observation_plan"
+                    else:
+                        request = normalized_request
 
-        tool_result = await self.gateway.invoke(
-            principal,
-            "admin.portal.read",
-            request.as_payload(),
-            allowed_tools=self.allowed_tools,
-        )
+        if invalid_plan_error is not None:
+            correction_context = {
+                "knowledge": knowledge_context,
+                "planningDirective": {
+                    "requirePortalRead": True,
+                    "pureObserveFirst": True,
+                    "invalidClosedPlan": True,
+                    "reason": invalid_plan_error,
+                    "allowedFallback": "knowledge_only:not_confirmed",
+                },
+            }
+            try:
+                corrected_plan = await _await_reader_stage(
+                    self.planner.plan_admin_portal_read(
+                        question,
+                        permission_context.prompt_json(),
+                        correction_context,
+                    ),
+                    stage="planning_correction",
+                    cap_seconds=budget.planner_seconds,
+                    deadline=deadline,
+                )
+            except ReaderStageTimeout as exc:
+                missing = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+                result = ReaderResult(status="not_confirmed", summary="The invalid portal plan could not be corrected in time.", missing=(missing,))
+                return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit, "invalidPlanError": invalid_plan_error})
+            except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
+                result = ReaderResult(status="not_confirmed", summary="The invalid portal plan could not be corrected.", missing=(invalid_plan_error,))
+                return ReaderOutcome(result, {"stage": "planning_correction", "permission": permission_audit, "invalidPlanError": invalid_plan_error, "errorType": type(exc).__name__})
+
+            corrected_request = portal_read_request_from_plan(corrected_plan)
+            if corrected_request is None:
+                result = ReaderResult(status="not_confirmed", summary="The corrected portal plan was not valid.", missing=("invalid_closed_plan",))
+                return ReaderOutcome(result, {"stage": "planning_correction", "permission": permission_audit, "invalidPlanError": "invalid_closed_plan"})
+            policy_error = self.policy.validate(corrected_request, permission_context)
+            if policy_error:
+                status = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
+                result = ReaderResult(status=status, summary="The corrected portal operation is not permitted by the read-only reader.", missing=(policy_error,))  # type: ignore[arg-type]
+                return ReaderOutcome(result, {"stage": "policy_after_correction", "policyError": policy_error, "permission": permission_audit})
+            normalized_request = _normalize_initial_observation_request(corrected_request)
+            if normalized_request is None:
+                result = ReaderResult(status="not_confirmed", summary="The corrected observation plan was still invalid.", missing=("invalid_observation_plan",))
+                return ReaderOutcome(result, {"stage": "planning_correction", "permission": permission_audit, "invalidPlanError": "invalid_observation_plan"})
+            if expected_start_path is not None and (
+                urlsplit(normalized_request.start_path).path.rstrip("/") or "/"
+            ) != expected_start_path:
+                result = ReaderResult(status="not_confirmed", summary="The corrected portal plan selected the wrong page.", missing=("unexpected_start_path",))
+                return ReaderOutcome(result, {"stage": "planning_correction", "permission": permission_audit, "invalidPlanError": "unexpected_start_path"})
+            plan = corrected_plan
+            request = normalized_request
+
+        try:
+            tool_result = await _await_reader_stage(
+                self.gateway.invoke(
+                    principal,
+                    "admin.portal.read",
+                    request.as_payload(),
+                    allowed_tools=self.allowed_tools,
+                ),
+                stage="portal_read",
+                cap_seconds=budget.portal_read_seconds,
+                deadline=deadline,
+            )
+        except ReaderStageTimeout as exc:
+            missing = "reader_total_timeout" if exc.total_budget else "portal_read_timeout"
+            result = ReaderResult(status="load_failed", summary="The Admin Portal page could not be loaded in time.", missing=(missing,))
+            return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit})
         raw_tool_payload = tool_result.get("result") if isinstance(tool_result, dict) else None
         observation = raw_tool_payload.get("observation") if isinstance(raw_tool_payload, dict) else None
         if observation is not None and any(str(action.get("type") or "").casefold() == "observe" for action in request.actions):
@@ -615,15 +1599,105 @@ class AdminPortalReader:
                 "knowledge": knowledge_context,
                 "portalObservation": bounded_json(observation, max_depth=4, max_items=50, max_string=300),
             }
-            try:
-                next_plan = await self.planner.plan_admin_portal_read(
+            observation_status = str(
+                raw_tool_payload.get("result") or raw_tool_payload.get("status") or ""
+            ).strip()
+            if observation_status in {"load_failed", "no_permission"} or _observation_has_error_state(
+                observed_context["portalObservation"]
+            ):
+                result = ReaderResult(
+                    status="not_confirmed",
+                    summary="The observed page was not a confirmed Admin Portal data page.",
+                    missing=("observation_page_not_confirmed",),
+                )
+                return ReaderOutcome(
+                    result,
+                    {
+                        "stage": "observation_validation",
+                        "permission": permission_audit,
+                        "observation": observed_context["portalObservation"],
+                    },
+                )
+            strict_path = _strict_question_start_path(question)
+            if strict_path in _STRICT_LICENSING_PATHS:
+                deterministic_result = observation_fallback_result(
                     question,
-                    permission_context.prompt_json(),
-                    observed_context,
+                    observed_context["portalObservation"],
+                    page=request.start_path,
+                    scope=_permission_result_scope(permission_context),
+                )
+                if deterministic_result is not None:
+                    return ReaderOutcome(
+                        deterministic_result,
+                        {
+                            "stage": "completed_from_observation",
+                            "permission": permission_audit,
+                            "knowledge": knowledge_context,
+                            "plan": bounded_json(request.as_payload()),
+                            "observation": observed_context["portalObservation"],
+                            "result": deterministic_result.public_json(),
+                        },
+                    )
+            try:
+                next_plan = await _await_reader_stage(
+                    self.planner.plan_admin_portal_read(
+                        question,
+                        permission_context.prompt_json(),
+                        observed_context,
+                    ),
+                    stage="planning_after_observe",
+                    cap_seconds=budget.planner_seconds,
+                    deadline=deadline,
+                )
+            except ReaderStageTimeout as exc:
+                missing = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+                result = ReaderResult(status="not_confirmed", summary="The observed portal structure could not be interpreted in time.", missing=(missing,))
+                return ReaderOutcome(
+                    result,
+                    {**_timeout_evidence(exc, budget), "permission": permission_audit, "observation": observed_context["portalObservation"]},
                 )
             except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
                 result = ReaderResult(status="not_confirmed", summary="The observed portal structure could not be turned into a bounded read plan.")
                 return ReaderOutcome(result, {"stage": "planning_after_observe", "permission": permission_audit, "observation": observed_context["portalObservation"], "errorType": type(exc).__name__})
+            verified_scope = _permission_result_scope(permission_context)
+            planned_result = knowledge_result_from_plan(next_plan)
+            fallback_result = None
+            if planned_result is not None and planned_result.status in {"success", "not_confirmed"}:
+                fallback_result = observation_fallback_result(
+                    question,
+                    observed_context["portalObservation"],
+                    page=request.start_path,
+                    scope=verified_scope,
+                )
+            if fallback_result is not None:
+                return ReaderOutcome(
+                    fallback_result,
+                    {
+                        "stage": "completed_from_observation",
+                        "permission": permission_audit,
+                        "knowledge": knowledge_context,
+                        "plan": bounded_json(next_plan),
+                        "observation": observed_context["portalObservation"],
+                        "result": fallback_result.public_json(),
+                    },
+                )
+            observed_result = observation_result_from_plan(
+                next_plan,
+                observed_context["portalObservation"],
+                verified_scope=verified_scope,
+            )
+            if observed_result is not None:
+                return ReaderOutcome(
+                    observed_result,
+                    {
+                        "stage": "completed_after_observe",
+                        "permission": permission_audit,
+                        "knowledge": knowledge_context,
+                        "plan": bounded_json(next_plan),
+                        "observation": observed_context["portalObservation"],
+                        "result": observed_result.public_json(),
+                    },
+                )
             next_request = portal_read_request_from_plan(next_plan)
             if (
                 next_request is None
@@ -638,12 +1712,22 @@ class AdminPortalReader:
                 status: ReaderStatus = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
                 result = ReaderResult(status=status, summary="The follow-up portal operation is not permitted.", missing=(policy_error,))
                 return ReaderOutcome(result, {"stage": "policy_after_observe", "permission": permission_audit, "policyError": policy_error, "plan": bounded_json(next_request.as_payload())})
-            tool_result = await self.gateway.invoke(
-                principal,
-                "admin.portal.read",
-                next_request.as_payload(),
-                allowed_tools=self.allowed_tools,
-            )
+            try:
+                tool_result = await _await_reader_stage(
+                    self.gateway.invoke(
+                        principal,
+                        "admin.portal.read",
+                        next_request.as_payload(),
+                        allowed_tools=self.allowed_tools,
+                    ),
+                    stage="portal_read_after_observe",
+                    cap_seconds=budget.portal_read_seconds,
+                    deadline=deadline,
+                )
+            except ReaderStageTimeout as exc:
+                missing = "reader_total_timeout" if exc.total_budget else "portal_read_timeout"
+                result = ReaderResult(status="load_failed", summary="The follow-up Admin Portal page read did not complete in time.", missing=(missing,))
+                return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit})
             request = next_request
         result = _reader_result_from_tool(tool_result)
         return ReaderOutcome(

@@ -33,7 +33,8 @@ admin_portal_reader:
   limits:
     max_pages: 3
     max_actions: 12
-    max_duration_seconds: 45
+    max_duration_seconds: 90
+    portal_execution_timeout_seconds: 45
     max_facts: 20
     max_fact_characters: 500
     max_missing_items: 10

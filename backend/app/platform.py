@@ -3,6 +3,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
+from .reader_limits import effective_platform_timeout
 
 
 class PlatformGatewayClient:
@@ -10,7 +11,7 @@ class PlatformGatewayClient:
 
     def __init__(self, settings: Settings) -> None:
         self.base_url = settings.platform_gateway_url.rstrip("/")
-        self.timeout = settings.platform_timeout_seconds
+        self.timeout = effective_platform_timeout(settings.platform_timeout_seconds)
         self.user_info_url = settings.umc_user_info_endpoint
         self.portal_base_url = settings.umc_base_url
 

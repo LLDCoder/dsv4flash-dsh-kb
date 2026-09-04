@@ -1,5 +1,14 @@
 from functools import lru_cache
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .reader_limits import (
+    MAX_PLATFORM_TIMEOUT_SECONDS,
+    MAX_READER_TOTAL_TIMEOUT_SECONDS,
+    MIN_PLATFORM_TIMEOUT_SECONDS,
+    MIN_READER_TOTAL_TIMEOUT_SECONDS,
+    READER_TOTAL_TIMEOUT_SECONDS,
+)
 
 
 class Settings(BaseSettings):
@@ -15,6 +24,12 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-v4-flash"
     llm_timeout_seconds: float = 60.0
+    reader_total_timeout_seconds: float = Field(
+        default=READER_TOTAL_TIMEOUT_SECONDS,
+        ge=MIN_READER_TOTAL_TIMEOUT_SECONDS,
+        le=MAX_READER_TOTAL_TIMEOUT_SECONDS,
+        allow_inf_nan=False,
+    )
     # Operator-editable instructions are added to each generated system
     # prompt. Built-in language, safety, and evidence rules remain enforced.
     system_prompt: str = ""
@@ -41,7 +56,12 @@ class Settings(BaseSettings):
     knowledge_default_folder_id: str = ""
     knowledge_top_k: int = 32
     platform_gateway_url: str = "http://platform-gateway:8102"
-    platform_timeout_seconds: float = 30.0
+    platform_timeout_seconds: float = Field(
+        default=50.0,
+        ge=MIN_PLATFORM_TIMEOUT_SECONDS,
+        le=MAX_PLATFORM_TIMEOUT_SECONDS,
+        allow_inf_nan=False,
+    )
 
     @staticmethod
     def _portal_base(value: str) -> str:
@@ -84,6 +104,7 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "llm_api_key", "label": "LLM API Key", "env": "LLM_API_KEY", "secret": True, "restartRequired": False, "group": "模型"},
     {"key": "llm_model", "label": "模型名称", "env": "LLM_MODEL", "secret": False, "restartRequired": False, "group": "模型"},
     {"key": "llm_timeout_seconds", "label": "LLM 超时（秒）", "env": "LLM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "模型"},
+    {"key": "reader_total_timeout_seconds", "label": "Portal Reader 总超时（秒）", "env": "READER_TOTAL_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "description": "包含权限、知识检索、规划和页面读取的单轮总预算。", "group": "外部 Tool"},
     {"key": "system_prompt", "label": "系统提示词（可编辑）", "env": "SYSTEM_PROMPT", "secret": False, "restartRequired": False, "multiline": True, "description": "作为全局追加指令注入每轮系统提示词；内置语言、安全和证据规则仍然优先。", "group": "DSH 行为"},
     {"key": "database_url", "label": "Database URL", "env": "DATABASE_URL", "secret": True, "restartRequired": True, "group": "基础设施"},
     {"key": "redis_url", "label": "Redis URL", "env": "REDIS_URL", "secret": True, "restartRequired": True, "group": "基础设施"},

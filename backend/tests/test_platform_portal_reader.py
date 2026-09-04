@@ -112,32 +112,144 @@ class FakePage:
 
 
 class FakeQueryLocator:
-    def __init__(self, values):
+    def __init__(self, values, index=0):
         self.values = values
-        self.index = 0
+        self.index = index
 
     async def count(self):
         return len(self.values)
 
     def nth(self, index):
-        child = FakeQueryLocator(self.values)
-        child.index = index
-        return child
+        return FakeQueryLocator(self.values, index)
+
+    async def is_visible(self):
+        value = self.values[self.index]
+        return value[1] if isinstance(value, tuple) else True
 
     async def inner_text(self):
-        return self.values[self.index]
+        value = self.values[self.index]
+        return value[0] if isinstance(value, tuple) else value
+
+
+class FakeObservationLocator:
+    def __init__(self, values, index=0):
+        self.values = values
+        self.index = index
+
+    async def count(self):
+        return len(self.values)
+
+    def nth(self, index):
+        return FakeObservationLocator(self.values, index)
+
+    async def is_visible(self):
+        return self.values[self.index][1]
+
+    async def inner_text(self):
+        return self.values[self.index][0]
+
+
+class FakeObservationContainer:
+    def __init__(self, rows, *, tag="table", visible=True, aria_busy=None):
+        self.rows = rows
+        self.tag = tag
+        self.visible = visible
+        self.aria_busy = aria_busy
+
+    async def is_visible(self):
+        return self.visible
+
+    async def get_attribute(self, name):
+        return self.aria_busy if name == "aria-busy" else None
+
+    async def evaluate(self, script):
+        return self.tag
+
+    def locator(self, selector):
+        return FakeObservationLocator(self.rows)
+
+
+class FakeObservationContainers:
+    def __init__(self, containers, index=0):
+        self.containers = containers
+        self.index = index
+
+    async def count(self):
+        return len(self.containers)
+
+    def nth(self, index):
+        return self.containers[index]
+
+
+class FakeStructuredRow:
+    def __init__(self, cells, *, visible=True):
+        self.cells = cells
+        self.visible = visible
+
+    async def is_visible(self):
+        return self.visible
+
+    async def inner_text(self):
+        return " ".join(value for value, _ in self.cells)
+
+    def locator(self, selector):
+        return FakeObservationLocator(self.cells)
+
+
+class FakeStructuredRows:
+    def __init__(self, rows, index=0):
+        self.rows = rows
+        self.index = index
+
+    async def count(self):
+        return len(self.rows)
+
+    def nth(self, index):
+        return self.rows[index]
+
+
+class FakeStructuredContainer(FakeObservationContainer):
+    def __init__(self, headers, rows):
+        super().__init__([], tag="table")
+        self.headers = headers
+        self.structured_rows = rows
+
+    def locator(self, selector):
+        if selector == "thead th,[role='columnheader']":
+            return FakeObservationLocator(self.headers)
+        return FakeStructuredRows(self.structured_rows)
+
+
+class FakeObservationPage:
+    def __init__(self, values_by_selector, *, containers=None):
+        self.values_by_selector = values_by_selector
+        self.containers = containers or []
+        self.selectors = []
+
+    def locator(self, selector):
+        self.selectors.append(selector)
+        if selector == "table,[role='grid']":
+            return FakeObservationContainers(self.containers)
+        return FakeObservationLocator(self.values_by_selector.get(selector, []))
 
 
 class FakeQueryPage:
-    def __init__(self, values, *, empty_state_visible=False):
+    def __init__(self, values, *, empty_state_present=False, empty_state_visible=False, failure_states=(), body_text=""):
         self.values = values
+        self.empty_state_present = empty_state_present or empty_state_visible
         self.empty_state_visible = empty_state_visible
+        self.failure_states = failure_states
+        self.body_text = body_text
 
     def locator(self, selector):
+        if selector == gateway.READER_FAILURE_STATE_SELECTOR:
+            return FakeQueryLocator(self.failure_states)
+        if selector == "body":
+            return FakeQueryLocator([(self.body_text, True)]) if self.body_text else FakeQueryLocator([])
         return FakeQueryLocator(self.values)
 
     def get_by_text(self, text, exact=True):
-        return FakeQueryLocator([text] if self.empty_state_visible else [])
+        return FakeQueryLocator([(text, self.empty_state_visible)] if self.empty_state_present else [])
 
 
 def guard(method, path, *, resource_type="xhr"):
@@ -173,6 +285,187 @@ def test_query_field_is_observed_only_with_a_value_or_explicit_empty_state() -> 
     assert missing == ("Status", [], False)
     assert empty == ("Status", [], True)
     assert present == ("Status", ["Pending Review"], False)
+
+
+def test_query_returns_only_visible_values_and_redacts_credentials() -> None:
+    action = gateway.PortalReadAction(type="query", selector="[class*='field']", label="Result")
+    page = FakeQueryPage([
+        ("Hidden stale record", False),
+        ("Authorization: Bearer abc.def", True),
+        ("A normal token status", True),
+        ("access_token=secret-value", True),
+    ])
+
+    _, values, confirmed_empty = asyncio.run(gateway._query_page_values(page, action, 20))
+
+    assert values == [
+        "Authorization: [redacted]",
+        "A normal token status",
+        "access_token=[redacted]",
+    ]
+    assert not confirmed_empty
+
+
+def test_hidden_empty_state_or_visible_failure_state_cannot_confirm_no_data() -> None:
+    action = gateway.PortalReadAction(
+        type="query",
+        selector="[class*='field']",
+        label="Status",
+        emptyState="No data",
+    )
+
+    hidden_empty = FakeQueryPage([], empty_state_present=True, empty_state_visible=False)
+    loading = FakeQueryPage([], empty_state_visible=True, failure_states=[("Loading...", True)])
+    error_page = FakeQueryPage([], empty_state_visible=True, body_text="503 Server Error - Retry")
+
+    assert asyncio.run(gateway._query_page_values(hidden_empty, action, 20))[2] is False
+    assert asyncio.run(gateway._query_page_values(loading, action, 20))[2] is False
+    assert asyncio.run(gateway._query_page_values(error_page, action, 20))[2] is False
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        {"field": "Password"},
+        {"name": "Access Token", "role": "status"},
+        {"selector": "[data-field='authorization']"},
+        {"selector": "[class*='api_key']"},
+        {"section": "Cookie value", "role": "listitem"},
+        {"label": "Credential", "role": "status"},
+    ],
+)
+def test_gateway_rejects_sensitive_query_locators(locator) -> None:
+    request = read_request([{"type": "query", **locator}])
+
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(request)
+
+    assert error_code(raised.value) == "reader_sensitive_locator_forbidden"
+
+
+def test_reader_text_sanitizer_preserves_normal_token_word_and_redacts_values() -> None:
+    value = gateway._sanitize_reader_text(
+        "Token status is active; password: hunter2; api_key=abc; "
+        "JWT eyJabcdefgh.abcdefgh.abcdefgh; cookie is session=secret"
+    )
+
+    assert "Token status is active" in value
+    assert "hunter2" not in value
+    assert "api_key=[redacted]" in value
+    assert "eyJabcdefgh.abcdefgh.abcdefgh" not in value
+    assert "cookie is [redacted]" in value
+
+
+def test_reader_text_sanitizer_redacts_basic_auth_and_all_cookie_pairs() -> None:
+    value = gateway._sanitize_reader_text(
+        "Authorization Basic abc123; Cookie: session=abc; Secure; refresh=def; "
+        "access token xyz789; refresh token secretvalue; access token policy; Token status is active"
+    )
+
+    assert "abc123" not in value
+    assert "session=abc" not in value
+    assert "refresh=def" not in value
+    assert "xyz789" not in value
+    assert "secretvalue" not in value
+    assert "access token policy" in value
+    assert "Token status is active" in value
+
+
+def test_observe_semantics_collects_only_visible_native_table_rows_within_bounds() -> None:
+    rows = [("Hidden row", False), ("No data found", True), ("Loading...", True)] + [
+        (f"Row {index} " + ("x" * 450), True)
+        for index in range(10)
+    ]
+    page = FakeObservationPage({
+        "h1,h2,h3,[role='heading']": [("Hidden heading", False), ("Dashboard", True)],
+    }, containers=[FakeObservationContainer(rows)])
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["headings"] == ["Dashboard"]
+    assert "table,[role='grid']" in page.selectors
+    assert len(observation["rowSummaries"]) == 8
+    assert all("Hidden row" not in row for row in observation["rowSummaries"])
+    assert all("No data" not in row and "Loading" not in row for row in observation["rowSummaries"])
+    assert all(len(row) == 400 for row in observation["rowSummaries"])
+
+
+def test_observe_semantics_uses_only_first_visible_table_with_data_rows() -> None:
+    page = FakeObservationPage({}, containers=[
+        FakeObservationContainer([("Hidden table row", True)], visible=False),
+        FakeObservationContainer([("No data found", True)]),
+        FakeObservationContainer([("First table row 1", True), ("First table row 2", True)]),
+        FakeObservationContainer([("Second table row", True)]),
+    ])
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["rowSummaries"] == ["First table row 1", "First table row 2"]
+
+
+def test_observe_semantics_excludes_the_visible_actions_column_by_cell_index() -> None:
+    container = FakeStructuredContainer(
+        [("Application No.", True), ("Service Name", True), ("Actions", True)],
+        [
+            FakeStructuredRow([
+                ("ML-1", True),
+                ("Application for Media Export", True),
+                ("Approve Reject", True),
+            ])
+        ],
+    )
+    page = FakeObservationPage({}, containers=[container])
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["rowSummaries"] == ["ML-1 Application for Media Export"]
+
+
+def test_observe_semantics_collects_bounded_visible_non_error_stat_cards() -> None:
+    summary_selector = ".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))"
+    summaries = [
+        ("Hidden 1", False),
+        ("Loading...", True),
+        ("Error 500", True),
+        ("Retry 503", True),
+        *((f"Status {index} " + "x" * 220, True) for index in range(14)),
+    ]
+    page = FakeObservationPage({summary_selector: summaries})
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert summary_selector in page.selectors
+    assert len(observation["summaries"]) == 12
+    assert all(len(value) == 200 for value in observation["summaries"])
+    assert all(
+        marker not in " ".join(observation["summaries"])
+        for marker in ("Hidden", "Loading", "Error", "Retry")
+    )
+
+
+def test_observe_semantics_redacts_credentials_in_all_text_collections() -> None:
+    selectors = {
+        "h1,h2,h3,[role='heading']": [("Authorization: Bearer heading-secret", True)],
+        "label": [("password: label-secret", True)],
+        "th,[role='columnheader']": [("api_key=column-secret", True)],
+        "[role='region'][aria-label],section[aria-label]": [("access_token: region-secret", True)],
+        "[role='tab'],.ant-pagination button,.ant-pagination a,button[aria-label],a[aria-label]": [("cookie=session-secret", True)],
+        ".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))": [("secret: summary-secret", True)],
+    }
+    page = FakeObservationPage(
+        selectors,
+        containers=[FakeObservationContainer([("credential: row-secret", True)])],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+    encoded = str(observation)
+
+    for secret in (
+        "heading-secret", "label-secret", "column-secret", "region-secret",
+        "session-secret", "summary-secret", "row-secret",
+    ):
+        assert secret not in encoded
+    assert encoded.count("[redacted]") >= 7
 
 
 def test_auth_init_script_executes_and_uses_portal_storage_shape() -> None:

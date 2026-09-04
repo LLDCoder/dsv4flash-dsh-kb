@@ -93,6 +93,21 @@ READER_BLOCKED_EXACT_PATHS = frozenset(
 )
 READER_BROAD_SELECTORS = frozenset({"html", "body", "main", "table", "*", "#root", "#app"})
 READER_QUERY_ROLES = frozenset({"row", "cell", "columnheader", "heading", "status", "listitem", "term", "definition"})
+READER_SENSITIVE_LOCATOR_TERMS = frozenset(
+    {"credential", "password", "accesstoken", "refreshtoken", "sessiontoken", "umctoken", "authorization", "cookie", "apikey"}
+)
+READER_FAILURE_TEXT_PATTERN = re.compile(
+    r"(?:\b(?:unauthorized|forbidden|access denied|permission denied|something went wrong|"
+    r"internal server error|page not found|loading|please wait|retry)\b|"
+    r"\b(?:http|error|status code)\s*:?\s*[45]\d{2}\b|"
+    r"\b[45]\d{2}\s+(?:error|unauthorized|forbidden|not found|server error)\b|"
+    r"未授权|无权限|禁止访问|加载中|重试)",
+    re.IGNORECASE,
+)
+READER_FAILURE_STATE_SELECTOR = (
+    "[role='alert'],[aria-busy='true'],.ant-spin-spinning,"
+    "[class*='loading'],[class*='error'],[class*='unauthorized'],[class*='forbidden']"
+)
 
 
 class PortalReadAction(BaseModel):
@@ -213,6 +228,75 @@ def _reader_compact(value: object) -> str:
 def _reader_contains_forbidden(value: object) -> bool:
     compact = _reader_compact(value)
     return any(term in compact for term in READER_FORBIDDEN_TERMS)
+
+
+def _reader_contains_sensitive_locator(value: object) -> bool:
+    compact = _reader_compact(value)
+    return any(term in compact for term in READER_SENSITIVE_LOCATOR_TERMS)
+
+
+_READER_CREDENTIAL_NAME = (
+    r"session[\s_-]?token|access[\s_-]?token|refresh[\s_-]?token|umc[\s_-]?token|"
+    r"token|password|"
+    r"api[\s_-]?key|provider[\s_-]?key|secret|credential"
+)
+
+
+def _sanitize_reader_text(value: object, *, max_chars: int | None = None) -> str:
+    """Redact credential values without removing ordinary business uses of 'token'."""
+
+    text = str(value or "")
+    text = re.sub(
+        r"(?i)(?P<prefix>\bauthorization(?:[\s_-]?header)?\b(?:\s*[:=]\s*|\s+\bis\b\s+|\s+))"
+        r"(?P<value>(?:(?:bearer|basic)\s+)?[^\s,;]+)",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        text,
+    )
+    text = re.sub(r"(?i)\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+", "[redacted-auth]", text)
+    text = re.sub(
+        r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b",
+        "[redacted-jwt]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(?P<prefix>\bcookie(?:[\s_-]?(?:value|header))?\b(?:\s*[:=]\s*|\s+\bis\b\s+))"
+        r"(?P<value>[^\s;,=]+=[^;\s,]+(?:\s*;\s*(?:[^\s;,=]+=[^;\s,]+|secure|httponly|partitioned))*)",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(?P<prefix>\b(?:session|access|refresh|umc)[\s_-]?token\b\s+)"
+        r"(?P<value>(?!(?:policy|status|scope|lifetime|expiry|expiration|format|rotation|required)\b)"
+        r"[a-z0-9._~+/=-]{6,})",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(?P<prefix>\bcookie(?:[\s_-]?(?:value|header))?\b(?:\s*[:=]\s*|\s+\bis\b\s+))"
+        r"(?P<value>[^\s,;]+)",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        text,
+    )
+    text = re.sub(
+        rf"(?i)(?P<prefix>\b(?:{_READER_CREDENTIAL_NAME})\b\s*[\"']?\s*(?::|=|\bis\b)\s*)"
+        r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
+        lambda match: f"{match.group('prefix')}[redacted]",
+        text,
+    )
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars] if max_chars is not None else text
+
+
+def _sanitize_reader_output(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _sanitize_reader_output(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_reader_output(child) for child in value]
+    if isinstance(value, tuple):
+        return [_sanitize_reader_output(child) for child in value]
+    if isinstance(value, str):
+        return _sanitize_reader_text(value)
+    return value
 
 
 def _reader_relative_path(value: object) -> str | None:
@@ -394,6 +478,11 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
                 raise HTTPException(status_code=422, detail={"code": "reader_semantic_locator_required"})
         if action_type == "query" and not action.selector and not action.field and action.role not in READER_QUERY_ROLES:
             raise HTTPException(status_code=422, detail={"code": "reader_query_locator_too_broad"})
+        if action_type == "query" and any(
+            _reader_contains_sensitive_locator(candidate)
+            for candidate in (action.selector, action.label, action.name, action.field, action.section)
+        ):
+            raise HTTPException(status_code=422, detail={"code": "reader_sensitive_locator_forbidden"})
         if action_type in {"paginate", "switch_tab", "expand_details"} and (not action.role or not (action.name or action.label)):
             raise HTTPException(status_code=422, detail={"code": "reader_click_semantics_required"})
         if action_type == "switch_tab" and action.role != "tab":
@@ -532,14 +621,102 @@ async def _settle_page(page: Page) -> None:
 
 
 async def _observe_semantics(page: Page, limit: int) -> dict[str, list[str]]:
-    async def texts(selector: str, *, max_each: int, max_chars: int = 200) -> list[str]:
-        locator = page.locator(selector)
+    async def visible_texts(
+        locator,
+        *,
+        max_each: int,
+        max_chars: int = 200,
+        reject_non_data_rows: bool = False,
+        reject_error_states: bool = False,
+    ) -> list[str]:
         values: list[str] = []
-        for index in range(min(await locator.count(), max_each)):
-            value = re.sub(r"\s+", " ", (await locator.nth(index).inner_text()).strip())[:max_chars]
+        for index in range(await locator.count()):
+            candidate = locator.nth(index)
+            if not await candidate.is_visible():
+                continue
+            value = _sanitize_reader_text(await candidate.inner_text(), max_chars=max_chars)
+            normalized = value.casefold()
+            if reject_non_data_rows and (
+                any(marker in normalized for marker in ("no data", "no records", "no results", "nothing found", "暂无数据", "暂无记录", "没有数据"))
+                or normalized in {"loading", "loading...", "please wait", "please wait..."}
+            ):
+                continue
+            if reject_error_states and (
+                any(
+                    marker in normalized
+                    for marker in (
+                        "error", "unauthorized", "forbidden", "access denied", "permission denied",
+                        "loading", "please wait", "retry", "未授权", "无权限", "禁止访问", "加载中", "重试",
+                    )
+                )
+                or re.search(r"\b[45]\d{2}\b", normalized)
+            ):
+                continue
             if value and value not in values:
                 values.append(value)
+            if len(values) >= max_each:
+                break
         return values
+
+    async def texts(selector: str, *, max_each: int, max_chars: int = 200) -> list[str]:
+        return await visible_texts(page.locator(selector), max_each=max_each, max_chars=max_chars)
+
+    async def first_data_rows() -> list[str]:
+        containers = page.locator("table,[role='grid']")
+        for index in range(await containers.count()):
+            container = containers.nth(index)
+            if not await container.is_visible() or await container.get_attribute("aria-busy") == "true":
+                continue
+            tag_name = str(await container.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
+            headers = container.locator("thead th,[role='columnheader']")
+            action_column_indexes: set[int] = set()
+            for header_index in range(await headers.count()):
+                header = headers.nth(header_index)
+                if not await header.is_visible():
+                    continue
+                header_text = _sanitize_reader_text(await header.inner_text(), max_chars=120)
+                if re.sub(r"[^a-z]", "", header_text.casefold()) in {"action", "actions"}:
+                    action_column_indexes.add(header_index)
+            row_selector = (
+                "tbody > tr:has(> td):not(.ant-table-placeholder):not([class*='skeleton']):not(:has([class*='skeleton']))"
+                if tag_name == "table"
+                else "[role='row']:has([role='cell'],[role='gridcell']):not([class*='skeleton']):not(:has([class*='skeleton']))"
+            )
+            row_locator = container.locator(row_selector)
+            rows: list[str] = []
+            for row_index in range(await row_locator.count()):
+                row = row_locator.nth(row_index)
+                if not await row.is_visible():
+                    continue
+                if action_column_indexes:
+                    cells = row.locator(":scope > td,:scope > [role='cell'],:scope > [role='gridcell']")
+                    parts: list[str] = []
+                    for cell_index in range(await cells.count()):
+                        if cell_index in action_column_indexes:
+                            continue
+                        cell = cells.nth(cell_index)
+                        if cell_index >= 50 or not await cell.is_visible():
+                            continue
+                        cell_text = _sanitize_reader_text(await cell.inner_text(), max_chars=300)
+                        if cell_text:
+                            parts.append(cell_text)
+                    value = _sanitize_reader_text(" ".join(parts), max_chars=400)
+                else:
+                    value = _sanitize_reader_text(await row.inner_text(), max_chars=400)
+                normalized = value.casefold()
+                if (
+                    not value
+                    or any(marker in normalized for marker in ("no data", "no records", "no results", "nothing found", "暂无数据", "暂无记录", "没有数据"))
+                    or normalized in {"loading", "loading...", "please wait", "please wait..."}
+                ):
+                    continue
+                if value not in rows:
+                    rows.append(value)
+                if len(rows) >= min(limit, 8):
+                    break
+            if rows:
+                return rows
+        return []
 
     return {
         "headings": await texts("h1,h2,h3,[role='heading']", max_each=min(limit, 12)),
@@ -547,25 +724,61 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, list[str]]:
         "columnHeaders": await texts("th,[role='columnheader']", max_each=min(limit, 20), max_chars=120),
         "regions": await texts("[role='region'][aria-label],section[aria-label]", max_each=min(limit, 8)),
         "controls": await texts("[role='tab'],.ant-pagination button,.ant-pagination a,button[aria-label],a[aria-label]", max_each=min(limit, 12)),
-        "rowSummaries": await texts("[role='row']", max_each=min(limit, 8), max_chars=400),
+        "summaries": await visible_texts(
+            page.locator(".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))"),
+            max_each=min(limit, 12),
+            max_chars=200,
+            reject_error_states=True,
+        ),
+        "rowSummaries": await first_data_rows(),
     }
 
 
 async def _query_page_values(page: Page, action: PortalReadAction, limit: int) -> tuple[str, list[str], bool]:
     locator = _semantic_locator(page, action)
-    count = min(await locator.count(), max(0, limit))
-    label = (action.label or action.field or action.name or "result")[:120]
+    label = _sanitize_reader_text(action.label or action.field or action.name or "result", max_chars=120)
+    max_values = max(0, limit)
+    if max_values == 0:
+        return label, [], False
+    count = await locator.count()
     values: list[str] = []
     for index in range(count):
-        text = re.sub(r"\s+", " ", (await locator.nth(index).inner_text()).strip())[:1_000]
-        if text:
-            values.append(text[:500])
-    confirmed_empty = bool(
-        not values
-        and action.empty_state
-        and await page.get_by_text(action.empty_state, exact=True).count()
-    )
+        candidate = locator.nth(index)
+        if not await candidate.is_visible():
+            continue
+        text = _sanitize_reader_text(await candidate.inner_text(), max_chars=500)
+        if text and text not in values:
+            values.append(text)
+        if len(values) >= max_values:
+            break
+
+    visible_empty_state = False
+    if not values and action.empty_state:
+        empty_locator = page.get_by_text(action.empty_state, exact=True)
+        for index in range(await empty_locator.count()):
+            if await empty_locator.nth(index).is_visible():
+                visible_empty_state = True
+                break
+    confirmed_empty = bool(visible_empty_state and not await _page_has_visible_failure_state(page))
     return label, values, confirmed_empty
+
+
+async def _page_has_visible_failure_state(page: Page) -> bool:
+    state_locator = page.locator(READER_FAILURE_STATE_SELECTOR)
+    for index in range(await state_locator.count()):
+        candidate = state_locator.nth(index)
+        if await candidate.is_visible():
+            return True
+
+    body = page.locator("body")
+    for index in range(min(await body.count(), 1)):
+        candidate = body.nth(index)
+        if not await candidate.is_visible():
+            continue
+        visible_text = _sanitize_reader_text(await candidate.inner_text(), max_chars=20_000)
+        if READER_FAILURE_TEXT_PATTERN.search(visible_text):
+            return True
+    return False
 
 
 async def _execute_reader_actions(
@@ -719,9 +932,9 @@ async def admin_portal_read(
         async with READER_LOCK:
             facts, pages, observed_fields, confirmed_empty, observation = await asyncio.wait_for(execute(), timeout=request.timeout_seconds)
     except PermissionError:
-        return {"status": "no_permission", "summary": "The requested Admin Portal page is not permitted."}
+        return _sanitize_reader_output({"status": "no_permission", "summary": "The requested Admin Portal page is not permitted."})
     except asyncio.TimeoutError:
-        return {"status": "load_failed", "summary": "The Admin Portal read timed out.", "limitations": ["reader_timeout"]}
+        return _sanitize_reader_output({"status": "load_failed", "summary": "The Admin Portal read timed out.", "limitations": ["reader_timeout"]})
     except Exception as exc:
         code = str(exc)
         status = "no_permission" if code in {"action_not_read_only", "page_not_permitted"} else "load_failed"
@@ -732,7 +945,9 @@ async def admin_portal_read(
             status,
             type(exc).__name__,
         )
-        return {"status": status, "summary": "The Admin Portal page could not be read.", "limitations": [code[:120]]}
+        return _sanitize_reader_output(
+            {"status": status, "summary": "The Admin Portal page could not be read.", "limitations": [code[:120]]}
+        )
 
     missing_fields = [field for field in request.expected_fields if field not in observed_fields]
     status = "not_confirmed" if missing_fields or (not facts and not confirmed_empty) else "success" if facts else "no_data"
@@ -746,7 +961,7 @@ async def admin_portal_read(
         if separator and any(term in label.casefold() for term in ("status", "state", "workflow")):
             workflow_state = value.strip()[:500]
             break
-    return {
+    return _sanitize_reader_output({
         "status": status,
         "summary": "The requested Admin Portal data was found." if status == "success" else "No matching Admin Portal data was found." if status == "no_data" else "The requested fields could not all be confirmed.",
         "page": pages[0] if pages else request.start_path,
@@ -760,4 +975,4 @@ async def admin_portal_read(
         "actionTrace": [action.type for action in request.actions],
         "permissionFingerprint": permission_fingerprint,
         **({"observation": observation} if observation is not None else {}),
-    }
+    })
