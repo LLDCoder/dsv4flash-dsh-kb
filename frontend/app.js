@@ -398,6 +398,12 @@ function auditRecordSummary(item) {
     case "assistant.chunk": return content ? `流式片段：${content.slice(0, 180)}` : "流式回答片段";
     case "assistant.welcome": return "初始化欢迎语";
     case "skill.route": return `Skill：${payload.skillId || payload.skill_id || "未标识"} · 模式：${payload.mode || "answer"}`;
+    case "reader.evidence": {
+      const permission = payload.permission || {};
+      const account = permission.account || "未确认";
+      const currentRole = permission.currentRole || (Array.isArray(permission.roles) ? permission.roles[0] : "") || "未确认";
+      return `Reader 审计：登录账号 ${account} · 当前角色 ${currentRole} · 阶段 ${payload.stage || "未标识"}`;
+    }
     case "tool.call": return `调用 Tool：${payload.toolName || "未标识"}`;
     case "tool.result": return `Tool 结果：${payload.toolName || "未标识"} · ${payload.ok === false ? "失败" : "成功"}`;
     case "llm.request": return `LLM 请求：${payload.model || "未标识"} · ${Array.isArray(payload.messages) ? `${payload.messages.length} 条消息` : ""}`;
@@ -433,7 +439,7 @@ function renderAuditConversationList() {
     const meta = document.createElement("span");
     meta.className = "audit-conversation-meta";
     const owner = state.auditScope === "admin" && (item.ownerUserId || item.ownerTenantId)
-      ? `账号 ${item.ownerUserId || "-"} · 租户 ${item.ownerTenantId || "-"}`
+      ? `用户 ID ${item.ownerUserId || "-"} · 租户 ${item.ownerTenantId || "-"}`
       : "";
     meta.textContent = [owner, auditStatusLabel(item.status), `${item.lastSeq || 0} 个事件`, auditTime(item.lastActivityAt || item.createdAt)].filter(Boolean).join(" · ");
     button.append(title, id, meta);
@@ -463,17 +469,20 @@ function renderAuditOverview(conversation) {
   heading.append(headingText, status);
   const grid = document.createElement("div");
   grid.className = "audit-overview-grid";
+  const readerIdentity = conversation.readerIdentity || {};
   const fields = [
     ["创建时间", auditTime(conversation.createdAt)],
     ["最近活动", auditTime(conversation.lastActivityAt)],
+    ["登录账号", readerIdentity.account || "未记录"],
+    ["当前角色", readerIdentity.currentRole || "未记录"],
     ["运行时", conversation.runtimeId || "尚未分配"],
     ["DSH Session", conversation.dshSessionId || "-"],
     ["Skill Profile", conversation.skillProfile || "default"],
     ["事件序号", String(conversation.lastSeq ?? 0)],
   ];
   if (state.auditScope === "admin" && conversation.owner) {
-    fields.splice(2, 0, ["所属账号", conversation.owner.userId || "-"]);
-    fields.splice(3, 0, ["所属租户", conversation.owner.tenantId || "-"]);
+    fields.splice(4, 0, ["所属用户 ID", conversation.owner.userId || "-"]);
+    fields.splice(5, 0, ["所属租户", conversation.owner.tenantId || "-"]);
   }
   fields.forEach(([label, value]) => {
     const field = document.createElement("div");

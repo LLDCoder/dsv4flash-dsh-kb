@@ -28,10 +28,12 @@ from app.portal_reader import (
 from app.principal import Principal
 
 
-def user_info(*, roles=True, pages=True, user_id="admin-7") -> dict:
+def user_info(*, roles=True, pages=True, user_id="admin-7", account="licensing.officer@example.test", current_role="Licensing Officer") -> dict:
     return {
         "data": {
             "id": user_id,
+            "email": account,
+            "currentRoleName": current_role,
             "rolesInfo": [{"roleName": "Licensing Manager", "departmentId": 14}] if roles else [],
             "listRoles": [{"nameEn": "Manager"}] if roles else [],
             "listSysPermission": [
@@ -134,6 +136,8 @@ def test_permission_context_normalizes_real_admin_shape() -> None:
     context = permissions()
 
     assert context.user_id == "admin-7"
+    assert context.account == "licensing.officer@example.test"
+    assert context.current_role == "Licensing Officer"
     assert "Licensing Manager" in context.roles
     assert "/licensing" in context.pages
     assert "/licensing/tasks" in context.subpages
@@ -340,15 +344,36 @@ def test_portal_request_paths_include_start_and_action_navigation() -> None:
     assert portal_request_paths(request) == frozenset({"/dashboard", "/licensing", "/licensing/profile"})
 
 
-def test_permission_audit_uses_fingerprint_not_identity_or_tree() -> None:
+def test_permission_audit_records_account_and_current_role_without_fingerprinting_identity_or_tree() -> None:
     audit = permission_audit_summary(permissions())
-    other_identity = permission_context_from_user_info(user_info(user_id="another-admin"))
+    other_identity = permission_context_from_user_info(user_info(user_id="another-admin", account="other@example.test"))
 
     assert len(audit["fingerprint"]) == 64
     assert "userId" not in audit
     assert "pages" not in audit
+    assert audit["account"] == "licensing.officer@example.test"
+    assert audit["currentRole"] == "Licensing Officer"
     assert audit["pageCount"] >= 1
     assert audit["fingerprint"] == permission_audit_summary(other_identity)["fingerprint"]
+
+
+def test_permission_context_uses_first_role_when_active_role_is_absent() -> None:
+    info = user_info(current_role="")
+    info["data"].pop("currentRoleName")
+
+    context = permission_context_from_user_info(info)
+
+    assert context.current_role == "Licensing Manager"
+    assert context.prompt_json().get("account") is None
+
+
+def test_permission_context_prefers_top_level_account_over_nested_business_username() -> None:
+    info = user_info(account="officer@example.test")
+    info["data"]["listSysPermission"][0]["userName"] = "nested-business-value"
+
+    context = permission_context_from_user_info(info)
+
+    assert context.account == "officer@example.test"
 
 
 def test_permission_fingerprint_normalizes_scope_and_permission_order() -> None:

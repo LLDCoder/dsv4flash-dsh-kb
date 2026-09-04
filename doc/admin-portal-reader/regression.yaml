@@ -146,6 +146,8 @@ cases:
     input_contains: [password, authorization, access_token, cookie, session]
     expect:
       audit_has_technical_trace: true
+      get_user_info_account_recorded: true
+      current_role_recorded: true
       secrets_redacted: true
 
   - id: reader-account-switch-isolation
@@ -163,3 +165,4 @@ acceptance:
   - Result states distinguish no data, no permission, load failure, and insufficient evidence.
   - Model-visible evidence is bounded and contains no complete page or table.
   - Audit evidence is sufficient for diagnosis and contains no credentials or session secrets.
+  - Reader audit evidence identifies the GetUserInfo login account and current role without changing the permission fingerprint.

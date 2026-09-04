@@ -26,6 +26,27 @@ from .testcases import generate_test_cases, run_test_cases
 logger = logging.getLogger("uvicorn.error")
 
 
+def reader_identity_from_audit_payloads(payloads: list[Any]) -> dict[str, str]:
+    """Project the latest available Reader identity into the audit overview."""
+
+    for payload in payloads:
+        permission = payload.get("permission") if isinstance(payload, dict) else None
+        if not isinstance(permission, dict):
+            continue
+        account = permission.get("account")
+        roles = permission.get("roles")
+        current_role = permission.get("currentRole")
+        if not current_role and isinstance(roles, list) and roles:
+            current_role = roles[0]
+        identity = {
+            "account": str(account).strip()[:300] if isinstance(account, (str, int)) else "",
+            "currentRole": str(current_role).strip()[:300] if isinstance(current_role, (str, int)) else "",
+        }
+        if identity["account"] or identity["currentRole"]:
+            return identity
+    return {"account": "", "currentRole": ""}
+
+
 def make_router(service: DSHService) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
 
@@ -196,6 +217,12 @@ def make_router(service: DSHService) -> APIRouter:
                 AuditRecord.user_id == principal.user_id,
             ))
         has_audit_records = (await db.execute(select(AuditRecord.id).where(*base_conditions).limit(1))).scalar_one_or_none() is not None
+        identity_payloads = list((await db.execute(
+            select(AuditRecord.payload)
+            .where(*base_conditions, AuditRecord.record_type == "reader.evidence")
+            .order_by(AuditRecord.created_at.desc(), AuditRecord.id.desc())
+            .limit(25)
+        )).scalars().all())
         query = select(AuditRecord).where(*base_conditions)
         if category:
             query = query.where(AuditRecord.category == category.strip().lower())
@@ -254,6 +281,7 @@ def make_router(service: DSHService) -> APIRouter:
                 )
             source = "session_event_history"
         conversation_json = service.conversation_json(conversation)
+        conversation_json["readerIdentity"] = reader_identity_from_audit_payloads(identity_payloads)
         if is_admin:
             conversation_json["owner"] = {
                 "userId": conversation.user_id,

@@ -133,6 +133,8 @@ result_contract:
 audit:
   retain:
     - normalized_page_address
+    - login_account
+    - current_role
     - permission_fingerprint
     - role_and_department
     - applied_filters

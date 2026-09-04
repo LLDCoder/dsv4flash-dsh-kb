@@ -170,6 +170,8 @@ def _timeout_evidence(exc: ReaderStageTimeout, budget: ReaderTimeoutBudget) -> d
 @dataclass(frozen=True)
 class UserPermissionContext:
     user_id: str = ""
+    account: str = ""
+    current_role: str = ""
     roles: tuple[str, ...] = ()
     departments: tuple[str, ...] = ()
     pages: tuple[str, ...] = ()
@@ -178,7 +180,10 @@ class UserPermissionContext:
     data_scope: dict[str, Any] = field(default_factory=dict)
 
     def prompt_json(self) -> dict[str, Any]:
-        return bounded_json(asdict(self), max_depth=4, max_items=50, max_string=300)
+        payload = asdict(self)
+        # The login account is useful for audit attribution, not Reader planning.
+        payload.pop("account", None)
+        return bounded_json(payload, max_depth=4, max_items=50, max_string=300)
 
 
 @dataclass(frozen=True)
@@ -311,11 +316,30 @@ def _find_values(payload: Any, aliases: set[str]) -> list[Any]:
     return found
 
 
+def _first_direct_string(payload: Any, names: tuple[str, ...]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    values_by_key = {_key(name): value for name, value in payload.items()}
+    for name in names:
+        values = _strings(values_by_key.get(_key(name)), limit=1)
+        if values:
+            return values[0]
+    return ""
+
+
 def permission_context_from_user_info(payload: Any) -> UserPermissionContext:
     """Normalize portal-specific ``GetUserInfo`` shapes without trusting the client."""
 
     aliases = {
         "user": {"userid", "useridentifier", "adminuserid"},
+        "account": {
+            "account", "accountname", "email", "emailaddress", "loginaccount",
+            "loginname", "useremail", "username",
+        },
+        "current_role": {
+            "activerole", "activerolename", "currentrole", "currentrolename",
+            "selectedrole", "selectedrolename",
+        },
         "roles": {"role", "roles", "roleinfo", "rolesinfo", "listrole", "listroles", "rolename", "rolenames"},
         "departments": {"department", "departments", "departmentinfo", "listdepartment", "listdepartments", "departmentname", "departmentnames", "departmentid"},
         "pages": {"page", "pages", "pagepermissions", "menus", "menupermissions", "listsyspermission", "syspermissions", "permissions"},
@@ -326,13 +350,26 @@ def permission_context_from_user_info(payload: Any) -> UserPermissionContext:
     user_values = _find_values(payload, aliases["user"])
     envelope_data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else {}
     user_id = str(envelope_data.get("id") or next(iter(_strings(user_values, limit=1)), "")).strip()[:300]
+    account = _first_direct_string(
+        envelope_data,
+        ("email", "emailAddress", "userEmail", "loginAccount", "accountName", "account", "userName", "username", "loginName"),
+    ) or next(iter(_strings(_find_values(envelope_data, aliases["account"]), limit=1)), "")
+    roles = _strings(_find_values(payload, aliases["roles"]))
+    current_role = _first_direct_string(
+        envelope_data,
+        ("currentRoleName", "activeRoleName", "selectedRoleName", "currentRole", "activeRole", "selectedRole"),
+    ) or next(iter(_strings(_find_values(envelope_data, aliases["current_role"]), limit=1)), "")
+    if not current_role and roles:
+        current_role = roles[0]
     scope_values = _find_values(payload, aliases["scope"])
     scope = bounded_json(scope_values[0], max_depth=4, max_items=50, max_string=300) if scope_values else {}
     if not isinstance(scope, dict):
         scope = {"values": scope if isinstance(scope, list) else [scope]}
     return UserPermissionContext(
         user_id=user_id,
-        roles=_strings(_find_values(payload, aliases["roles"])),
+        account=account,
+        current_role=current_role,
+        roles=roles,
         departments=_strings(_find_values(payload, aliases["departments"])),
         pages=_strings(_find_values(payload, aliases["pages"])),
         subpages=_strings(_find_values(payload, aliases["subpages"])),
@@ -368,6 +405,8 @@ def permission_audit_summary(context: UserPermissionContext) -> dict[str, Any]:
     canonical = json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return {
         "fingerprint": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "account": _sanitize_untrusted_text(context.account, max_length=300),
+        "currentRole": _sanitize_untrusted_text(context.current_role, max_length=300),
         "roles": list(context.roles[:20]),
         "departments": list(context.departments[:20]),
         "pageCount": len(context.pages),

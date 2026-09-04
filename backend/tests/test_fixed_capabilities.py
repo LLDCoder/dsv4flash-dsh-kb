@@ -1,9 +1,11 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+from app.api import reader_identity_from_audit_payloads
 from app.config import Settings
 from app.platform import PlatformGatewayClient
 from app.reader_limits import (
@@ -17,6 +19,9 @@ from app.skills import DEFAULT_SKILL_DEFINITIONS
 from app.tool_gateway import SYSTEM_DEFAULT_TOOL_NAMES
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
 def test_only_generic_runtime_skills_remain() -> None:
     by_id = {item["skill_id"]: item for item in DEFAULT_SKILL_DEFINITIONS}
 
@@ -27,6 +32,44 @@ def test_only_generic_runtime_skills_remain() -> None:
 
 def test_only_fixed_read_only_tools_are_executable() -> None:
     assert SYSTEM_DEFAULT_TOOL_NAMES == {"knowledge.search", "admin.portal.read"}
+
+
+def test_audit_ui_distinguishes_internal_user_id_from_reader_login_identity() -> None:
+    app_source = (REPOSITORY_ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+
+    assert 'case "reader.evidence"' in app_source
+    assert "登录账号 ${account} · 当前角色 ${currentRole}" in app_source
+    assert "conversation.readerIdentity" in app_source
+    assert '["登录账号", readerIdentity.account || "未记录"]' in app_source
+    assert '["当前角色", readerIdentity.currentRole || "未记录"]' in app_source
+    assert "所属用户 ID" in app_source
+
+
+def test_audit_overview_uses_latest_available_reader_identity() -> None:
+    identity = reader_identity_from_audit_payloads([
+        {"stage": "planning"},
+        {
+            "permission": {
+                "account": "officer@example.test",
+                "currentRole": "Licensing Officer",
+                "roles": ["Licensing Officer"],
+            }
+        },
+        {"permission": {"account": "older@example.test", "currentRole": "Licensing Manager"}},
+    ])
+
+    assert identity == {
+        "account": "officer@example.test",
+        "currentRole": "Licensing Officer",
+    }
+
+
+def test_audit_overview_falls_back_to_legacy_roles_and_marks_missing_account() -> None:
+    identity = reader_identity_from_audit_payloads([
+        {"permission": {"roles": ["Licensing Officer"]}},
+    ])
+
+    assert identity == {"account": "", "currentRole": "Licensing Officer"}
 
 
 def test_reader_response_prompt_forbids_claiming_bounded_rows_are_complete() -> None:
