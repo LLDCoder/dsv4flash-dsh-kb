@@ -33,23 +33,6 @@ from .skills import response_language_for
 from .tool_gateway import ToolGateway
 
 
-def _reader_task_category(question: str) -> str:
-    """Extract an explicit task qualifier without knowing business modules."""
-
-    matches = list(re.finditer(r"\b([a-z][a-z0-9& /_-]{0,80}?)\s+tasks?\b", question, flags=re.IGNORECASE))
-    if not matches:
-        return ""
-    candidate = matches[-1].group(1).casefold()
-    candidate = re.sub(
-        r"\b(?:how|many|what|which|about|show|display|list|give|tell|me|my|the|a|an|current|currently|"
-        r"overview|summary|breakdown|count|total|number|due|overdue|expiring|urgent|attention)\b",
-        " ",
-        candidate,
-    )
-    candidate = " ".join(candidate.replace("_", " ").replace("-", " ").split()).strip(" /&")
-    return candidate[:80]
-
-
 def _reader_conversation_context(
     history: list[SessionEvent],
     latest_user: SessionEvent | None,
@@ -93,9 +76,6 @@ def _reader_conversation_context(
             str(previous_result.get("workflowState") or "")
         )[:500],
     }
-    category = _reader_task_category(previous_question)
-    if category:
-        intent["category"] = category
     return {"previousIntent": intent}
 
 

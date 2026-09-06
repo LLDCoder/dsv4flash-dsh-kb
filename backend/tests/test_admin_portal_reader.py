@@ -572,6 +572,13 @@ def test_dismiss_overlay_allows_only_the_closed_close_label_exception() -> None:
     assert policy.validate(
         PortalReadRequest("/licensing", ({"type": "query", "label": "Close record"},)), permissions()
     ) == "action_not_read_only"
+    assert policy.validate(
+        PortalReadRequest(
+            "/licensing",
+            ({"type": "dismiss_overlay", "label": "Close", "selector": "[data-action='approve']"},),
+        ),
+        permissions(),
+    ) == "action_not_read_only"
 
 
 @pytest.mark.parametrize("action", ["show_filter", "apply_filter", "reset_filter", "show_detail", "dismiss_overlay", "sort"])
@@ -596,11 +603,46 @@ def test_policy_blocks_additional_write_verbs(term) -> None:
     assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions()) == "action_not_read_only"
 
 
+@pytest.mark.parametrize("label", ["Refunds 2", "Appeals", "Open tasks", "Approval tasks"])
+def test_policy_allows_read_only_resource_and_status_tab_labels(label) -> None:
+    request = PortalReadRequest("/licensing", ({"type": "switch_tab", "label": label},))
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions()) is None
+
+
+@pytest.mark.parametrize("path", ["/refunds", "/appeals", "/open-tasks", "/approval-tasks"])
+def test_policy_allows_read_only_resource_and_status_routes(path) -> None:
+    permissions_for_routes = UserPermissionContext(
+        roles=("Manager",),
+        pages=("/refunds", "/appeals", "/open-tasks", "/approval-tasks"),
+    )
+    request = PortalReadRequest("/refunds", ({"type": "navigate", "path": path},))
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions_for_routes) is None
+
+
+@pytest.mark.parametrize("label", ["Approve record", "Reject", "Submit", "Export all tasks", "Download report", "Close record"])
+def test_policy_blocks_explicit_mutation_control_labels(label) -> None:
+    request = PortalReadRequest("/licensing", ({"type": "query", "label": label},))
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions()) == "action_not_read_only"
+
+
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
 def test_policy_blocks_model_supplied_non_get_methods(method) -> None:
     request = PortalReadRequest("/licensing", ({"type": "query", "method": method},))
 
     assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions()) == "method_not_read_only"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/licensing/approve-record", "/licensing/open-record", "/licensing/refund-record", "/licensing/tasks/123/close", "/licensing/export"],
+)
+def test_policy_blocks_explicit_mutation_routes(path) -> None:
+    request = PortalReadRequest("/licensing", ({"type": "navigate", "path": path},))
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions()) == "action_not_read_only"
 
 
 @pytest.mark.parametrize(
@@ -691,6 +733,12 @@ def test_planner_modes_reject_extra_or_unknown_fields() -> None:
     assert knowledge_result_from_plan({
         "mode": "knowledge_only", "result": "not_confirmed", "facts": [], "missing": []
     }) is None
+    assert knowledge_result_from_plan({
+        "mode": "observation_result", "result": "success", "facts": ["Observed fact"], "missing": []
+    }) is None
+    assert observation_result_from_plan({
+        "mode": "knowledge_only", "result": "success", "facts": ["Observed fact"], "missing": []
+    }, {"regions": ["Observed fact"]}) is None
 
 
 def test_portal_plan_normalizes_action_alias_from_real_planner_output() -> None:
@@ -825,7 +873,7 @@ def test_observation_result_requires_visible_labels_and_values() -> None:
         "controls": ["Service Application 16", "Profile Verification 0", "All 2"],
     }
     result = observation_result_from_plan({
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "success",
         "page": "/dashboard",
         "section": "Dashboard",
@@ -869,7 +917,7 @@ def test_observation_result_accepts_real_dashboard_region_filter_and_row_facts()
     ]
 
     result = observation_result_from_plan({
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "success",
         "page": "/dashboard",
         "section": "My Tasks",
@@ -890,7 +938,7 @@ def test_observation_result_keeps_supported_fact_and_marks_unsupported_fact_miss
     }
 
     result = observation_result_from_plan({
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "success",
         "facts": [
             "Service Application 16 is shown.",
@@ -911,7 +959,7 @@ def test_observation_result_rejects_when_all_facts_are_unsupported() -> None:
     observation = {"controls": ["Service Application 16"], "regions": ["Pending Review"]}
 
     assert observation_result_from_plan({
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "success",
         "facts": ["Profile Verification 9 is Approved.", "Appeals 4 are Completed."],
         "missing": [],
@@ -922,7 +970,7 @@ def test_observation_result_rejects_unobserved_count_or_status() -> None:
     observation = {"controls": ["Service Application 16"], "regions": ["Pending Review"]}
 
     assert observation_result_from_plan({
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "success",
         "facts": ["Service Application 17 is Approved."],
         "missing": [],
@@ -933,7 +981,7 @@ def test_observation_result_rejects_counts_swapped_between_visible_cards() -> No
     observation = {"controls": ["Service Application 16", "Profile Verification 0"]}
 
     assert observation_result_from_plan({
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "success",
         "facts": ["Service Application 0、Profile Verification 16。"],
         "missing": [],
@@ -948,7 +996,7 @@ def test_observation_result_rejects_opposite_polarity_and_cross_row_status_join(
 
     for fact in ("Application Alpha Status Approved", "Application Alpha Status Pending Review"):
         assert observation_result_from_plan({
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "success",
             "facts": [fact],
             "missing": [],
@@ -958,7 +1006,7 @@ def test_observation_result_rejects_opposite_polarity_and_cross_row_status_join(
 def test_observation_result_scope_requires_explicit_permission_scope() -> None:
     observation = {"rowSummaries": ["Application Alpha Pending Review"]}
     plan = {
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "success",
         "scope": "team",
         "facts": ["Application Alpha Pending Review"],
@@ -1063,6 +1111,10 @@ def test_current_question_forces_portal_read_even_when_knowledge_fact_is_support
     assert gateway.events == ["GetUserInfo", "knowledge.search", "admin.portal.read"]
     assert planner.calls[1][2]["planningDirective"]["requirePortalRead"] is True
     assert planner.calls[1][2]["planningDirective"]["reason"] == "current_portal_state_required"
+    assert planner.calls[1][2]["chunks"] == [
+        {"content": "My Tasks contains the current user's tasks."}
+    ]
+    assert "knowledge" not in planner.calls[1][2]
 
 
 def test_initial_knowledge_no_data_must_fall_through_to_portal_read() -> None:
@@ -1114,6 +1166,8 @@ def test_unsupported_knowledge_success_falls_through_to_portal_read() -> None:
     assert outcome.result.status == "success"
     assert gateway.events[-1] == "admin.portal.read"
     assert planner.calls[1][2]["planningDirective"]["reason"] == "knowledge_result_not_grounded_or_incomplete"
+    assert planner.calls[1][2]["chunks"] == [{"content": "[truncated]"}]
+    assert "knowledge" not in planner.calls[1][2]
 
 
 def test_planner_stage_timeout_is_identified_before_portal_read() -> None:
@@ -1185,7 +1239,7 @@ def test_observe_is_separate_then_followed_by_semantic_read() -> None:
 
     assert outcome.result.status == "success"
     assert gateway.events.count("admin.portal.read") == 2
-    assert len(planner.calls) == 2
+    assert len(planner.calls) == 3
 
 
 def test_observe_can_finish_with_grounded_result_without_second_portal_call() -> None:
@@ -1195,7 +1249,7 @@ def test_observe_can_finish_with_grounded_result_without_second_portal_call() ->
             "portalRequest": {"startPath": "/licensing", "actions": [{"action": "observe"}]},
         },
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "success",
             "page": "/licensing",
             "section": "My Tasks",
@@ -1228,7 +1282,7 @@ def test_observe_not_confirmed_falls_back_to_bounded_generic_list_facts() -> Non
             "portalRequest": {"startPath": "/licensing", "actions": [{"type": "observe"}]},
         },
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "not_confirmed",
             "section": "My Application Tasks",
             "facts": [],
@@ -1257,14 +1311,14 @@ def test_observe_not_confirmed_falls_back_to_bounded_generic_list_facts() -> Non
     assert outcome.result.status == "success"
     assert outcome.result.facts == ("Renewal of Media Licenses Pending Review 3d Overdue",)
     assert outcome.result.scope == "team"
-    assert outcome.audit_evidence["stage"] == "completed_from_observation"
+    assert outcome.audit_evidence["stage"] == "completed_from_observation_fallback"
     assert gateway.events.count("admin.portal.read") == 1
 
 
 def test_observe_not_confirmed_falls_back_to_generic_overview_controls() -> None:
     planner = Planner(
         {"mode": "portal_read", "portalRequest": {"startPath": "/dashboard", "actions": [{"type": "observe"}]}},
-        {"mode": "knowledge_only", "result": "not_confirmed", "section": "My Tasks", "facts": [], "missing": ["no_semantic_plan"]},
+        {"mode": "observation_result", "result": "not_confirmed", "section": "My Tasks", "facts": [], "missing": ["no_semantic_plan"]},
     )
     dashboard_info = user_info()
     dashboard_info["data"]["listSysPermission"] = [{"frontendRoute": "/dashboard", "children": [], "buttonList": []}]
@@ -1292,7 +1346,7 @@ def test_observe_not_confirmed_falls_back_to_generic_overview_controls() -> None
         "Profile Verification 0",
     )
     assert outcome.result.scope == "team"
-    assert outcome.audit_evidence["stage"] == "completed_from_observation"
+    assert outcome.audit_evidence["stage"] == "completed_from_observation_fallback"
 
 
 def test_invalid_mixed_plan_is_corrected_to_a_plan_selected_section() -> None:
@@ -1336,7 +1390,7 @@ def test_invalid_mixed_plan_is_corrected_to_a_plan_selected_section() -> None:
     assert outcome.result.facts[0] == "ML-1-7-3968029 Ground Photography Permit Initial Approval Due in 2d"
     assert "312 To Do" not in outcome.result.facts
     assert gateway.events.count("admin.portal.read") == 1
-    assert len(planner.calls) == 2
+    assert len(planner.calls) == 3
     assert "DO_NOT_REPLAY" not in json.dumps(outcome.audit_evidence)
 
 
@@ -1378,14 +1432,14 @@ def test_closed_schema_failure_is_corrected_to_a_plan_selected_section() -> None
     assert outcome.result.section == "My Profile Verification Tasks"
     assert "35 Total" not in outcome.result.facts
     assert gateway.events.count("admin.portal.read") == 1
-    assert len(planner.calls) == 2
+    assert len(planner.calls) == 3
 
 
 def test_license_status_real_observation_uses_only_numeric_stat_card_summaries() -> None:
     planner = Planner(
         portal_plan_for("/licensing/licenses", [{"type": "observe"}]),
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "not_confirmed",
             "section": "Status overview",
             "facts": [],
@@ -1423,8 +1477,8 @@ def test_license_status_real_observation_uses_only_numeric_stat_card_summaries()
     assert "8929867" not in " ".join(outcome.result.facts)
     assert "999" not in " ".join(outcome.result.facts)
     assert "777" not in " ".join(outcome.result.facts)
-    assert outcome.audit_evidence["stage"] == "completed_from_observation"
-    assert len(planner.calls) == 1
+    assert outcome.audit_evidence["stage"] == "completed_from_observation_fallback"
+    assert len(planner.calls) == 2
 
 
 def test_plan_selected_unpermitted_page_is_not_replaced_or_executed() -> None:
@@ -1487,7 +1541,7 @@ def test_strict_licensing_fallback_never_succeeds_on_error_or_loading_page(obser
 def test_plan_selected_section_rejects_rows_from_another_section() -> None:
     planner = Planner(
         portal_plan_for("/licensing/profile", [{"type": "observe"}]),
-        {"mode": "knowledge_only", "result": "not_confirmed", "section": "Profile Verification", "facts": [], "missing": ["page_signature_missing"]},
+        {"mode": "observation_result", "result": "not_confirmed", "section": "Profile Verification", "facts": [], "missing": ["page_signature_missing"]},
     )
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/licensing/profile")},
@@ -1513,7 +1567,7 @@ def test_plan_selected_section_rejects_rows_from_another_section() -> None:
     assert len(planner.calls) == 2
 
 
-def test_plan_selected_section_returns_before_second_planner_call() -> None:
+def test_plan_selected_section_is_used_only_after_post_observe_llm_attempt() -> None:
     planner = Planner(portal_plan_for("/licensing/profile", [{"type": "observe", "section": "My Profile Verification Tasks"}]))
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/licensing/profile")},
@@ -1535,7 +1589,7 @@ def test_plan_selected_section_returns_before_second_planner_call() -> None:
     outcome = run_reader(gateway, planner, question="目前有哪些 Profile Verification 记录需要我查看？")
 
     assert outcome.result.status == "success"
-    assert len(planner.calls) == 1
+    assert len(planner.calls) == 2
 
 
 def test_incomplete_knowledge_plan_requires_planner_selected_portal_read() -> None:
@@ -1568,7 +1622,7 @@ def test_incomplete_knowledge_plan_requires_planner_selected_portal_read() -> No
     outcome = run_reader(gateway, planner, question="我当前有哪些 Licensing 待办任务？")
 
     assert outcome.result.status == "success"
-    assert len(planner.calls) == 2
+    assert len(planner.calls) == 3
     assert gateway.events.count("admin.portal.read") == 1
 
 
@@ -1617,7 +1671,7 @@ def test_reader_does_not_replace_a_permitted_plan_selected_page(question, expect
 def test_observation_fallback_rejects_detail_date_and_filter_questions(question) -> None:
     planner = Planner(
         {"mode": "portal_read", "portalRequest": {"startPath": "/licensing", "actions": [{"type": "observe"}]}},
-        {"mode": "knowledge_only", "result": "not_confirmed", "facts": [], "missing": ["needs_semantic_read"]},
+        {"mode": "observation_result", "result": "not_confirmed", "facts": [], "missing": ["needs_semantic_read"]},
     )
     gateway = Gateway(portal_result={
         "ok": True,
@@ -1697,7 +1751,7 @@ def test_dashboard_attention_never_infers_from_nonzero_cards_without_authoritati
     planner = Planner(
         portal_plan_for("/dashboard", [{"type": "observe", "section": "Needs Your Attention"}]),
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "not_confirmed",
             "page": "/dashboard",
             "section": "Needs Your Attention",
@@ -1829,7 +1883,7 @@ def test_licensing_task_overview_uses_dashboard_my_tasks_categories() -> None:
     planner = Planner(
         portal_plan_for("/dashboard", [{"type": "observe", "section": "My Tasks"}]),
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "success",
             "page": "/dashboard",
             "section": "My Tasks",
@@ -1902,7 +1956,7 @@ def test_licensing_task_overview_requires_my_tasks_section_identity() -> None:
     planner = Planner(
         portal_plan_for("/dashboard", [{"type": "observe", "section": "My Tasks"}]),
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "not_confirmed",
             "page": "/dashboard",
             "section": "My Tasks",
@@ -1943,7 +1997,7 @@ def test_licensing_task_count_requires_an_explicit_unambiguous_total() -> None:
     planner = Planner(
         portal_plan_for("/licensing/applications", [{"type": "observe", "section": "My Application Tasks"}]),
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "not_confirmed",
             "page": "/licensing/applications",
             "section": "My Application Tasks",
@@ -1983,7 +2037,7 @@ def test_generic_list_observation_takes_priority_and_never_mixes_overview_counts
     planner = Planner(
         {"mode": "portal_read", "portalRequest": {"startPath": "/licensing", "actions": [{"type": "observe"}]}},
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "success",
             "section": "My Application Tasks",
             "answerShape": "list",
@@ -2012,7 +2066,7 @@ def test_generic_list_observation_takes_priority_and_never_mixes_overview_counts
     outcome = run_reader(gateway, planner, question="Show my licensing tasks")
 
     assert outcome.result.status == "success"
-    assert outcome.audit_evidence["stage"] == "completed_from_observation"
+    assert outcome.audit_evidence["stage"] == "completed_from_observation_fallback"
     assert outcome.result.facts[:2] == (
         "Renewal of Media Licenses Pending Review 3d Overdue",
         "New Media License Pending Modification Due in 2d",
@@ -2032,7 +2086,7 @@ def test_generic_list_observation_takes_priority_and_never_mixes_overview_counts
 def test_observation_fallback_does_not_succeed_from_empty_or_unapproved_structure(observation) -> None:
     planner = Planner(
         {"mode": "portal_read", "portalRequest": {"startPath": "/licensing", "actions": [{"type": "observe"}]}},
-        {"mode": "knowledge_only", "result": "not_confirmed", "facts": [], "missing": ["no_rows"]},
+        {"mode": "observation_result", "result": "not_confirmed", "facts": [], "missing": ["no_rows"]},
     )
     gateway = Gateway(portal_result={
         "ok": True,
@@ -2048,7 +2102,7 @@ def test_observation_fallback_does_not_succeed_from_empty_or_unapproved_structur
 def test_observation_fallback_enforces_fact_count_character_and_byte_limits() -> None:
     planner = Planner(
         {"mode": "portal_read", "portalRequest": {"startPath": "/licensing", "actions": [{"type": "observe"}]}},
-        {"mode": "knowledge_only", "result": "not_confirmed", "facts": [], "missing": ["no_semantic_plan"]},
+        {"mode": "observation_result", "result": "not_confirmed", "facts": [], "missing": ["no_semantic_plan"]},
     )
     gateway = Gateway(portal_result={
         "ok": True,

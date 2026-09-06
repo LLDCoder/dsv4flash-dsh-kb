@@ -62,6 +62,14 @@ def test_reader_planner_disables_thinking_and_bounds_output(monkeypatch) -> None
     assert "show_filter, apply_filter, reset_filter, sort, show_detail, and dismiss_overlay" in system_prompt
     assert "only when the retrieved manual documents the named control on a permitted page" in system_prompt
     assert "show_detail must include value with the stable record identifier" in system_prompt
+    assert "mode:'observation_result'" in system_prompt
+    assert "Never return knowledge_only after portalObservation" in system_prompt
+    assert "pre-observe knowledge_only, portal_read, and post-observe observation_result" in system_prompt
+    assert "a parent label with a count proves only the quantity" in system_prompt
+    assert "inspect the bounded children of an available category control" in system_prompt
+    assert "the current observation is authoritative" in system_prompt
+    assert "never guess a different destination page or repeat observe instead" in system_prompt
+    assert "a question about the user's tasks, items, or work queue should start from the task surface" in system_prompt
 
 
 def test_reader_planner_accepts_one_fenced_json_object(monkeypatch) -> None:

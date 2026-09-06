@@ -7,7 +7,7 @@ import pytest
 
 from app.config import Settings
 from app.llm import LLMAdapter
-from app.portal_reader import reader_answer_shape
+from app.portal_reader import question_requires_live_portal, reader_answer_shape
 from app.service import _reader_conversation_context
 
 
@@ -26,6 +26,7 @@ def event(seq: int, event_type: str, payload: dict[str, object]):
         ("What needs my attention?", "attention"),
         ("Which tasks are overdue?", "due"),
         ("Show details for this task", "detail"),
+        ("How about the service application tasks?", "unspecified"),
         ("How about enquiries?", "unspecified"),
     ],
 )
@@ -33,7 +34,14 @@ def test_answer_shape_is_generic_and_preserves_elliptical_follow_ups(question: s
     assert reader_answer_shape(question) == expected
 
 
-def test_conversation_context_keeps_previous_shape_category_and_reader_location() -> None:
+def test_elliptical_task_wording_is_only_a_live_read_guard() -> None:
+    question = "How about the service application tasks?"
+
+    assert question_requires_live_portal(question) is True
+    assert reader_answer_shape(question) == "unspecified"
+
+
+def test_conversation_context_keeps_previous_shape_and_reader_location() -> None:
     previous_user = event(1, "user.message", {"content": "Show my service application tasks list"})
     previous_result = event(
         2,
@@ -58,7 +66,6 @@ def test_conversation_context_keeps_previous_shape_category_and_reader_location(
         "previousIntent": {
             "question": "Show my service application tasks list",
             "answerShape": "list",
-            "category": "service application",
             "resultStatus": "success",
             "page": "/work/items",
             "section": "Assigned work",
@@ -66,6 +73,27 @@ def test_conversation_context_keeps_previous_shape_category_and_reader_location(
             "workflowState": "Open",
         }
     }
+
+
+def test_conversation_context_does_not_derive_a_category_from_the_previous_question() -> None:
+    previous_user = event(1, "user.message", {"content": "What are my current tasks?"})
+    previous_result = event(
+        2,
+        "reader.result",
+        {
+            "result": "success",
+            "page": "/work/items",
+            "section": "Assigned work",
+            "scope": "personal",
+            "workflowState": "Open",
+        },
+    )
+    current_user = event(3, "user.message", {"content": "How about enquiries?"})
+
+    context = _reader_conversation_context([previous_user, previous_result, current_user], current_user)
+
+    assert context["previousIntent"]["question"] == "What are my current tasks?"
+    assert "category" not in context["previousIntent"]
 
 
 def test_conversation_context_is_empty_without_a_previous_user_turn() -> None:
@@ -108,7 +136,6 @@ def test_planner_receives_bounded_conversation_context(monkeypatch) -> None:
         "previousIntent": {
             "question": "List my tasks",
             "answerShape": "list",
-            "category": "",
             "resultStatus": "success",
             "page": "/work/items",
             "section": "Assigned work",
@@ -124,3 +151,4 @@ def test_planner_receives_bounded_conversation_context(monkeypatch) -> None:
     assert planner_input["conversationContext"] == context
     assert "untrusted user-conversation metadata" in messages[0]["content"]
     assert "explicit wording in the current question always wins" in messages[0]["content"]
+    assert "answer shape, or category" not in messages[0]["content"]

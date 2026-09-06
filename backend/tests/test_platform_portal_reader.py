@@ -187,21 +187,30 @@ class FakeObservationLocator:
 
 
 class FakeObservationContainer:
-    def __init__(self, rows, *, tag="table", visible=True, aria_busy=None, heading=""):
+    def __init__(self, rows, *, tag="table", visible=True, aria_busy=None, heading="", parent_index=None):
         self.rows = rows
         self.tag = tag
         self.visible = visible
         self.aria_busy = aria_busy
         self.heading = heading
+        self.parent_index = parent_index
 
     async def is_visible(self):
         return self.visible
 
     async def get_attribute(self, name):
-        return self.aria_busy if name == "aria-busy" else None
+        if name == "aria-busy":
+            return self.aria_busy
+        if name == "role" and self.tag == "grid":
+            return "grid"
+        return None
 
     async def evaluate(self, script):
-        return self.tag if "tagName" in script else self.heading
+        if "tagName" in script:
+            return self.tag
+        if "parentIndex" in script:
+            return {"heading": self.heading, "parentIndex": self.parent_index}
+        return self.heading
 
     def locator(self, selector):
         return FakeObservationLocator(self.rows)
@@ -220,9 +229,20 @@ class FakeObservationContainers:
 
 
 class FakeSemanticSection:
-    def __init__(self, heading, controls, *, card_summaries=(), selected_states=(), empty_state="", visible=True):
+    def __init__(
+        self,
+        heading,
+        controls,
+        *,
+        aria_label="",
+        card_summaries=(),
+        selected_states=(),
+        empty_state="",
+        visible=True,
+    ):
         self.heading = heading
         self.controls = controls
+        self.aria_label = aria_label
         self.card_summaries = card_summaries
         self.selected_states = selected_states
         self.empty_state = empty_state
@@ -231,6 +251,9 @@ class FakeSemanticSection:
 
     async def is_visible(self):
         return self.visible
+
+    async def get_attribute(self, name):
+        return self.aria_label if name == "aria-label" else None
 
     def locator(self, selector):
         self.selectors.append(selector)
@@ -275,8 +298,8 @@ class FakeStructuredRows:
 
 
 class FakeStructuredContainer(FakeObservationContainer):
-    def __init__(self, headers, rows, *, heading="", empty_state=""):
-        super().__init__([], tag="table", heading=heading)
+    def __init__(self, headers, rows, *, heading="", empty_state="", parent_index=None):
+        super().__init__([], tag="table", heading=heading, parent_index=parent_index)
         self.headers = headers
         self.structured_rows = rows
         self.empty_state = empty_state
@@ -300,7 +323,7 @@ class FakeObservationPage:
         self.selectors.append(selector)
         if selector == "table,[role='grid']":
             return FakeObservationContainers(self.containers)
-        if selector == "section":
+        if selector == "section,[role='region']":
             return FakeObservationContainers(self.sections)
         return FakeObservationLocator(self.values_by_selector.get(selector, []))
 
@@ -495,6 +518,8 @@ def test_observe_semantics_keeps_rows_bound_to_their_dashboard_section() -> None
 
     assert observation["sectionSummaries"] == [
         {
+            "nodeId": "observation-table-001",
+            "kind": "table",
             "heading": "My Tasks",
             "sourceSection": "My Tasks",
             "columnHeaders": [],
@@ -502,6 +527,8 @@ def test_observe_semantics_keeps_rows_bound_to_their_dashboard_section() -> None
             "emptyState": "",
         },
         {
+            "nodeId": "observation-table-002",
+            "kind": "table",
             "heading": "Needs Your Attention",
             "sourceSection": "Needs Your Attention",
             "columnHeaders": [],
@@ -524,6 +551,8 @@ def test_observe_semantics_preserves_explicit_empty_state_with_section_identity(
     observation = asyncio.run(gateway._observe_semantics(page, 20))
 
     assert observation["sectionSummaries"] == [{
+        "nodeId": "observation-table-001",
+        "kind": "table",
         "heading": "Needs Your Attention",
         "sourceSection": "Needs Your Attention",
         "columnHeaders": ["Task No.", "Service Name"],
@@ -543,12 +572,16 @@ def test_observe_semantics_binds_controls_to_visible_semantic_sections() -> None
 
     assert observation["regionSummaries"] == [
         {
+            "nodeId": "observation-region-002",
+            "kind": "region",
             "heading": "My Tasks",
             "sourceSection": "My Tasks",
             "controls": ["Service Application 14", "Profile Verification 0"],
             "emptyState": "",
         },
         {
+            "nodeId": "observation-region-003",
+            "kind": "region",
             "heading": "Needs Your Attention",
             "sourceSection": "Needs Your Attention",
             "controls": ["All 2", "Pending Modification 2"],
@@ -567,6 +600,8 @@ def test_observe_semantics_binds_cards_to_their_semantic_section() -> None:
 
     assert observation["regionSummaries"] == [
         {
+            "nodeId": "observation-region-001",
+            "kind": "region",
             "heading": "Queue Overview",
             "sourceSection": "Queue Overview",
             "controls": [],
@@ -575,6 +610,8 @@ def test_observe_semantics_binds_cards_to_their_semantic_section() -> None:
             "summaries": ["Open 8", "Closed 3"],
         },
         {
+            "nodeId": "observation-region-002",
+            "kind": "region",
             "heading": "Other Overview",
             "sourceSection": "Other Overview",
             "controls": [],
@@ -583,6 +620,43 @@ def test_observe_semantics_binds_cards_to_their_semantic_section() -> None:
             "summaries": ["Waiting 2"],
         },
     ]
+
+
+def test_observe_semantics_assigns_stable_parent_refs_to_nested_tables() -> None:
+    page = FakeObservationPage(
+        {},
+        containers=[FakeStructuredContainer([], [FakeStructuredRow([("REF-101 Open", True)])], heading="Queue", parent_index=0)],
+        sections=[FakeSemanticSection("Queue", [])],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["regionSummaries"][0]["nodeId"] == "observation-region-001"
+    assert observation["regionSummaries"][0]["kind"] == "region"
+    assert observation["regionSummaries"][0]["controls"] == []
+    assert observation["sectionSummaries"][0]["nodeId"] == "observation-table-001"
+    assert observation["sectionSummaries"][0]["kind"] == "table"
+    assert observation["sectionSummaries"][0]["parentRef"] == "observation-region-001"
+
+
+def test_observe_semantics_keeps_aria_label_only_region_referenced_by_table() -> None:
+    page = FakeObservationPage(
+        {},
+        containers=[FakeStructuredContainer([], [FakeStructuredRow([("REF-101 Open", True)])], heading="Queue", parent_index=0)],
+        sections=[FakeSemanticSection("", [], aria_label="Queue")],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["regionSummaries"] == [{
+        "nodeId": "observation-region-001",
+        "kind": "region",
+        "heading": "Queue",
+        "sourceSection": "Queue",
+        "controls": [],
+        "emptyState": "",
+    }]
+    assert observation["sectionSummaries"][0]["parentRef"] == "observation-region-001"
 
 
 def test_observe_semantics_includes_only_bounded_visible_dialog_content() -> None:
@@ -766,6 +840,55 @@ def test_extended_read_only_interactions_are_generic_for_permitted_pages() -> No
     gateway._validate_reader_request(request)
 
 
+@pytest.mark.parametrize("label", ["Refunds 2", "Appeals", "Open tasks", "Approval tasks"])
+def test_gateway_allows_read_only_resource_and_status_tab_labels(label) -> None:
+    gateway._validate_reader_request(read_request([
+        {"type": "switch_tab", "role": "tab", "name": label},
+    ]))
+
+
+@pytest.mark.parametrize("path", ["/refunds", "/appeals", "/open-tasks", "/approval-tasks"])
+def test_gateway_allows_read_only_resource_and_status_routes(path) -> None:
+    gateway._validate_reader_request(read_request([
+        {"type": "navigate", "path": path},
+    ], startPath="/refunds"))
+
+
+@pytest.mark.parametrize("label", ["Approve record", "Reject", "Submit", "Export all tasks", "Download report", "Close record"])
+def test_gateway_rejects_explicit_mutation_control_labels(label) -> None:
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(read_request([{"type": "query", "label": label}]))
+
+    assert error_code(raised.value) == "action_not_read_only"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/licensing/approve-record", "/licensing/open-record", "/licensing/refund-record", "/licensing/tasks/123/close"],
+)
+def test_gateway_rejects_explicit_mutation_routes(path) -> None:
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(read_request([{"type": "navigate", "path": path}]))
+
+    assert error_code(raised.value) == "invalid_reader_path"
+
+
+def test_gateway_dismiss_overlay_does_not_exempt_a_mutation_selector() -> None:
+    request = read_request([
+        {
+            "type": "dismiss_overlay",
+            "role": "button",
+            "label": "Close",
+            "selector": "[data-action='approve']",
+        },
+    ])
+
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(request)
+
+    assert error_code(raised.value) == "action_not_read_only"
+
+
 def test_filter_requires_an_explicit_value() -> None:
     with pytest.raises(HTTPException) as raised:
         gateway._validate_reader_request(read_request([{"type": "filter", "field": "Status"}]))
@@ -884,6 +1007,16 @@ def test_runtime_click_rejects_additional_write_descriptors(descriptor) -> None:
 
     with pytest.raises(RuntimeError, match="action_not_read_only"):
         asyncio.run(gateway._safe_click(FakePage(locator), action))
+
+
+@pytest.mark.parametrize("descriptor", ["Refunds 2", "Appeals", "Open tasks", "Approval tasks"])
+def test_runtime_click_allows_read_only_resource_and_status_tabs(descriptor) -> None:
+    action = gateway.PortalReadAction(type="switch_tab", role="tab", name=descriptor)
+    locator = FakeLocator(descriptor=descriptor, role="tab", aria_selected="true")
+
+    asyncio.run(gateway._safe_click(FakePage(locator), action))
+
+    assert locator.clicked
 
 
 def test_runtime_click_rejects_role_descriptor_and_aria_mismatch() -> None:

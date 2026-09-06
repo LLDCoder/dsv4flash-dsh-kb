@@ -40,6 +40,22 @@ FORBIDDEN_ACTION_TERMS = frozenset(
         "suspend", "archive", "enable", "disable", "close", "open", "activate", "deactivate",
     }
 )
+# Browser action types and HTTP methods are the primary read-only boundary. These
+# terms provide a second, contextual guard for UI commands without treating the
+# names of business resources or workflow states as commands.
+MUTATION_COMMAND_TERMS = frozenset(
+    {
+        "approve", "reject", "submit", "modify", "update", "edit", "delete",
+        "remove", "assign", "send", "export", "upload", "download", "dowload",
+        "create", "write", "save", "pay", "refund", "appeal", "publish", "import",
+        "cancel", "confirm", "suspend", "archive", "enable", "disable", "close",
+        "open", "activate", "deactivate",
+    }
+)
+# Whole-word matching leaves plural resource routes such as ``/refunds`` and
+# ``/appeals`` readable while retaining single-command routes as mutations.
+MUTATION_ROUTE_TERMS = MUTATION_COMMAND_TERMS
+READ_ONLY_OPEN_CONTEXT_TERMS = frozenset({"task", "tasks", "status", "statuses", "category", "categories"})
 SENSITIVE_KEYS = frozenset(
     {
         "authorization", "cookie", "cookies", "token", "access_token", "accesstoken",
@@ -732,10 +748,35 @@ class ReadOnlyPortalPolicy:
         return path[:1_000]
 
     @staticmethod
-    def _contains_forbidden_term(value: object) -> bool:
-        decoded = unquote(str(value or "")).casefold()
-        compact = re.sub(r"[^a-z]", "", decoded)
-        return any(term in compact for term in FORBIDDEN_ACTION_TERMS)
+    def _words(value: object) -> frozenset[str]:
+        decoded = unquote(str(value or ""))
+        # Split camel-case parameter names such as ``exportFormat`` before
+        # tokenizing, while keeping plural resource names distinct from verbs.
+        spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", decoded)
+        return frozenset(re.findall(r"[a-z]+", spaced.casefold()))
+
+    @classmethod
+    def _contains_mutation_command(cls, value: object) -> bool:
+        words = cls._words(value)
+        mutation_terms = words.intersection(MUTATION_COMMAND_TERMS)
+        return bool(
+            mutation_terms - {"open"}
+            or ("open" in mutation_terms and not words.intersection(READ_ONLY_OPEN_CONTEXT_TERMS))
+        )
+
+    @classmethod
+    def _is_mutation_route(cls, value: object) -> bool:
+        parsed = urlsplit(unquote(str(value or "")))
+        return any(
+            cls._contains_mutation_command(segment)
+            and cls._words(segment).intersection(MUTATION_ROUTE_TERMS)
+            for segment in parsed.path.split("/")
+            if segment
+        )
+
+    @classmethod
+    def _is_safe_overlay_dismissal_label(cls, value: object, action_type: str) -> bool:
+        return action_type == "dismiss_overlay" and cls._words(value) in ({"close"}, {"dismiss"}, {"cancel"})
 
     def validate(
         self,
@@ -748,7 +789,7 @@ class ReadOnlyPortalPolicy:
             return "invalid_portal_origin"
         if not self._safe_path(request.start_path):
             return "invalid_navigation_path"
-        if self._contains_forbidden_term(request.start_path):
+        if self._is_mutation_route(request.start_path):
             return "action_not_read_only"
         if not request.actions or len(request.actions) > self.max_actions:
             return "invalid_action_count"
@@ -762,12 +803,12 @@ class ReadOnlyPortalPolicy:
             action_type = str(action.get("type") or "").strip().casefold().replace("-", "_")
             if action_type not in ALLOWED_READER_ACTIONS:
                 return "action_not_read_only"
-            dismiss_label = action_type == "dismiss_overlay" and _key(action.get("label") or action.get("name")) in {"close", "dismiss"}
-            if (
-                (self._contains_forbidden_term(action.get("label")) and not dismiss_label)
-                or self._contains_forbidden_term(action.get("selector"))
-            ):
-                return "action_not_read_only"
+            method = str(action.get("method") or "GET").strip().upper()
+            # Query means interacting with the already-loaded page, not calling
+            # an arbitrary API endpoint. The isolated executor owns all network
+            # traffic, so model-provided POST requests are never accepted.
+            if method != "GET":
+                return "method_not_read_only"
             permission_code = action.get("permissionCode") or action.get("permission_code")
             if action_type in {"expand_details", "show_detail"} and (not permission_code or not _click_permission_matches(action, permissions.buttons)):
                 return "button_not_permitted"
@@ -784,16 +825,10 @@ class ReadOnlyPortalPolicy:
                 return "invalid_filter_values"
             if action_type == "filter" and action.get("value") is None and not raw_values:
                 return "filter_value_required"
-            method = str(action.get("method") or "GET").strip().upper()
-            # Query means interacting with the already-loaded page, not calling
-            # an arbitrary API endpoint. The isolated executor owns all network
-            # traffic, so model-provided POST requests are never accepted.
-            if method != "GET":
-                return "method_not_read_only"
             for name in ("path", "url"):
                 if name in action and not self._safe_path(action[name]):
                     return "invalid_navigation_path"
-                if name in action and self._contains_forbidden_term(action[name]):
+                if name in action and self._is_mutation_route(action[name]):
                     return "action_not_read_only"
                 if name in action:
                     action_path = str(action[name])
@@ -803,8 +838,16 @@ class ReadOnlyPortalPolicy:
             parameters = action.get("parameters") or action.get("filters") or {}
             if not isinstance(parameters, dict):
                 return "invalid_action_parameters"
-            if any(self._contains_forbidden_term(name) for name in parameters):
+            if any(self._contains_mutation_command(name) for name in parameters):
                 return "action_not_read_only"
+            for name in ("label", "name", "selector"):
+                candidate = action.get(name)
+                if candidate is None:
+                    continue
+                if name in {"label", "name"} and self._is_safe_overlay_dismissal_label(candidate, action_type):
+                    continue
+                if self._contains_mutation_command(candidate):
+                    return "action_not_read_only"
         if len(page_paths) > self.max_pages:
             return "page_limit_exceeded"
         return None
@@ -865,10 +908,14 @@ def _normalize_initial_observation_request(request: PortalReadRequest) -> Portal
     )
 
 
-def knowledge_result_from_plan(plan: Any) -> ReaderResult | None:
-    """Validate the planner's closed knowledge-only result shape."""
+def _closed_result_from_plan(
+    plan: Any,
+    *,
+    expected_mode: Literal["knowledge_only", "observation_result"],
+) -> ReaderResult | None:
+    """Validate one closed planner result mode without accepting aliases."""
 
-    if not isinstance(plan, dict) or plan.get("mode") != "knowledge_only":
+    if not isinstance(plan, dict) or plan.get("mode") != expected_mode:
         return None
     allowed = {
         "mode", "result", "page", "section", "sourceSection", "answerShape", "completeness",
@@ -900,7 +947,13 @@ def knowledge_result_from_plan(plan: Any) -> ReaderResult | None:
         return None
     return ReaderResult(
         status=status,  # type: ignore[arg-type]
-        summary="The knowledge base answered the request." if status == "success" else "The knowledge result is incomplete.",
+        summary=(
+            "The knowledge base answered the request."
+            if expected_mode == "knowledge_only" and status == "success"
+            else "The portal observation answered the request."
+            if expected_mode == "observation_result" and status == "success"
+            else "The planner result is incomplete."
+        ),
         page=str(plan.get("page") or "")[:500],
         section=str(plan.get("section") or "")[:300],
         source_section=str(plan.get("sourceSection") or plan.get("section") or "")[:300],
@@ -912,6 +965,18 @@ def knowledge_result_from_plan(plan: Any) -> ReaderResult | None:
         workflow_state=str(plan.get("workflowState") or "")[:500],
         missing=tuple(str(item)[:500] for item in missing[:10]),
     )
+
+
+def knowledge_result_from_plan(plan: Any) -> ReaderResult | None:
+    """Validate the planner's closed pre-observe knowledge-only result shape."""
+
+    return _closed_result_from_plan(plan, expected_mode="knowledge_only")
+
+
+def _observation_plan_result_from_plan(plan: Any) -> ReaderResult | None:
+    """Validate the planner's closed post-observe result shape."""
+
+    return _closed_result_from_plan(plan, expected_mode="observation_result")
 
 
 _DOCUMENTATION_QUESTION_MARKERS = ("manual", "documented", "documentation", "user guide", "手册", "文档", "说明", "دليل")
@@ -955,6 +1020,8 @@ def question_requires_live_portal(question: str) -> bool:
         return True
     if documentation_intent:
         return False
+    if re.search(r"\b(?:how|what) about\b.*\b(?:tasks?|items?|records?)\b", normalized):
+        return True
     return any(marker in normalized for marker in _LIVE_STATE_MARKERS)
 
 
@@ -1199,7 +1266,7 @@ def _section_observation(section: Any) -> dict[str, Any] | None:
     ).strip()[:300]
     if not heading:
         return None
-    return {
+    normalized = {
         "heading": heading,
         "sourceSection": heading,
         "headings": [heading],
@@ -1211,6 +1278,11 @@ def _section_observation(section: Any) -> dict[str, Any] | None:
         "selectedState": str(section.get("selectedState") or "")[:300],
         "emptyState": str(section.get("emptyState") or "")[:300],
     }
+    for name, max_length in (("nodeId", 120), ("kind", 40), ("parentRef", 120)):
+        value = str(section.get(name) or "").strip()
+        if value:
+            normalized[name] = value[:max_length]
+    return normalized
 
 
 def _structured_observation_sections(observation: Any) -> tuple[dict[str, Any], ...]:
@@ -1237,6 +1309,8 @@ def _structured_observation_sections(observation: Any) -> tuple[dict[str, Any], 
                 continue
             if key not in merged:
                 merged[key] = section
+                if section.get("nodeId"):
+                    merged[key]["nodeRefs"] = [section["nodeId"]]
                 order.append(key)
                 continue
             target = merged[key]
@@ -1249,6 +1323,9 @@ def _structured_observation_sections(observation: Any) -> tuple[dict[str, Any], 
                 target["emptyState"] = section["emptyState"]
             if not target["selectedState"]:
                 target["selectedState"] = section["selectedState"]
+            node_id = str(section.get("nodeId") or "")
+            if node_id and node_id not in target.setdefault("nodeRefs", []):
+                target["nodeRefs"].append(node_id)
     return tuple(merged[key] for key in order)
 
 
@@ -1280,7 +1357,9 @@ def _observation_evidence_for_section(observation: Any, section_name: str) -> di
     matches = [
         section
         for section in structured
-        if expected == section["heading"].casefold()
+        if expected == str(section.get("nodeId") or "").casefold()
+        or expected in {str(ref).casefold() for ref in section.get("nodeRefs", [])}
+        or expected == section["heading"].casefold()
         or expected in section["heading"].casefold()
         or section["heading"].casefold() in expected
     ]
@@ -1305,6 +1384,37 @@ def _section_match_tokens(value: Any) -> frozenset[str]:
         for token in normalized.split()
         if len(token) > 1 and token not in _SECTION_INFERENCE_STOP_WORDS
     )
+
+
+def _category_control_requiring_children(
+    question: str,
+    observation: Any,
+    planned_result: ReaderResult | None,
+    requested_answer_shape: str,
+) -> str:
+    """Identify a named collection whose parent count is not enough evidence."""
+
+    if (
+        requested_answer_shape == "count"
+        or planned_result is None
+        or planned_result.status != "success"
+        or planned_result.answer_shape != "count"
+    ):
+        return ""
+    question_tokens = _section_match_tokens(question)
+    if not question_tokens:
+        return ""
+    matches: list[str] = []
+    for section in _structured_observation_sections(observation):
+        for control in _bounded_observation_field(section, "controls", limit=20):
+            match = re.fullmatch(r"(.+?)\s+\d+(?:[.,]\d+)?", control)
+            if match is None:
+                continue
+            label = match.group(1).strip()
+            label_tokens = _section_match_tokens(label)
+            if label_tokens and label_tokens.issubset(question_tokens) and label not in matches:
+                matches.append(label)
+    return matches[0] if len(matches) == 1 else ""
 
 
 def _infer_observation_section(
@@ -1455,6 +1565,7 @@ def _result_from_structured_observation(
             source_section=str(section.get("heading") or section_name)[:300],
             answer_shape=answer_shape,
             completeness="bounded",
+            selected_state=str(section.get("selectedState") or "")[:300],
             scope=scope,
             facts=facts,
         )
@@ -1467,6 +1578,7 @@ def _result_from_structured_observation(
             source_section=str(section.get("heading") or section_name)[:300],
             answer_shape=answer_shape,
             completeness="bounded",
+            selected_state=str(section.get("selectedState") or "")[:300],
             scope=scope,
         )
     return None
@@ -1556,6 +1668,7 @@ def observation_fallback_result(
                 source_section=str(source.get("heading") or section)[:300],
                 answer_shape="list",
                 completeness="bounded",
+                selected_state=str(source.get("selectedState") or "")[:300],
                 scope=scope,
             )
         return None
@@ -1569,6 +1682,7 @@ def observation_fallback_result(
                 source_section=str(source.get("heading") or section)[:300],
                 answer_shape="overview",
                 completeness="bounded",
+                selected_state=str(source.get("selectedState") or "")[:300],
                 scope=scope,
             )
         return None
@@ -1599,6 +1713,7 @@ def observation_fallback_result(
         source_section=str(source.get("heading") or section or (headings[0] if headings else ""))[:300],
         answer_shape=intent,
         completeness="bounded",
+        selected_state=str(source.get("selectedState") or "")[:300],
         scope=scope,
         facts=facts,
     )
@@ -1703,18 +1818,31 @@ def observation_result_from_plan(
     observation: Any,
     *,
     verified_scope: Literal["personal", "team", "global", "unknown"] = "unknown",
+    observed_page: str = "",
+    permitted_paths: tuple[str, ...] = (),
 ) -> ReaderResult | None:
-    """Keep the observation-grounded subset of a post-observe result."""
+    """Validate a post-observe LLM result against permission and bounded evidence."""
 
-    result = knowledge_result_from_plan(plan)
+    result = _observation_plan_result_from_plan(plan)
     if result is None:
         return None
-    scoped_observation = _observation_evidence_for_section(observation, result.section)
+    result_page = (urlsplit(result.page).path.rstrip("/") or "/") if result.page else ""
+    actual_page = (urlsplit(observed_page).path.rstrip("/") or "/") if observed_page else ""
+    if result_page and actual_page and result_page != actual_page:
+        return None
+    if result_page and permitted_paths and not any(
+        permission_path_matches(result_page, allowed) for allowed in permitted_paths
+    ):
+        return None
+    source_ref = result.source_section or result.section
+    scoped_observation = _observation_evidence_for_section(observation, source_ref)
     if result.status == "not_confirmed":
+        if source_ref and scoped_observation is None:
+            return None
         return ReaderResult(
             status=result.status,
             summary=result.summary,
-            page=result.page,
+            page=observed_page or result.page,
             section=result.section,
             source_section=result.source_section or result.section,
             answer_shape=result.answer_shape,
@@ -1724,6 +1852,8 @@ def observation_result_from_plan(
             missing=result.missing,
         )
     if scoped_observation is None:
+        return None
+    if result.selected_state and result.selected_state not in _observation_scalar_strings(scoped_observation):
         return None
     if result.status == "success":
         supported: list[str] = []
@@ -1758,7 +1888,7 @@ def observation_result_from_plan(
     return ReaderResult(
         status=result.status,
         summary="The portal observation answered the request." if result.status == "success" else result.summary,
-        page=result.page,
+        page=observed_page or result.page,
         section=result.section,
         source_section=result.source_section or result.section,
         answer_shape=result.answer_shape,
@@ -1825,48 +1955,12 @@ def _align_result_to_answer_shape(
     question: str,
     conversation_context: dict[str, Any] | None = None,
 ) -> ReaderResult:
-    """Keep final Tool facts within the user's requested response shape."""
+    """Attach presentation guidance without deleting already verified facts."""
 
     answer_shape = reader_answer_shape(question, conversation_context)
-    if result.status != "success":
-        return replace(
-            result,
-            answer_shape=answer_shape if answer_shape != "unspecified" else result.answer_shape,
-        )
-    if answer_shape != "due":
-        return replace(
-            result,
-            answer_shape=answer_shape if answer_shape != "unspecified" else result.answer_shape,
-        )
-
-    normalized_question = question.casefold()
-    due_soon_only = bool(re.search(r"due soon|expir|即将|到期|قريب", normalized_question)) and not bool(
-        re.search(r"overdue|逾期|متأخر", normalized_question)
-    )
-    if not due_soon_only:
-        return replace(result, answer_shape="due")
-    due_facts = tuple(
-        fact
-        for fact in result.facts
-        if re.search(r"\bdue in\b|即将|到期|قريب", fact.casefold())
-        and not re.search(r"\boverdue\b|逾期|متأخر", fact.casefold())
-    )
-    if due_facts:
-        return replace(
-            result,
-            summary="The requested due-soon portal items were found.",
-            answer_shape="due",
-            completeness="bounded",
-            facts=due_facts,
-        )
     return replace(
         result,
-        status="not_confirmed",
-        summary="No due-soon item was confirmed in the bounded portal result.",
-        answer_shape="due",
-        completeness="bounded",
-        facts=(),
-        missing=tuple((*result.missing, "due_soon_items_not_observed")[:10]),
+        answer_shape=answer_shape if answer_shape != "unspecified" else result.answer_shape,
     )
 
 
@@ -2128,6 +2222,96 @@ class AdminPortalReader:
             )
             return tool_result
 
+        def deterministic_observation_fallback(
+            observation: Any,
+            *,
+            page: str,
+            section: str,
+            answer_shape: Literal["overview", "count", "list", "attention", "due", "detail", "unspecified"],
+            scope: Literal["personal", "team", "global", "unknown"],
+        ) -> tuple[ReaderResult | None, str]:
+            fallback_intent = _observation_fallback_intent(question, answer_shape)
+            if fallback_intent is None and answer_shape in {"count", "attention", "due"}:
+                unique_section = _observation_evidence_for_section(observation, section)
+                if unique_section is not None:
+                    fallback_intent = answer_shape
+            if fallback_intent is None:
+                return None, "none"
+            structured = _result_from_structured_observation(
+                observation,
+                page=page,
+                section_name=section,
+                answer_shape=fallback_intent,
+                scope=scope,
+                question=question,
+            )
+            if structured is not None:
+                return structured, "structured_unique_evidence"
+            generic = observation_fallback_result(
+                question,
+                observation,
+                page=page,
+                section=section,
+                scope=scope,
+                answer_shape=answer_shape,
+            )
+            if generic is not None:
+                return generic, "generic_unique_evidence"
+            return None, "none"
+
+        def record_semantic_resolution(
+            *,
+            decision: str,
+            reason: str,
+            llm_plan: Any = None,
+            result: ReaderResult | None = None,
+            fallback_strategy: str = "none",
+        ) -> dict[str, Any]:
+            llm_result = _observation_plan_result_from_plan(llm_plan)
+            llm_request = portal_read_request_from_plan(llm_plan)
+            llm_selection = (
+                {
+                    "resultStatus": llm_result.status,
+                    "section": llm_result.section[:160],
+                    "sourceSection": llm_result.source_section[:120],
+                    "answerShape": llm_result.answer_shape,
+                }
+                if llm_result is not None
+                else {
+                    "startPath": llm_request.start_path[:160],
+                    "actionTypes": [str(action.get("type") or "")[:40] for action in llm_request.actions],
+                }
+                if llm_request is not None
+                else {}
+            )
+            status = "passed" if result is not None and result.status in {"success", "no_data"} else "degraded"
+            failure_code = "" if status == "passed" else reason
+            trace.record(
+                "semantic_resolution",
+                status,
+                input_summary={
+                    "reason": reason,
+                    "llmMode": str(llm_plan.get("mode") or "")[:80] if isinstance(llm_plan, dict) else "",
+                },
+                output_summary={
+                    "decision": decision,
+                    "fallbackStrategy": fallback_strategy,
+                    "resultStatus": result.status if result is not None else "",
+                    "factCount": len(result.facts) if result is not None else 0,
+                    "answerShape": result.answer_shape if result is not None else "",
+                },
+                failure_code=failure_code,
+            )
+            return {
+                "decision": decision,
+                "reason": reason,
+                "llmMode": str(llm_plan.get("mode") or "")[:80] if isinstance(llm_plan, dict) else "",
+                "llmSelection": bounded_json(llm_selection, max_depth=3, max_items=8, max_string=160),
+                "validation": "passed" if decision == "llm_result" else "failed" if "invalid" in reason else "not_applicable",
+                "fallbackUsed": decision == "fallback",
+                "fallbackStrategy": fallback_strategy,
+            }
+
         # Finish just inside the service guard so the current stage can be
         # recorded instead of collapsing into a generic runtime timeout.
         deadline = asyncio.get_running_loop().time() + max(0.01, budget.total_seconds - 1.0)
@@ -2304,7 +2488,7 @@ class AdminPortalReader:
                 else "knowledge_result_not_grounded_or_incomplete"
             )
             forced_context = {
-                "knowledge": knowledge_context,
+                **knowledge_context,
                 "planningDirective": {
                     "requirePortalRead": True,
                     "reason": force_reason,
@@ -2352,7 +2536,7 @@ class AdminPortalReader:
 
         if invalid_plan_error is not None:
             correction_context = {
-                "knowledge": knowledge_context,
+                **knowledge_context,
                 "planningDirective": {
                     "requirePortalRead": True,
                     "pureObserveFirst": True,
@@ -2414,7 +2598,7 @@ class AdminPortalReader:
         observation = raw_tool_payload.get("observation") if isinstance(raw_tool_payload, dict) else None
         if observation is not None and any(str(action.get("type") or "").casefold() == "observe" for action in request.actions):
             observed_context = {
-                "knowledge": knowledge_context,
+                **knowledge_context,
                 "portalObservation": bounded_json(observation, max_depth=5, max_items=50, max_string=300),
             }
             observation_status = str(
@@ -2460,64 +2644,7 @@ class AdminPortalReader:
                 expected_fields=request.expected_fields,
                 answer_shape=requested_answer_shape,
             )
-            if resolved_section_hint:
-                direct_result = _result_from_structured_observation(
-                    observed_context["portalObservation"],
-                    page=request.start_path,
-                    section_name=resolved_section_hint,
-                    answer_shape=requested_answer_shape,
-                    scope=_permission_result_scope(permission_context),
-                    question=question,
-                )
-                if direct_result is None:
-                    direct_result = observation_fallback_result(
-                        question,
-                        observed_context["portalObservation"],
-                        page=request.start_path,
-                        section=resolved_section_hint,
-                        scope=_permission_result_scope(permission_context),
-                        answer_shape=requested_answer_shape,
-                    )
-                if direct_result is not None:
-                    return ReaderOutcome(
-                        direct_result,
-                        {
-                            "stage": "completed_from_observation",
-                            "permission": permission_audit,
-                            "knowledge": knowledge_context,
-                            "plan": bounded_json(request.as_payload()),
-                            "observation": observed_context["portalObservation"],
-                            "result": direct_result.public_json(),
-                        },
-                    )
-            elif (
-                requested_answer_shape in {"count", "list", "attention", "due"}
-                and not _structured_observation_sections(observed_context["portalObservation"])
-                and (
-                    requested_answer_shape != "list"
-                    or _observation_fallback_intent(question, requested_answer_shape) is not None
-                )
-            ):
-                unscoped_result = _result_from_structured_observation(
-                    observed_context["portalObservation"],
-                    page=request.start_path,
-                    section_name="",
-                    answer_shape=requested_answer_shape,
-                    scope=_permission_result_scope(permission_context),
-                    question=question,
-                )
-                if unscoped_result is not None:
-                    return ReaderOutcome(
-                        unscoped_result,
-                        {
-                            "stage": "completed_from_observation",
-                            "permission": permission_audit,
-                            "knowledge": knowledge_context,
-                            "plan": bounded_json(request.as_payload()),
-                            "observation": observed_context["portalObservation"],
-                            "result": unscoped_result.public_json(),
-                        },
-                    )
+            verified_scope = _permission_result_scope(permission_context)
             try:
                 next_plan = await plan_stage(
                     observed_context,
@@ -2526,16 +2653,124 @@ class AdminPortalReader:
                 )
             except ReaderStageTimeout as exc:
                 missing = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+                fallback_result, fallback_strategy = deterministic_observation_fallback(
+                    observed_context["portalObservation"],
+                    page=request.start_path,
+                    section=resolved_section_hint,
+                    answer_shape=requested_answer_shape,
+                    scope=verified_scope,
+                )
+                semantic_resolution = record_semantic_resolution(
+                    decision="fallback" if fallback_result is not None else "not_confirmed",
+                    reason=missing,
+                    result=fallback_result,
+                    fallback_strategy=fallback_strategy,
+                )
+                if fallback_result is not None:
+                    return ReaderOutcome(
+                        fallback_result,
+                        {
+                            "stage": "completed_from_observation_fallback",
+                            "permission": permission_audit,
+                            "knowledge": knowledge_context,
+                            "observation": observed_context["portalObservation"],
+                            "result": fallback_result.public_json(),
+                            "semanticResolution": semantic_resolution,
+                        },
+                    )
                 result = ReaderResult(status="not_confirmed", summary="The observed portal structure could not be interpreted in time.", missing=(missing,))
                 return ReaderOutcome(
                     result,
-                    {**_timeout_evidence(exc, budget), "permission": permission_audit, "observation": observed_context["portalObservation"]},
+                    {**_timeout_evidence(exc, budget), "permission": permission_audit, "observation": observed_context["portalObservation"], "semanticResolution": semantic_resolution},
                 )
-            except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
+            except (httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError) as exc:
+                fallback_result, fallback_strategy = deterministic_observation_fallback(
+                    observed_context["portalObservation"],
+                    page=request.start_path,
+                    section=resolved_section_hint,
+                    answer_shape=requested_answer_shape,
+                    scope=verified_scope,
+                )
+                semantic_resolution = record_semantic_resolution(
+                    decision="fallback" if fallback_result is not None else "not_confirmed",
+                    reason="planner_error",
+                    result=fallback_result,
+                    fallback_strategy=fallback_strategy,
+                )
+                if fallback_result is not None:
+                    return ReaderOutcome(
+                        fallback_result,
+                        {
+                            "stage": "completed_from_observation_fallback",
+                            "permission": permission_audit,
+                            "knowledge": knowledge_context,
+                            "observation": observed_context["portalObservation"],
+                            "result": fallback_result.public_json(),
+                            "semanticResolution": semantic_resolution,
+                            "errorType": type(exc).__name__,
+                        },
+                    )
                 result = ReaderResult(status="not_confirmed", summary="The observed portal structure could not be turned into a bounded read plan.")
-                return ReaderOutcome(result, {"stage": "planning_after_observe", "permission": permission_audit, "observation": observed_context["portalObservation"], "errorType": type(exc).__name__})
-            verified_scope = _permission_result_scope(permission_context)
-            planned_result = knowledge_result_from_plan(next_plan)
+                return ReaderOutcome(result, {"stage": "planning_after_observe", "permission": permission_audit, "observation": observed_context["portalObservation"], "semanticResolution": semantic_resolution, "errorType": type(exc).__name__})
+            planned_result = _observation_plan_result_from_plan(next_plan)
+            category_control = _category_control_requiring_children(
+                question,
+                observed_context["portalObservation"],
+                planned_result,
+                requested_answer_shape,
+            )
+            if category_control:
+                refinement_context = {
+                    **observed_context,
+                    "planningDirective": {
+                        "requirePortalRead": True,
+                        "reason": "named_collection_requires_child_evidence",
+                        "currentPage": request.start_path,
+                        "categoryControl": category_control,
+                        "parentCountNotSufficient": True,
+                        "priorResult": planned_result.public_json(),
+                        "allowedFallback": "observation_result:not_confirmed",
+                    },
+                }
+                try:
+                    next_plan = await plan_stage(
+                        refinement_context,
+                        timeout_stage="planning_collection_children_after_observe",
+                        reason="collection_children_required",
+                    )
+                except ReaderStageTimeout as exc:
+                    missing = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+                    result = ReaderResult(
+                        status="not_confirmed",
+                        summary="The requested collection details could not be planned in time.",
+                        page=request.start_path,
+                        missing=(missing,),
+                    )
+                    return ReaderOutcome(
+                        result,
+                        {
+                            **_timeout_evidence(exc, budget),
+                            "permission": permission_audit,
+                            "observation": observed_context["portalObservation"],
+                        },
+                    )
+                except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
+                    result = ReaderResult(
+                        status="not_confirmed",
+                        summary="The requested collection details could not be planned.",
+                        page=request.start_path,
+                        missing=("collection_children_read_required",),
+                    )
+                    return ReaderOutcome(
+                        result,
+                        {
+                            "stage": "planning_collection_children_after_observe",
+                            "permission": permission_audit,
+                            "observation": observed_context["portalObservation"],
+                            "errorType": type(exc).__name__,
+                        },
+                    )
+                planned_result = _observation_plan_result_from_plan(next_plan)
             if (
                 planned_result is not None
                 and planned_result.status == "not_confirmed"
@@ -2552,7 +2787,7 @@ class AdminPortalReader:
                         "requirePortalRead": True,
                         "reason": "current_data_requires_a_follow_up_page_read",
                         "priorNotConfirmed": planned_result.public_json(),
-                        "allowedFallback": "knowledge_only:not_confirmed",
+                        "allowedFallback": "observation_result:not_confirmed",
                     },
                 }
                 try:
@@ -2591,39 +2826,21 @@ class AdminPortalReader:
                             "errorType": type(exc).__name__,
                         },
                     )
-                planned_result = knowledge_result_from_plan(next_plan)
-            fallback_result = None
-            if planned_result is not None and planned_result.status in {"success", "not_confirmed"}:
-                fallback_result = observation_fallback_result(
-                    question,
-                    observed_context["portalObservation"],
-                    page=request.start_path,
-                    section=planned_result.section,
-                    scope=verified_scope,
-                    answer_shape=(
-                        planned_result.answer_shape
-                        if planned_result.answer_shape != "unspecified"
-                        else requested_answer_shape
-                    ),
-                )
-            if fallback_result is not None:
-                return ReaderOutcome(
-                    fallback_result,
-                    {
-                        "stage": "completed_from_observation",
-                        "permission": permission_audit,
-                        "knowledge": knowledge_context,
-                        "plan": bounded_json(next_plan),
-                        "observation": observed_context["portalObservation"],
-                        "result": fallback_result.public_json(),
-                    },
-                )
+                planned_result = _observation_plan_result_from_plan(next_plan)
             observed_result = observation_result_from_plan(
                 next_plan,
                 observed_context["portalObservation"],
                 verified_scope=verified_scope,
+                observed_page=request.start_path,
+                permitted_paths=(*permission_context.pages, *permission_context.subpages),
             )
-            if observed_result is not None:
+            if observed_result is not None and observed_result.status in {"success", "no_data"}:
+                semantic_resolution = record_semantic_resolution(
+                    decision="llm_result",
+                    reason="validated_observation_result",
+                    llm_plan=next_plan,
+                    result=observed_result,
+                )
                 return ReaderOutcome(
                     observed_result,
                     {
@@ -2633,9 +2850,91 @@ class AdminPortalReader:
                         "plan": bounded_json(next_plan),
                         "observation": observed_context["portalObservation"],
                         "result": observed_result.public_json(),
+                        "semanticResolution": semantic_resolution,
                     },
                 )
             next_request = portal_read_request_from_plan(next_plan)
+            fallback_reason = ""
+            if planned_result is not None and planned_result.status == "not_confirmed":
+                fallback_reason = (
+                    "llm_not_confirmed"
+                    if observed_result is not None
+                    else "invalid_observation_references"
+                )
+            elif planned_result is not None and observed_result is None:
+                fallback_reason = "invalid_observation_references"
+            elif planned_result is None and next_request is None:
+                fallback_reason = "invalid_semantic_schema"
+            if fallback_reason:
+                planned_section = (
+                    (planned_result.source_section or planned_result.section)
+                    if planned_result is not None
+                    else ""
+                )
+                fallback_section = planned_section or resolved_section_hint
+                fallback_shape = (
+                    planned_result.answer_shape
+                    if planned_result is not None and planned_result.answer_shape != "unspecified"
+                    else requested_answer_shape
+                )
+                fallback_result, fallback_strategy = deterministic_observation_fallback(
+                    observed_context["portalObservation"],
+                    page=request.start_path,
+                    section=fallback_section,
+                    answer_shape=fallback_shape,
+                    scope=verified_scope,
+                )
+                semantic_resolution = record_semantic_resolution(
+                    decision="fallback" if fallback_result is not None else "llm_not_confirmed",
+                    reason=fallback_reason,
+                    llm_plan=next_plan,
+                    result=fallback_result or observed_result,
+                    fallback_strategy=fallback_strategy,
+                )
+                if fallback_result is not None:
+                    return ReaderOutcome(
+                        fallback_result,
+                        {
+                            "stage": "completed_from_observation_fallback",
+                            "permission": permission_audit,
+                            "knowledge": knowledge_context,
+                            "plan": bounded_json(next_plan),
+                            "observation": observed_context["portalObservation"],
+                            "result": fallback_result.public_json(),
+                            "semanticResolution": semantic_resolution,
+                        },
+                    )
+                if observed_result is not None:
+                    return ReaderOutcome(
+                        observed_result,
+                        {
+                            "stage": "completed_after_observe",
+                            "permission": permission_audit,
+                            "knowledge": knowledge_context,
+                            "plan": bounded_json(next_plan),
+                            "observation": observed_context["portalObservation"],
+                            "result": observed_result.public_json(),
+                            "semanticResolution": semantic_resolution,
+                        },
+                    )
+                if planned_result is not None and planned_result.status == "not_confirmed":
+                    unconfirmed_result = replace(
+                        planned_result,
+                        page=request.start_path,
+                        scope=verified_scope,
+                    )
+                    return ReaderOutcome(
+                        unconfirmed_result,
+                        {
+                            "stage": "completed_after_observe",
+                            "permission": permission_audit,
+                            "knowledge": knowledge_context,
+                            "plan": bounded_json(next_plan),
+                            "observation": observed_context["portalObservation"],
+                            "result": unconfirmed_result.public_json(),
+                            "semanticResolution": semantic_resolution,
+                        },
+                    )
             mixed_follow_up_observe = bool(
                 next_request is not None
                 and any(str(action.get("type") or "").casefold() == "observe" for action in next_request.actions)
@@ -2719,6 +3018,13 @@ class AdminPortalReader:
                     question=question,
                 )
                 if repeated_result is not None:
+                    semantic_resolution = record_semantic_resolution(
+                        decision="fallback",
+                        reason="invalid_repeated_observe_plan",
+                        llm_plan=next_plan,
+                        result=repeated_result,
+                        fallback_strategy="structured_unique_evidence",
+                    )
                     return ReaderOutcome(
                         repeated_result,
                         {
@@ -2728,6 +3034,7 @@ class AdminPortalReader:
                             "plan": bounded_json(next_plan),
                             "observation": observed_context["portalObservation"],
                             "result": repeated_result.public_json(),
+                            "semanticResolution": semantic_resolution,
                         },
                     )
                 result = ReaderResult(
@@ -2746,6 +3053,13 @@ class AdminPortalReader:
                         "plan": bounded_json(next_plan),
                         "observation": observed_context["portalObservation"],
                     },
+                )
+            if next_request is not None:
+                trace.record(
+                    "semantic_resolution",
+                    "passed",
+                    input_summary={"reason": "after_observe", "llmMode": "portal_read"},
+                    output_summary={"decision": "follow_up_read", "actionCount": len(next_request.actions)},
                 )
             if (
                 next_request is None
@@ -2795,44 +3109,160 @@ class AdminPortalReader:
                     expected_fields=next_request.expected_fields,
                     answer_shape=follow_up_shape,
                 )
-                follow_up_result = None
-                if follow_up_section:
-                    follow_up_result = _result_from_structured_observation(
-                        bounded_follow_up_observation,
-                        page=next_request.start_path,
-                        section_name=follow_up_section,
-                        answer_shape=follow_up_shape,
-                        scope=verified_scope,
-                        question=question,
+                post_action_context = {
+                    **knowledge_context,
+                    "portalObservation": bounded_follow_up_observation,
+                    "priorPortalRead": bounded_json(next_request.as_payload(), max_depth=4, max_items=30, max_string=200),
+                }
+                post_action_plan: Any = None
+                post_action_error = ""
+                try:
+                    post_action_plan = await plan_stage(
+                        post_action_context,
+                        timeout_stage="planning_after_read_state_change",
+                        reason="after_read_state_change",
                     )
-                    if follow_up_result is None:
-                        follow_up_result = observation_fallback_result(
-                            question,
-                            bounded_follow_up_observation,
-                            page=next_request.start_path,
-                            section=follow_up_section,
-                            scope=verified_scope,
-                            answer_shape=follow_up_shape,
-                        )
-                if follow_up_result is not None:
-                    selected_state = next(
-                        (
-                            str(action.get("name") or action.get("label") or action.get("value") or "").strip()
-                            for action in reversed(next_request.actions)
-                            if str(action.get("type") or "").casefold() in {"switch_tab", "filter", "paginate", "sort"}
-                        ),
-                        "",
+                except ReaderStageTimeout as exc:
+                    post_action_error = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+                except (httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError):
+                    post_action_error = "planner_error"
+
+                follow_up_result = observation_result_from_plan(
+                    post_action_plan,
+                    bounded_follow_up_observation,
+                    verified_scope=verified_scope,
+                    observed_page=next_request.start_path,
+                    permitted_paths=(*permission_context.pages, *permission_context.subpages),
+                )
+                if follow_up_result is not None and follow_up_result.status in {"success", "no_data"}:
+                    semantic_resolution = record_semantic_resolution(
+                        decision="llm_result",
+                        reason="validated_post_action_observation_result",
+                        llm_plan=post_action_plan,
+                        result=follow_up_result,
                     )
-                    follow_up_result = replace(follow_up_result, selected_state=selected_state[:300])
                     return ReaderOutcome(
                         follow_up_result,
                         {
                             "stage": "completed_after_read_state_change",
                             "permission": permission_audit,
                             "knowledge": knowledge_context,
-                            "plan": bounded_json(next_request.as_payload()),
+                            "plan": bounded_json(post_action_plan),
+                            "portalReadPlan": bounded_json(next_request.as_payload()),
                             "observation": bounded_follow_up_observation,
                             "result": follow_up_result.public_json(),
+                            "semanticResolution": semantic_resolution,
+                        },
+                    )
+                post_action_planned_result = _observation_plan_result_from_plan(post_action_plan)
+                post_action_request = portal_read_request_from_plan(post_action_plan)
+                fallback_reason = post_action_error
+                if not fallback_reason and post_action_planned_result is not None:
+                    fallback_reason = (
+                        "llm_not_confirmed"
+                        if post_action_planned_result.status == "not_confirmed"
+                        and follow_up_result is not None
+                        else "invalid_observation_references"
+                    )
+                if not fallback_reason and post_action_request is None:
+                    fallback_reason = "invalid_semantic_schema"
+                if fallback_reason:
+                    planned_section = (
+                        (post_action_planned_result.source_section or post_action_planned_result.section)
+                        if post_action_planned_result is not None
+                        else ""
+                    )
+                    fallback_section = planned_section or follow_up_section
+                    fallback_answer_shape = (
+                        post_action_planned_result.answer_shape
+                        if post_action_planned_result is not None
+                        and post_action_planned_result.answer_shape != "unspecified"
+                        else follow_up_shape
+                    )
+                    fallback_result, fallback_strategy = deterministic_observation_fallback(
+                        bounded_follow_up_observation,
+                        page=next_request.start_path,
+                        section=fallback_section,
+                        answer_shape=fallback_answer_shape,
+                        scope=verified_scope,
+                    )
+                    semantic_resolution = record_semantic_resolution(
+                        decision="fallback" if fallback_result is not None else "not_confirmed",
+                        reason=fallback_reason,
+                        llm_plan=post_action_plan,
+                        result=fallback_result or follow_up_result,
+                        fallback_strategy=fallback_strategy,
+                    )
+                    if fallback_result is not None:
+                        return ReaderOutcome(
+                            fallback_result,
+                            {
+                                "stage": "completed_after_read_state_change_fallback",
+                                "permission": permission_audit,
+                                "knowledge": knowledge_context,
+                                "plan": bounded_json(post_action_plan),
+                                "portalReadPlan": bounded_json(next_request.as_payload()),
+                                "observation": bounded_follow_up_observation,
+                                "result": fallback_result.public_json(),
+                                "semanticResolution": semantic_resolution,
+                            },
+                        )
+                    if follow_up_result is not None:
+                        return ReaderOutcome(
+                            follow_up_result,
+                            {
+                                "stage": "completed_after_read_state_change",
+                                "permission": permission_audit,
+                                "knowledge": knowledge_context,
+                                "plan": bounded_json(post_action_plan),
+                                "portalReadPlan": bounded_json(next_request.as_payload()),
+                                "observation": bounded_follow_up_observation,
+                                "result": follow_up_result.public_json(),
+                                "semanticResolution": semantic_resolution,
+                            },
+                        )
+                    if (
+                        post_action_planned_result is not None
+                        and post_action_planned_result.status == "not_confirmed"
+                    ):
+                        unconfirmed_result = replace(
+                            post_action_planned_result,
+                            page=next_request.start_path,
+                            scope=verified_scope,
+                        )
+                        return ReaderOutcome(
+                            unconfirmed_result,
+                            {
+                                "stage": "completed_after_read_state_change",
+                                "permission": permission_audit,
+                                "knowledge": knowledge_context,
+                                "plan": bounded_json(post_action_plan),
+                                "portalReadPlan": bounded_json(next_request.as_payload()),
+                                "observation": bounded_follow_up_observation,
+                                "result": unconfirmed_result.public_json(),
+                                "semanticResolution": semantic_resolution,
+                            },
+                        )
+                if post_action_request is not None:
+                    semantic_resolution = record_semantic_resolution(
+                        decision="additional_read_not_executed",
+                        reason="post_action_requires_additional_read",
+                        llm_plan=post_action_plan,
+                    )
+                    result = ReaderResult(
+                        status="not_confirmed",
+                        summary="The post-action observation requires another bounded read.",
+                        page=next_request.start_path,
+                        missing=("additional_portal_read_required",),
+                    )
+                    return ReaderOutcome(
+                        result,
+                        {
+                            "stage": "planning_after_read_state_change",
+                            "permission": permission_audit,
+                            "plan": bounded_json(post_action_plan),
+                            "observation": bounded_follow_up_observation,
+                            "semanticResolution": semantic_resolution,
                         },
                     )
         result = _align_result_to_answer_shape(
@@ -2896,15 +3326,39 @@ class AdminPortalReader:
                         question=question,
                         answer_shape=retry_shape,
                     )
-                    observed_result = _result_from_structured_observation(
+                    recovery_plan: Any = None
+                    recovery_error = ""
+                    try:
+                        recovery_plan = await plan_stage(
+                            {
+                                **knowledge_context,
+                                "portalObservation": bounded_retry_observation,
+                                "priorPortalFailure": bounded_json(
+                                    raw_final_payload, max_depth=4, max_items=20, max_string=160
+                                ),
+                            },
+                            timeout_stage="planning_after_control_failure_observe",
+                            reason="after_control_failure_observe",
+                        )
+                    except ReaderStageTimeout as exc:
+                        recovery_error = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+                    except (httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError):
+                        recovery_error = "planner_error"
+                    verified_scope = _permission_result_scope(permission_context)
+                    observed_result = observation_result_from_plan(
+                        recovery_plan,
                         bounded_retry_observation,
-                        page=request.start_path,
-                        section_name=retry_section,
-                        answer_shape=retry_shape,
-                        scope=_permission_result_scope(permission_context),
-                        question=question,
+                        verified_scope=verified_scope,
+                        observed_page=request.start_path,
+                        permitted_paths=(*permission_context.pages, *permission_context.subpages),
                     )
-                    if observed_result is not None:
+                    if observed_result is not None and observed_result.status in {"success", "no_data"}:
+                        semantic_resolution = record_semantic_resolution(
+                            decision="llm_result",
+                            reason="validated_control_failure_observation_result",
+                            llm_plan=recovery_plan,
+                            result=observed_result,
+                        )
                         return ReaderOutcome(
                             observed_result,
                             {
@@ -2915,8 +3369,61 @@ class AdminPortalReader:
                                 "failure": bounded_json(raw_final_payload),
                                 "observation": bounded_retry_observation,
                                 "result": observed_result.public_json(),
+                                "semanticResolution": semantic_resolution,
                             },
                         )
+                    recovery_planned_result = _observation_plan_result_from_plan(recovery_plan)
+                    recovery_request = portal_read_request_from_plan(recovery_plan)
+                    fallback_reason = recovery_error
+                    if not fallback_reason and recovery_planned_result is not None:
+                        fallback_reason = (
+                            "llm_not_confirmed"
+                            if recovery_planned_result.status == "not_confirmed"
+                            and observed_result is not None
+                            else "invalid_observation_references"
+                        )
+                    if not fallback_reason and recovery_request is None:
+                        fallback_reason = "invalid_semantic_schema"
+                    if fallback_reason:
+                        planned_section = (
+                            recovery_planned_result.source_section or recovery_planned_result.section
+                            if recovery_planned_result is not None
+                            else ""
+                        )
+                        fallback_result, fallback_strategy = deterministic_observation_fallback(
+                            bounded_retry_observation,
+                            page=request.start_path,
+                            section=planned_section or retry_section,
+                            answer_shape=(
+                                recovery_planned_result.answer_shape
+                                if recovery_planned_result is not None
+                                and recovery_planned_result.answer_shape != "unspecified"
+                                else retry_shape
+                            ),
+                            scope=verified_scope,
+                        )
+                        semantic_resolution = record_semantic_resolution(
+                            decision="fallback" if fallback_result is not None else "not_confirmed",
+                            reason=fallback_reason,
+                            llm_plan=recovery_plan,
+                            result=fallback_result or observed_result,
+                            fallback_strategy=fallback_strategy,
+                        )
+                        if fallback_result is not None:
+                            return ReaderOutcome(
+                                fallback_result,
+                                {
+                                    "stage": "completed_from_control_failure_observation_fallback",
+                                    "permission": permission_audit,
+                                    "knowledge": knowledge_context,
+                                    "failedPlan": bounded_json(request.as_payload()),
+                                    "failure": bounded_json(raw_final_payload),
+                                    "plan": bounded_json(recovery_plan),
+                                    "observation": bounded_retry_observation,
+                                    "result": fallback_result.public_json(),
+                                    "semanticResolution": semantic_resolution,
+                                },
+                            )
         return ReaderOutcome(
             result,
             {

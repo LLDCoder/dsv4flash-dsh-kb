@@ -34,12 +34,16 @@ READER_ACTIONS = {
     "observe", "navigate", "query", "filter", "paginate", "switch_tab", "expand_details",
     "show_filter", "apply_filter", "reset_filter", "sort", "show_detail", "dismiss_overlay",
 }
-READER_FORBIDDEN_TERMS = {
-    "approve", "approval", "reject", "submit", "modify", "update", "edit", "delete",
+READER_MUTATION_COMMAND_TERMS = {
+    "approve", "reject", "submit", "modify", "update", "edit", "delete",
     "remove", "assign", "send", "export", "upload", "download", "create", "write", "save",
     "pay", "refund", "appeal", "publish", "import", "cancel", "confirm", "dowload",
     "suspend", "archive", "enable", "disable", "close", "open", "activate", "deactivate",
 }
+# Whole-word matching leaves plural resource routes such as ``/refunds`` and
+# ``/appeals`` readable while retaining single-command routes as mutations.
+READER_MUTATION_ROUTE_TERMS = READER_MUTATION_COMMAND_TERMS
+READER_READ_ONLY_OPEN_CONTEXT_TERMS = {"task", "tasks", "status", "statuses", "category", "categories"}
 READER_MAX_ACTIONS = 12
 READER_MAX_PAGES = 3
 READER_TIMEOUT_SECONDS = 45
@@ -232,9 +236,40 @@ def _reader_compact(value: object) -> str:
     return re.sub(r"[^a-z]", "", unquote(str(value or "")).casefold())
 
 
-def _reader_contains_forbidden(value: object) -> bool:
-    compact = _reader_compact(value)
-    return any(term in compact for term in READER_FORBIDDEN_TERMS)
+def _reader_words(value: object) -> set[str]:
+    decoded = unquote(str(value or ""))
+    spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", decoded)
+    return set(re.findall(r"[a-z]+", spaced.casefold()))
+
+
+def _reader_contains_mutation_command(value: object) -> bool:
+    words = _reader_words(value)
+    mutation_terms = words.intersection(READER_MUTATION_COMMAND_TERMS)
+    return bool(
+        mutation_terms - {"open"}
+        or ("open" in mutation_terms and not words.intersection(READER_READ_ONLY_OPEN_CONTEXT_TERMS))
+    )
+
+
+def _reader_is_mutation_route(value: object) -> bool:
+    parsed = urlsplit(unquote(str(value or "")))
+    return any(
+        _reader_contains_mutation_command(segment)
+        and _reader_words(segment).intersection(READER_MUTATION_ROUTE_TERMS)
+        for segment in parsed.path.split("/")
+        if segment
+    )
+
+
+def _reader_is_safe_overlay_dismissal_label(value: object, action: PortalReadAction) -> bool:
+    return (
+        action.type.strip().casefold().replace("-", "_") == "dismiss_overlay"
+        and _reader_words(value) in ({"close"}, {"dismiss"}, {"cancel"})
+    )
+
+
+def _reader_is_safe_overlay_dismissal_descriptor(value: object, action: PortalReadAction) -> bool:
+    return _reader_is_safe_overlay_dismissal_label(value, action)
 
 
 def _reader_contains_sensitive_locator(value: object) -> bool:
@@ -460,7 +495,7 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
         raise HTTPException(status_code=403, detail={"code": "admin_reader_wrong_portal"})
     if request.max_pages > READER_MAX_PAGES or request.timeout_seconds > READER_TIMEOUT_SECONDS or request.max_output_items > READER_MAX_OUTPUT_ITEMS:
         raise HTTPException(status_code=422, detail={"code": "reader_limit_exceeded"})
-    if not _reader_relative_path(request.start_path) or _reader_contains_forbidden(request.start_path):
+    if not _reader_relative_path(request.start_path) or _reader_is_mutation_route(request.start_path):
         raise HTTPException(status_code=422, detail={"code": "invalid_reader_path"})
     pages = {request.start_path}
     if any(action.type.strip().casefold().replace("-", "_") == "observe" for action in request.actions) and len(request.actions) != 1:
@@ -471,20 +506,18 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
             raise HTTPException(status_code=422, detail={"code": "action_not_read_only"})
         if action.method.strip().upper() != "GET":
             raise HTTPException(status_code=422, detail={"code": "method_not_read_only"})
-        for field_name, candidate in (
-            ("type", action.type), ("label", action.label), ("selector", action.selector),
-            ("role", action.role), ("name", action.name), ("field", action.field),
-            ("section", action.section), ("permission", action.permission_code),
-            *(("parameter", key) for key in action.parameters),
-            *(("filter", key) for key in action.filters),
-        ):
-            dismiss_label = (
-                action_type == "dismiss_overlay"
-                and field_name in {"label", "name"}
-                and _reader_compact(candidate) in {"close", "dismiss"}
-            )
-            if _reader_contains_forbidden(candidate) and not dismiss_label:
+        for field_name, candidate in (("label", action.label), ("name", action.name), ("selector", action.selector)):
+            if candidate is None:
+                continue
+            if field_name in {"label", "name"} and _reader_is_safe_overlay_dismissal_label(candidate, action):
+                continue
+            if _reader_contains_mutation_command(candidate):
                 raise HTTPException(status_code=422, detail={"code": "action_not_read_only"})
+        if any(
+            _reader_contains_mutation_command(key)
+            for key in (*action.parameters, *action.filters)
+        ):
+            raise HTTPException(status_code=422, detail={"code": "action_not_read_only"})
         if action_type in {
             "query", "filter", "paginate", "switch_tab", "expand_details", "show_filter",
             "apply_filter", "reset_filter", "sort", "show_detail", "dismiss_overlay",
@@ -533,7 +566,7 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
             if candidate is None:
                 continue
             safe_path = _reader_relative_path(candidate)
-            if not safe_path or _reader_contains_forbidden(safe_path):
+            if not safe_path or _reader_is_mutation_route(safe_path):
                 raise HTTPException(status_code=422, detail={"code": "invalid_reader_path"})
             pages.add(safe_path)
     if len(pages) > request.max_pages:
@@ -595,8 +628,7 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
             ],
         )
     )
-    dismiss_descriptor = action_type == "dismiss_overlay" and _reader_compact(descriptor) in {"close", "dismiss"}
-    if _reader_contains_forbidden(descriptor) and not dismiss_descriptor:
+    if _reader_contains_mutation_command(descriptor) and not _reader_is_safe_overlay_dismissal_descriptor(descriptor, action):
         raise RuntimeError("action_not_read_only")
     if not descriptor.strip():
         raise RuntimeError("reader_click_target_unverifiable")
@@ -670,8 +702,6 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
             option = page.get_by_role("option", name=str(item), exact=True).first
             if await option.count() == 0 or not await option.is_visible():
                 raise RuntimeError("reader_filter_option_not_found")
-            if _reader_contains_forbidden(await option.inner_text()):
-                raise RuntimeError("action_not_read_only")
             await option.click(timeout=5_000)
         return
     if len(values) != 1:
@@ -830,6 +860,7 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
         container = containers.nth(index)
         if not await container.is_visible() or await container.get_attribute("aria-busy") == "true":
             continue
+        container_kind = "grid" if await container.get_attribute("role") == "grid" else "table"
         headers, rows, empty_state = await table_values(
             container,
             row_limit=min(limit, 8) if not first_rows else min(limit, 4),
@@ -838,8 +869,7 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
             continue
         if not first_rows:
             first_rows = rows
-        heading = _sanitize_reader_text(
-            await container.evaluate(
+        semantic_identity = await container.evaluate(
                 """element => {
                     const visible = node => !!(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
                     const overlay = element.closest('[role="dialog"],[role="alertdialog"],.ant-drawer-content');
@@ -850,31 +880,64 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
                             .filter(node => visible(node) && (node.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING))
                         : [];
                     const heading = localHeadings && localHeadings.pop();
-                    if (heading && heading.innerText.trim()) return heading.innerText.trim();
+                    let headingText = '';
+                    if (heading && heading.innerText.trim()) headingText = heading.innerText.trim();
                     const label = semanticRoot && semanticRoot.getAttribute('aria-label');
-                    if (label && !/^(?:scrollable content|content|main)$/i.test(label.trim())) return label;
-                    const root = overlay || document.body;
-                    const precedingHeadings = Array.from(root.querySelectorAll('h1,h2,h3,[role="heading"]'))
-                        .filter(node => visible(node) && (node.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING));
-                    const precedingHeading = precedingHeadings.pop();
-                    if (precedingHeading && precedingHeading.innerText.trim()) return precedingHeading.innerText.trim();
-                    return '';
+                    if (!headingText && label && !/^(?:scrollable content|content|main)$/i.test(label.trim())) {
+                        headingText = label;
+                    }
+                    if (!headingText) {
+                        const root = overlay || document.body;
+                        const precedingHeadings = Array.from(root.querySelectorAll('h1,h2,h3,[role="heading"]'))
+                            .filter(node => visible(node) && (node.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING));
+                        const precedingHeading = precedingHeadings.pop();
+                        if (precedingHeading && precedingHeading.innerText.trim()) headingText = precedingHeading.innerText.trim();
+                    }
+                    const semanticRoots = Array.from(document.querySelectorAll('section,[role="region"]'));
+                    const parentIndex = semanticRoot ? semanticRoots.indexOf(semanticRoot) : -1;
+                    return { heading: headingText, parentIndex };
                 }"""
-            ),
+            )
+        if isinstance(semantic_identity, dict):
+            heading_value = semantic_identity.get("heading")
+            parent_index = semantic_identity.get("parentIndex")
+        else:
+            # Compatibility for browser adapters and test doubles returning the
+            # legacy heading scalar.
+            heading_value = semantic_identity
+            parent_index = None
+        heading = _sanitize_reader_text(
+            heading_value,
             max_chars=200,
         )
-        section_summaries.append({
+        section_summary: dict[str, Any] = {
+            "nodeId": f"observation-table-{index + 1:03d}",
+            "kind": container_kind,
             "heading": heading,
             "sourceSection": heading,
             "columnHeaders": headers[:12],
             "rowSummaries": rows[:4],
             "emptyState": empty_state,
-        })
+        }
+        if isinstance(parent_index, int) and parent_index >= 0:
+            section_summary["parentRef"] = f"observation-region-{parent_index + 1:03d}"
+        section_summaries.append(section_summary)
         if len(section_summaries) >= 4:
             break
 
-    region_summaries: list[dict[str, Any]] = []
-    semantic_sections = page.locator("section")
+    referenced_parent_refs = {
+        str(summary.get("parentRef") or "")
+        for summary in section_summaries
+        if summary.get("parentRef")
+    }
+    referenced_indexes = {
+        int(ref.rsplit("-", 1)[-1]) - 1
+        for ref in referenced_parent_refs
+        if ref.rsplit("-", 1)[-1].isdigit()
+    }
+    referenced_regions: list[dict[str, Any]] = []
+    other_regions: list[dict[str, Any]] = []
+    semantic_sections = page.locator("section,[role='region']")
     for index in range(await semantic_sections.count()):
         section = semantic_sections.nth(index)
         if not await section.is_visible():
@@ -884,7 +947,13 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
             max_each=1,
             max_chars=200,
         )
-        if not headings:
+        heading = headings[0] if headings else _sanitize_reader_text(
+            await section.get_attribute("aria-label"),
+            max_chars=200,
+        )
+        if heading.casefold() in {"scrollable content", "content", "main"}:
+            heading = ""
+        if not heading:
             continue
         controls = await visible_texts(
             section.locator("[role='tab'],[role='button'],button[aria-label],a[aria-label]"),
@@ -916,11 +985,15 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
             ),
             "",
         )
-        if not controls and not card_summaries and not empty_state:
+        node_id = f"observation-region-{index + 1:03d}"
+        is_referenced_parent = node_id in referenced_parent_refs
+        if not controls and not card_summaries and not empty_state and not is_referenced_parent:
             continue
         region_summary: dict[str, Any] = {
-            "heading": headings[0],
-            "sourceSection": headings[0],
+            "nodeId": node_id,
+            "kind": "region",
+            "heading": heading,
+            "sourceSection": heading,
             "controls": controls,
             "emptyState": empty_state,
         }
@@ -929,9 +1002,22 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
         if card_summaries:
             region_summary["cardSummaries"] = card_summaries
             region_summary["summaries"] = card_summaries
-        region_summaries.append(region_summary)
-        if len(region_summaries) >= 8:
+        if is_referenced_parent:
+            referenced_regions.append(region_summary)
+        elif len(other_regions) < 8:
+            other_regions.append(region_summary)
+        if (
+            len(other_regions) >= 8
+            and (not referenced_indexes or index >= max(referenced_indexes))
+            and len(referenced_regions) >= len(referenced_parent_refs)
+        ):
             break
+
+    remaining_region_slots = max(0, 8 - len(referenced_regions))
+    region_summaries = sorted(
+        [*referenced_regions, *other_regions[:remaining_region_slots]],
+        key=lambda summary: str(summary.get("nodeId") or ""),
+    )
 
     return {
         "headings": await texts("h1,h2,h3,[role='heading']", max_each=min(limit, 12)),

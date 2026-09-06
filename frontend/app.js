@@ -530,14 +530,75 @@ function renderAuditRecords(items) {
     meta.className = "audit-record-meta";
     meta.textContent = [item.requestId && `request ${item.requestId}`, item.runtimeId && `runtime ${item.runtimeId}`].filter(Boolean).join(" · ") || "无请求关联 ID";
     const details = document.createElement("details");
+    details.className = "audit-record-payload";
     const detailsSummary = document.createElement("summary");
     detailsSummary.textContent = "查看原始审计数据";
+    const rawPayload = JSON.stringify(item.payload || {}, null, 2);
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "audit-copy-button";
+    copyButton.setAttribute("aria-label", "复制原始审计数据");
+    copyButton.title = "复制原始审计数据";
+    copyButton.innerHTML = '<span class="audit-copy-icon" aria-hidden="true"></span>';
+    const copyStatus = document.createElement("span");
+    copyStatus.className = "sr-only";
+    copyStatus.setAttribute("aria-live", "polite");
+    copyButton.addEventListener("click", async () => {
+      copyButton.disabled = true;
+      try {
+        await copyAuditPayload(rawPayload);
+        copyButton.classList.add("is-copied");
+        copyButton.setAttribute("aria-label", "已复制原始审计数据");
+        copyButton.title = "已复制";
+        copyStatus.textContent = "原始审计数据已复制";
+        window.setTimeout(() => {
+          copyButton.classList.remove("is-copied");
+          copyButton.setAttribute("aria-label", "复制原始审计数据");
+          copyButton.title = "复制原始审计数据";
+        }, 1600);
+      } catch (error) {
+        console.error("Unable to copy audit payload", error);
+        copyButton.setAttribute("aria-label", "复制失败");
+        copyButton.title = "复制失败";
+        copyStatus.textContent = "复制原始审计数据失败";
+        window.setTimeout(() => {
+          copyButton.setAttribute("aria-label", "复制原始审计数据");
+          copyButton.title = "复制原始审计数据";
+        }, 1600);
+      } finally {
+        copyButton.disabled = false;
+      }
+    });
     const payload = document.createElement("pre");
-    payload.textContent = JSON.stringify(item.payload || {}, null, 2);
-    details.append(detailsSummary, payload);
+    payload.textContent = rawPayload;
+    details.append(detailsSummary, copyButton, copyStatus, payload);
     record.append(head, summary, meta, details);
     list.appendChild(record);
   });
+}
+
+async function copyAuditPayload(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      console.warn("Clipboard API unavailable; using fallback", error);
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) {
+    throw new Error("Clipboard copy failed");
+  }
 }
 
 function renderAuditRecordLoadState() {

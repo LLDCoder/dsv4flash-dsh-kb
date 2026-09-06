@@ -33,7 +33,7 @@ def structured_observation():
 def test_observation_fact_must_come_from_the_planned_section() -> None:
     result = observation_result_from_plan(
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "success",
             "page": "/work",
             "section": "Queue Overview",
@@ -50,7 +50,7 @@ def test_observation_fact_must_come_from_the_planned_section() -> None:
 def test_no_data_must_come_from_the_planned_section() -> None:
     wrong_section = observation_result_from_plan(
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "no_data",
             "page": "/work",
             "section": "Items Requiring Review",
@@ -62,7 +62,7 @@ def test_no_data_must_come_from_the_planned_section() -> None:
     )
     exact_section = observation_result_from_plan(
         {
-            "mode": "knowledge_only",
+            "mode": "observation_result",
             "result": "no_data",
             "page": "/work",
             "section": "Queue Overview",
@@ -79,7 +79,7 @@ def test_no_data_must_come_from_the_planned_section() -> None:
     assert exact_section.source_section == "Queue Overview"
 
 
-def test_section_scoped_observe_finishes_without_a_second_plan() -> None:
+def test_section_scoped_observe_falls_back_only_after_semantic_planner_error() -> None:
     planner = Planner(portal_plan_for("/work", [{"type": "observe", "section": "Items Requiring Review"}]))
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/work")},
@@ -95,8 +95,9 @@ def test_section_scoped_observe_finishes_without_a_second_plan() -> None:
     assert outcome.result.facts == ("REF-101 Pending Review",)
     assert outcome.result.source_section == "Items Requiring Review"
     assert outcome.result.completeness == "bounded"
-    assert outcome.audit_evidence["stage"] == "completed_from_observation"
-    assert len(planner.calls) == 1
+    assert outcome.audit_evidence["stage"] == "completed_from_observation_fallback"
+    assert outcome.audit_evidence["semanticResolution"]["reason"] == "planner_error"
+    assert len(planner.calls) == 2
 
 
 def test_repeated_observe_without_unique_section_is_not_an_invalid_plan() -> None:
@@ -197,7 +198,7 @@ def test_count_requires_an_explicit_total_in_the_same_section() -> None:
         }],
     }
     success_plan = {
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "success",
         "page": "/work",
         "section": "Assigned Work",
@@ -302,7 +303,18 @@ def test_unscoped_observe_infers_count_section_from_expected_fields() -> None:
         "Items Requiring Review",
         "work item count",
     ]
-    planner = Planner(plan)
+    planner = Planner(
+        plan,
+        {
+            "mode": "observation_result",
+            "result": "success",
+            "page": "/work",
+            "section": "My Work",
+            "answerShape": "count",
+            "facts": ["Applications 14", "Reviews 2"],
+            "missing": [],
+        },
+    )
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/work")},
         portal_result={
@@ -328,7 +340,7 @@ def test_unscoped_observe_infers_count_section_from_expected_fields() -> None:
     assert outcome.result.source_section == "My Work"
     assert outcome.result.answer_shape == "count"
     assert outcome.result.facts == ("Applications 14", "Reviews 2")
-    assert len(planner.calls) == 1
+    assert len(planner.calls) == 2
 
 
 def test_unscoped_observe_infers_attention_section_without_using_overview_counts() -> None:
@@ -423,8 +435,18 @@ def test_repeated_observe_due_soon_excludes_overdue_items() -> None:
     assert outcome.result.facts == ("Pending Review Due in 1d Record B",)
 
 
-def test_headingless_single_list_directly_answers_due_soon() -> None:
-    planner = Planner(portal_plan_for("/work", [{"type": "observe"}]))
+def test_headingless_single_list_is_semantically_resolved_as_due_soon() -> None:
+    planner = Planner(
+        portal_plan_for("/work", [{"type": "observe"}]),
+        {
+            "mode": "observation_result",
+            "result": "success",
+            "page": "/work",
+            "answerShape": "due",
+            "facts": ["Pending Review Due in 1d Record B"],
+            "missing": [],
+        },
+    )
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/work")},
         portal_result={
@@ -456,8 +478,8 @@ def test_headingless_single_list_directly_answers_due_soon() -> None:
 
     assert outcome.result.status == "success"
     assert outcome.result.facts == ("Pending Review Due in 1d Record B",)
-    assert outcome.audit_evidence["stage"] == "completed_from_observation"
-    assert len(planner.calls) == 1
+    assert outcome.audit_evidence["stage"] == "completed_after_observe"
+    assert len(planner.calls) == 2
 
 
 def test_due_section_is_inferred_from_unique_due_evidence_for_non_latin_question() -> None:
@@ -581,7 +603,7 @@ def test_category_list_switches_tab_and_uses_verified_post_action_observation() 
     assert outcome.result.answer_shape == "list"
     assert outcome.result.selected_state == "Enquiries & Complaints 2"
     assert outcome.result.facts == ("ENQ-202 Open Enquiry Service",)
-    assert outcome.audit_evidence["stage"] == "completed_after_read_state_change"
+    assert outcome.audit_evidence["stage"] == "completed_after_read_state_change_fallback"
 
 
 def test_single_observed_list_with_explicit_empty_state_returns_no_data() -> None:
@@ -615,7 +637,7 @@ def test_single_observed_list_with_explicit_empty_state_returns_no_data() -> Non
     assert outcome.result.facts == ()
 
 
-def test_final_due_soon_result_excludes_overdue_tool_rows() -> None:
+def test_final_alignment_preserves_verified_tool_rows_for_semantic_answering() -> None:
     planner = Planner(portal_plan_for(
         "/work",
         [{"type": "query", "field": "Task cards"}],
@@ -643,17 +665,30 @@ def test_final_due_soon_result_excludes_overdue_tool_rows() -> None:
 
     assert outcome.result.status == "success"
     assert outcome.result.answer_shape == "due"
-    assert outcome.result.facts == ("REF-101 Pending Review Due in 1d",)
+    assert outcome.result.facts == (
+        "REF-101 Pending Review Due in 1d",
+        "REF-102 Pending Review 2d Overdue",
+    )
 
 
 def test_stale_read_control_falls_back_to_bounded_observation() -> None:
-    planner = Planner(portal_plan_for(
-        "/work",
-        [
-            {"type": "switch_tab", "role": "tab", "name": "To Do"},
-            {"type": "filter", "field": "SLA", "value": "Due in 1"},
-        ],
-    ))
+    planner = Planner(
+        portal_plan_for(
+            "/work",
+            [
+                {"type": "switch_tab", "role": "tab", "name": "To Do"},
+                {"type": "filter", "field": "SLA", "value": "Due in 1"},
+            ],
+        ),
+        {
+            "mode": "observation_result",
+            "result": "success",
+            "page": "/work",
+            "answerShape": "due",
+            "facts": ["REF-101 Pending Review Due in 1d"],
+            "missing": [],
+        },
+    )
 
     class SequentialGateway(Gateway):
         def __init__(self):
@@ -702,12 +737,13 @@ def test_stale_read_control_falls_back_to_bounded_observation() -> None:
     assert outcome.result.answer_shape == "due"
     assert outcome.result.facts == ("REF-101 Pending Review Due in 1d",)
     assert outcome.audit_evidence["stage"] == "completed_from_control_failure_observation"
+    assert outcome.audit_evidence["semanticResolution"]["decision"] == "llm_result"
 
 
 def test_observation_not_confirmed_replans_required_live_destination_read() -> None:
     initial_plan = portal_plan_for("/dashboard", [{"type": "observe"}])
     not_confirmed = {
-        "mode": "knowledge_only",
+        "mode": "observation_result",
         "result": "not_confirmed",
         "page": "",
         "section": "",

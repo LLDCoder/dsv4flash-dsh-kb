@@ -25,6 +25,18 @@ cases:
       legacy_skill_selected: false
       runtime_skills_exactly: [admin_portal_reader, general_knowledge]
 
+  - id: reader-readonly-policy-contextual-command-guard
+    question: Read the named Portal category or status tab without changing records.
+    requires: [current_permission_context]
+    expect:
+      allowed_actions: [switch_tab, query, navigate]
+      allowed_tab_labels: [Refunds 2, Appeals, Open tasks, Approval tasks]
+      allowed_routes: [/refunds, /appeals, /open-tasks, /approval-tasks]
+      rejected_control_labels: [Approve record, Reject, Submit, Export all tasks, Download report, Close record, Open record]
+      rejected_routes: [/licensing/approve-record, /licensing/open-record, /licensing/refund-record, /licensing/tasks/123/close, /licensing/export]
+      rejected_methods: [POST, PUT, PATCH, DELETE]
+      result_for_rejected_request: not_confirmed
+
   - id: reader-dashboard-attention-selection
     question: What should I pay attention to?
     alternate_questions:
@@ -75,6 +87,41 @@ cases:
       needs_attention_rows_labeled_as_my_tasks: forbidden
       complete_list_claim: forbidden
       result: [success, no_data, not_confirmed]
+
+  - id: reader-post-observe-semantic-service-application
+    question: How about the service application tasks?
+    requires: [dashboard_access, structured_observation]
+    observed: [task_category_counts, service_application_status_region]
+    expect:
+      semantic_resolution_before_fallback: true
+      llm_may_select: [category, list, overview]
+      selected_example: overview
+      selected_section: Service Application
+      facts_from_selected_node_only: true
+      valid_llm_result_overridden_by_fallback: false
+
+  - id: reader-post-action-semantic-enquiries
+    question: What about Enquiries & Complaints items?
+    requires: [dashboard_access, enquiries_access, structured_observation]
+    observed: [category_tab, selected_state, bounded_enquiry_rows]
+    expect:
+      switch_tab_then_semantic_resolution: true
+      selected_example: list
+      selected_section: Enquiries & Complaints
+      result_grounded_in_post_action_observation: true
+      deterministic_pre_llm_result: forbidden
+
+  - id: reader-semantic-resolution-fallback-order
+    requires: [structured_observation]
+    expect:
+      pre_observe_closed_mode: knowledge_only
+      post_observe_closed_mode: observation_result
+      knowledge_only_after_observation: forbidden
+      order: [llm_semantic_selection, schema_permission_bounds_and_reference_validation, conditional_fallback]
+      fallback_reasons: [planner_timeout, planner_error, invalid_semantic_schema, invalid_observation_references, llm_not_confirmed]
+      fallback_requires_unique_evidence: true
+      valid_llm_result_overridden_by_fallback: false
+      audit_fields: [semanticResolution, qualityTrace.semantic_resolution]
 
   - id: reader-dashboard-follow-up-category-continuity
     turns:
