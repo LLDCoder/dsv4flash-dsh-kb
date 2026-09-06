@@ -8,7 +8,7 @@ import pytest
 # database. Stub the optional production driver when it is absent locally.
 sys.modules.setdefault("asyncpg", MagicMock())
 
-from app.service import DSHService
+from app.service import DSHService, reader_answer_assembly_evidence
 from app.testcases import _grade_reader_case
 
 
@@ -64,6 +64,29 @@ def test_audit_payload_recursively_redacts_normalized_sensitive_keys_and_strings
     ):
         assert secret not in encoded
     assert encoded.count("[redacted]") >= 10
+
+
+def test_answer_assembly_trace_keeps_only_stage_metrics() -> None:
+    trace = reader_answer_assembly_evidence(
+        {**PUBLIC_RESULT, "answerShape": "overview"},
+        "You have two current tasks.",
+        duration_ms=12.4,
+        formatting_failed=False,
+    )
+
+    assert trace == {
+        "stage": "answer_assembly",
+        "status": "passed",
+        "durationMs": 12.4,
+        "input": {
+            "readerStatus": "success",
+            "factCount": 1,
+            "missingCount": 0,
+            "answerShape": "overview",
+        },
+        "output": {"responseChars": 27, "usedFormattingFallback": False},
+        "failureCode": "",
+    }
 
 
 @pytest.mark.parametrize(

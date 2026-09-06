@@ -42,6 +42,7 @@ def user_info(*, roles=True, pages=True, user_id="admin-7", account="licensing.o
                     "children": [
                         {"frontendRoute": "/licensing/tasks"},
                         {"frontendRoute": "/licensing/tasks/:id"},
+                        {"frontendRoute": "/licensing/applications"},
                     ],
                     "buttonList": [{"permissionCode": "licensing.view_detail"}],
                 }
@@ -117,7 +118,7 @@ class Gateway:
         return self.portal_result
 
 
-def run_reader(gateway, planner=None, *, folder="kb", timeout_budget=None, question="Show my licensing tasks"):
+def run_reader(gateway, planner=None, *, folder="kb", timeout_budget=None, question="Show portal information"):
     reader = AdminPortalReader(
         gateway,
         planner or Planner(),
@@ -174,6 +175,73 @@ def test_knowledge_query_reserves_space_for_the_question() -> None:
 
     assert marker in query
     assert len(query) <= 2_000
+
+
+def test_quality_trace_attributes_current_tasks_across_reader_stages() -> None:
+    question = "How about my current tasks?"
+    planner = Planner(portal_plan_for("/dashboard", [{"type": "query", "section": "My Tasks"}]))
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/dashboard")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "page": "/dashboard",
+                "section": "My Tasks",
+                "facts": ["Pending Review: 2"],
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question=question)
+
+    assert outcome.result.status == "success"
+    assert outcome.result.facts == ("Pending Review: 2",)
+    trace = outcome.audit_evidence["qualityTrace"]
+    assert [entry["stage"] for entry in trace] == [
+        "question_context",
+        "identity_permissions",
+        "knowledge_retrieval",
+        "planning",
+        "read_policy",
+        "portal_execution",
+        "result_classification",
+    ]
+    assert all(
+        set(entry) == {"stage", "status", "durationMs", "input", "output", "failureCode"}
+        for entry in trace
+    )
+    assert trace[0]["output"]["requiresLivePortalRead"] is True
+    assert trace[3]["output"] == {
+        "mode": "portal_read",
+        "startPath": "/dashboard",
+        "actionCount": 1,
+        "actionTypes": ["query"],
+        "expectedFieldCount": 1,
+    }
+    assert trace[5]["output"]["factCount"] == 1
+    assert outcome.audit_evidence["rootCause"] == ""
+    encoded = json.dumps(trace)
+    assert question not in encoded
+    assert "Pending Review: 2" not in encoded
+
+
+def test_quality_trace_assigns_planner_failure_for_the_same_current_tasks_question() -> None:
+    class FailingPlanner:
+        async def plan_admin_portal_read(self, question, permission_context, knowledge_context):
+            raise ValueError("invalid planner response")
+
+    outcome = run_reader(
+        Gateway(info={"ok": True, "result": user_info_for_paths("/dashboard")}),
+        FailingPlanner(),
+        question="How about my current tasks?",
+    )
+
+    planning = next(entry for entry in outcome.audit_evidence["qualityTrace"] if entry["stage"] == "planning")
+    assert outcome.result.status == "not_confirmed"
+    assert planning["status"] == "failed"
+    assert planning["failureCode"] == "planner_error"
+    assert outcome.audit_evidence["rootCause"] == "planner_error"
 
 
 def test_knowledge_projection_preserves_nested_chunk_content_without_internal_payloads() -> None:
@@ -414,7 +482,8 @@ def test_permission_path_matching_is_bounded(requested, allowed, expected) -> No
 
 def test_reader_actions_and_statuses_are_closed_enums() -> None:
     assert ALLOWED_READER_ACTIONS == {
-        "observe", "navigate", "query", "filter", "paginate", "switch_tab", "expand_details"
+        "observe", "navigate", "query", "filter", "paginate", "switch_tab", "expand_details",
+        "show_filter", "apply_filter", "reset_filter", "show_detail", "dismiss_overlay", "sort",
     }
     assert READER_STATUSES == {"success", "no_data", "no_permission", "load_failed", "not_confirmed"}
 
@@ -424,8 +493,14 @@ def test_policy_accepts_each_declared_action(action) -> None:
     item = {"type": action}
     if action == "navigate":
         item["path"] = "/licensing/tasks"
-    if action == "expand_details":
+    if action == "filter":
+        item["value"] = "Pending Review"
+    if action in {"expand_details", "show_detail"}:
         item["permissionCode"] = "LICENSING.VIEW_DETAIL"
+    if action == "show_detail":
+        item["value"] = "ML-123"
+    if action == "sort":
+        item["direction"] = "ascending"
     request = PortalReadRequest("/licensing", (item,))
 
     assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions()) is None
@@ -442,6 +517,75 @@ def test_expand_details_requires_exact_normalized_button_permission() -> None:
     ) == "button_not_permitted"
     assert policy.validate(
         PortalReadRequest("/licensing", ({"type": "expand_details", "permissionCode": "LICENSING-VIEW-DETAIL"},)), permissions()
+    ) is None
+
+
+def test_show_detail_requires_exact_normalized_button_permission() -> None:
+    policy = ReadOnlyPortalPolicy("https://admin.example.test")
+
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "show_detail"},)), permissions()
+    ) == "button_not_permitted"
+    assert policy.validate(
+        PortalReadRequest(
+            "/licensing",
+            ({"type": "show_detail", "permissionCode": "LICENSING-VIEW-DETAIL", "value": "ML-123"},),
+        ),
+        permissions(),
+    ) is None
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "show_detail", "permissionCode": "LICENSING-VIEW-DETAIL"},)), permissions()
+    ) == "detail_identity_required"
+
+
+def test_sort_requires_closed_direction() -> None:
+    policy = ReadOnlyPortalPolicy("https://admin.example.test")
+
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "sort"},)), permissions()
+    ) == "sort_direction_required"
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "sort", "direction": "ascending"},)), permissions()
+    ) is None
+
+
+def test_filter_requires_one_bounded_value_shape() -> None:
+    policy = ReadOnlyPortalPolicy("https://admin.example.test")
+
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "filter"},)), permissions()
+    ) == "filter_value_required"
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "filter", "values": ["Pending", "Completed"]},)), permissions()
+    ) is None
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "filter", "values": []},)), permissions()
+    ) == "invalid_filter_values"
+
+
+def test_dismiss_overlay_allows_only_the_closed_close_label_exception() -> None:
+    policy = ReadOnlyPortalPolicy("https://admin.example.test")
+
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "dismiss_overlay", "label": "Close"},)), permissions()
+    ) is None
+    assert policy.validate(
+        PortalReadRequest("/licensing", ({"type": "query", "label": "Close record"},)), permissions()
+    ) == "action_not_read_only"
+
+
+@pytest.mark.parametrize("action", ["show_filter", "apply_filter", "reset_filter", "show_detail", "dismiss_overlay", "sort"])
+def test_generic_read_only_interactions_are_available_on_permitted_pages(action) -> None:
+    item = {"type": action}
+    if action == "show_detail":
+        item["permissionCode"] = "LICENSING.VIEW_DETAIL"
+        item["value"] = "ML-123"
+    if action == "sort":
+        item["direction"] = "ascending"
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(
+        PortalReadRequest("/reports", (item,)),
+        UserPermissionContext(roles=("Manager",), pages=("/reports",), buttons=("LICENSING.VIEW_DETAIL",)),
     ) is None
 
 
@@ -561,6 +705,23 @@ def test_portal_plan_normalizes_action_alias_from_real_planner_output() -> None:
 
     assert request is not None
     assert request.actions == ({"type": "observe"},)
+
+
+def test_portal_plan_preserves_bounded_filter_values_and_sort_direction() -> None:
+    request = portal_read_request_from_plan({
+        "mode": "portal_read",
+        "portalRequest": {
+            "startPath": "/licensing/applications",
+            "actions": [
+                {"type": "filter", "field": "Status", "values": ["Pending Review", "Completed"]},
+                {"type": "sort", "role": "columnheader", "name": "Submission Time", "direction": "descending"},
+            ],
+        },
+    })
+
+    assert request is not None
+    assert request.actions[0]["values"] == ["Pending Review", "Completed"]
+    assert request.actions[1]["direction"] == "descending"
 
 
 def test_portal_plan_rejects_conflicting_action_alias() -> None:
@@ -1069,6 +1230,7 @@ def test_observe_not_confirmed_falls_back_to_bounded_generic_list_facts() -> Non
         {
             "mode": "knowledge_only",
             "result": "not_confirmed",
+            "section": "My Application Tasks",
             "facts": [],
             "missing": ["semantic_plan_not_available"],
         },
@@ -1078,9 +1240,11 @@ def test_observe_not_confirmed_falls_back_to_bounded_generic_list_facts() -> Non
         "result": {
             "result": "not_confirmed",
             "observation": {
-                "headings": ["My Application Tasks"],
-                "columnHeaders": ["Service Name", "Status", "Time Alert"],
-                "rowSummaries": ["Renewal of Media Licenses Pending Review 3d Overdue"],
+                "sectionSummaries": [{
+                    "heading": "My Application Tasks",
+                    "columnHeaders": ["Service Name", "Status", "Time Alert"],
+                    "rowSummaries": ["Renewal of Media Licenses Pending Review 3d Overdue"],
+                }],
                 "controls": ["Next page"],
                 "labels": ["must not become a fallback fact"],
                 "regions": ["must not become a fallback fact either"],
@@ -1091,13 +1255,7 @@ def test_observe_not_confirmed_falls_back_to_bounded_generic_list_facts() -> Non
     outcome = run_reader(gateway, planner, question="Show my licensing tasks")
 
     assert outcome.result.status == "success"
-    assert outcome.result.facts == (
-        "Renewal of Media Licenses Pending Review 3d Overdue",
-        "Service Name",
-        "Status",
-        "Time Alert",
-        "My Application Tasks",
-    )
+    assert outcome.result.facts == ("Renewal of Media Licenses Pending Review 3d Overdue",)
     assert outcome.result.scope == "team"
     assert outcome.audit_evidence["stage"] == "completed_from_observation"
     assert gateway.events.count("admin.portal.read") == 1
@@ -1106,7 +1264,7 @@ def test_observe_not_confirmed_falls_back_to_bounded_generic_list_facts() -> Non
 def test_observe_not_confirmed_falls_back_to_generic_overview_controls() -> None:
     planner = Planner(
         {"mode": "portal_read", "portalRequest": {"startPath": "/dashboard", "actions": [{"type": "observe"}]}},
-        {"mode": "knowledge_only", "result": "not_confirmed", "facts": [], "missing": ["no_semantic_plan"]},
+        {"mode": "knowledge_only", "result": "not_confirmed", "section": "My Tasks", "facts": [], "missing": ["no_semantic_plan"]},
     )
     dashboard_info = user_info()
     dashboard_info["data"]["listSysPermission"] = [{"frontendRoute": "/dashboard", "children": [], "buttonList": []}]
@@ -1117,8 +1275,10 @@ def test_observe_not_confirmed_falls_back_to_generic_overview_controls() -> None
             "result": {
                 "result": "not_confirmed",
                 "observation": {
-                    "headings": ["Dashboard", "My Tasks"],
-                    "controls": ["Service Application 16", "Profile Verification 0"],
+                    "regionSummaries": [{
+                        "heading": "My Tasks",
+                        "controls": ["Service Application 16", "Profile Verification 0"],
+                    }],
                 },
             },
         },
@@ -1130,13 +1290,12 @@ def test_observe_not_confirmed_falls_back_to_generic_overview_controls() -> None
     assert outcome.result.facts == (
         "Service Application 16",
         "Profile Verification 0",
-        "Dashboard",
     )
     assert outcome.result.scope == "team"
     assert outcome.audit_evidence["stage"] == "completed_from_observation"
 
 
-def test_licensing_tasks_real_invalid_plan_uses_server_observe_without_correction() -> None:
+def test_invalid_mixed_plan_is_corrected_to_a_plan_selected_section() -> None:
     invalid_plan = {
         "mode": "portal_read",
         "portalRequest": {
@@ -1150,8 +1309,7 @@ def test_licensing_tasks_real_invalid_plan_uses_server_observe_without_correctio
     }
     planner = Planner(
         invalid_plan,
-        portal_plan_for("/licensing/applications", [{"type": "observe"}]),
-        {"mode": "knowledge_only", "result": "not_confirmed", "facts": [], "missing": ["semantic_plan_not_available"]},
+        portal_plan_for("/licensing/applications", [{"type": "observe", "section": "My Application Tasks"}]),
     )
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/dashboard", "/licensing/applications")},
@@ -1160,9 +1318,11 @@ def test_licensing_tasks_real_invalid_plan_uses_server_observe_without_correctio
             "result": {
                 "result": "success",
                 "observation": {
-                    "headings": ["My Application Tasks"],
-                    "columnHeaders": ["Application No.", "Service Name", "Status", "SLA"],
-                    "rowSummaries": ["ML-1-7-3968029 Ground Photography Permit Initial Approval Due in 2d"],
+                    "sectionSummaries": [{
+                        "heading": "My Application Tasks",
+                        "columnHeaders": ["Application No.", "Service Name", "Status", "SLA"],
+                        "rowSummaries": ["ML-1-7-3968029 Ground Photography Permit Initial Approval Due in 2d"],
+                    }],
                     "controls": ["312 To Do", "208 Pending Review"],
                 },
             },
@@ -1176,11 +1336,11 @@ def test_licensing_tasks_real_invalid_plan_uses_server_observe_without_correctio
     assert outcome.result.facts[0] == "ML-1-7-3968029 Ground Photography Permit Initial Approval Due in 2d"
     assert "312 To Do" not in outcome.result.facts
     assert gateway.events.count("admin.portal.read") == 1
-    assert len(planner.calls) == 1
+    assert len(planner.calls) == 2
     assert "DO_NOT_REPLAY" not in json.dumps(outcome.audit_evidence)
 
 
-def test_profile_real_closed_schema_failure_uses_server_observe_without_correction() -> None:
+def test_closed_schema_failure_is_corrected_to_a_plan_selected_section() -> None:
     planner = Planner(
         {
             "mode": "portal_read",
@@ -1190,8 +1350,7 @@ def test_profile_real_closed_schema_failure_uses_server_observe_without_correcti
                 "expectedFields": ["Profile Verification records list"],
             },
         },
-        portal_plan_for("/licensing/profile", [{"type": "observe"}]),
-        {"mode": "knowledge_only", "result": "not_confirmed", "facts": [], "missing": ["semantic_plan_not_available"]},
+        portal_plan_for("/licensing/profile", [{"type": "observe", "section": "My Profile Verification Tasks"}]),
     )
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/licensing/profile")},
@@ -1200,9 +1359,11 @@ def test_profile_real_closed_schema_failure_uses_server_observe_without_correcti
             "result": {
                 "result": "success",
                 "observation": {
-                    "headings": ["My Profile Verification Tasks"],
-                    "columnHeaders": ["Application No.", "Profile Type", "Status", "Last Updated"],
-                    "rowSummaries": ["13-2037291 Embassy 25d Overdue Pending Review 02/07/2026 17:26:04 Approve Reject"],
+                    "sectionSummaries": [{
+                        "heading": "My Profile Verification Tasks",
+                        "columnHeaders": ["Application No.", "Profile Type", "Status", "Last Updated"],
+                        "rowSummaries": ["13-2037291 Embassy 25d Overdue Pending Review 02/07/2026 17:26:04 Approve Reject"],
+                    }],
                     "controls": ["35 Total", "10 Individual"],
                 },
             },
@@ -1217,7 +1378,7 @@ def test_profile_real_closed_schema_failure_uses_server_observe_without_correcti
     assert outcome.result.section == "My Profile Verification Tasks"
     assert "35 Total" not in outcome.result.facts
     assert gateway.events.count("admin.portal.read") == 1
-    assert len(planner.calls) == 1
+    assert len(planner.calls) == 2
 
 
 def test_license_status_real_observation_uses_only_numeric_stat_card_summaries() -> None:
@@ -1226,6 +1387,7 @@ def test_license_status_real_observation_uses_only_numeric_stat_card_summaries()
         {
             "mode": "knowledge_only",
             "result": "not_confirmed",
+            "section": "Status overview",
             "facts": [],
             "missing": ["licenses status overview counts"],
         },
@@ -1238,7 +1400,10 @@ def test_license_status_real_observation_uses_only_numeric_stat_card_summaries()
             "result": {
                 "result": "success",
                 "observation": {
-                    "summaries": [*overview, "1", "2"],
+                    "regionSummaries": [{
+                        "heading": "Status overview",
+                        "summaries": [*overview, "1", "2"],
+                    }],
                     "controls": ["Unrelated control 99"],
                     "rowSummaries": ["8929867 Media License Active 03/09/2027 02/09/2028"],
                     "regions": ["Licensing Module Licenses", "Hidden status 999"],
@@ -1262,7 +1427,7 @@ def test_license_status_real_observation_uses_only_numeric_stat_card_summaries()
     assert len(planner.calls) == 1
 
 
-def test_strict_wrong_unpermitted_page_is_replaced_without_execution_or_replay() -> None:
+def test_plan_selected_unpermitted_page_is_not_replaced_or_executed() -> None:
     planner = Planner(
         portal_plan_for("/dashboard", [{"type": "observe", "section": "DO_NOT_REPLAY"}]),
         portal_plan_for("/licensing/applications", [{"type": "observe"}]),
@@ -1284,11 +1449,10 @@ def test_strict_wrong_unpermitted_page_is_replaced_without_execution_or_replay()
 
     outcome = run_reader(gateway, planner, question="我当前有哪些 Licensing 待办任务？")
 
-    assert outcome.result.status == "success"
-    assert gateway.events.count("admin.portal.read") == 1
-    assert gateway.calls[-1][1]["startPath"] == "/licensing/applications"
+    assert outcome.result.status == "no_permission"
+    assert gateway.events.count("admin.portal.read") == 0
     assert len(planner.calls) == 1
-    assert "/dashboard" not in json.dumps(outcome.audit_evidence)
+    assert outcome.result.missing == ("page_not_permitted",)
 
 
 @pytest.mark.parametrize(
@@ -1320,10 +1484,10 @@ def test_strict_licensing_fallback_never_succeeds_on_error_or_loading_page(obser
     assert len(planner.calls) == 1
 
 
-def test_strict_licensing_list_requires_matching_heading_and_columns() -> None:
+def test_plan_selected_section_rejects_rows_from_another_section() -> None:
     planner = Planner(
         portal_plan_for("/licensing/profile", [{"type": "observe"}]),
-        {"mode": "knowledge_only", "result": "not_confirmed", "facts": [], "missing": ["page_signature_missing"]},
+        {"mode": "knowledge_only", "result": "not_confirmed", "section": "Profile Verification", "facts": [], "missing": ["page_signature_missing"]},
     )
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/licensing/profile")},
@@ -1332,9 +1496,11 @@ def test_strict_licensing_list_requires_matching_heading_and_columns() -> None:
             "result": {
                 "result": "not_confirmed",
                 "observation": {
-                    "headings": ["Licenses"],
-                    "columnHeaders": ["License No.", "Status"],
-                    "rowSummaries": ["8929867 Active"],
+                    "sectionSummaries": [{
+                        "heading": "Licenses",
+                        "columnHeaders": ["License No.", "Status"],
+                        "rowSummaries": ["8929867 Active"],
+                    }],
                 },
             },
         },
@@ -1347,8 +1513,8 @@ def test_strict_licensing_list_requires_matching_heading_and_columns() -> None:
     assert len(planner.calls) == 2
 
 
-def test_strict_licensing_signature_returns_before_second_planner_call() -> None:
-    planner = Planner(portal_plan_for("/licensing/profile", [{"type": "observe"}]))
+def test_plan_selected_section_returns_before_second_planner_call() -> None:
+    planner = Planner(portal_plan_for("/licensing/profile", [{"type": "observe", "section": "My Profile Verification Tasks"}]))
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/licensing/profile")},
         portal_result={
@@ -1356,10 +1522,11 @@ def test_strict_licensing_signature_returns_before_second_planner_call() -> None
             "result": {
                 "result": "not_confirmed",
                 "observation": {
-                    "headings": [],
-                    "regions": ["My Profile Verification Tasks Total 35"],
-                    "columnHeaders": ["Application No.", "Profile Type", "Status", "Last Updated"],
-                    "rowSummaries": ["13-2037291 Embassy Pending Review 02/07/2026"],
+                    "sectionSummaries": [{
+                        "heading": "My Profile Verification Tasks",
+                        "columnHeaders": ["Application No.", "Profile Type", "Status", "Last Updated"],
+                        "rowSummaries": ["13-2037291 Embassy Pending Review 02/07/2026"],
+                    }],
                 },
             },
         },
@@ -1371,13 +1538,16 @@ def test_strict_licensing_signature_returns_before_second_planner_call() -> None
     assert len(planner.calls) == 1
 
 
-def test_strict_licensing_knowledge_only_plan_uses_server_observe_once() -> None:
-    planner = Planner({
-        "mode": "knowledge_only",
-        "result": "not_confirmed",
-        "facts": [],
-        "missing": ["planner_could_not_form_request"],
-    })
+def test_incomplete_knowledge_plan_requires_planner_selected_portal_read() -> None:
+    planner = Planner(
+        {
+            "mode": "knowledge_only",
+            "result": "not_confirmed",
+            "facts": [],
+            "missing": ["planner_could_not_form_request"],
+        },
+        portal_plan_for("/licensing/applications", [{"type": "observe", "section": "My Application Tasks"}]),
+    )
     gateway = Gateway(
         info={"ok": True, "result": user_info_for_paths("/licensing/applications")},
         portal_result={
@@ -1385,9 +1555,11 @@ def test_strict_licensing_knowledge_only_plan_uses_server_observe_once() -> None
             "result": {
                 "result": "not_confirmed",
                 "observation": {
-                    "regions": ["My Application Tasks To Do"],
-                    "columnHeaders": ["Application No.", "Service Name", "Status"],
-                    "rowSummaries": ["ML-123 Ground Photography Pending Review"],
+                    "sectionSummaries": [{
+                        "heading": "My Application Tasks",
+                        "columnHeaders": ["Application No.", "Service Name", "Status"],
+                        "rowSummaries": ["ML-123 Ground Photography Pending Review"],
+                    }],
                 },
             },
         },
@@ -1396,12 +1568,12 @@ def test_strict_licensing_knowledge_only_plan_uses_server_observe_once() -> None
     outcome = run_reader(gateway, planner, question="我当前有哪些 Licensing 待办任务？")
 
     assert outcome.result.status == "success"
-    assert len(planner.calls) == 1
+    assert len(planner.calls) == 2
     assert gateway.events.count("admin.portal.read") == 1
 
 
-def test_strict_licensing_server_observe_still_requires_page_permission() -> None:
-    planner = Planner(portal_plan_for("/dashboard", [{"type": "observe"}]))
+def test_planner_selected_page_still_requires_page_permission() -> None:
+    planner = Planner(portal_plan_for("/licensing/applications", [{"type": "observe"}]))
     gateway = Gateway(info={"ok": True, "result": user_info_for_paths("/dashboard")})
 
     outcome = run_reader(gateway, planner, question="我当前有哪些 Licensing 待办任务？")
@@ -1418,21 +1590,16 @@ def test_strict_licensing_server_observe_still_requires_page_permission() -> Non
         ("我当前有哪些任务？", "/dashboard", "/licensing"),
     ],
 )
-def test_strict_question_rejects_wrong_page_after_one_correction(question, expected_path, wrong_path) -> None:
-    planner = Planner(
-        portal_plan_for(wrong_path, [{"type": "observe"}]),
-        portal_plan_for(wrong_path, [{"type": "observe"}]),
-    )
+def test_reader_does_not_replace_a_permitted_plan_selected_page(question, expected_path, wrong_path) -> None:
+    planner = Planner(portal_plan_for(wrong_path, [{"type": "query", "field": "Status"}]))
     gateway = Gateway(info={"ok": True, "result": user_info_for_paths(expected_path, wrong_path)})
 
     outcome = run_reader(gateway, planner, question=question)
 
-    assert outcome.result.status == "not_confirmed"
-    assert outcome.result.missing == ("unexpected_start_path",)
-    assert outcome.audit_evidence["stage"] == "planning_correction"
-    assert "admin.portal.read" not in gateway.events
-    assert len(planner.calls) == 2
-    assert planner.calls[1][2]["planningDirective"]["reason"] == "unexpected_start_path"
+    assert outcome.result.status == "success"
+    assert gateway.events.count("admin.portal.read") == 1
+    assert gateway.calls[-1][1]["startPath"] == wrong_path
+    assert len(planner.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -1441,7 +1608,6 @@ def test_strict_question_rejects_wrong_page_after_one_correction(question, expec
         "Show details for application ML-123",
         "Show tasks from 2026-09-01 to 2026-09-03",
         "Show Pending Review tasks",
-        "Which tasks need Manager Attention?",
         "Approve my tasks",
         "Show application ALPHA",
         "What is the blacklist policy?",
@@ -1473,12 +1639,354 @@ def test_observation_fallback_rejects_detail_date_and_filter_questions(question)
     assert outcome.audit_evidence["stage"] == "completed_after_observe"
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What should I pay attention to?",
+        "What needs my attention?",
+        "Show my licensing tasks that need attention",
+        "Which licensing tasks should I pay attention to?",
+    ],
+)
+def test_dashboard_attention_uses_only_needs_your_attention_rows(question) -> None:
+    planner = Planner(portal_plan_for("/dashboard", [{"type": "observe", "section": "Needs Your Attention"}]))
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/dashboard", "/licensing/applications")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "observation": {
+                    "controls": ["Service Applications 15", "Enquiries & Complaints 2", "Refunds 2"],
+                    "summaries": ["9 Overdue Tasks"],
+                    "sectionSummaries": [
+                        {
+                            "heading": "Needs Your Attention",
+                            "columnHeaders": ["Task No.", "Service Name", "Waiting On"],
+                            "rowSummaries": [
+                                "ML-1-6-5599394 Reporter Permit Customer",
+                                "ML-2-901-6156449 Commercial Media License Customer",
+                            ],
+                        },
+                        {
+                            "heading": "My Tasks",
+                            "columnHeaders": ["Category", "Count"],
+                            "rowSummaries": ["Service Applications 15"],
+                        },
+                    ],
+                },
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question=question)
+
+    assert outcome.result.status == "success"
+    assert outcome.result.page == "/dashboard"
+    assert outcome.result.section == "Needs Your Attention"
+    assert outcome.result.facts == (
+        "ML-1-6-5599394 Reporter Permit Customer",
+        "ML-2-901-6156449 Commercial Media License Customer",
+    )
+    assert "Service Applications 15" not in outcome.result.facts
+    assert "Overdue" not in " ".join(outcome.result.facts)
+    assert gateway.calls[-1][1]["startPath"] == "/dashboard"
+
+
+def test_dashboard_attention_never_infers_from_nonzero_cards_without_authoritative_section() -> None:
+    planner = Planner(
+        portal_plan_for("/dashboard", [{"type": "observe", "section": "Needs Your Attention"}]),
+        {
+            "mode": "knowledge_only",
+            "result": "not_confirmed",
+            "page": "/dashboard",
+            "section": "Needs Your Attention",
+            "answerShape": "attention",
+            "facts": [],
+            "missing": ["attention_section_not_confirmed"],
+        },
+    )
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/dashboard")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "observation": {
+                    "controls": ["Service Applications 15", "Enquiries & Complaints 2", "Refunds 2"],
+                    "summaries": ["9 Overdue Tasks"],
+                    "sectionSummaries": [{"heading": "My Tasks", "columnHeaders": [], "rowSummaries": []}],
+                },
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question="What should I pay attention to?")
+
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.result.section == "Needs Your Attention"
+    assert outcome.result.facts == ()
+    assert outcome.result.missing == ("attention_section_not_confirmed",)
+
+
+def test_dashboard_attention_reports_no_data_only_from_section_empty_state() -> None:
+    planner = Planner(portal_plan_for("/dashboard", [{"type": "observe", "section": "Needs Your Attention"}]))
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/dashboard")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "observation": {
+                    "sectionSummaries": [{
+                        "heading": "Needs Your Attention",
+                        "columnHeaders": ["Task No.", "Service Name"],
+                        "rowSummaries": [],
+                        "emptyState": "No data",
+                    }],
+                },
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question="What should I pay attention to?")
+
+    assert outcome.result.status == "no_data"
+    assert outcome.result.section == "Needs Your Attention"
+    assert outcome.result.facts == ()
+
+
+def test_manager_attention_is_distinct_from_personal_attention() -> None:
+    planner = Planner(portal_plan_for("/dashboard", [{"type": "observe", "section": "Needs Manager Attention"}]))
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/dashboard")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "observation": {
+                    "sectionSummaries": [
+                        {
+                            "heading": "Needs Your Attention",
+                            "columnHeaders": ["Task No.", "Service Name"],
+                            "rowSummaries": ["PERSONAL-1 Personal task"],
+                        },
+                        {
+                            "heading": "Needs Manager Attention",
+                            "columnHeaders": ["Task No.", "Service Name"],
+                            "rowSummaries": ["MANAGER-1 Team escalation"],
+                        },
+                    ],
+                },
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question="Which tasks need Manager Attention?")
+
+    assert outcome.result.status == "success"
+    assert outcome.result.section == "Needs Manager Attention"
+    assert outcome.result.facts == ("MANAGER-1 Team escalation",)
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_facts"),
+    [
+        ("Show my licensing tasks", ("ML-123 Ground Photography Pending Review",)),
+        ("List my licensing tasks", ("ML-123 Ground Photography Pending Review",)),
+    ],
+)
+def test_list_shape_uses_the_planner_selected_page_and_section(question, expected_facts) -> None:
+    planner = Planner(portal_plan_for("/licensing/applications", [{"type": "observe", "section": "My Application Tasks"}]))
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/dashboard", "/licensing/applications")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "observation": {
+                    "sectionSummaries": [
+                        {
+                            "heading": "My Application Tasks",
+                            "columnHeaders": ["Application No.", "Service Name", "Status", "SLA"],
+                            "rowSummaries": ["ML-123 Ground Photography Pending Review"],
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question=question)
+
+    assert outcome.result.status == "success"
+    assert outcome.result.page == "/licensing/applications"
+    assert outcome.result.facts == expected_facts
+    assert "Service Application 16" not in outcome.result.facts
+
+
+def test_licensing_task_overview_uses_dashboard_my_tasks_categories() -> None:
+    planner = Planner(
+        portal_plan_for("/dashboard", [{"type": "observe", "section": "My Tasks"}]),
+        {
+            "mode": "knowledge_only",
+            "result": "success",
+            "page": "/dashboard",
+            "section": "My Tasks",
+            "answerShape": "overview",
+            "facts": [
+                "Service Application 14",
+                "Profile Verification 0",
+                "Enquiries & Complaints 2",
+                "Refunds 2",
+                "Appeals 0",
+            ],
+            "missing": [],
+        },
+    )
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/dashboard", "/licensing/applications")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "observation": {
+                    "summaries": ["Total 17"],
+                    "controls": ["All 2", "Service Application 14"],
+                    "regionSummaries": [
+                        {
+                            "heading": "My Tasks",
+                            "controls": [
+                                "Service Application 14",
+                                "Profile Verification 0",
+                                "Enquiries & Complaints 2",
+                                "Refunds 2",
+                                "Appeals 0",
+                            ],
+                            "emptyState": "",
+                        },
+                        {
+                            "heading": "Needs Your Attention",
+                            "controls": ["All 2", "Pending Modification 2"],
+                            "emptyState": "",
+                        },
+                    ],
+                    "sectionSummaries": [{
+                        "heading": "My Application Tasks",
+                        "columnHeaders": ["Application No.", "Service Name", "Status", "SLA"],
+                        "rowSummaries": ["ML-123 Ground Photography Pending Review"],
+                    }],
+                },
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question="show my licensing tasks overView")
+
+    assert outcome.result.status == "success"
+    assert outcome.result.page == "/dashboard"
+    assert outcome.result.section == "My Tasks"
+    assert outcome.result.facts == (
+        "Service Application 14",
+        "Profile Verification 0",
+        "Enquiries & Complaints 2",
+        "Refunds 2",
+        "Appeals 0",
+    )
+    assert "All 2" not in outcome.result.facts
+    assert "ML-123 Ground Photography Pending Review" not in outcome.result.facts
+    assert gateway.calls[-1][1]["startPath"] == "/dashboard"
+
+
+def test_licensing_task_overview_requires_my_tasks_section_identity() -> None:
+    planner = Planner(
+        portal_plan_for("/dashboard", [{"type": "observe", "section": "My Tasks"}]),
+        {
+            "mode": "knowledge_only",
+            "result": "not_confirmed",
+            "page": "/dashboard",
+            "section": "My Tasks",
+            "answerShape": "overview",
+            "facts": [],
+            "missing": ["dashboard_task_overview_not_confirmed"],
+        },
+    )
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/dashboard")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "observation": {
+                    "controls": ["Service Application 14", "All 2"],
+                    "summaries": ["Total 17"],
+                    "regionSummaries": [{
+                        "heading": "Needs Your Attention",
+                        "controls": ["All 2"],
+                        "emptyState": "",
+                    }],
+                },
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question="Show my licensing tasks overview")
+
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.result.page == "/dashboard"
+    assert outcome.result.section == "My Tasks"
+    assert outcome.result.facts == ()
+    assert outcome.result.missing == ("dashboard_task_overview_not_confirmed",)
+
+
+def test_licensing_task_count_requires_an_explicit_unambiguous_total() -> None:
+    planner = Planner(
+        portal_plan_for("/licensing/applications", [{"type": "observe", "section": "My Application Tasks"}]),
+        {
+            "mode": "knowledge_only",
+            "result": "not_confirmed",
+            "page": "/licensing/applications",
+            "section": "My Application Tasks",
+            "answerShape": "count",
+            "facts": [],
+            "missing": ["explicit_total_not_confirmed"],
+        },
+    )
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/licensing/applications")},
+        portal_result={
+            "ok": True,
+            "result": {
+                "result": "success",
+                "observation": {
+                    "controls": ["Service Application 15", "Enquiries & Complaints 2"],
+                    "sectionSummaries": [
+                        {
+                            "heading": "My Application Tasks",
+                            "columnHeaders": ["Application No.", "Service Name", "Status"],
+                            "rowSummaries": ["ML-123 Ground Photography Pending Review"],
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    outcome = run_reader(gateway, planner, question="How many licensing tasks do I have?")
+
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.result.facts == ()
+    assert outcome.result.missing == ("explicit_total_not_confirmed",)
+
+
 def test_generic_list_observation_takes_priority_and_never_mixes_overview_counts() -> None:
     planner = Planner(
         {"mode": "portal_read", "portalRequest": {"startPath": "/licensing", "actions": [{"type": "observe"}]}},
         {
             "mode": "knowledge_only",
             "result": "success",
+            "section": "My Application Tasks",
+            "answerShape": "list",
             "facts": ["Service Application 16"],
             "missing": [],
         },
@@ -1488,12 +1996,14 @@ def test_generic_list_observation_takes_priority_and_never_mixes_overview_counts
         "result": {
             "result": "success",
             "observation": {
-                "headings": ["My Application Tasks"],
-                "columnHeaders": ["Service Name", "Status", "Time Alert"],
-                "rowSummaries": [
-                    "Renewal of Media Licenses Pending Review 3d Overdue",
-                    "New Media License Pending Modification Due in 2d",
-                ],
+                "sectionSummaries": [{
+                    "heading": "My Application Tasks",
+                    "columnHeaders": ["Service Name", "Status", "Time Alert"],
+                    "rowSummaries": [
+                        "Renewal of Media Licenses Pending Review 3d Overdue",
+                        "New Media License Pending Modification Due in 2d",
+                    ],
+                }],
                 "controls": ["Service Application 16"],
             },
         },
@@ -1546,7 +2056,10 @@ def test_observation_fallback_enforces_fact_count_character_and_byte_limits() ->
             "result": "not_confirmed",
             "observation": {
                 "headings": ["My Application Tasks"],
-                "columnHeaders": [f"Column {index} " + "x" * 400 for index in range(20)],
+                "columnHeaders": [
+                    "Application No.", "Service Name", "Status",
+                    *(f"Column {index} " + "x" * 400 for index in range(17)),
+                ],
                 "rowSummaries": [f"Task {index} " + "界" * 400 for index in range(20)],
                 "controls": [f"Control {index}" for index in range(20)],
             },
@@ -1592,7 +2105,10 @@ def test_public_result_is_fixed_bounded_shape_without_internal_evidence() -> Non
         facts=tuple("x" * 400 for _ in range(40)),
     ).public_json()
 
-    assert set(result) == {"result", "page", "section", "scope", "facts", "workflowState", "missing"}
+    assert set(result) == {
+        "result", "page", "section", "sourceSection", "answerShape", "completeness",
+        "selectedState", "scope", "facts", "workflowState", "missing",
+    }
     assert "summary" not in result
     assert len(result["facts"]) <= 20
     assert len(json.dumps(result).encode()) <= 12_000

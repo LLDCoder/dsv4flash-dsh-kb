@@ -70,8 +70,12 @@ class FakeRoute:
 
 
 class FakeLocator:
-    def __init__(self, *, descriptor="Next", role="", tag="button", rel=None, aria_controls=None, aria_expanded=None):
+    def __init__(
+        self, *, descriptor="Next", role="", tag="button", rel=None, aria_controls=None,
+        aria_expanded=None, aria_selected=None, aria_sort=None, input_type=None, visible=True,
+    ):
         self.first = self
+        self.last = self
         self.descriptor = descriptor
         self.attributes = {
             "aria-label": descriptor,
@@ -80,12 +84,21 @@ class FakeLocator:
             "rel": rel,
             "aria-controls": aria_controls,
             "aria-expanded": aria_expanded,
+            "aria-selected": aria_selected,
+            "aria-sort": aria_sort,
+            "type": input_type,
         }
         self.tag = tag
+        self.visible = visible
         self.clicked = False
+        self.filled = None
+        self.selected = None
 
     async def count(self):
         return 1
+
+    def nth(self, index):
+        return self
 
     async def get_attribute(self, name):
         return self.attributes.get(name)
@@ -93,11 +106,29 @@ class FakeLocator:
     async def inner_text(self):
         return self.descriptor
 
+    async def is_visible(self):
+        return self.visible
+
     async def evaluate(self, script):
         return self.tag
 
     async def click(self, timeout):
         self.clicked = True
+
+    async def fill(self, value, timeout):
+        self.filled = value
+
+    async def select_option(self, *, label, timeout):
+        self.selected = label
+
+    def locator(self, selector):
+        return self
+
+    def get_by_label(self, label, exact=True):
+        return self
+
+    def get_by_role(self, role, **kwargs):
+        return self
 
 
 class FakePage:
@@ -108,6 +139,12 @@ class FakePage:
         return self.result
 
     def get_by_role(self, role, **kwargs):
+        return self.result
+
+    def get_by_label(self, label, exact=True):
+        return self.result
+
+    def get_by_text(self, text, exact=True):
         return self.result
 
 
@@ -150,11 +187,12 @@ class FakeObservationLocator:
 
 
 class FakeObservationContainer:
-    def __init__(self, rows, *, tag="table", visible=True, aria_busy=None):
+    def __init__(self, rows, *, tag="table", visible=True, aria_busy=None, heading=""):
         self.rows = rows
         self.tag = tag
         self.visible = visible
         self.aria_busy = aria_busy
+        self.heading = heading
 
     async def is_visible(self):
         return self.visible
@@ -163,7 +201,7 @@ class FakeObservationContainer:
         return self.aria_busy if name == "aria-busy" else None
 
     async def evaluate(self, script):
-        return self.tag
+        return self.tag if "tagName" in script else self.heading
 
     def locator(self, selector):
         return FakeObservationLocator(self.rows)
@@ -179,6 +217,34 @@ class FakeObservationContainers:
 
     def nth(self, index):
         return self.containers[index]
+
+
+class FakeSemanticSection:
+    def __init__(self, heading, controls, *, card_summaries=(), selected_states=(), empty_state="", visible=True):
+        self.heading = heading
+        self.controls = controls
+        self.card_summaries = card_summaries
+        self.selected_states = selected_states
+        self.empty_state = empty_state
+        self.visible = visible
+        self.selectors = []
+
+    async def is_visible(self):
+        return self.visible
+
+    def locator(self, selector):
+        self.selectors.append(selector)
+        if selector == "h1,h2,h3,[role='heading']":
+            return FakeObservationLocator([(self.heading, True)] if self.heading else [])
+        if selector == "[role='tab'],[role='button'],button[aria-label],a[aria-label]":
+            return FakeObservationLocator([(value, True) for value in self.controls])
+        if selector == "[role='tab'][aria-selected='true']":
+            return FakeObservationLocator(self.selected_states)
+        if selector == ".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))":
+            return FakeObservationLocator([(value, True) for value in self.card_summaries])
+        if selector == ".ant-empty-description,[role='status']":
+            return FakeObservationLocator([(self.empty_state, True)] if self.empty_state else [])
+        return FakeObservationLocator([])
 
 
 class FakeStructuredRow:
@@ -209,27 +275,33 @@ class FakeStructuredRows:
 
 
 class FakeStructuredContainer(FakeObservationContainer):
-    def __init__(self, headers, rows):
-        super().__init__([], tag="table")
+    def __init__(self, headers, rows, *, heading="", empty_state=""):
+        super().__init__([], tag="table", heading=heading)
         self.headers = headers
         self.structured_rows = rows
+        self.empty_state = empty_state
 
     def locator(self, selector):
         if selector == "thead th,[role='columnheader']":
             return FakeObservationLocator(self.headers)
+        if selector == ".ant-empty-description,[role='status']":
+            return FakeObservationLocator([(self.empty_state, True)] if self.empty_state else [])
         return FakeStructuredRows(self.structured_rows)
 
 
 class FakeObservationPage:
-    def __init__(self, values_by_selector, *, containers=None):
+    def __init__(self, values_by_selector, *, containers=None, sections=None):
         self.values_by_selector = values_by_selector
         self.containers = containers or []
+        self.sections = sections or []
         self.selectors = []
 
     def locator(self, selector):
         self.selectors.append(selector)
         if selector == "table,[role='grid']":
             return FakeObservationContainers(self.containers)
+        if selector == "section":
+            return FakeObservationContainers(self.sections)
         return FakeObservationLocator(self.values_by_selector.get(selector, []))
 
 
@@ -242,6 +314,8 @@ class FakeQueryPage:
         self.body_text = body_text
 
     def locator(self, selector):
+        if selector == "[role='dialog']:visible,[role='alertdialog']:visible,.ant-drawer-content:visible":
+            return FakeQueryLocator([])
         if selector == gateway.READER_FAILURE_STATE_SELECTOR:
             return FakeQueryLocator(self.failure_states)
         if selector == "body":
@@ -260,7 +334,8 @@ def guard(method, path, *, resource_type="xhr"):
 
 def test_gateway_action_enum_matches_runtime_contract() -> None:
     assert gateway.READER_ACTIONS == {
-        "observe", "navigate", "query", "filter", "paginate", "switch_tab", "expand_details"
+        "observe", "navigate", "query", "filter", "paginate", "switch_tab", "expand_details",
+        "show_filter", "apply_filter", "reset_filter", "sort", "show_detail", "dismiss_overlay",
     }
 
 
@@ -403,6 +478,129 @@ def test_observe_semantics_uses_only_first_visible_table_with_data_rows() -> Non
     assert observation["rowSummaries"] == ["First table row 1", "First table row 2"]
 
 
+def test_observe_semantics_keeps_rows_bound_to_their_dashboard_section() -> None:
+    page = FakeObservationPage({}, containers=[
+        FakeStructuredContainer([], [FakeStructuredRow([("Service Applications 15", True)])], heading="My Tasks"),
+        FakeStructuredContainer(
+            [],
+            [
+                FakeStructuredRow([("ML-1 Pending Modification Customer", True)]),
+                FakeStructuredRow([("ML-2 Pending Modification Customer", True)]),
+            ],
+            heading="Needs Your Attention",
+        ),
+    ])
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["sectionSummaries"] == [
+        {
+            "heading": "My Tasks",
+            "sourceSection": "My Tasks",
+            "columnHeaders": [],
+            "rowSummaries": ["Service Applications 15"],
+            "emptyState": "",
+        },
+        {
+            "heading": "Needs Your Attention",
+            "sourceSection": "Needs Your Attention",
+            "columnHeaders": [],
+            "rowSummaries": ["ML-1 Pending Modification Customer", "ML-2 Pending Modification Customer"],
+            "emptyState": "",
+        },
+    ]
+
+
+def test_observe_semantics_preserves_explicit_empty_state_with_section_identity() -> None:
+    page = FakeObservationPage({}, containers=[
+        FakeStructuredContainer(
+            [("Task No.", True), ("Service Name", True)],
+            [],
+            heading="Needs Your Attention",
+            empty_state="No data",
+        ),
+    ])
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["sectionSummaries"] == [{
+        "heading": "Needs Your Attention",
+        "sourceSection": "Needs Your Attention",
+        "columnHeaders": ["Task No.", "Service Name"],
+        "rowSummaries": [],
+        "emptyState": "No data",
+    }]
+
+
+def test_observe_semantics_binds_controls_to_visible_semantic_sections() -> None:
+    page = FakeObservationPage({}, sections=[
+        FakeSemanticSection("Hidden", ["Hidden 99"], visible=False),
+        FakeSemanticSection("My Tasks", ["Service Application 14", "Profile Verification 0"]),
+        FakeSemanticSection("Needs Your Attention", ["All 2", "Pending Modification 2"]),
+    ])
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["regionSummaries"] == [
+        {
+            "heading": "My Tasks",
+            "sourceSection": "My Tasks",
+            "controls": ["Service Application 14", "Profile Verification 0"],
+            "emptyState": "",
+        },
+        {
+            "heading": "Needs Your Attention",
+            "sourceSection": "Needs Your Attention",
+            "controls": ["All 2", "Pending Modification 2"],
+            "emptyState": "",
+        },
+    ]
+
+
+def test_observe_semantics_binds_cards_to_their_semantic_section() -> None:
+    page = FakeObservationPage({}, sections=[
+        FakeSemanticSection("Queue Overview", [], card_summaries=("Open 8", "Closed 3")),
+        FakeSemanticSection("Other Overview", [], card_summaries=("Waiting 2",)),
+    ])
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["regionSummaries"] == [
+        {
+            "heading": "Queue Overview",
+            "sourceSection": "Queue Overview",
+            "controls": [],
+            "emptyState": "",
+            "cardSummaries": ["Open 8", "Closed 3"],
+            "summaries": ["Open 8", "Closed 3"],
+        },
+        {
+            "heading": "Other Overview",
+            "sourceSection": "Other Overview",
+            "controls": [],
+            "emptyState": "",
+            "cardSummaries": ["Waiting 2"],
+            "summaries": ["Waiting 2"],
+        },
+    ]
+
+
+def test_observe_semantics_includes_only_bounded_visible_dialog_content() -> None:
+    page = FakeObservationPage({
+        gateway.READER_OVERLAY_SELECTOR: [
+            ("Hidden filter", False),
+            ("Application Status Pending Review Apply Reset", True),
+            *((f"Dialog {index} " + "x" * 900, True) for index in range(5)),
+        ],
+    })
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert len(observation["dialogs"]) == 4
+    assert "Hidden filter" not in observation["dialogs"]
+    assert all(len(value) <= 800 for value in observation["dialogs"])
+
+
 def test_observe_semantics_excludes_the_visible_actions_column_by_cell_index() -> None:
     container = FakeStructuredContainer(
         [("Application No.", True), ("Service Name", True), ("Actions", True)],
@@ -441,6 +639,21 @@ def test_observe_semantics_collects_bounded_visible_non_error_stat_cards() -> No
         marker not in " ".join(observation["summaries"])
         for marker in ("Hidden", "Loading", "Error", "Retry")
     )
+
+
+def test_observe_semantics_records_selected_tab_per_region() -> None:
+    selected_tab_selector = "[role='tab'][aria-selected='true']"
+    section = FakeSemanticSection(
+        heading="My Work",
+        controls=["Applications 14", "Enquiries 2"],
+        selected_states=[("Enquiries 2", True)],
+    )
+    page = FakeObservationPage({}, sections=[section])
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert selected_tab_selector in section.selectors
+    assert observation["regionSummaries"][0]["selectedState"] == "Enquiries 2"
 
 
 def test_observe_semantics_redacts_credentials_in_all_text_collections() -> None:
@@ -532,6 +745,37 @@ def test_gateway_requires_semantic_locators_for_interactions() -> None:
 @pytest.mark.parametrize(
     "action",
     [
+        {"type": "show_filter", "role": "button", "name": "Filter"},
+        {"type": "apply_filter", "role": "button", "name": "Apply"},
+        {"type": "reset_filter", "role": "button", "name": "Reset"},
+        {"type": "sort", "role": "columnheader", "name": "Submission Time", "direction": "ascending"},
+        {"type": "dismiss_overlay", "role": "button", "name": "Close"},
+    ],
+)
+def test_dashboard_and_licensing_read_only_interactions_are_accepted(action) -> None:
+    gateway._validate_reader_request(read_request([action], startPath="/dashboard"))
+    gateway._validate_reader_request(read_request([action], startPath="/licensing/applications"))
+
+
+def test_extended_read_only_interactions_are_generic_for_permitted_pages() -> None:
+    request = read_request(
+        [{"type": "show_filter", "role": "button", "name": "Filter"}],
+        startPath="/customer-happiness",
+    )
+
+    gateway._validate_reader_request(request)
+
+
+def test_filter_requires_an_explicit_value() -> None:
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(read_request([{"type": "filter", "field": "Status"}]))
+
+    assert error_code(raised.value) == "reader_filter_value_required"
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
         {"type": "expand_details", "role": "button", "name": "Details"},
         {"type": "expand_details", "selector": "[data-action='details']", "role": "button", "name": "Details"},
     ],
@@ -543,6 +787,73 @@ def test_expand_details_requires_permission_code_for_semantic_and_selector_click
     assert error_code(raised.value) == "button_permission_required"
 
 
+def test_show_detail_requires_permission_code() -> None:
+    action = {"type": "show_detail", "role": "link", "name": "ML-123", "value": "ML-123"}
+
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(read_request([action]))
+
+    assert error_code(raised.value) == "button_permission_required"
+
+
+def test_show_detail_requires_stable_record_identity() -> None:
+    action = {
+        "type": "show_detail",
+        "role": "link",
+        "name": "Details",
+        "permissionCode": "licensing.view_detail",
+    }
+
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(read_request([action]))
+
+    assert error_code(raised.value) == "reader_detail_identity_required"
+
+
+def test_sort_requires_closed_direction() -> None:
+    action = {"type": "sort", "role": "columnheader", "name": "Submission Time"}
+
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(read_request([action]))
+    assert error_code(raised.value) == "reader_sort_direction_required"
+
+    action["direction"] = "ascending"
+    gateway._validate_reader_request(read_request([action]))
+
+
+def test_filter_sets_supported_text_and_native_select_controls() -> None:
+    text_locator = FakeLocator(tag="input")
+    select_locator = FakeLocator(tag="select")
+
+    asyncio.run(gateway._set_filter_value(FakePage(text_locator), gateway.PortalReadAction(type="filter", field="Search", value="ML-123")))
+    asyncio.run(gateway._set_filter_value(FakePage(select_locator), gateway.PortalReadAction(type="filter", field="Status", value="Pending Review")))
+
+    assert text_locator.filled == "ML-123"
+    assert select_locator.selected == ["Pending Review"]
+
+
+def test_filter_sets_bounded_native_multiselect_values() -> None:
+    select_locator = FakeLocator(tag="select")
+
+    asyncio.run(gateway._set_filter_value(
+        FakePage(select_locator),
+        gateway.PortalReadAction(type="filter", field="Status", values=["Pending Review", "Completed"]),
+    ))
+
+    assert select_locator.selected == ["Pending Review", "Completed"]
+
+
+def test_filter_rejects_unknown_or_password_controls() -> None:
+    for locator in (FakeLocator(tag="div"), FakeLocator(tag="input", input_type="password")):
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                gateway._set_filter_value(
+                    FakePage(locator),
+                    gateway.PortalReadAction(type="filter", field="Status", value="Pending Review"),
+                )
+            )
+
+
 def test_runtime_click_validation_is_shared_by_selector_and_semantic_locators() -> None:
     for action in (
         gateway.PortalReadAction(type="paginate", selector="[aria-label='Next']", role="link", name="Next"),
@@ -551,6 +862,19 @@ def test_runtime_click_validation_is_shared_by_selector_and_semantic_locators() 
         locator = FakeLocator(descriptor="Next", tag="a", rel="next")
         asyncio.run(gateway._safe_click(FakePage(locator), action))
         assert locator.clicked
+
+
+def test_runtime_click_verifies_tab_and_sort_state() -> None:
+    tab = FakeLocator(descriptor="To Do", role="tab", aria_selected="true")
+    sort = FakeLocator(descriptor="Submission Time", role="columnheader", tag="th", aria_sort="ascending")
+
+    asyncio.run(gateway._safe_click(FakePage(tab), gateway.PortalReadAction(type="switch_tab", role="tab", name="To Do")))
+    asyncio.run(gateway._safe_click(FakePage(sort), gateway.PortalReadAction(
+        type="sort", role="columnheader", name="Submission Time", direction="ascending",
+    )))
+
+    assert tab.clicked
+    assert sort.clicked
 
 
 @pytest.mark.parametrize("descriptor", ["Suspend", "Archive", "Enable", "Disable", "Close", "Open", "Activate", "Deactivate"])

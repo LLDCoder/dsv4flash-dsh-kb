@@ -17,7 +17,7 @@ from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
-from .portal_reader import AdminPortalReader, ReaderTimeoutBudget, bounded_json
+from .portal_reader import AdminPortalReader, ReaderTimeoutBudget, bounded_json, reader_answer_shape
 from .principal import Principal
 from .reader_limits import (
     MAX_PLATFORM_TIMEOUT_SECONDS,
@@ -31,6 +31,101 @@ from .response_safety import is_internal_tool_protocol, strip_unverified_links
 from .runtime import RuntimeManager
 from .skills import response_language_for
 from .tool_gateway import ToolGateway
+
+
+def _reader_task_category(question: str) -> str:
+    """Extract an explicit task qualifier without knowing business modules."""
+
+    matches = list(re.finditer(r"\b([a-z][a-z0-9& /_-]{0,80}?)\s+tasks?\b", question, flags=re.IGNORECASE))
+    if not matches:
+        return ""
+    candidate = matches[-1].group(1).casefold()
+    candidate = re.sub(
+        r"\b(?:how|many|what|which|about|show|display|list|give|tell|me|my|the|a|an|current|currently|"
+        r"overview|summary|breakdown|count|total|number|due|overdue|expiring|urgent|attention)\b",
+        " ",
+        candidate,
+    )
+    candidate = " ".join(candidate.replace("_", " ").replace("-", " ").split()).strip(" /&")
+    return candidate[:80]
+
+
+def _reader_conversation_context(
+    history: list[SessionEvent],
+    latest_user: SessionEvent | None,
+) -> dict[str, Any]:
+    """Return one bounded prior intent, excluding prior live facts and permissions."""
+
+    if latest_user is None:
+        return {}
+    try:
+        latest_index = next(index for index in range(len(history) - 1, -1, -1) if history[index] is latest_user)
+    except StopIteration:
+        return {}
+    previous_index = next(
+        (index for index in range(latest_index - 1, -1, -1) if history[index].event_type == "user.message"),
+        None,
+    )
+    if previous_index is None:
+        return {}
+
+    previous_question = DSHService._redact_audit_string(
+        str((history[previous_index].event_json or {}).get("content") or "").strip()
+    )[:1_000]
+    if not previous_question:
+        return {}
+    previous_result = next(
+        (
+            history[index].event_json or {}
+            for index in range(latest_index - 1, previous_index, -1)
+            if history[index].event_type == "reader.result"
+        ),
+        {},
+    )
+    intent: dict[str, Any] = {
+        "question": previous_question,
+        "answerShape": reader_answer_shape(previous_question),
+        "resultStatus": DSHService._redact_audit_string(str(previous_result.get("result") or ""))[:32],
+        "page": DSHService._redact_audit_string(str(previous_result.get("page") or ""))[:500],
+        "section": DSHService._redact_audit_string(str(previous_result.get("section") or ""))[:300],
+        "scope": DSHService._redact_audit_string(str(previous_result.get("scope") or "unknown"))[:32],
+        "workflowState": DSHService._redact_audit_string(
+            str(previous_result.get("workflowState") or "")
+        )[:500],
+    }
+    category = _reader_task_category(previous_question)
+    if category:
+        intent["category"] = category
+    return {"previousIntent": intent}
+
+
+def reader_answer_assembly_evidence(
+    reader_result: dict[str, Any],
+    content: str,
+    *,
+    duration_ms: float,
+    formatting_failed: bool,
+) -> dict[str, Any]:
+    """Record answer assembly quality without copying the answer or source facts."""
+
+    facts = reader_result.get("facts") if isinstance(reader_result.get("facts"), list) else []
+    missing = reader_result.get("missing") if isinstance(reader_result.get("missing"), list) else []
+    return {
+        "stage": "answer_assembly",
+        "status": "failed" if formatting_failed else "passed",
+        "durationMs": round(max(0.0, duration_ms), 1),
+        "input": {
+            "readerStatus": str(reader_result.get("result") or "")[:40],
+            "factCount": len(facts),
+            "missingCount": len(missing),
+            "answerShape": str(reader_result.get("answerShape") or "")[:40],
+        },
+        "output": {
+            "responseChars": len(content),
+            "usedFormattingFallback": formatting_failed,
+        },
+        "failureCode": "internal_tool_protocol" if formatting_failed else "",
+    }
 
 
 class EventBroker:
@@ -533,9 +628,18 @@ class DSHService:
         scope = (
             "You receive only the bounded result produced by the read-only Admin Portal Reader. "
             "Explain its status accurately: success, no_data, no_permission, load_failed, or not_confirmed. "
-            "The facts are a bounded extract, never proof of a complete list. When listing records, say they are "
-            "the records visible in this read or a partial sample; never say they are all current records unless "
-            "the bounded result explicitly includes and supports that completeness. "
+            "For success, lead with the business answer and state scope naturally, using wording such as "
+            "'currently' or 'in your dashboard' when useful. Do not narrate the evidence-gathering process with "
+            "phrases such as 'based on the visible page', 'based on the visible section', 'this read', "
+            "'bounded extract', or 'bounded snapshot'. "
+            "The facts are a bounded extract, never proof of a complete list. Never say records are all current "
+            "records unless the bounded result explicitly supports completeness. If only a partial list is "
+            "supported, identify it briefly and naturally, for example 'Here are some of your current tasks'. "
+            "Mention a limitation only when partial results or insufficient evidence materially affect the answer; "
+            "keep that limitation concise and do not expose internal collection or audit terminology. "
+            "A nonzero task-category count is workload information, not evidence that the category or its tasks "
+            "need attention. Describe work as needing attention only when the bounded result explicitly identifies "
+            "it that way; never infer attention from a nonzero count. "
             "Do not mention visible action labels such as Approve, Reject, Export, Download, or Suspend unless the "
             "user explicitly asks about available actions; never imply that any such action was used. "
             "Never imply that a write, approval, export, download, or other mutation was performed."
@@ -643,7 +747,15 @@ class DSHService:
                         )
                         try:
                             total_timeout = bounded_reader_total_timeout(self.settings.reader_total_timeout_seconds)
-                            outcome = await asyncio.wait_for(reader.run(principal, latest_content), timeout=total_timeout)
+                            conversation_context = _reader_conversation_context(history, latest_user)
+                            outcome = await asyncio.wait_for(
+                                reader.run(
+                                    principal,
+                                    latest_content,
+                                    conversation_context=conversation_context,
+                                ),
+                                timeout=total_timeout,
+                            )
                             evidence = outcome.result.public_json()
                             audit_evidence = outcome.audit_evidence
                         except asyncio.TimeoutError:
@@ -719,7 +831,8 @@ class DSHService:
                     async for token in self.llm.stream(messages, on_reasoning=capture_reasoning):
                         chunks.append(token)
                     content = strip_unverified_links("".join(chunks), evidence)
-                    if is_internal_tool_protocol(content):
+                    formatting_failed = is_internal_tool_protocol(content)
+                    if formatting_failed:
                         content = (
                             "تعذر تنسيق النتيجة المطلوبة. يرجى المحاولة مرة أخرى."
                             if language == "ar"
@@ -732,6 +845,19 @@ class DSHService:
                             {"content": content, "requestId": principal.request_id, "runtimeId": conversation.runtime_id},
                         )
                     reasoning = "".join(reasoning_chunks)
+                    await self.append_audit(
+                        db,
+                        conversation,
+                        "reader.answer_assembly",
+                        reader_answer_assembly_evidence(
+                            evidence,
+                            content,
+                            duration_ms=(time.perf_counter() - llm_started) * 1000,
+                            formatting_failed=formatting_failed,
+                        ),
+                        request_id=principal.request_id,
+                        runtime_id=conversation.runtime_id,
+                    )
                     await self.append_audit(
                         db,
                         conversation,

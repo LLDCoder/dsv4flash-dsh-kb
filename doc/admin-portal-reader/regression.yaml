@@ -9,6 +9,13 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-quality-trace-current-tasks
+    question: How about my current tasks?
+    expect:
+      skill: admin_portal_reader
+      stages: [question_context, identity_permissions, knowledge_retrieval, planning, read_policy, portal_execution, result_classification, answer_assembly]
+      trace_contains_no: [question_text, full_page, full_table, chunk_content, facts, credentials, cookies, tokens]
+
   - id: reader-admin-default-route
     question: What work needs my attention today?
     expect:
@@ -16,6 +23,114 @@ cases:
       first_step: get_user_info
       tools_subset: [knowledge.search, admin.portal.read]
       legacy_skill_selected: false
+      runtime_skills_exactly: [admin_portal_reader, general_knowledge]
+
+  - id: reader-dashboard-attention-selection
+    question: What should I pay attention to?
+    alternate_questions:
+      - Show my Licensing tasks that need attention.
+      - Which Licensing tasks should I pay attention to?
+    requires: [dashboard_access]
+    expect:
+      page: /dashboard
+      section: Needs Your Attention
+      primary_data: bounded_visible_task_rows
+      forbidden_substitutes:
+        - My Tasks category counts
+        - Overdue Tasks metric alone
+        - Needs Manager Attention
+      nonzero_category_inferred_as_attention: false
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-dashboard-task-overview-selection
+    question: Give me an overview of my Dashboard tasks.
+    requires: [dashboard_access]
+    expect:
+      page: /dashboard
+      section: My Tasks
+      primary_data: visible_task_category_counts
+      attention_claim_without_attention_evidence: forbidden
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-dashboard-generic-task-count
+    question: How many tasks do I have?
+    requires: [dashboard_access]
+    expect:
+      page: /dashboard
+      section: My Tasks
+      answer_shape: count
+      primary_data: visible_task_category_counts
+      licensing_list_total: forbidden
+      attention_rows: forbidden
+      result: [success, not_confirmed]
+
+  - id: reader-dashboard-generic-task-overview
+    question: Show me my tasks.
+    requires: [dashboard_access]
+    expect:
+      page: /dashboard
+      section: My Tasks
+      answer_shape: overview
+      primary_data: visible_task_category_counts
+      needs_attention_rows_labeled_as_my_tasks: forbidden
+      complete_list_claim: forbidden
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-dashboard-follow-up-category-continuity
+    turns:
+      - user: Show me my application tasks list.
+        expect_answer_shape: list
+      - user: How about enquiries tasks?
+        inherit_answer_shape: list
+        replace_category: enquiries
+    requires: [dashboard_access, customer_happiness_ticket_access]
+    expect:
+      context_is_bounded: true
+      full_transcript_forwarded: false
+      explicit_empty_state_result: no_data
+      unavailable_claim_when_empty_state_observed: forbidden
+
+  - id: reader-dashboard-due-soon-is-not-overdue
+    question: 现在有即将到期的 application tasks 么
+    requires: [dashboard_access]
+    expect:
+      answer_shape: due
+      primary_data: explicit_due_in_labels_or_documented_due_field
+      overdue_rows_substituted: false
+      hidden_deadline_calculation: forbidden
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-valid-list-observation-finishes
+    question: Show me the application tasks list.
+    requires: [licensing_access]
+    observed: [matching_list_heading, bounded_rows_with_identity]
+    planner_follow_up: duplicate_observe
+    expect:
+      answer_shape: list
+      result: success
+      invalid_follow_up_plan: forbidden
+      unavailable_claim: forbidden
+
+  - id: reader-dashboard-manager-attention-is-distinct
+    question: What needs manager attention?
+    requires: [dashboard_access, manager_scope]
+    expect:
+      page: /dashboard
+      section: Needs Manager Attention
+      scope: [team, global]
+      personal_attention_substituted: false
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-dashboard-overdue-selection
+    question: How many overdue tasks do I have?
+    requires: [dashboard_access]
+    expect:
+      page: /dashboard
+      section: Overdue Tasks
+      primary_data: explicit_overdue_metric
+      matching_rows_inferred_from_metric: false
+      zero_count_result: success
+      result: [success, not_confirmed]
 
   - id: reader-dashboard-role-scope
     question: Summarize my Dashboard tasks and main cards.
@@ -32,6 +147,104 @@ cases:
       pages_at_most: 2
       actions_subset: [navigate, query, filter, paginate, switch_tab, expand_details]
       result: [success, no_data, not_confirmed]
+
+  - id: reader-licensing-list-semantics
+    question: Show my Licensing tasks.
+    requires: [licensing_access]
+    expect:
+      primary_data: bounded_matching_list_rows
+      record_identity_present_when_data_exists: true
+      overview_count_only: forbidden
+      complete_list_claim_without_complete_pagination: forbidden
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-licensing-count-semantics
+    question: How many Licensing tasks do I have?
+    requires: [licensing_access]
+    expect:
+      primary_data: verified_matching_count
+      unrequested_record_enumeration: false
+      zero_count_result: success
+      result: [success, not_confirmed]
+
+  - id: reader-licensing-overview-semantics
+    question: Show my Licensing tasks overview.
+    requires: [dashboard_access]
+    expect:
+      page: /dashboard
+      section: My Tasks
+      primary_data: visible_task_category_counts
+      application_list_total_or_rows: forbidden
+      attention_tabs_or_rows: forbidden
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-licensing-mixed-list-overview-semantics
+    question: Show me an overview of my Licensing tasks and the current items.
+    requires: [licensing_access]
+    expect:
+      primary_data: [verified_overview, bounded_matching_list_rows]
+      count_only_answer: forbidden
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-filter-dialog-readonly-boundary
+    question: Open the Licensing filter, select the named status, apply it, and list matching records.
+    requires: [licensing_access, documented_filter_control]
+    expect:
+      actions_subset: [navigate, query, show_filter, filter, apply_filter]
+      allowed_surface: [filter_dialog, filter_drawer]
+      active_filter_verified: true
+      returned_rows_match_active_filter: true
+      unsupported_or_unverified_control_result: not_confirmed
+      mutation: forbidden
+
+  - id: reader-filter-dialog-reset
+    question: Reset the Licensing filters and show the resulting unfiltered list.
+    requires: [licensing_access, documented_filter_control]
+    expect:
+      reset_state_verified: true
+      active_filters_empty: true
+      resulting_list_state_verified: true
+      actions_subset: [show_filter, reset_filter, query]
+      mutation: forbidden
+
+  - id: reader-filter-dialog-cancel
+    question: Open the Licensing filter, change the status, then cancel without applying it.
+    requires: [licensing_access, documented_filter_control]
+    expect:
+      prior_active_filters_preserved: true
+      cancelled_value_reported_as_active: false
+      actions_subset: [show_filter, filter, dismiss_overlay, query]
+      mutation: forbidden
+
+  - id: reader-readonly-detail-dialog-boundary
+    question: Open the first visible Licensing record's details and summarize its status.
+    requires: [licensing_access, permitted_readonly_detail]
+    expect:
+      actions_subset: [navigate, query, show_detail, switch_tab, expand_details, dismiss_overlay]
+      allowed_surface: [readonly_detail_dialog, readonly_detail_drawer, readonly_detail_page]
+      selected_and_detail_identity_match: true
+      direct_detail_url_guessed: false
+      result: [success, not_confirmed]
+
+  - id: reader-action-dialog-boundary
+    question: Open the approval dialog for the first Licensing record.
+    expect:
+      mutation: refused
+      action_dialog_opened: false
+      portal_tool_call: false
+
+  - id: reader-natural-answer-presentation
+    question: Summarize my current Dashboard tasks.
+    expect:
+      leads_with_business_conclusion: true
+      internal_process_narration: forbidden
+      forbidden_phrases:
+        - Based on the visible
+        - visible to you
+        - this read
+        - bounded snapshot
+        - page extraction
+      material_limitation_only: true
 
   - id: reader-profile-verification
     question: Are there Profile Verification items I can review?
@@ -139,7 +352,7 @@ cases:
 
   - id: reader-model-evidence-boundary
     expect:
-      model_fields: [result, page, section, scope, facts, workflowState, missing]
+      model_fields: [result, page, section, sourceSection, answerShape, completeness, selectedState, scope, facts, workflowState, missing]
       forbidden_model_fields: [html, fullPage, fullTable, rawAuditEvidence, internalErrors]
 
   - id: reader-audit-redaction
@@ -166,3 +379,7 @@ acceptance:
   - Model-visible evidence is bounded and contains no complete page or table.
   - Audit evidence is sufficient for diagnosis and contains no credentials or session secrets.
   - Reader audit evidence identifies the GetUserInfo login account and current role without changing the permission fingerprint.
+  - Dashboard attention, task summary, overdue, and manager-attention intents select their authoritative regions without substituting semantically related counts or lists.
+  - Licensing list, count, overview, and mixed list-overview questions return the requested answer shape.
+  - Named filter dialogs or drawers and read-only detail surfaces remain bounded, identity-verified, and mutation-free; action dialogs and unknown controls are refused before dispatch.
+  - Successful user answers lead with the business conclusion and do not narrate page visibility, reads, snapshots, extraction, Tool execution, or audit evidence.

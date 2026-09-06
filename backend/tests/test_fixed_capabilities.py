@@ -76,7 +76,37 @@ def test_reader_response_prompt_forbids_claiming_bounded_rows_are_complete() -> 
     prompt = DSHService._runtime_system_prompt("admin_portal_reader", "en", "", "")
 
     assert "bounded extract" in prompt
-    assert "never say they are all current records" in prompt
+    assert "Never say records are all current records" in prompt
+    assert "explicitly supports completeness" in prompt
+
+
+def test_reader_response_prompt_leads_with_business_answer_without_audit_narration() -> None:
+    prompt = DSHService._runtime_system_prompt("admin_portal_reader", "en", "", "")
+
+    assert "lead with the business answer" in prompt
+    assert "'currently' or 'in your dashboard'" in prompt
+    assert "Do not narrate the evidence-gathering process" in prompt
+    assert "'based on the visible page'" in prompt
+    assert "'based on the visible section'" in prompt
+    assert "'this read'" in prompt
+    assert "'bounded snapshot'" in prompt
+
+
+def test_reader_response_prompt_keeps_limitations_concise_and_material() -> None:
+    prompt = DSHService._runtime_system_prompt("admin_portal_reader", "en", "", "")
+
+    assert "If only a partial list is supported" in prompt
+    assert "Here are some of your current tasks" in prompt
+    assert "only when partial results or insufficient evidence materially affect the answer" in prompt
+    assert "keep that limitation concise" in prompt
+
+
+def test_reader_response_prompt_does_not_infer_attention_from_nonzero_counts() -> None:
+    prompt = DSHService._runtime_system_prompt("admin_portal_reader", "en", "", "")
+
+    assert "nonzero task-category count is workload information" in prompt
+    assert "not evidence that the category or its tasks need attention" in prompt
+    assert "never infer attention from a nonzero count" in prompt
 
 
 def test_reader_timeout_defaults_cover_two_stage_planning_and_portal_executor() -> None:

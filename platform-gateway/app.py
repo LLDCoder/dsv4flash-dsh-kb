@@ -30,7 +30,10 @@ logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="DSH Admin Portal Reader Gateway", version="1.0.0")
 
-READER_ACTIONS = {"observe", "navigate", "query", "filter", "paginate", "switch_tab", "expand_details"}
+READER_ACTIONS = {
+    "observe", "navigate", "query", "filter", "paginate", "switch_tab", "expand_details",
+    "show_filter", "apply_filter", "reset_filter", "sort", "show_detail", "dismiss_overlay",
+}
 READER_FORBIDDEN_TERMS = {
     "approve", "approval", "reject", "submit", "modify", "update", "edit", "delete",
     "remove", "assign", "send", "export", "upload", "download", "create", "write", "save",
@@ -108,6 +111,8 @@ READER_FAILURE_STATE_SELECTOR = (
     "[role='alert'],[aria-busy='true'],.ant-spin-spinning,"
     "[class*='loading'],[class*='error'],[class*='unauthorized'],[class*='forbidden']"
 )
+READER_OVERLAY_SELECTOR = "[role='dialog'],[role='alertdialog'],.ant-drawer-content"
+READER_OVERLAY_ACTIONS = frozenset({"apply_filter", "reset_filter", "dismiss_overlay"})
 
 
 class PortalReadAction(BaseModel):
@@ -124,6 +129,8 @@ class PortalReadAction(BaseModel):
     empty_state: str | None = Field(default=None, alias="emptyState", max_length=300)
     permission_code: str | None = Field(default=None, alias="permissionCode", max_length=200)
     value: str | None = Field(default=None, max_length=1_000)
+    values: list[str] = Field(default_factory=list, max_length=20)
+    direction: str | None = Field(default=None, max_length=20)
     method: str = "GET"
     parameters: dict[str, Any] = Field(default_factory=dict)
     filters: dict[str, Any] = Field(default_factory=dict)
@@ -464,14 +471,24 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
             raise HTTPException(status_code=422, detail={"code": "action_not_read_only"})
         if action.method.strip().upper() != "GET":
             raise HTTPException(status_code=422, detail={"code": "method_not_read_only"})
-        for candidate in (
-            action.type, action.label, action.selector, action.role, action.name,
-            action.field, action.section, action.permission_code,
-            *action.parameters.keys(), *action.filters.keys(),
+        for field_name, candidate in (
+            ("type", action.type), ("label", action.label), ("selector", action.selector),
+            ("role", action.role), ("name", action.name), ("field", action.field),
+            ("section", action.section), ("permission", action.permission_code),
+            *(("parameter", key) for key in action.parameters),
+            *(("filter", key) for key in action.filters),
         ):
-            if _reader_contains_forbidden(candidate):
+            dismiss_label = (
+                action_type == "dismiss_overlay"
+                and field_name in {"label", "name"}
+                and _reader_compact(candidate) in {"close", "dismiss"}
+            )
+            if _reader_contains_forbidden(candidate) and not dismiss_label:
                 raise HTTPException(status_code=422, detail={"code": "action_not_read_only"})
-        if action_type in {"query", "filter", "paginate", "switch_tab", "expand_details"}:
+        if action_type in {
+            "query", "filter", "paginate", "switch_tab", "expand_details", "show_filter",
+            "apply_filter", "reset_filter", "sort", "show_detail", "dismiss_overlay",
+        }:
             if action.selector:
                 _validate_reader_selector(action.selector)
             elif not any((action.role, action.field, action.section)):
@@ -483,7 +500,14 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
             for candidate in (action.selector, action.label, action.name, action.field, action.section)
         ):
             raise HTTPException(status_code=422, detail={"code": "reader_sensitive_locator_forbidden"})
-        if action_type in {"paginate", "switch_tab", "expand_details"} and (not action.role or not (action.name or action.label)):
+        if action_type == "filter" and action.value is None and not action.values:
+            raise HTTPException(status_code=422, detail={"code": "reader_filter_value_required"})
+        if any(not str(value).strip() or len(str(value)) > 1_000 for value in action.values):
+            raise HTTPException(status_code=422, detail={"code": "reader_filter_value_invalid"})
+        if action_type in {
+            "paginate", "switch_tab", "expand_details", "show_filter", "apply_filter",
+            "reset_filter", "sort", "show_detail", "dismiss_overlay",
+        } and (not action.role or not (action.name or action.label)):
             raise HTTPException(status_code=422, detail={"code": "reader_click_semantics_required"})
         if action_type == "switch_tab" and action.role != "tab":
             raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_tab"})
@@ -491,7 +515,19 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
             raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_pagination"})
         if action_type == "expand_details" and action.role != "button":
             raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_expandable"})
-        if action_type == "expand_details" and not action.permission_code:
+        if action_type == "show_filter" and action.role != "button":
+            raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_filter"})
+        if action_type in {"apply_filter", "reset_filter", "dismiss_overlay"} and action.role != "button":
+            raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_overlay_button"})
+        if action_type == "sort" and action.role not in {"button", "columnheader"}:
+            raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_sort"})
+        if action_type == "sort" and str(action.direction or "").casefold() not in {"ascending", "descending"}:
+            raise HTTPException(status_code=422, detail={"code": "reader_sort_direction_required"})
+        if action_type == "show_detail" and action.role not in {"button", "link"}:
+            raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_detail"})
+        if action_type == "show_detail" and not str(action.value or "").strip():
+            raise HTTPException(status_code=422, detail={"code": "reader_detail_identity_required"})
+        if action_type in {"expand_details", "show_detail"} and not action.permission_code:
             raise HTTPException(status_code=422, detail={"code": "button_permission_required"})
         for candidate in (action.path, action.url):
             if candidate is None:
@@ -559,7 +595,8 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
             ],
         )
     )
-    if _reader_contains_forbidden(descriptor):
+    dismiss_descriptor = action_type == "dismiss_overlay" and _reader_compact(descriptor) in {"close", "dismiss"}
+    if _reader_contains_forbidden(descriptor) and not dismiss_descriptor:
         raise RuntimeError("action_not_read_only")
     if not descriptor.strip():
         raise RuntimeError("reader_click_target_unverifiable")
@@ -568,7 +605,7 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
         raise RuntimeError("reader_click_descriptor_mismatch")
     explicit_role = (await locator.get_attribute("role") or "").casefold()
     tag_name = str(await locator.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
-    role = explicit_role or {"button": "button", "a": "link"}.get(tag_name, "")
+    role = explicit_role or {"button": "button", "a": "link", "th": "columnheader"}.get(tag_name, "")
     if role != str(action.role or "").casefold():
         raise RuntimeError("reader_click_role_mismatch")
     rel = (await locator.get_attribute("rel") or "").casefold()
@@ -580,19 +617,77 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
     if action_type == "expand_details" and aria_expanded not in {"true", "false"}:
         raise RuntimeError("reader_click_target_not_expandable")
     await locator.click(timeout=5_000)
+    if action_type == "switch_tab" and await locator.get_attribute("aria-selected") != "true":
+        raise RuntimeError("reader_tab_state_not_confirmed")
+    if action_type == "sort" and str(await locator.get_attribute("aria-sort") or "").casefold() != str(action.direction).casefold():
+        raise RuntimeError("reader_sort_state_not_confirmed")
 
 
-def _semantic_locator(page: Page, action: PortalReadAction):
+def _visible_overlay(page: Page):
+    return page.locator(
+        "[role='dialog']:visible,[role='alertdialog']:visible,.ant-drawer-content:visible"
+    ).last
+
+
+async def _visible_overlay_count(page: Page) -> int:
+    return await page.locator(
+        "[role='dialog']:visible,[role='alertdialog']:visible,.ant-drawer-content:visible"
+    ).count()
+
+
+def _semantic_locator(page: Page, action: PortalReadAction, *, prefer_overlay: bool = False):
+    action_type = action.type.strip().casefold().replace("-", "_")
+    root = _visible_overlay(page) if prefer_overlay or action_type in READER_OVERLAY_ACTIONS else page
     if action.selector:
-        return page.locator(action.selector)
+        return root.locator(action.selector)
     if action.field:
-        return page.get_by_label(action.field, exact=True)
+        return root.get_by_label(action.field, exact=True)
     if action.role:
-        root = page.get_by_role("region", name=action.section, exact=True) if action.section else page
-        return root.get_by_role(action.role, name=action.name or action.label, exact=True)
+        semantic_root = root.get_by_role("region", name=action.section, exact=True) if action.section else root
+        return semantic_root.get_by_role(action.role, name=action.name or action.label, exact=True)
     if action.section:
-        return page.get_by_role("region", name=action.section, exact=True)
+        return root.get_by_role("region", name=action.section, exact=True)
     raise RuntimeError("reader_semantic_locator_required")
+
+
+async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
+    locator = _semantic_locator(page, action, prefer_overlay=await _visible_overlay_count(page) > 0).first
+    if await locator.count() == 0:
+        raise RuntimeError("reader_selector_not_found")
+    tag_name = str(await locator.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
+    role = str(await locator.get_attribute("role") or "").casefold()
+    input_type = str(await locator.get_attribute("type") or "").casefold()
+    if input_type == "password":
+        raise RuntimeError("reader_sensitive_locator_forbidden")
+    values = action.values or ([action.value] if action.value is not None else [])
+    value = str(values[0]) if values else ""
+    if tag_name == "select":
+        await locator.select_option(label=[str(item) for item in values], timeout=5_000)
+        return
+    if role == "combobox" and tag_name not in {"input", "textarea"}:
+        await locator.click(timeout=5_000)
+        for item in values:
+            option = page.get_by_role("option", name=str(item), exact=True).first
+            if await option.count() == 0 or not await option.is_visible():
+                raise RuntimeError("reader_filter_option_not_found")
+            if _reader_contains_forbidden(await option.inner_text()):
+                raise RuntimeError("action_not_read_only")
+            await option.click(timeout=5_000)
+        return
+    if len(values) != 1:
+        raise RuntimeError("reader_filter_control_not_multiselect")
+    if tag_name not in {"input", "textarea"}:
+        raise RuntimeError("reader_filter_control_unsupported")
+    await locator.fill(value, timeout=5_000)
+
+
+async def _detail_identity_is_visible(page: Page, identity: str, *, overlay_open: bool) -> bool:
+    root = _visible_overlay(page) if overlay_open else page
+    locator = root.get_by_text(identity, exact=True)
+    for index in range(await locator.count()):
+        if await locator.nth(index).is_visible():
+            return True
+    return False
 
 
 async def _settle_page(page: Page) -> None:
@@ -620,7 +715,7 @@ async def _settle_page(page: Page) -> None:
         pass
 
 
-async def _observe_semantics(page: Page, limit: int) -> dict[str, list[str]]:
+async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
     async def visible_texts(
         locator,
         *,
@@ -661,62 +756,182 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, list[str]]:
     async def texts(selector: str, *, max_each: int, max_chars: int = 200) -> list[str]:
         return await visible_texts(page.locator(selector), max_each=max_each, max_chars=max_chars)
 
-    async def first_data_rows() -> list[str]:
-        containers = page.locator("table,[role='grid']")
-        for index in range(await containers.count()):
-            container = containers.nth(index)
-            if not await container.is_visible() or await container.get_attribute("aria-busy") == "true":
+    async def table_values(container, *, row_limit: int) -> tuple[list[str], list[str], str]:
+        tag_name = str(await container.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
+        headers = container.locator("thead th,[role='columnheader']")
+        header_values: list[str] = []
+        action_column_indexes: set[int] = set()
+        for header_index in range(await headers.count()):
+            header = headers.nth(header_index)
+            if not await header.is_visible():
                 continue
-            tag_name = str(await container.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
-            headers = container.locator("thead th,[role='columnheader']")
-            action_column_indexes: set[int] = set()
-            for header_index in range(await headers.count()):
-                header = headers.nth(header_index)
-                if not await header.is_visible():
-                    continue
-                header_text = _sanitize_reader_text(await header.inner_text(), max_chars=120)
-                if re.sub(r"[^a-z]", "", header_text.casefold()) in {"action", "actions"}:
-                    action_column_indexes.add(header_index)
-            row_selector = (
-                "tbody > tr:has(> td):not(.ant-table-placeholder):not([class*='skeleton']):not(:has([class*='skeleton']))"
-                if tag_name == "table"
-                else "[role='row']:has([role='cell'],[role='gridcell']):not([class*='skeleton']):not(:has([class*='skeleton']))"
-            )
-            row_locator = container.locator(row_selector)
-            rows: list[str] = []
-            for row_index in range(await row_locator.count()):
-                row = row_locator.nth(row_index)
-                if not await row.is_visible():
-                    continue
-                if action_column_indexes:
-                    cells = row.locator(":scope > td,:scope > [role='cell'],:scope > [role='gridcell']")
-                    parts: list[str] = []
-                    for cell_index in range(await cells.count()):
-                        if cell_index in action_column_indexes:
-                            continue
-                        cell = cells.nth(cell_index)
-                        if cell_index >= 50 or not await cell.is_visible():
-                            continue
-                        cell_text = _sanitize_reader_text(await cell.inner_text(), max_chars=300)
-                        if cell_text:
-                            parts.append(cell_text)
-                    value = _sanitize_reader_text(" ".join(parts), max_chars=400)
-                else:
-                    value = _sanitize_reader_text(await row.inner_text(), max_chars=400)
-                normalized = value.casefold()
-                if (
-                    not value
-                    or any(marker in normalized for marker in ("no data", "no records", "no results", "nothing found", "暂无数据", "暂无记录", "没有数据"))
-                    or normalized in {"loading", "loading...", "please wait", "please wait..."}
-                ):
-                    continue
-                if value not in rows:
-                    rows.append(value)
-                if len(rows) >= min(limit, 8):
-                    break
-            if rows:
-                return rows
-        return []
+            header_text = _sanitize_reader_text(await header.inner_text(), max_chars=120)
+            if re.sub(r"[^a-z]", "", header_text.casefold()) in {"action", "actions"}:
+                action_column_indexes.add(header_index)
+            elif header_text and header_text not in header_values:
+                header_values.append(header_text)
+        row_selector = (
+            "tbody > tr:has(> td):not(.ant-table-placeholder):not([class*='skeleton']):not(:has([class*='skeleton']))"
+            if tag_name == "table"
+            else "[role='row']:has([role='cell'],[role='gridcell']):not([class*='skeleton']):not(:has([class*='skeleton']))"
+        )
+        row_locator = container.locator(row_selector)
+        rows: list[str] = []
+        for row_index in range(await row_locator.count()):
+            row = row_locator.nth(row_index)
+            if not await row.is_visible():
+                continue
+            if action_column_indexes:
+                cells = row.locator(":scope > td,:scope > [role='cell'],:scope > [role='gridcell']")
+                parts: list[str] = []
+                for cell_index in range(await cells.count()):
+                    if cell_index in action_column_indexes:
+                        continue
+                    cell = cells.nth(cell_index)
+                    if cell_index >= 50 or not await cell.is_visible():
+                        continue
+                    cell_text = _sanitize_reader_text(await cell.inner_text(), max_chars=300)
+                    if cell_text:
+                        parts.append(cell_text)
+                value = _sanitize_reader_text(" ".join(parts), max_chars=400)
+            else:
+                value = _sanitize_reader_text(await row.inner_text(), max_chars=400)
+            normalized = value.casefold()
+            if (
+                not value
+                or any(marker in normalized for marker in ("no data", "no records", "no results", "nothing found", "暂无数据", "暂无记录", "没有数据"))
+                or normalized in {"loading", "loading...", "please wait", "please wait..."}
+            ):
+                continue
+            if value not in rows:
+                rows.append(value)
+            if len(rows) >= row_limit:
+                break
+        empty_values = await visible_texts(
+            container.locator(".ant-empty-description,[role='status']"),
+            max_each=2,
+            max_chars=200,
+        )
+        empty_state = next(
+            (
+                value for value in empty_values
+                if any(marker in value.casefold() for marker in (
+                    "no data", "no records", "no results", "nothing found", "暂无数据", "暂无记录", "没有数据",
+                ))
+            ),
+            "",
+        )
+        return header_values[:20], rows, empty_state
+
+    containers = page.locator("table,[role='grid']")
+    section_summaries: list[dict[str, Any]] = []
+    first_rows: list[str] = []
+    for index in range(await containers.count()):
+        container = containers.nth(index)
+        if not await container.is_visible() or await container.get_attribute("aria-busy") == "true":
+            continue
+        headers, rows, empty_state = await table_values(
+            container,
+            row_limit=min(limit, 8) if not first_rows else min(limit, 4),
+        )
+        if not rows and not empty_state:
+            continue
+        if not first_rows:
+            first_rows = rows
+        heading = _sanitize_reader_text(
+            await container.evaluate(
+                """element => {
+                    const visible = node => !!(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+                    const overlay = element.closest('[role="dialog"],[role="alertdialog"],.ant-drawer-content');
+                    const semanticRoot = element.closest('section,[role="region"]');
+                    const localRoot = semanticRoot || overlay;
+                    const localHeadings = localRoot
+                        ? Array.from(localRoot.querySelectorAll('h1,h2,h3,[role="heading"]'))
+                            .filter(node => visible(node) && (node.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING))
+                        : [];
+                    const heading = localHeadings && localHeadings.pop();
+                    if (heading && heading.innerText.trim()) return heading.innerText.trim();
+                    const label = semanticRoot && semanticRoot.getAttribute('aria-label');
+                    if (label && !/^(?:scrollable content|content|main)$/i.test(label.trim())) return label;
+                    const root = overlay || document.body;
+                    const precedingHeadings = Array.from(root.querySelectorAll('h1,h2,h3,[role="heading"]'))
+                        .filter(node => visible(node) && (node.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING));
+                    const precedingHeading = precedingHeadings.pop();
+                    if (precedingHeading && precedingHeading.innerText.trim()) return precedingHeading.innerText.trim();
+                    return '';
+                }"""
+            ),
+            max_chars=200,
+        )
+        section_summaries.append({
+            "heading": heading,
+            "sourceSection": heading,
+            "columnHeaders": headers[:12],
+            "rowSummaries": rows[:4],
+            "emptyState": empty_state,
+        })
+        if len(section_summaries) >= 4:
+            break
+
+    region_summaries: list[dict[str, Any]] = []
+    semantic_sections = page.locator("section")
+    for index in range(await semantic_sections.count()):
+        section = semantic_sections.nth(index)
+        if not await section.is_visible():
+            continue
+        headings = await visible_texts(
+            section.locator("h1,h2,h3,[role='heading']"),
+            max_each=1,
+            max_chars=200,
+        )
+        if not headings:
+            continue
+        controls = await visible_texts(
+            section.locator("[role='tab'],[role='button'],button[aria-label],a[aria-label]"),
+            max_each=min(limit, 12),
+            max_chars=200,
+        )
+        selected_states = await visible_texts(
+            section.locator("[role='tab'][aria-selected='true']"),
+            max_each=1,
+            max_chars=200,
+        )
+        card_summaries = await visible_texts(
+            section.locator(".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))"),
+            max_each=min(limit, 12),
+            max_chars=200,
+            reject_error_states=True,
+        )
+        empty_values = await visible_texts(
+            section.locator(".ant-empty-description,[role='status']"),
+            max_each=2,
+            max_chars=200,
+        )
+        empty_state = next(
+            (
+                value for value in empty_values
+                if any(marker in value.casefold() for marker in (
+                    "no data", "no records", "no results", "nothing found", "暂无数据", "暂无记录", "没有数据",
+                ))
+            ),
+            "",
+        )
+        if not controls and not card_summaries and not empty_state:
+            continue
+        region_summary: dict[str, Any] = {
+            "heading": headings[0],
+            "sourceSection": headings[0],
+            "controls": controls,
+            "emptyState": empty_state,
+        }
+        if selected_states:
+            region_summary["selectedState"] = selected_states[0]
+        if card_summaries:
+            region_summary["cardSummaries"] = card_summaries
+            region_summary["summaries"] = card_summaries
+        region_summaries.append(region_summary)
+        if len(region_summaries) >= 8:
+            break
 
     return {
         "headings": await texts("h1,h2,h3,[role='heading']", max_each=min(limit, 12)),
@@ -730,12 +945,15 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, list[str]]:
             max_chars=200,
             reject_error_states=True,
         ),
-        "rowSummaries": await first_data_rows(),
+        "rowSummaries": first_rows,
+        "sectionSummaries": section_summaries,
+        "regionSummaries": region_summaries,
+        "dialogs": await texts(READER_OVERLAY_SELECTOR, max_each=min(limit, 4), max_chars=800),
     }
 
 
 async def _query_page_values(page: Page, action: PortalReadAction, limit: int) -> tuple[str, list[str], bool]:
-    locator = _semantic_locator(page, action)
+    locator = _semantic_locator(page, action, prefer_overlay=await _visible_overlay_count(page) > 0)
     label = _sanitize_reader_text(action.label or action.field or action.name or "result", max_chars=120)
     max_values = max(0, limit)
     if max_values == 0:
@@ -785,12 +1003,12 @@ async def _execute_reader_actions(
     page: Page,
     request: AdminPortalReadRequest,
     portal_origin: str,
-) -> tuple[list[str], list[str], list[str], bool, dict[str, list[str]] | None]:
+) -> tuple[list[str], list[str], list[str], bool, dict[str, Any] | None]:
     facts: list[str] = []
     visited: list[str] = []
     observed_fields: list[str] = []
     confirmed_empty = False
-    observation: dict[str, list[str]] | None = None
+    observation: dict[str, Any] | None = None
     declared_paths = {request.start_path}
     declared_paths.update(
         path
@@ -826,7 +1044,7 @@ async def _execute_reader_actions(
                 await _settle_page(page)
                 await record_page()
         elif action_type == "filter":
-            await _semantic_locator(page, action).first.fill(action.value or "", timeout=5_000)
+            await _set_filter_value(page, action)
             await _settle_page(page)
         elif action_type == "query":
             label, values, query_confirmed_empty = await _query_page_values(
@@ -841,11 +1059,33 @@ async def _execute_reader_actions(
             if values:
                 facts.extend(f"{label}: {value}"[:500] for value in values)
         else:
+            before_url = page.url
+            overlays_before = await _visible_overlay_count(page)
             await _safe_click(page, action)
             await _settle_page(page)
             await record_page()
+            overlays_after = await _visible_overlay_count(page)
+            if action_type == "show_filter" and overlays_after <= overlays_before:
+                raise RuntimeError("reader_filter_overlay_not_opened")
+            if action_type == "show_detail" and page.url == before_url and overlays_after <= overlays_before:
+                raise RuntimeError("reader_detail_not_opened")
+            if action_type == "show_detail" and not await _detail_identity_is_visible(
+                page,
+                str(action.value),
+                overlay_open=overlays_after > overlays_before,
+            ):
+                raise RuntimeError("reader_detail_identity_mismatch")
+            if action_type == "dismiss_overlay" and overlays_after >= overlays_before:
+                raise RuntimeError("reader_overlay_not_dismissed")
         if len(facts) >= request.max_output_items:
             break
+    if observation is None and any(
+        action.type.strip().casefold().replace("-", "_") != "query"
+        for action in request.actions
+    ):
+        # Capture the bounded semantic state after a verified read-only
+        # interaction so callers can validate the resulting tab, page, or view.
+        observation = await _observe_semantics(page, request.max_output_items)
     return facts[: request.max_output_items], visited[: request.max_pages], observed_fields, confirmed_empty, observation
 
 
@@ -880,14 +1120,16 @@ async def admin_portal_read(
             if path and not _path_is_permitted(path, (*permission_context["pages"], *permission_context["subpages"])):
                 raise HTTPException(status_code=403, detail={"code": "page_not_permitted"})
         action_type = action.type.strip().casefold().replace("-", "_")
-        if action_type == "expand_details" and (not action.permission_code or not _gateway_button_permitted(action, permission_context["buttons"])):
+        if action_type in {"expand_details", "show_detail"} and (
+            not action.permission_code or not _gateway_button_permitted(action, permission_context["buttons"])
+        ):
             raise HTTPException(status_code=403, detail={"code": "button_not_permitted"})
 
     portal_parts = urlsplit(UMC_BASE_URL)
     portal_origin = f"{portal_parts.scheme}://{portal_parts.netloc}"
     raw_token = forwarded[7:].strip()
 
-    async def execute() -> tuple[list[str], list[str], list[str], bool, dict[str, list[str]] | None]:
+    async def execute() -> tuple[list[str], list[str], list[str], bool, dict[str, Any] | None]:
         if async_playwright is None:
             raise RuntimeError("reader_browser_unavailable")
         async with async_playwright() as playwright:
