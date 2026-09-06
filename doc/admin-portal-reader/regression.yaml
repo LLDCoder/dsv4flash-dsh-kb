@@ -9,6 +9,36 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-conditional-intent-before-retrieval
+    expect:
+      order: [get_user_info, resolve_intent, knowledge_search, plan, read]
+      first_turn_resolver_call: unnecessary
+      current_state_replaces_incompatible_previous_state: true
+      explicit_broader_object_clears_previous_record_view_filter: true
+      prior_page_as_scope_constraint: forbidden
+      requested_scope_grants_permissions: false
+      inherited_live_list_answered_from_manual_only: forbidden
+      resolver_failure_restores_older_scope: forbidden
+
+  - id: reader-material-scope-clarification
+    questions:
+      - Are there any appeals that need to be processed now?
+      - What tasks shoud I pay attention?
+      - Tasks across categories.
+    expect:
+      unresolved_material_scope: concise_clarification_not_generic_inability
+      clarification_reads_pages: false
+      explicit_answer_resolves_options: true
+      cleared_history_reappears_after_failure: false
+
+  - id: reader-current-intent-completion
+    expect:
+      mismatched_completion: one_bounded_semantic_review
+      relabel_ordinary_list_as_attention: forbidden
+      ordinary_closed_rows_as_attention_fallback: forbidden
+      explicit_attention_section_fallback: allowed
+      audit_status_matches_final_result: true
+
   - id: reader-network-whitelist-toggle
     expect:
       absent_env: whitelist_enabled
@@ -49,7 +79,7 @@ cases:
   - id: reader-business-followup-turn-boundaries
     expect:
       recent_context_window: at_most_three_user_turns_not_three_events
-      failed_intermediate_turn_preserves_prior_intent_chain: true
+      failed_intermediate_turn_preserves_only_compatible_resolved_intent: true
       record_reference_requires_fresh_read: true
       unrelated_topic_record_inheritance: forbidden
       current_question_language_wins: true

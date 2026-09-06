@@ -18,6 +18,7 @@ from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
 from .portal_reader import AdminPortalReader, ReaderTimeoutBudget, bounded_json, reader_answer_shape
+from .reader_intent import format_clarification_options
 from .principal import Principal
 from .reader_limits import (
     MAX_PLATFORM_TIMEOUT_SECONDS,
@@ -53,6 +54,17 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str) 
 
     facts = [fact.strip() for fact in reader_result.get("facts", []) if isinstance(fact, str) and fact.strip()] if isinstance(reader_result.get("facts"), list) else []
     status = str(reader_result.get("result") or "")
+    intent = reader_result.get("intentContext")
+    options = reader_result.get("clarificationOptions")
+    if (
+        status == "not_confirmed" and not facts and reader_result.get("missing") == ["intent_ambiguous"]
+        and isinstance(intent, dict) and intent.get("relation") == "clarify"
+        and options == intent.get("clarificationOptions")
+    ):
+        try:
+            return format_clarification_options(options, language)
+        except ValueError:
+            pass
     messages = {
         "ar": {
             "not_confirmed": "تعذر تأكيد المعلومات المطلوبة.",
@@ -130,6 +142,28 @@ def _reader_semantic_anchors(result: dict[str, Any]) -> dict[str, Any]:
     return anchors
 
 
+def _reader_requested_single_record(question: str) -> bool:
+    """Recognize explicit single-item selection, not a merely one-row observation."""
+
+    english = re.search(
+        r"(?i)\b(?:give|show|find|pick|select|choose|provide|return|get|list)\s+"
+        r"(?:(?:me|us)\s+)?(?:one|a\s+single|an?\s+example|a\s+sample)\b"
+        r"(?!\s+(?:second|minute|hour|day|week|month|year)s?\b)",
+        question,
+    )
+    chinese = re.search(
+        r"(?:给我|给出|提供|展示|显示|找出|查找|选择|选取|列出|举)(?:一个|一条|一笔|一项|个例子|个示例)"
+        r"(?!月|星期|季度)", question,
+    )
+    arabic = re.search(
+        r"(?:أعطني|اعطني|أعطيني|اعرض|أظهر|اظهر|اختر|هات)\s+[^.!?؟،\n]{0,60}"
+        r"(?:\bواحد(?:ة|ا|ًا)?\b|\bمثال(?:ا|اً)?\b)", question,
+    )
+    if arabic and re.search(r"(?:يوم|أسبوع|اسبوع|شهر|سنة|عام|ساعة|دقيقة)\s+واحد(?:ة|ا|ًا)?", arabic.group(0)):
+        arabic = None
+    return bool(english or chinese or arabic)
+
+
 def _reader_conversation_context(
     history: list[SessionEvent],
     latest_user: SessionEvent | None,
@@ -162,6 +196,49 @@ def _reader_conversation_context(
         ),
         {},
     )
+    missing = previous_result.get("missing")
+    if isinstance(missing, (list, tuple)) and any(
+        marker in missing for marker in ("intent_resolution_invalid", "intent_resolution_timeout")
+    ):
+        # A failed semantic decision does not authorize restoring older targets.
+        # Keep the request itself available for a retry or clarification only.
+        return {"previousIntent": {
+            "question": previous_question[:500],
+            "resultStatus": DSHService._redact_audit_string(str(previous_result.get("result") or ""))[:32],
+        }}
+    if isinstance(previous_result.get("intentContext"), dict):
+        # An explicitly cleared condition is a boundary: never resurrect it by
+        # searching older results after a failed read or clarification turn.
+        resolved = bounded_json(previous_result["intentContext"], max_depth=4, max_items=10, max_string=500)
+        current: dict[str, Any] = {
+            "question": previous_question,
+            "resultStatus": str(previous_result.get("result") or "")[:32],
+            "intentContext": resolved,
+        }
+        slots = resolved.get("slots", {})
+        for key in ("businessObject", "recordIdentity", "view", "dateRange", "filter", "requestedScope", "answerShape"):
+            slot = slots.get(key, {}) if isinstance(slots, dict) else {}
+            if isinstance(slot, dict) and slot.get("source") != "clear" and isinstance(slot.get("value"), str):
+                current[key] = DSHService._redact_audit_string(slot["value"])[:300]
+        facts = previous_result.get("facts")
+        focused_detail = current.get("answerShape") == "detail" and previous_result.get("answerShape") == "detail"
+        explicit_single_list = (
+            current.get("answerShape") == "list" and previous_result.get("answerShape") == "list"
+            and _reader_requested_single_record(previous_question)
+        )
+        if (
+            "recordIdentity" not in current and previous_result.get("result") == "success"
+            and (focused_detail or explicit_single_list)
+            and isinstance(facts, list) and len(facts) == 1 and isinstance(facts[0], str) and facts[0].strip()
+        ):
+            # An explicitly requested single-record result can establish a new identity;
+            # broad/list results must not silently narrow to their first record.
+            identity = _reader_semantic_anchors(previous_result).get("recordIdentity")
+            if identity:
+                current["recordIdentity"] = identity
+        if isinstance(previous_result.get("clarificationOptions"), list):
+            current["clarificationOptions"] = previous_result["clarificationOptions"][:2]
+        return {"previousIntent": current}
     # If the immediately preceding turn failed before producing a useful
     # object/identity anchor, recover the nearest earlier bounded result. This
     # keeps a failed list/detail attempt from erasing the prior target while

@@ -21,8 +21,8 @@ admin_portal_reader:
     - admin.portal.read
   execution_order:
     - get_user_info
+    - resolve_conditional_follow_up_intent_before_retrieval
     - retrieve_relevant_manual
-    - resolve_question_and_follow_up_shape
     - plan_bounded_page_read
     - read_authorized_pages
     - reduce_to_relevant_facts
@@ -81,6 +81,17 @@ conversation_context_contract:
   purpose: Preserve the minimum prior-turn meaning needed to resolve an elliptical follow-up without passing the full conversation to the Reader.
   answer_shape:
     enum: [overview, count, list, attention, due, detail, unspecified]
+  resolved_intent:
+    relations: [continue, refine, switch, broaden, clarify]
+    slots: [businessObject, recordIdentity, view, dateRange, filter, requestedScope, answerShape]
+    per_slot_sources: [current, previous, clear]
+    source_evidence: bounded_exact_text_from_current_question_or_previous_semantic_anchors
+    authority: intent_only_never_permissions_or_live_facts
+    max_resolution_seconds: 20
+    total_reader_budget: unchanged
+    syntax_and_schema_attempts: 2
+    completion_review_attempts: 1
+    clarification_options: exactly_two_plain_scope_labels_only_when_materially_ambiguous
   allowed_fields:
     - prior_question
     - answer_shape
@@ -93,13 +104,18 @@ conversation_context_contract:
   requirements:
     - The current question remains authoritative; context may fill an omitted answer shape or category but must not override an explicit current request.
     - Context is bounded, sanitized, and derived only from the immediately relevant prior user question and Reader result.
-    - The same context is supplied to knowledge retrieval and every planning pass in the turn.
+    - After resolution, only resolved conditions enter retrieval and every planning pass; raw history and prior page restrictions do not. The two actual clarification labels may accompany a resolved selection to interpret an ordinal, never as filters or permissions.
+    - Planning uses a canonical resolved task while retaining originalQuestion for literal constraints; it must not reinterpret a resolved ordinal as missing history.
     - Page and section come from a prior verified Reader result, never from an assistant claim alone.
     - Context contains no full transcript, page payload, record table, identity credential, cookie, token, or hidden field.
     - Answer-shape continuity is generic and must not introduce module-specific runtime routing.
     - At most three recent user-turn boundaries may contribute intent metadata; event count is not a turn boundary.
     - A bounded record identifier from an observed list or detail is a reference for a fresh lookup, not proof that prior status or ownership remains current.
-    - A failed follow-up must not erase the earlier business object; unrelated prior records must not be merged into a new topic.
+    - A failed page read retains resolved noncleared intent; explicitly cleared slots and resolver-failure boundaries must not resurrect older anchors.
+    - A successful single-fact detail or explicitly requested one-record list may establish a newly observed identity; a broad list never selects its first record implicitly.
+    - Elliptical requests for live lists or records still require a fresh read; a manual definition is not a substitute.
+    - Current answer shape must be satisfied, not copied onto an ordinary result; deterministic attention fallback requires an observed attention or action-review section.
+    - Clarification returns not_confirmed with intent_ambiguous and guarded localized alternatives; it performs no knowledge or page query.
 
 business_answer_quality:
   knowledge_projection:

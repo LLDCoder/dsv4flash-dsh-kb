@@ -169,7 +169,7 @@ def test_generic_answer_shape_is_added_to_retrieval_and_inherited_for_follow_up(
     assert knowledge_search_query("How about enquiries?", context, follow_up).startswith(
         "Admin Portal work page user manual"
     )
-    assert "Continue within the current Admin Portal page" in knowledge_search_query(
+    assert "Previous page is a candidate source, not a scope constraint" in knowledge_search_query(
         "How about enquiries?", context, follow_up
     )
 

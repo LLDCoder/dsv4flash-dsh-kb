@@ -23,6 +23,7 @@ from urllib.parse import unquote, urlsplit
 import httpx
 
 from .principal import Principal
+from .reader_intent import parse_intent_resolution
 from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOUT_SECONDS, bounded_reader_total_timeout
 
 
@@ -238,6 +239,8 @@ class ReaderResult:
     facts: tuple[str, ...] = ()
     workflow_state: str = ""
     missing: tuple[str, ...] = ()
+    intent_context: dict[str, Any] = field(default_factory=dict)
+    clarification_options: tuple[str, ...] = ()
 
     def public_json(self) -> dict[str, Any]:
         result = {
@@ -253,6 +256,12 @@ class ReaderResult:
             "workflowState": _sanitize_untrusted_text(self.workflow_state, max_length=500),
             "missing": [_sanitize_untrusted_text(item, max_length=200) for item in self.missing[:10]],
         }
+        if self.intent_context:
+            result["intentContext"] = bounded_json(self.intent_context, max_depth=4, max_items=10, max_string=500)
+        if self.clarification_options:
+            result["clarificationOptions"] = [
+                _sanitize_untrusted_text(option, max_length=120) for option in self.clarification_options[:2]
+            ]
         while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000 and result["facts"]:
             result["facts"].pop()
         while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000 and result["missing"]:
@@ -260,6 +269,8 @@ class ReaderResult:
         for field_name in ("workflowState", "selectedState", "sourceSection", "section", "page"):
             while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000 and result[field_name]:
                 result[field_name] = result[field_name][: max(0, len(result[field_name]) // 2)]
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000:
+            result.pop("intentContext", None)
         return result
 
 
@@ -493,7 +504,15 @@ def permission_audit_summary(context: UserPermissionContext) -> dict[str, Any]:
 def _bounded_conversation_context(value: Any) -> dict[str, Any]:
     """Keep only non-authoritative continuity metadata needed by the Reader."""
 
-    if not isinstance(value, dict) or not isinstance(value.get("previousIntent"), dict):
+    if not isinstance(value, dict):
+        return {}
+    if isinstance(value.get("resolvedIntent"), dict):
+        resolved_context = {"resolvedIntent": bounded_json(value["resolvedIntent"], max_depth=4, max_items=10, max_string=500)}
+        options = value.get("resolvedChoiceOptions")
+        if isinstance(options, list) and len(options) == 2 and all(isinstance(option, str) for option in options):
+            resolved_context["resolvedChoiceOptions"] = [_sanitize_untrusted_text(option, max_length=120) for option in options]
+        return resolved_context
+    if not isinstance(value.get("previousIntent"), dict):
         return {}
     previous = value["previousIntent"]
     limits = {
@@ -510,6 +529,7 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
         "sourceSection": 200,
         "selectedState": 200,
         "scope": 40,
+        "requestedScope": 40,
         "resultStatus": 40,
         "workflowState": 300,
     }
@@ -523,7 +543,24 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
             if isinstance(value, (dict, list, tuple))
             else _sanitize_untrusted_text(value, max_length=max_length)
         )
+    if isinstance(previous.get("intentContext"), dict):
+        bounded["intentContext"] = bounded_json(previous["intentContext"], max_depth=4, max_items=10, max_string=500)
+    if isinstance(previous.get("clarificationOptions"), list):
+        bounded["clarificationOptions"] = [
+            _sanitize_untrusted_text(option, max_length=120)
+            for option in previous["clarificationOptions"][:2] if isinstance(option, str)
+        ]
     return {"previousIntent": bounded} if any(bounded.values()) else {}
+
+
+def _resolved_intent_values(conversation_context: Any) -> dict[str, str]:
+    context = _bounded_conversation_context(conversation_context)
+    slots = context.get("resolvedIntent", {}).get("slots", {})
+    return {
+        key: str(slot.get("value") or "")
+        for key, slot in slots.items()
+        if isinstance(slot, dict) and slot.get("source") != "clear" and slot.get("value")
+    } if isinstance(slots, dict) else {}
 
 
 def reader_answer_shape(
@@ -532,6 +569,9 @@ def reader_answer_shape(
 ) -> Literal["overview", "count", "list", "attention", "due", "detail", "unspecified"]:
     """Classify a generic answer shape without selecting a business destination."""
 
+    resolved = _resolved_intent_values(conversation_context).get("answerShape")
+    if resolved in {"overview", "count", "list", "attention", "due", "detail", "unspecified"}:
+        return resolved  # type: ignore[return-value]
     normalized = re.sub(r"\s+", " ", str(question or "").casefold()).strip()
     if re.fullmatch(
         r"(?:show|display)(?: me)? my tasks?[?!.]*|(?:显示|查看)(?:一下)?我的任务[？。!！]*",
@@ -569,6 +609,15 @@ def knowledge_search_query(
 
     question_text = question.strip()[:1_200]
     bounded_context = _bounded_conversation_context(conversation_context)
+    resolved_values = _resolved_intent_values(bounded_context)
+    if bounded_context.get("resolvedIntent"):
+        parts = ["Admin Portal user manual"]
+        if context.roles:
+            parts.append("Current roles: " + ", ".join(context.roles[:4])[:160])
+        # Reserve space for every resolved condition before the original wording.
+        parts.extend(f"Current task {name}: {value[:180]}" for name, value in resolved_values.items())
+        parts.append("Original question: " + question_text)
+        return ". ".join(parts)[:2_000]
     previous = bounded_context.get("previousIntent")
     previous_page = str(previous.get("page") or "") if isinstance(previous, dict) else ""
     page_label = urlsplit(previous_page).path.rstrip("/").rsplit("/", 1)[-1].replace("-", " ").strip()
@@ -579,10 +628,7 @@ def knowledge_search_query(
     )
     parts = [manual_prefix, "Question: " + question_text]
     if previous_page:
-        parts.append(
-            "Continue within the current Admin Portal page unless the question explicitly names another page: "
-            + previous_page
-        )
+        parts.append("Previous page is a candidate source, not a scope constraint: " + previous_page)
     parts.append("Requested answer shape: " + reader_answer_shape(question, bounded_context))
     if isinstance(previous, dict):
         continuity = [
@@ -1739,6 +1785,8 @@ def _category_control_requiring_children(
     previous = _bounded_conversation_context(conversation_context).get("previousIntent")
     target_sources: tuple[Any, ...] = (
         question,
+        _resolved_intent_values(conversation_context).get("businessObject", ""),
+        _resolved_intent_values(conversation_context).get("view", ""),
         previous.get("question") if isinstance(previous, dict) else "",
         previous.get("selectedState") if isinstance(previous, dict) else "",
         previous.get("sourceSection") if isinstance(previous, dict) else "",
@@ -1954,6 +2002,15 @@ def _result_from_structured_observation(
         return None
     section = _observation_evidence_for_section(observation, section_name)
     if section is None:
+        return None
+    heading = str(section.get("heading") or "")
+    attention_heading = reader_answer_shape(heading) == "attention" or bool(re.search(
+        r"\b(?:need(?:s|ing)?|requir(?:e|es|ing))\b.{0,25}\b(?:review|action)\b|待处理|待审核|需要审核",
+        heading.casefold(),
+    ))
+    if answer_shape == "attention" and not attention_heading:
+        # Generic rows establish a list, not a business priority. Other attention
+        # evidence needs semantic evaluation by the planner, not label copying.
         return None
     rows = _bounded_observation_field(section, "rowSummaries", limit=8)
     controls = _bounded_observation_field(section, "controls", limit=20)
@@ -2538,6 +2595,9 @@ def _align_result_to_answer_shape(
 ) -> ReaderResult:
     """Attach presentation guidance without deleting already verified facts."""
 
+    if _bounded_conversation_context(conversation_context).get("resolvedIntent"):
+        # A declared current intent must be checked, not copied onto the evidence.
+        return result
     answer_shape = reader_answer_shape(question, conversation_context)
     return replace(
         result,
@@ -2576,6 +2636,7 @@ class AdminPortalReader:
     ) -> ReaderOutcome:
         trace = _ReaderQualityTrace()
         bounded_context = _bounded_conversation_context(conversation_context)
+        intent_state: dict[str, Any] = {}
         trace.record(
             "question_context",
             "passed",
@@ -2594,6 +2655,7 @@ class AdminPortalReader:
                 question,
                 conversation_context=bounded_context,
                 trace=trace,
+                intent_state=intent_state,
             )
         except Exception as exc:
             trace.record(
@@ -2603,6 +2665,14 @@ class AdminPortalReader:
                 failure_code="reader_runtime_error",
             )
             raise
+        if intent_state:
+            result = replace(outcome.result, intent_context=intent_state)
+            expected_shape = _resolved_intent_values({"resolvedIntent": intent_state}).get("answerShape")
+            if result.status in {"success", "no_data"} and expected_shape not in {None, "unspecified", result.answer_shape}:
+                result = replace(result, status="not_confirmed", facts=(), missing=("answer_intent_mismatch",))
+            outcome = ReaderOutcome(result, {
+                **outcome.audit_evidence, "intentResolution": intent_state, "result": result.public_json(),
+            })
         result_status = "passed" if outcome.result.status in {"success", "no_data"} else "failed"
         failure_code = outcome.result.missing[0] if outcome.result.missing else ""
         trace.record(
@@ -2631,10 +2701,12 @@ class AdminPortalReader:
         *,
         conversation_context: dict[str, Any] | None = None,
         trace: _ReaderQualityTrace,
+        intent_state: dict[str, Any],
     ) -> ReaderOutcome:
         budget = self.timeout_budget
         bounded_conversation_context = _bounded_conversation_context(conversation_context)
         list_selection_reviewed = False
+        intent_completion_reviewed = False
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
             if bounded_conversation_context:
@@ -2684,7 +2756,7 @@ class AdminPortalReader:
             timeout_stage: str,
             reason: str,
         ) -> dict[str, Any]:
-            nonlocal list_selection_reviewed
+            nonlocal list_selection_reviewed, intent_completion_reviewed
             started_at = time.perf_counter()
             input_summary = {
                 "reason": reason,
@@ -2729,6 +2801,26 @@ class AdminPortalReader:
                 input_summary=input_summary,
                 output_summary=plan_summary(plan),
             )
+            expected_shape = _resolved_intent_values(bounded_conversation_context).get("answerShape")
+            if (
+                not intent_completion_reviewed and expected_shape not in {None, "unspecified"}
+                and plan.get("mode") in {"observation_result", "knowledge_only"}
+                and (
+                    plan.get("result") in {"success", "no_data"} and plan.get("answerShape") != expected_shape
+                    or plan.get("result") == "not_confirmed" and bool(plan.get("facts"))
+                )
+            ):
+                intent_completion_reviewed = True
+                return await plan_stage(
+                    {**knowledge_or_observation, "planningDirective": {
+                        **knowledge_or_observation.get("planningDirective", {}),
+                        "intentCompletionReview": True,
+                        "requestedAnswerShape": expected_shape,
+                        "priorCandidate": bounded_json(plan),
+                    }},
+                    timeout_stage=timeout_stage,
+                    reason="current_intent_completion_review",
+                )
             review_context = (
                 _list_selection_review_context(plan, knowledge_or_observation)
                 if not list_selection_reviewed else None
@@ -2993,6 +3085,36 @@ class AdminPortalReader:
                 "buttonCount": len(permission_context.buttons),
             },
         )
+        resolver = getattr(self.planner, "resolve_admin_portal_intent", None)
+        if bounded_conversation_context and callable(resolver):
+            intent_started_at = time.perf_counter()
+            try:
+                candidate = await _await_reader_stage(
+                    resolver(question, bounded_conversation_context),
+                    stage="intent_resolution", cap_seconds=min(20.0, budget.planner_seconds), deadline=deadline,
+                )
+                resolution = parse_intent_resolution(candidate, question, bounded_conversation_context)
+                intent_state.update(resolution.public_json())
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
+                failure = "intent_resolution_timeout" if isinstance(exc, ReaderStageTimeout) else "intent_resolution_invalid"
+                trace.record("intent_resolution", "failed", started_at=intent_started_at, failure_code=failure)
+                return ReaderOutcome(
+                    ReaderResult(status="not_confirmed", summary="The current task scope could not be resolved.", missing=(failure,)),
+                    {"stage": "intent_resolution", "permission": permission_audit},
+                )
+            trace.record(
+                "intent_resolution", "passed", started_at=intent_started_at,
+                output_summary={"relation": intent_state["relation"], "sources": {
+                    name: slot["source"] for name, slot in intent_state["slots"].items()
+                }},
+            )
+            if intent_state["relation"] == "clarify":
+                return ReaderOutcome(
+                    ReaderResult(status="not_confirmed", summary="The requested scope needs clarification.",
+                                 missing=("intent_ambiguous",), clarification_options=tuple(intent_state["clarificationOptions"])),
+                    {"stage": "intent_clarification", "permission": permission_audit},
+                )
+            bounded_conversation_context = resolution.planner_context(bounded_conversation_context)
         knowledge_result: dict[str, Any] = {"ok": False, "code": "knowledge_not_configured"}
         knowledge_trace_recorded = False
         if self.knowledge_folder_id:
@@ -3071,7 +3193,24 @@ class AdminPortalReader:
                 },
             )
         knowledge_result_from_planner = knowledge_result_from_plan(plan)
-        needs_live_read = question_requires_live_portal(question)
+        resolved_values = _resolved_intent_values(bounded_conversation_context)
+        conceptual_request = bool(re.search(
+            r"\b(?:explain|describe|define|meaning|definition|difference|manual)\b"
+            r"|\bwhat (?:does|do)\b.*\bmean\b|\bhow (?:do i|can i|to)\b"
+            r"|解释|含义|区别|手册|是什么意思|如何|怎么使用|شرح|معنى|الفرق|كيف",
+            question.casefold(),
+        )) or any(marker in question.casefold() for marker in _DOCUMENTATION_QUESTION_MARKERS)
+        if resolved_values and conceptual_request and not any(
+            marker in question.casefold() for marker in (*_LIVE_TIME_MARKERS, "visible", "selected", "applied")
+        ) and not resolved_values.get("recordIdentity"):
+            needs_live_read = False
+        else:
+            needs_live_read = question_requires_live_portal(question) or bool(
+                resolved_values and not conceptual_request and (
+                    resolved_values.get("recordIdentity") or resolved_values.get("view")
+                    or resolved_values.get("answerShape") in {"overview", "count", "list", "attention", "due", "detail"}
+                )
+            )
         if (
             knowledge_result_from_planner is not None
             and knowledge_result_from_planner.status == "success"
