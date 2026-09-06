@@ -7,7 +7,7 @@ import pytest
 
 from app.config import Settings
 from app.llm import LLMAdapter
-from app.portal_reader import question_requires_live_portal, reader_answer_shape
+from app.portal_reader import UserPermissionContext, _bounded_conversation_context, knowledge_search_query, question_requires_live_portal, reader_answer_shape
 from app.service import _reader_conversation_context
 
 
@@ -50,6 +50,9 @@ def test_conversation_context_keeps_previous_shape_and_reader_location() -> None
             "result": "success",
             "page": "/work/items",
             "section": "Assigned work",
+            "sourceSection": "Assigned work panel",
+            "selectedState": "Open items",
+            "answerShape": "list",
             "scope": "personal",
             "workflowState": "Open",
             "facts": ["must not enter follow-up context"],
@@ -69,9 +72,29 @@ def test_conversation_context_keeps_previous_shape_and_reader_location() -> None
             "resultStatus": "success",
             "page": "/work/items",
             "section": "Assigned work",
+            "sourceSection": "Assigned work panel",
+            "selectedState": "Open items",
             "scope": "personal",
             "workflowState": "Open",
         }
+    }
+
+
+def test_reader_context_preserves_service_semantic_anchors_for_planning() -> None:
+    context = _bounded_conversation_context({"previousIntent": {
+        "businessObject": "licensing application",
+        "recordIdentity": "APP-100",
+        "view": "To Do",
+        "dateRange": {"start": "2026-09-01", "end": "2026-09-05"},
+        "filter": {"status": "Pending"},
+    }})
+
+    assert context["previousIntent"] == {
+        "businessObject": "licensing application",
+        "recordIdentity": "APP-100",
+        "view": "To Do",
+        "dateRange": {"start": "2026-09-01", "end": "2026-09-05"},
+        "filter": {"status": "Pending"},
     }
 
 
@@ -112,6 +135,93 @@ def test_conversation_context_redacts_credentials_and_does_not_copy_facts() -> N
     assert "secret-value" not in json.dumps(context)
     assert context["previousIntent"]["question"] == "List tasks; access_token=[redacted]"
     assert "facts" not in context["previousIntent"]
+
+
+def test_list_follow_up_keeps_the_previous_target_in_planner_context_without_facts(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    original_client = httpx.AsyncClient
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"mode":"portal_read","portalRequest":{}}'}}]},
+        )
+
+    def client_factory(**kwargs):
+        return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    first_user = event(1, "user.message", {"content": "How about my enquiries tasks?"})
+    first_result = event(
+        2,
+        "reader.result",
+        {
+            "result": "success",
+            "page": "/dashboard",
+            "section": "My Tasks",
+            "sourceSection": "My Tasks",
+            "selectedState": "Enquiries & Complaints 2",
+            "answerShape": "overview",
+            "scope": "personal",
+            "facts": ["ENQ-PRIVATE-41"],
+        },
+    )
+    second_user = event(3, "user.message", {"content": "Show me the list"})
+    context = _reader_conversation_context([first_user, first_result, second_user], second_user)
+    adapter = LLMAdapter(
+        Settings(_env_file=None, llm_base_url="https://llm.example.test", llm_api_key="test-key")
+    )
+
+    asyncio.run(adapter.plan_admin_portal_read("Show me the list", {}, {}, context))
+
+    previous = json.loads(captured["messages"][1]["content"])["conversationContext"]["previousIntent"]
+    assert previous == {
+        "question": "How about my enquiries tasks?",
+        "answerShape": "overview",
+        "resultStatus": "success",
+        "page": "/dashboard",
+        "section": "My Tasks",
+        "sourceSection": "My Tasks",
+        "selectedState": "Enquiries & Complaints 2",
+        "scope": "personal",
+        "workflowState": "",
+    }
+    assert "facts" not in previous
+    assert "ENQ-PRIVATE-41" not in json.dumps(previous)
+
+
+def test_list_follow_up_retrieval_keeps_the_previous_target_without_old_facts() -> None:
+    first_user = event(1, "user.message", {"content": "How about my enquiries tasks?"})
+    first_result = event(
+        2,
+        "reader.result",
+        {
+            "result": "success",
+            "page": "/dashboard",
+            "section": "My Tasks",
+            "sourceSection": "My Tasks",
+            "selectedState": "Enquiries & Complaints 2",
+            "answerShape": "overview",
+            "scope": "personal",
+            "facts": ["ENQ-PRIVATE-41"],
+        },
+    )
+    second_user = event(3, "user.message", {"content": "Show me the list"})
+    context = _reader_conversation_context([first_user, first_result, second_user], second_user)
+
+    query = knowledge_search_query(
+        "Show me the list",
+        UserPermissionContext(pages=("/dashboard",)),
+        context,
+    )
+
+    assert "question: How about my enquiries tasks?" in query
+    assert "selectedState: Enquiries & Complaints 2" in query
+    assert "sourceSection: My Tasks" in query
+    assert "page: /dashboard" in query
+    assert "facts:" not in query
+    assert "ENQ-PRIVATE-41" not in query
 
 
 def test_planner_receives_bounded_conversation_context(monkeypatch) -> None:

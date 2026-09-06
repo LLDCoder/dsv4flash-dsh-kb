@@ -83,7 +83,7 @@ class ToolGateway:
                     "ok": True,
                     "code": "ok",
                     "toolName": tool_name,
-                    "result": bounded_json(result, max_depth=6, max_items=100, max_string=1_000),
+                    "result": bounded_json(result, max_depth=7, max_items=100, max_string=1_000),
                 }
             except httpx.HTTPStatusError as exc:
                 code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"

@@ -131,6 +131,58 @@ class FakeLocator:
         return self
 
 
+class FakeLocatorGroup:
+    def __init__(self, *locators):
+        self.locators = locators
+        self.first = locators[0] if locators else FakeLocator()
+
+    async def count(self):
+        return len(self.locators)
+
+    def nth(self, index):
+        return self.locators[index]
+
+
+class FakeDetailRow:
+    def __init__(self, *, visible=True, text="Record row", count=1):
+        self.first = self
+        self.visible = visible
+        self.text = text
+        self.row_count = count
+
+    async def count(self):
+        return self.row_count
+
+    async def is_visible(self):
+        return self.visible
+
+    async def inner_text(self):
+        return self.text
+
+
+class FakeDetailCell(FakeLocator):
+    def __init__(self, *, descriptor="APP-123", tag="td", visible=True, row_visible=True, row_text="APP-123 Active", row_count=1, count=1):
+        super().__init__(descriptor=descriptor, tag=tag, visible=visible)
+        self.row = FakeDetailRow(visible=row_visible, text=row_text, count=row_count)
+        self.cell_count = count
+
+    async def count(self):
+        return self.cell_count
+
+    def locator(self, selector):
+        return self.row if selector == "xpath=ancestor::tr[1]" else super().locator(selector)
+
+
+class FakeDetailNavigationPage:
+    def __init__(self, url, *, detail_identity="APP-123", identity_visible=True):
+        self.url = url
+        self.detail_identity = detail_identity
+        self.identity_visible = identity_visible
+
+    def get_by_text(self, text, exact=True):
+        return FakeQueryLocator([(text, self.identity_visible and text == self.detail_identity)])
+
+
 class FakePage:
     def __init__(self, locator):
         self.result = locator
@@ -185,6 +237,13 @@ class FakeObservationLocator:
     async def inner_text(self):
         return self.values[self.index][0]
 
+    async def get_attribute(self, name):
+        value = self.values[self.index]
+        return value[2].get(name) if len(value) > 2 else None
+
+    def locator(self, selector):
+        return FakeObservationLocator([])
+
 
 class FakeObservationContainer:
     def __init__(self, rows, *, tag="table", visible=True, aria_busy=None, heading="", parent_index=None):
@@ -213,6 +272,8 @@ class FakeObservationContainer:
         return self.heading
 
     def locator(self, selector):
+        if selector in {"thead th,[role='columnheader']", ".ant-empty-description,[role='status']"}:
+            return FakeObservationLocator([])
         return FakeObservationLocator(self.rows)
 
 
@@ -279,7 +340,7 @@ class FakeStructuredRow:
         return self.visible
 
     async def inner_text(self):
-        return " ".join(value for value, _ in self.cells)
+        return " ".join(value[0] for value in self.cells)
 
     def locator(self, selector):
         return FakeObservationLocator(self.cells)
@@ -421,6 +482,111 @@ def test_hidden_empty_state_or_visible_failure_state_cannot_confirm_no_data() ->
     assert asyncio.run(gateway._query_page_values(error_page, action, 20))[2] is False
 
 
+def test_blocked_relevant_data_request_cannot_confirm_visible_no_data() -> None:
+    action = gateway.PortalReadAction(
+        type="query", selector="[class*='field']", label="Refunds", emptyState="No data",
+    )
+    page = FakeQueryPage([], empty_state_visible=True)
+    page.url = "https://admin.example.test/happiness/refunds"
+    page._reader_blocked_api_paths = ["/api/Refund/Admin/Tickets"]
+
+    assert asyncio.run(gateway._query_page_values(page, action, 20))[2] is False
+
+
+def test_blocked_unrelated_data_request_does_not_invalidate_empty_result() -> None:
+    action = gateway.PortalReadAction(
+        type="query", selector="[class*='field']", label="Refunds", emptyState="No data",
+    )
+    page = FakeQueryPage([], empty_state_visible=True)
+    page.url = "https://admin.example.test/happiness/refunds"
+    page._reader_blocked_api_paths = ["/api/clientlog/report"]
+
+    assert asyncio.run(gateway._query_page_values(page, action, 20))[2] is True
+
+
+def test_blocked_query_label_matches_current_data_surface_generically() -> None:
+    action = gateway.PortalReadAction(
+        type="query", selector="[class*='field']", label="Enquiries & Complaints", emptyState="No data",
+    )
+    page = FakeQueryPage([], empty_state_visible=True)
+    page.url = "https://admin.example.test/happiness/tickets"
+    page._reader_blocked_api_paths = ["/api/Enquiry/Management/List"]
+
+    assert asyncio.run(gateway._query_page_values(page, action, 20))[2] is False
+
+
+def test_observation_empty_state_is_not_confirmed_when_surface_request_is_blocked(monkeypatch) -> None:
+    class Page:
+        url = "https://admin.example.test/happiness/refunds"
+
+    async def fake_observe(page, limit):
+        return {
+            "rowSummaries": [],
+            "regionSummaries": [{"emptyState": "No data"}],
+            "readHealth": {"healthy": False, "blocked": ["/api/Refund/Admin/Tickets"]},
+        }
+
+    monkeypatch.setattr(gateway, "_observe_semantics", fake_observe)
+    async def fake_settle(page):
+        return None
+    monkeypatch.setattr(gateway, "_settle_page", fake_settle)
+    request = gateway.AdminPortalReadRequest(
+        startPath="/happiness/refunds",
+        actions=(gateway.PortalReadAction(type="observe"),),
+    )
+    facts, pages, fields, confirmed_empty, observation = asyncio.run(
+        gateway._execute_reader_actions(Page(), request, "https://admin.example.test")
+    )
+
+    assert confirmed_empty is False
+    assert observation["readHealth"]["healthy"] is False
+
+
+@pytest.mark.parametrize("health_key", ["failed", "pending"])
+def test_surface_health_blocks_no_data_for_failed_or_pending_surface_request(health_key) -> None:
+    class Page:
+        url = "https://admin.example.test/happiness/refunds"
+
+    page = Page()
+    page._reader_health = {
+        "blocked": [],
+        "failed": {"/api/Refund/Admin/Tickets": 1} if health_key == "failed" else {},
+        "pending": {101: "/api/Refund/Admin/Tickets", 102: "/api/Refund/Admin/Tickets"} if health_key == "pending" else {},
+    }
+    result = gateway._reader_surface_health(page, "Refunds")
+
+    assert result["healthy"] is False
+    assert result[health_key] == ["/api/Refund/Admin/Tickets"]
+
+
+def test_surface_health_ignores_only_exact_blocked_notification_background_paths() -> None:
+    class Page:
+        url = "https://admin.example.test/happiness/tickets"
+
+    page = Page()
+    page._reader_health = {
+        "blocked": [
+            "/api/SignalR/GetNotificationInfoList",
+            "/api/SignalR/GetNotificationInfoListShowBox",
+        ],
+        "failed": [],
+        "pending": [],
+    }
+
+    assert gateway._reader_surface_health(page, "Enquiries & Complaints") == {
+        "blocked": [],
+        "failed": [],
+        "pending": [],
+        "uncertain": [],
+        "healthy": True,
+    }
+
+    page._reader_health["blocked"] = ["/api/SignalR/GetNotificationInfoList/extra"]
+    result = gateway._reader_surface_health(page, "Enquiries & Complaints")
+    assert result["healthy"] is False
+    assert result["uncertain"] == ["/api/SignalR/GetNotificationInfoList/extra"]
+
+
 @pytest.mark.parametrize(
     "locator",
     [
@@ -524,6 +690,7 @@ def test_observe_semantics_keeps_rows_bound_to_their_dashboard_section() -> None
             "sourceSection": "My Tasks",
             "columnHeaders": [],
             "rowSummaries": ["Service Applications 15"],
+            "rowFields": [],
             "emptyState": "",
         },
         {
@@ -533,6 +700,7 @@ def test_observe_semantics_keeps_rows_bound_to_their_dashboard_section() -> None
             "sourceSection": "Needs Your Attention",
             "columnHeaders": [],
             "rowSummaries": ["ML-1 Pending Modification Customer", "ML-2 Pending Modification Customer"],
+            "rowFields": [],
             "emptyState": "",
         },
     ]
@@ -557,6 +725,7 @@ def test_observe_semantics_preserves_explicit_empty_state_with_section_identity(
         "sourceSection": "Needs Your Attention",
         "columnHeaders": ["Task No.", "Service Name"],
         "rowSummaries": [],
+        "rowFields": [],
         "emptyState": "No data",
     }]
 
@@ -693,6 +862,107 @@ def test_observe_semantics_excludes_the_visible_actions_column_by_cell_index() -
     assert observation["rowSummaries"] == ["ML-1 Application for Media Export"]
 
 
+def test_observe_semantics_binds_multiword_cell_values_to_native_headers() -> None:
+    container = FakeStructuredContainer(
+        [
+            ("Ticket No.", True),
+            ("Customer", True),
+            ("Issue Category", True),
+            ("Status", True),
+            ("Actions", True),
+        ],
+        [FakeStructuredRow([
+            ("T-100", True),
+            ("Acme Media Group", True),
+            ("Business", True),
+            ("Open", True),
+            ("View Assign", True),
+        ])],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(FakeObservationPage({}, containers=[container]), 20))
+
+    assert observation["sectionSummaries"][0]["rowFields"] == [{
+        "Ticket No.": "T-100",
+        "Customer": "Acme Media Group",
+        "Issue Category": "Business",
+        "Status": "Open",
+    }]
+    assert observation["rowSummaries"] == ["T-100 Acme Media Group Business Open"]
+
+
+@pytest.mark.parametrize(
+    ("headers", "cells"),
+    [
+        (
+            [("Ticket No.", True), ("Status", False), ("Customer", True)],
+            [("T-100", True), ("Open", False), ("Acme Media Group", True)],
+        ),
+        (
+            [("Status", True), ("Status", True)],
+            [("Open", True), ("Closed", True)],
+        ),
+        (
+            [("Ticket No.", True, {"colspan": "2"}), ("Status", True)],
+            [("T-100", True), ("Open", True)],
+        ),
+        (
+            [("Ticket No.", True), ("Status", True)],
+            [("T-100", True, {"rowspan": "2"}), ("Open", True)],
+        ),
+        (
+            [("Ticket No.", True), ("Status", True)],
+            [("T-100", True)],
+        ),
+    ],
+)
+def test_observe_semantics_does_not_bind_ambiguous_table_structures(headers, cells) -> None:
+    container = FakeStructuredContainer(headers, [FakeStructuredRow(cells)])
+
+    observation = asyncio.run(gateway._observe_semantics(FakeObservationPage({}, containers=[container]), 20))
+
+    assert observation["sectionSummaries"][0]["rowFields"] == []
+    assert observation["sectionSummaries"][0]["rowSummaries"]
+
+
+def test_observe_semantics_bounds_and_sanitizes_structured_row_fields() -> None:
+    headers = [("Notes" if index == 1 else f"Field {index}", True) for index in range(14)]
+    rows = []
+    for row_index in range(5):
+        cells = [
+            (("x" * 350) if column_index == 0 else (
+                "password: field-secret" if column_index == 1 else f"row {row_index} value {column_index}"
+            ), True)
+            for column_index in range(14)
+        ]
+        rows.append(FakeStructuredRow(cells))
+    container = FakeStructuredContainer(headers, rows)
+
+    observation = asyncio.run(gateway._observe_semantics(FakeObservationPage({}, containers=[container]), 20))
+    row_fields = observation["sectionSummaries"][0]["rowFields"]
+
+    assert len(row_fields) == 4
+    assert all(len(row) == 12 for row in row_fields)
+    assert all(len(row["Field 0"]) == 300 for row in row_fields)
+    assert all(row["Notes"] == "password: [redacted]" for row in row_fields)
+    assert [row["Field 2"] for row in row_fields] == [f"row {index} value 2" for index in range(4)]
+    assert "row 4 value" not in str(row_fields)
+    assert "field-secret" not in str(row_fields)
+
+
+def test_observe_semantics_excludes_action_and_sensitive_columns_from_row_fields() -> None:
+    container = FakeStructuredContainer(
+        [("Ticket No.", True), ("Password", True), ("Actions", True)],
+        [FakeStructuredRow([("T-100", True), ("opaque-secret", True), ("Open", True)])],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(FakeObservationPage({}, containers=[container]), 20))
+
+    assert observation["sectionSummaries"][0]["rowFields"] == [{"Ticket No.": "T-100"}]
+    assert observation["rowSummaries"] == ["T-100"]
+    assert "opaque-secret" not in str(observation)
+
+
 def test_observe_semantics_collects_bounded_visible_non_error_stat_cards() -> None:
     summary_selector = ".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))"
     summaries = [
@@ -728,6 +998,72 @@ def test_observe_semantics_records_selected_tab_per_region() -> None:
 
     assert selected_tab_selector in section.selectors
     assert observation["regionSummaries"][0]["selectedState"] == "Enquiries 2"
+
+
+def test_observe_semantics_records_the_only_native_active_tab_on_the_only_visible_table() -> None:
+    active_tab_selector = "[role='tab'][aria-selected='true']"
+    page = FakeObservationPage(
+        {active_tab_selector: [("Completed", True)]},
+        containers=[FakeStructuredContainer(
+            [("Ticket No.", True), ("Status", True)],
+            [FakeStructuredRow([("T-100", True), ("Completed", True)])],
+        )],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert observation["sectionSummaries"][0]["selectedState"] == "Completed"
+
+
+def test_observe_semantics_does_not_assign_table_state_from_multiple_active_tabs() -> None:
+    active_tab_selector = "[role='tab'][aria-selected='true']"
+    page = FakeObservationPage(
+        {active_tab_selector: [("To Do", True), ("Completed", True)]},
+        containers=[FakeStructuredContainer(
+            [("Ticket No.", True), ("Status", True)],
+            [FakeStructuredRow([("T-100", True), ("Open", True)])],
+        )],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert "selectedState" not in observation["sectionSummaries"][0]
+
+
+def test_observe_semantics_does_not_assign_table_state_when_multiple_tables_are_visible() -> None:
+    active_tab_selector = "[role='tab'][aria-selected='true']"
+    page = FakeObservationPage(
+        {active_tab_selector: [("Completed", True)]},
+        containers=[
+            FakeStructuredContainer(
+                [("Ticket No.", True), ("Status", True)],
+                [FakeStructuredRow([("T-100", True), ("Completed", True)])],
+            ),
+            FakeStructuredContainer(
+                [("Ticket No.", True), ("Status", True)],
+                [FakeStructuredRow([("T-200", True), ("Completed", True)])],
+            ),
+        ],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert all("selectedState" not in section for section in observation["sectionSummaries"])
+
+
+def test_observe_semantics_does_not_assign_empty_active_tab_text_to_table() -> None:
+    active_tab_selector = "[role='tab'][aria-selected='true']"
+    page = FakeObservationPage(
+        {active_tab_selector: [("", True)]},
+        containers=[FakeStructuredContainer(
+            [("Ticket No.", True), ("Status", True)],
+            [FakeStructuredRow([("T-100", True), ("Open", True)])],
+        )],
+    )
+
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+
+    assert "selectedState" not in observation["sectionSummaries"][0]
 
 
 def test_observe_semantics_redacts_credentials_in_all_text_collections() -> None:
@@ -933,6 +1269,91 @@ def test_show_detail_requires_stable_record_identity() -> None:
     assert error_code(raised.value) == "reader_detail_identity_required"
 
 
+def cell_detail_action(**overrides):
+    action = {
+        "type": "show_detail",
+        "role": "cell",
+        "name": "APP-123",
+        "value": "APP-123",
+        "path": "/licensing/applications/detail",
+    }
+    action.update(overrides)
+    return action
+
+
+def test_gateway_allows_a_visible_record_cell_detail_without_button_permission() -> None:
+    gateway._validate_reader_request(read_request(
+        [cell_detail_action()], startPath="/licensing/applications",
+    ))
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        (cell_detail_action(path=None), "reader_detail_destination_required"),
+        (cell_detail_action(path="/licensing/applications"), "reader_detail_destination_not_distinct"),
+        (cell_detail_action(path="/licensing/applications/detail?taskId=opaque-uuid"), "reader_detail_destination_query_forbidden"),
+        (cell_detail_action(name="OTHER-9"), "reader_detail_cell_identity_mismatch"),
+        (cell_detail_action(permissionCode="licensing.approve"), "reader_click_target_not_detail"),
+    ],
+)
+def test_gateway_rejects_unbounded_or_forged_cell_detail_requests(action, expected) -> None:
+    with pytest.raises(HTTPException) as raised:
+        gateway._validate_reader_request(read_request([action], startPath="/licensing/applications"))
+
+    assert error_code(raised.value) == expected
+
+
+def test_runtime_cell_detail_requires_visible_native_cell_and_row_with_exact_identity() -> None:
+    action = gateway.PortalReadAction.model_validate(cell_detail_action())
+    valid = FakeDetailCell()
+
+    asyncio.run(gateway._safe_click(FakePage(valid), action))
+
+    assert valid.clicked
+    for locator, expected in (
+        (FakeDetailCell(descriptor="OTHER-9"), "reader_detail_cell_identity_mismatch"),
+        (FakeDetailCell(visible=False), "reader_detail_cell_not_visible"),
+        (FakeDetailCell(tag="div"), "reader_detail_cell_not_native"),
+        (FakeDetailCell(row_visible=False), "reader_detail_row_not_visible"),
+        (FakeDetailCell(row_count=0), "reader_detail_row_not_visible"),
+        (FakeDetailCell(count=2), "reader_detail_cell_not_unique"),
+    ):
+        with pytest.raises(RuntimeError, match=expected):
+            asyncio.run(gateway._safe_click(FakePage(locator), action))
+
+
+def test_runtime_cell_detail_rechecks_destination_and_identity_after_click() -> None:
+    action = gateway.PortalReadAction.model_validate(cell_detail_action())
+    before_url = "https://admin.example.test/licensing/applications"
+
+    asyncio.run(gateway._validate_cell_detail_navigation(
+        FakeDetailNavigationPage("https://admin.example.test/licensing/applications/detail?taskId=opaque-uuid"),
+        action,
+        before_url,
+    ))
+    for page, expected in (
+        (FakeDetailNavigationPage("https://admin.example.test/licensing/other?taskId=opaque-uuid"), "reader_detail_destination_mismatch"),
+        (FakeDetailNavigationPage("https://admin.example.test/licensing/applications/detail?taskId=other-opaque-uuid", detail_identity="APP-999"), "reader_detail_identity_mismatch"),
+        (FakeDetailNavigationPage("https://admin.example.test/licensing/applications/detail?taskId=opaque-uuid", identity_visible=False), "reader_detail_identity_mismatch"),
+    ):
+        with pytest.raises(RuntimeError, match=expected):
+            asyncio.run(gateway._validate_cell_detail_navigation(page, action, before_url))
+
+    license_action = gateway.PortalReadAction.model_validate({
+        "type": "show_detail",
+        "role": "cell",
+        "name": "LIC-900",
+        "value": "LIC-900",
+        "path": "/licensing/licenses/detail",
+    })
+    asyncio.run(gateway._validate_cell_detail_navigation(
+        FakeDetailNavigationPage("https://admin.example.test/licensing/licenses/detail?code=42", detail_identity="LIC-900"),
+        license_action,
+        "https://admin.example.test/licensing/licenses",
+    ))
+
+
 def test_sort_requires_closed_direction() -> None:
     action = {"type": "sort", "role": "columnheader", "name": "Submission Time"}
 
@@ -998,6 +1419,36 @@ def test_runtime_click_verifies_tab_and_sort_state() -> None:
 
     assert tab.clicked
     assert sort.clicked
+
+
+def test_runtime_switch_tab_requires_one_visible_semantic_target() -> None:
+    action = gateway.PortalReadAction(type="switch_tab", role="tab", name="Movies")
+    visible = FakeLocator(descriptor="Movies", role="tab", aria_selected="true")
+    hidden = FakeLocator(descriptor="Movies", role="tab", aria_selected="false", visible=False)
+
+    asyncio.run(gateway._safe_click(FakePage(FakeLocatorGroup(hidden, visible)), action))
+
+    assert visible.clicked
+    assert not hidden.clicked
+
+
+def test_runtime_switch_tab_rejects_ambiguous_visible_semantic_targets() -> None:
+    action = gateway.PortalReadAction(type="switch_tab", role="tab", name="Movies")
+    first = FakeLocator(descriptor="Movies", role="tab", aria_selected="true")
+    second = FakeLocator(descriptor="Movies", role="tab", aria_selected="false")
+
+    with pytest.raises(RuntimeError, match="reader_switch_tab_ambiguous"):
+        asyncio.run(gateway._safe_click(FakePage(FakeLocatorGroup(first, second)), action))
+
+    assert not first.clicked
+    assert not second.clicked
+
+
+def test_runtime_switch_tab_keeps_missing_target_error() -> None:
+    action = gateway.PortalReadAction(type="switch_tab", role="tab", name="Movies")
+
+    with pytest.raises(RuntimeError, match="reader_selector_not_found"):
+        asyncio.run(gateway._safe_click(FakePage(FakeLocatorGroup()), action))
 
 
 @pytest.mark.parametrize("descriptor", ["Suspend", "Archive", "Enable", "Disable", "Close", "Open", "Activate", "Deactivate"])
@@ -1098,6 +1549,8 @@ def test_default_post_allowlist_is_exact() -> None:
         "/api/Application/MyComplatedPage",
         "/api/Application/MyTodoPage",
         "/api/LicenseManagement/list",
+        "/api/licensing/team-management/tasks/query",
+        "/api/inspection/team-management/tasks/query",
     }
 
 
@@ -1108,6 +1561,8 @@ def test_default_post_allowlist_is_exact() -> None:
         "/api/Application/MyComplatedPage",
         "/api/Application/MyTodoPage",
         "/api/LicenseManagement/list",
+        "/api/licensing/team-management/tasks/query",
+        "/api/inspection/team-management/tasks/query",
     ],
 )
 def test_guard_allows_only_configured_read_only_posts(path) -> None:
@@ -1125,8 +1580,31 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/license/dashboard/needs-attention",
         "/api/Content/Dashboard/Overview",
         "/api/Content/Dashboard/TaskList",
+        "/api/ContentLibrary/GetBookList",
+        "/api/ContentLibrary/GetBooksCount",
+        "/api/ContentLibrary/GetCinemaList",
+        "/api/ContentLibrary/GetCinemasCount",
+        "/api/Lookup/GetLookupData",
+        "/api/Lookup/GetSubjectList",
         "/api/Inspection/Dashboard/Overview",
         "/api/Inspection/Dashboard/TaskList",
+        "/api/inspection/team-management/metadata",
+        "/api/inspection/team-management/members",
+        "/api/inspection/team-management/summary",
+        "/api/admin/inspection/lookup/inspectors",
+        "/api/admin/inspection/lookup/reasons",
+        "/api/admin/inspection/lookup/task-statuses",
+        "/api/admin/inspection/lookup/inspection-methods",
+        "/api/admin/inspection/lookup/emirates",
+        "/api/admin/inspection/lookup/priorities",
+        "/api/admin/inspection/tasks",
+        "/api/admin/inspection/tasks/stats",
+        "/api/admin/finance/transactions",
+        "/api/admin/finance/lookups/payment-methods",
+        "/api/admin/finance/lookups/transaction-types",
+        "/api/admin/finance/lookups/transaction-statuses",
+        "/api/admin/finance/transactions/statistics",
+        "/api/admin/finance/transactions/payment-method-statistics",
         "/api/CustomerHappiness/Dashboard/Overview",
         "/api/CustomerHappiness/Dashboard/TaskList",
         "/api/AdminUser/LoginMethod",
@@ -1138,6 +1616,27 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/UserManagement/UserProfile/Status",
         "/api/UserManagement/UserProfile/Type/Count",
         "/api/LicenseManagement/statistics",
+        "/api/Refund/Admin/Tickets",
+        "/api/Refund/Admin/Tickets/Statistics",
+        "/api/Enquiry/Management/List",
+        "/api/Enquiry/Management/UserInfo",
+        "/api/Enquiry/Management/TeamTask/List",
+        "/api/Enquiry/Management/Status/Count",
+        "/api/Enquiry/Management/EnquiryStatus",
+        "/api/Enquiry/EnquiryTypes",
+        "/api/Enquiry/PriorityType",
+        "/api/Enquiry/EnquirySource",
+        "/api/serviceInfo/GetAllUserType",
+        "/api/Application/dashboard/statistics",
+        "/api/Application/dashboard/service/list",
+        "/api/Application/dashboard/team/list",
+        "/api/UserManagement/dashboard/profile/statistics",
+        "/api/UserManagement/dashboard/list",
+        "/api/LicenseManagement/dashboard/statistics",
+        "/api/LicenseManagement/dashboard/report",
+        "/api/licensing/team-management/members",
+        "/api/licensing/team-management/metadata",
+        "/api/licensing/team-management/summary",
         "/api/TypeDictionary/GetTypeDictionaries/CertificateStatus",
         "/api/Application/MyReviewDetail/:taskId",
         "/api/UserManagement/UserProfile/:id/Personal",
@@ -1175,11 +1674,145 @@ def test_guard_matches_get_path_without_using_query_as_a_prefix_escape() -> None
     assert guard("GET", "/api/license/dashboard/overview/extra?days=7")[0] == "abort"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/Application/dashboard/statistics",
+        "/api/Application/dashboard/service/list",
+        "/api/Application/dashboard/team/list",
+        "/api/UserManagement/dashboard/profile/statistics",
+        "/api/UserManagement/dashboard/list",
+        "/api/LicenseManagement/dashboard/statistics",
+        "/api/LicenseManagement/dashboard/report",
+    ],
+)
+def test_guard_allows_only_get_for_verified_dashboard_reads(path) -> None:
+    assert guard("GET", path, resource_type="fetch") == ("continue", None)
+    assert guard("POST", path, resource_type="fetch")[0] == "abort"
+    assert guard("GET", f"{path}/extra", resource_type="fetch")[0] == "abort"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/Enquiry/Management/UserInfo",
+        "/api/Enquiry/Management/TeamTask/List",
+        "/api/Enquiry/Management/Status/Count",
+        "/api/Enquiry/Management/EnquiryStatus",
+        "/api/Enquiry/EnquiryTypes",
+        "/api/Enquiry/PriorityType",
+        "/api/Enquiry/EnquirySource",
+        "/api/serviceInfo/GetAllUserType",
+    ],
+)
+def test_guard_allows_only_get_for_verified_enquiry_ticket_page_reads(path) -> None:
+    assert guard("GET", path, resource_type="fetch") == ("continue", None)
+    assert guard("POST", path, resource_type="fetch")[0] == "abort"
+    assert guard("GET", f"{path}/extra", resource_type="fetch")[0] == "abort"
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/Role/GetRolesGroupedByDepartmentId"),
+        ("GET", "/api/Enquiry/ProblemCauses"),
+        ("GET", "/api/SignalR/GetNotificationInfoListShowBox"),
+        ("GET", "/api/SignalR/GetNotificationInfoList"),
+    ],
+)
+def test_guard_keeps_degraded_ticket_fallback_and_background_reads_blocked(method, path) -> None:
+    assert guard(method, path, resource_type="fetch")[0] == "abort"
+
+
+def test_notification_background_paths_are_explicitly_blocked_not_allowed() -> None:
+    notification_paths = {
+        "/api/SignalR/GetNotificationInfoList",
+        "/api/SignalR/GetNotificationInfoListShowBox",
+    }
+
+    assert notification_paths <= gateway.READER_BLOCKED_EXACT_PATHS
+    assert notification_paths.isdisjoint(gateway.READER_READ_ONLY_GET_PATHS)
+    assert all(guard("GET", path, resource_type="fetch")[0] == "abort" for path in notification_paths)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/licensing/team-management/members",
+        "/api/licensing/team-management/metadata",
+        "/api/licensing/team-management/summary",
+    ],
+)
+def test_guard_allows_only_get_for_verified_team_management_reads(path) -> None:
+    assert guard("GET", path, resource_type="fetch") == ("continue", None)
+    assert guard("POST", path, resource_type="fetch")[0] == "abort"
+    assert guard("GET", f"{path}/extra", resource_type="fetch")[0] == "abort"
+
+
+def test_guard_allows_only_post_for_verified_team_management_task_query() -> None:
+    path = "/api/licensing/team-management/tasks/query"
+
+    assert guard("POST", path, resource_type="fetch") == ("continue", None)
+    assert guard("GET", path, resource_type="fetch")[0] == "abort"
+    assert guard("POST", f"{path}/extra", resource_type="fetch")[0] == "abort"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/ContentLibrary/GetBookList",
+        "/api/ContentLibrary/GetBooksCount",
+        "/api/ContentLibrary/GetCinemaList",
+        "/api/ContentLibrary/GetCinemasCount",
+        "/api/Lookup/GetLookupData",
+        "/api/Lookup/GetSubjectList",
+        "/api/inspection/team-management/metadata",
+        "/api/inspection/team-management/members",
+        "/api/inspection/team-management/summary",
+        "/api/admin/inspection/lookup/inspectors",
+        "/api/admin/inspection/lookup/reasons",
+        "/api/admin/inspection/lookup/task-statuses",
+        "/api/admin/inspection/lookup/inspection-methods",
+        "/api/admin/inspection/lookup/emirates",
+        "/api/admin/inspection/lookup/priorities",
+        "/api/admin/inspection/tasks",
+        "/api/admin/inspection/tasks/stats",
+        "/api/admin/finance/transactions",
+        "/api/admin/finance/lookups/payment-methods",
+        "/api/admin/finance/lookups/transaction-types",
+        "/api/admin/finance/lookups/transaction-statuses",
+        "/api/admin/finance/transactions/statistics",
+        "/api/admin/finance/transactions/payment-method-statistics",
+    ],
+)
+def test_guard_allows_only_get_for_verified_content_inspection_and_finance_reads(path) -> None:
+    assert guard("GET", path, resource_type="fetch") == ("continue", None)
+    assert guard("POST", path, resource_type="fetch")[0] == "abort"
+    assert guard("GET", f"{path}/extra", resource_type="fetch")[0] == "abort"
+
+
+def test_guard_allows_only_post_for_verified_inspection_team_management_task_query() -> None:
+    path = "/api/inspection/team-management/tasks/query"
+
+    assert guard("POST", path, resource_type="fetch") == ("continue", None)
+    assert guard("GET", path, resource_type="fetch")[0] == "abort"
+    assert guard("POST", f"{path}/extra", resource_type="fetch")[0] == "abort"
+
+
+def test_guard_keeps_inspection_task_creation_and_exports_blocked() -> None:
+    task_path = "/api/admin/inspection/tasks"
+
+    assert guard("GET", task_path, resource_type="fetch") == ("continue", None)
+    assert guard("POST", task_path, resource_type="fetch")[0] == "abort"
+    assert guard("GET", f"{task_path}/export", resource_type="fetch")[0] == "abort"
+    assert guard("POST", f"{task_path}/export", resource_type="fetch")[0] == "abort"
+
+
 def test_health_reports_fixed_allowlist_counts() -> None:
     health = asyncio.run(gateway.healthz())
 
-    assert health["readOnlyGetPathCount"] == 28
-    assert health["readOnlyPostPathCount"] == 4
+    assert health["readOnlyGetPathCount"] == 72
+    assert health["readOnlyPostPathCount"] == 6
 
 
 @pytest.mark.parametrize(
@@ -1250,4 +1883,32 @@ def test_gateway_rechecks_get_user_info_before_browser(monkeypatch) -> None:
         ))
 
     assert error_code(raised.value) == "reader_permission_context_incomplete"
+    assert calls == [("POST", "/api/AdminUser/GetUserInfo")]
+
+
+def test_gateway_rechecks_cell_detail_destination_permission_before_browser(monkeypatch) -> None:
+    calls = []
+    user_info = admin_user_info()
+    user_info["data"]["listSysPermission"] = [{
+        "frontendRoute": "/licensing/applications",
+        "children": [],
+        "buttonList": [{"permissionCode": "licensing.approve"}],
+    }]
+
+    async def fake_umc_request(method, path, **kwargs):
+        calls.append((method, path))
+        return user_info
+
+    monkeypatch.setattr(gateway, "_umc_request", fake_umc_request)
+    request = read_request([cell_detail_action()], startPath="/licensing/applications")
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(gateway.admin_portal_read(
+            request,
+            authorization="Bearer token",
+            x_request_id="request",
+            x_user_id="admin-7",
+        ))
+
+    assert error_code(raised.value) == "page_not_permitted"
     assert calls == [("POST", "/api/AdminUser/GetUserInfo")]

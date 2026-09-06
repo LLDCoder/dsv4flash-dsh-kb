@@ -36,6 +36,10 @@ services:
       UMC_ADMIN_BASE_URL: ${UMC_ADMIN_BASE_URL:-https://umc-adminportal.sol.daypop.ai}
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
       PLATFORM_RETRY_ATTEMPTS: ${PLATFORM_RETRY_ATTEMPTS:-2}
+      PORTAL_READER_WHITELIST_ENABLED: ${PORTAL_READER_WHITELIST_ENABLED:-true}
+      PORTAL_READER_WHITELIST_FILE: /app/config/reader-network-policy.json
+    volumes:
+      - ./platform-gateway/config/reader-network-policy.json:/app/config/reader-network-policy.json:ro
     expose:
       - "8102"
     command: uvicorn app:app --host 0.0.0.0 --port 8102

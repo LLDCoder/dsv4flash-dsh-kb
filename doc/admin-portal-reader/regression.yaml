@@ -9,6 +9,92 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-network-whitelist-toggle
+    expect:
+      absent_env: whitelist_enabled
+      local_business_validation_env: whitelist_disabled
+      invalid_env_or_policy_file: startup_failure
+      enabled: configured_get_and_post_paths_only
+      disabled: same_origin_http_methods_and_paths_unrestricted
+      disabled_mode_health: same-origin-unrestricted
+      stale_blocked_health_for_bypassed_request: forbidden
+      cross_origin_and_out_of_scope_navigation: blocked_in_both_modes
+      explicit_business_mutation_actions: blocked_in_both_modes
+      disabled_mode_tests_of_write_methods: synthetic_requests_only
+
+  - id: reader-business-empty-load-health
+    requires: [structured_observation]
+    expect:
+      blocked_or_failed_or_pending_data_request_with_empty_label: not_confirmed
+      observation_reducer_and_fallback_share_health_gate: true
+      independently_loaded_rows_remain_answerable: true
+
+  - id: reader-business-stateless-continuation
+    question: Show the matching records after selecting the requested tab.
+    expect:
+      each_tool_call_starts_fresh: true
+      rebuild_only_permitted_read_state: true
+      third_read_observation_is_reduced_before_answer: true
+      cumulative_limits_preserved: true
+      mutation_replay: forbidden
+
+  - id: reader-business-knowledge-node-tail
+    question: Explain the documented filter behavior without reading current records.
+    expect:
+      relevant_control_rules_after_1000_characters_preserved: true
+      knowledge_validation_uses_same_retained_content: true
+      knowledge_only_grounded_answer: allowed
+      live_record_values_from_manual: forbidden
+
+  - id: reader-business-followup-turn-boundaries
+    expect:
+      recent_context_window: at_most_three_user_turns_not_three_events
+      failed_intermediate_turn_preserves_prior_intent_chain: true
+      record_reference_requires_fresh_read: true
+      unrelated_topic_record_inheritance: forbidden
+      current_question_language_wins: true
+
+  - id: reader-business-knowledge-envelope
+    expect:
+      complete_known_envelope_with_matching_source: strip_before_truncation
+      source_provenance: retain_separately
+      incomplete_or_source_mismatched_envelope: do_not_guess_body_boundary
+      metadata_or_markdown_structure_as_business_fact: forbidden
+      supported_sentence_or_paraphrase: allowed
+
+  - id: reader-business-selected-view-row-subset
+    expect:
+      non_unique_native_row_fact: rejected
+      selected_view_partial_native_row_selection: one_semantic_review
+      review_uses_existing_turn_deadline: true
+      automatic_row_fill: forbidden
+      explicit_user_predicates_and_limits: preserve
+      review_alone_proves_business_correctness: false
+
+  - id: reader-business-compound-knowledge-grounding
+    expect:
+      all_strong_clauses_supported_by_same_chunk: required
+      cross_chunk_composite_inference: forbidden
+      matching_clause_hides_unsupported_clause: forbidden
+      missing_or_contradictory_numbers: rejected
+      decimal_exact_quote: supported
+      negative_contradiction_hidden_by_overlap: rejected
+
+  - id: reader-business-unique-visible-tab
+    expect:
+      unique_visible_semantic_match: required_before_click
+      hidden_duplicate_targets: ignored
+      multiple_visible_matches: reader_switch_tab_ambiguous
+      missing_section_locator_fallback: forbidden
+
+  - id: reader-business-exact-api-dependencies
+    requires: [network_whitelist_enabled]
+    expect:
+      same_path_inspection_task_creation_post: blocked
+      exact_verified_team_task_query_post: allowed
+      unlisted_suffixes_and_exports: blocked
+      api_prefix_or_module_router: forbidden
+
   - id: reader-quality-trace-current-tasks
     question: How about my current tasks?
     expect:
@@ -44,8 +130,9 @@ cases:
       - Which Licensing tasks should I pay attention to?
     requires: [dashboard_access]
     expect:
-      page: /dashboard
-      section: Needs Your Attention
+      typical_source: /dashboard Needs Your Attention
+      required_evidence: explicit_personal_attention_labels_and_matching_task_rows
+      alternate_verified_source_with_same_scope: allowed
       primary_data: bounded_visible_task_rows
       forbidden_substitutes:
         - My Tasks category counts
@@ -68,8 +155,8 @@ cases:
     question: How many tasks do I have?
     requires: [dashboard_access]
     expect:
-      page: /dashboard
-      section: My Tasks
+      typical_source: /dashboard My Tasks
+      alternate_verified_source_with_same_scope: allowed
       answer_shape: count
       primary_data: visible_task_category_counts
       licensing_list_total: forbidden
@@ -80,8 +167,8 @@ cases:
     question: Show me my tasks.
     requires: [dashboard_access]
     expect:
-      page: /dashboard
-      section: My Tasks
+      typical_source: /dashboard My Tasks
+      alternate_verified_source_with_same_scope: allowed
       answer_shape: overview
       primary_data: visible_task_category_counts
       needs_attention_rows_labeled_as_my_tasks: forbidden
@@ -97,7 +184,7 @@ cases:
       llm_may_select: [category, list, overview]
       selected_example: overview
       selected_section: Service Application
-      facts_from_selected_node_only: true
+      facts_from_one_coherent_observed_bundle: true
       valid_llm_result_overridden_by_fallback: false
 
   - id: reader-post-action-semantic-enquiries
@@ -105,11 +192,20 @@ cases:
     requires: [dashboard_access, enquiries_access, structured_observation]
     observed: [category_tab, selected_state, bounded_enquiry_rows]
     expect:
-      switch_tab_then_semantic_resolution: true
+      permitted_read_then_semantic_resolution: true
+      permitted_read_may_use: [current_page_category_control, knowledge_supported_module_page]
       selected_example: list
       selected_section: Enquiries & Complaints
       result_grounded_in_post_action_observation: true
       deterministic_pre_llm_result: forbidden
+
+  - id: reader-lightweight-observation-structure
+    requires: [structured_observation]
+    expect:
+      parent_ref_and_selected_state: helpful_signals_not_hard_requirements
+      duplicate_or_trimmed_semantic_nodes: do_not_reject_directly_supported_facts
+      same_heading_region_and_table: prefer_bounded_table_rows_for_task_answers
+      no_data_with_single_explicit_empty_table: confirmable
 
   - id: reader-semantic-resolution-fallback-order
     requires: [structured_observation]
@@ -137,6 +233,36 @@ cases:
       explicit_empty_state_result: no_data
       unavailable_claim_when_empty_state_observed: forbidden
 
+  - id: reader-explicit-list-detail-requires-category-children
+    turns:
+      - user: How are the service application tasks?
+        observed_result: category_parent_count
+      - user: Show me the list.
+        expect_answer_shape: list
+    requires: [structured_observation, visible_category_control]
+    observed:
+      target_category: parent_count_only
+      sibling_category: [selected_state, bounded_rows]
+      sibling_heading_may_match_parent_heading: true
+    expect:
+      parent_count_accepted_for_list_or_detail: false
+      parent_ref_selected_state_validated: true
+      same_heading_sibling_evidence_merged: false
+      next_action_stays_on_current_page: not_required_if_permitted_alternate_source_is_sufficient
+      next_action_targets_observed_category: true
+      exact_observed_category_control_preserved: true
+      category_target_source_priority:
+        - current_question
+        - previous_question
+        - previous_selected_state
+        - previous_source_section
+        - previous_section
+      model_facts_used_to_select_category: false
+      allowed_category_actions: [switch_tab, expand_details, navigate, query]
+      result_when_model_omits_required_action: not_confirmed
+      unrelated_rows_used_by_fallback: false
+      explicit_count_requires_child_read: false
+
   - id: reader-dashboard-due-soon-is-not-overdue
     question: 现在有即将到期的 application tasks 么
     requires: [dashboard_access]
@@ -162,8 +288,8 @@ cases:
     question: What needs manager attention?
     requires: [dashboard_access, manager_scope]
     expect:
-      page: /dashboard
-      section: Needs Manager Attention
+      typical_source: /dashboard Needs Manager Attention
+      alternate_verified_source_with_same_scope: allowed
       scope: [team, global]
       personal_attention_substituted: false
       result: [success, no_data, not_confirmed]
@@ -172,8 +298,8 @@ cases:
     question: How many overdue tasks do I have?
     requires: [dashboard_access]
     expect:
-      page: /dashboard
-      section: Overdue Tasks
+      typical_source: /dashboard Overdue Tasks
+      alternate_verified_source_with_same_scope: allowed
       primary_data: explicit_overdue_metric
       matching_rows_inferred_from_metric: false
       zero_count_result: success
@@ -192,7 +318,7 @@ cases:
     requires: [licensing_access]
     expect:
       pages_at_most: 2
-      actions_subset: [navigate, query, filter, paginate, switch_tab, expand_details]
+      actions_subset: [navigate, query, filter, paginate, switch_tab, expand_details, show_detail]
       result: [success, no_data, not_confirmed]
 
   - id: reader-licensing-list-semantics
@@ -216,13 +342,13 @@ cases:
 
   - id: reader-licensing-overview-semantics
     question: Show my Licensing tasks overview.
-    requires: [dashboard_access]
+    requires: [authorized_matching_task_summary]
     expect:
-      page: /dashboard
-      section: My Tasks
-      primary_data: visible_task_category_counts
-      application_list_total_or_rows: forbidden
-      attention_tabs_or_rows: forbidden
+      fixed_start_page: not_required
+      primary_data: verified_summary_for_requested_business_object_and_ownership
+      application_only_total_labeled_as_all_licensing_work: forbidden
+      team_work_labeled_as_personal: forbidden
+      attention_rows_labeled_as_workload_summary: forbidden
       result: [success, no_data, not_confirmed]
 
   - id: reader-licensing-mixed-list-overview-semantics
@@ -352,6 +478,9 @@ cases:
         path: /api/LicenseManagement/list
         expect: allowed
       - method: POST
+        path: /api/licensing/team-management/tasks/query
+        expect: allowed
+      - method: POST
         path: /api/Document/OriginalNames
         expect: blocked
       - method: POST
@@ -417,7 +546,106 @@ cases:
       permission_context_reused: false
       identity_mismatch_rejected: true
 
+  - id: reader-licensing-analytics-active-tab
+    question: Summarize the Licensing profile verification analytics for the selected period.
+    requires: [licensing_reports_analytics_access]
+    observed: [active_profile_analytics_tab, displayed_period, visible_profile_statistics, hidden_service_and_license_tables]
+    expect:
+      page: /licensing/reports-analytics
+      section: Profile Analytics
+      hidden_table_evidence: forbidden
+      personal_assigned_work_inferred_from_analytics: false
+      period_verified: true
+      result: [success, no_data, load_failed, not_confirmed]
+
+  - id: reader-licensing-analytics-independent-totals
+    question: Why does the total differ between these two charts?
+    observed: [different_kpi_and_status_chart_totals, no_documented_common_aggregation]
+    expect:
+      totals_merged: false
+      discrepancy_explanation_invented: false
+      result: not_confirmed
+
+  - id: reader-licensing-export-report-boundary
+    question: Show the Electronic Media report results.
+    requires: [licensing_reports_analytics_access]
+    observed: [Reports_tab, export_configuration_form, no_report_result_table]
+    expect:
+      export_clicked: false
+      download_requested: false
+      form_values_presented_as_report_results: false
+      analytics_fallback_silently_substituted: false
+      result: not_confirmed
+
+  - id: reader-licensing-team-tasks
+    question: Show our team's refund tasks.
+    requires: [current_team_management_page_permission]
+    observed: [Team_Tasks, Application_Task_Only_off, Refunds_category, bounded_matching_rows]
+    expect:
+      scope: team
+      primary_data: matching_team_refund_rows
+      personal_task_counts_substituted: false
+      reassign_or_leave_actions: forbidden
+      result: [success, no_data, not_confirmed]
+
+  - id: reader-licensing-team-permission-denied
+    question: Show the Licensing team's work.
+    actor: L4
+    observed: [fresh_permissions_without_team_management]
+    expect:
+      team_management_navigation: false
+      manager_title_inferred_as_permission: false
+      result: no_permission
+
+  - id: reader-licensing-personal-refund-alternate-source
+    question: How about my refund tasks?
+    requires: [fresh_permissions, documented_equivalent_sources]
+    expect:
+      fixed_start_page: not_required
+      acceptable_source_condition: same_refund_task_object_personal_ownership_status_filters_time_and_answer_shape
+      any_refund_named_region_accepted: false
+      team_refunds_substituted_for_my_refunds: false
+      unrelated_refund_transaction_total_substituted: false
+
+  - id: reader-licensing-explicit-dashboard-request
+    question: Show the Licensing task overview on my Dashboard.
+    requires: [dashboard_access]
+    expect:
+      page: /dashboard
+      explicit_page_preference_preserved: true
+      unrelated_module_summary_substituted: false
+
+  - id: reader-licensing-cell-detail-page-permission
+    question: Read the detail for this visible application number.
+    requires: [fresh_list_permission, fresh_detail_page_permission, visible_unique_record_number_cell]
+    observed: [no_dedicated_read_button_permission, query_free_known_detail_route]
+    expect:
+      selected_cell_identity_equals_requested_identity: true
+      actual_detail_identity_matches_selected_cell: true
+      opaque_url_identifier_inferred_from_business_number: false
+      detail_url_guessed_or_directly_navigated: false
+      approve_permission_used_as_read_permission: false
+      unauthorized_destination_rejected_before_click: true
+      result: [success, not_confirmed]
+
+  - id: reader-licensing-five-outcomes
+    coverage: [Applications, Profile Verification, Licenses, Reports & Analytics, Team Management]
+    fixtures:
+      success: bounded_matching_visible_evidence
+      no_data: explicit_empty_under_verified_filters
+      no_permission: missing_current_page_permission
+      load_failed: required_page_or_read_transport_failed
+      not_confirmed: ambiguous_period_scope_or_unverified_control
+    expect:
+      missing_or_loading_interpreted_as_zero: false
+      full_module_scan_interpreted_as_deployed_acceptance: false
+
 acceptance:
+  - An initial tab switch that returns rows through a post-action observation is reduced without an unnecessary extra page read.
+  - A list answer preserves verified field names and relationships instead of guessing headings or widening ownership semantics.
+  - A non-success result without verified facts cannot produce business rules, inferred transitions, or empty-list claims from missing or history text.
+  - A non-success result with independently confirmed facts preserves those facts and marks the remaining limitation.
+  - Grounding accepts exact multi-clause source quotations while retaining polarity and cross-chunk relationship checks; a repair must not expand the source with assumptions.
   - Every text question in the Admin runtime selects admin_portal_reader; the Reader may terminate as knowledge_only when no live page read is needed.
   - No module-level Skill or legacy business Tool is selected.
   - Every page read starts with current-session GetUserInfo.

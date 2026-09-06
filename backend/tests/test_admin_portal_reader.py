@@ -87,7 +87,13 @@ class Planner:
         self.plans = list(plans or (portal_plan(),))
         self.calls = []
 
-    async def plan_admin_portal_read(self, question, permission_context, knowledge_context):
+    async def plan_admin_portal_read(
+        self,
+        question,
+        permission_context,
+        knowledge_context,
+        conversation_context=None,
+    ):
         self.calls.append((question, permission_context, knowledge_context))
         return self.plans.pop(0)
 
@@ -118,7 +124,15 @@ class Gateway:
         return self.portal_result
 
 
-def run_reader(gateway, planner=None, *, folder="kb", timeout_budget=None, question="Show portal information"):
+def run_reader(
+    gateway,
+    planner=None,
+    *,
+    folder="kb",
+    timeout_budget=None,
+    question="Show portal information",
+    conversation_context=None,
+):
     reader = AdminPortalReader(
         gateway,
         planner or Planner(),
@@ -126,7 +140,9 @@ def run_reader(gateway, planner=None, *, folder="kb", timeout_budget=None, quest
         knowledge_folder_id=folder,
         timeout_budget=timeout_budget,
     )
-    return asyncio.run(reader.run(principal(), question))
+    return asyncio.run(
+        reader.run(principal(), question, conversation_context=conversation_context)
+    )
 
 
 def permissions() -> UserPermissionContext:
@@ -317,6 +333,43 @@ def test_knowledge_projection_removes_active_markup_and_redacts_credentials() ->
     assert "[redacted]" in encoded
 
 
+def test_knowledge_projection_preserves_bounded_manual_node_controls() -> None:
+    content = "Meaning and scope. " + ("Stable manual context. " * 70) + "### Control: Apply filter\n- **effect:** Refreshes the matching list."
+
+    projected = project_knowledge_result({
+        "ok": True,
+        "result": {"chunks": [{"chunk": {"content": content}}]},
+    })
+
+    chunk = projected["chunks"][0]
+    assert chunk["content"].endswith("- **effect:** Refreshes the matching list.")
+    assert "truncated" not in chunk
+    assert len(json.dumps(projected, ensure_ascii=False).encode("utf-8")) <= 48_000
+
+
+def test_knowledge_projection_budget_handles_long_utf8_node_and_keeps_following_candidate() -> None:
+    first = "许可证申请列表支持状态筛选和日期筛选。" + ("稳定手册内容。" * 700)
+    second = "### Control: View details\n- **effect:** Opens the matching read-only record detail."
+
+    projected = project_knowledge_result({
+        "ok": True,
+        "result": {"chunks": [{"content": first}, {"content": second}]},
+    })
+
+    assert len(projected["chunks"]) == 2
+    assert projected["chunks"][0]["truncated"] is True
+    assert "View details" in projected["chunks"][1]["content"]
+    assert len(json.dumps(projected, ensure_ascii=False).encode("utf-8")) <= 48_000
+
+
+def test_knowledge_support_checks_the_bounded_node_tail_for_control_evidence() -> None:
+    content = ("Stable manual context. " * 90) + "The Apply filter control refreshes the matching list."
+    context = project_knowledge_result({"ok": True, "result": {"chunks": [{"content": content}]}})
+    result = ReaderResult(status="success", summary="", facts=("The Apply filter control refreshes the matching list.",))
+
+    assert knowledge_supports_result(result, context)
+
+
 def test_knowledge_projection_redacts_prose_credentials_and_bare_jwt() -> None:
     projected = project_knowledge_result({
         "ok": True,
@@ -367,6 +420,50 @@ def test_knowledge_support_rejects_opposite_polarity() -> None:
         assert not knowledge_supports_result(result, context)
 
 
+def test_knowledge_support_accepts_a_bounded_paraphrase_without_forcing_portal_read() -> None:
+    context = project_knowledge_result({
+        "ok": True,
+        "result": {"chunks": [{"content": "The Licensing applications list supports filtering by application status and date."}]},
+    })
+    result = ReaderResult(
+        status="success",
+        summary="",
+        facts=("The applications list can be filtered using status and date.",),
+    )
+
+    assert knowledge_supports_result(result, context)
+
+
+def test_knowledge_support_rejects_multi_term_polarity_flip_in_paraphrase() -> None:
+    context = project_knowledge_result({
+        "ok": True,
+        "result": {"chunks": [{"content": "Managers cannot approve licensing applications."}]},
+    })
+    result = ReaderResult(
+        status="success",
+        summary="",
+        facts=("Managers can approve licensing applications.",),
+    )
+
+    assert not knowledge_supports_result(result, context)
+
+
+def test_knowledge_support_preserves_exact_multiclause_source_sentences() -> None:
+    sentences = (
+        "Queue A identifies waiting work, category B separates review subjects, date C records entry time.",
+        "To Do 和 Completed 是队列标签，不等于行级 Status；具体状态以该行字段为准。",
+    )
+    for sentence in sentences:
+        context = {"ok": True, "chunks": [{"content": sentence}]}
+        assert knowledge_supports_result(ReaderResult(status="success", summary="", facts=(sentence,)), context)
+
+
+def test_knowledge_quotes_do_not_remove_negation() -> None:
+    context = {"ok": True, "chunks": [{"content": "The queue is not the record status."}]}
+    result = ReaderResult(status="success", summary="", facts=("The queue is the record status.",))
+    assert not knowledge_supports_result(result, context)
+
+
 @pytest.mark.parametrize(
     "question",
     [
@@ -381,6 +478,43 @@ def test_knowledge_support_rejects_opposite_polarity() -> None:
 )
 def test_live_question_detection_is_generic_and_multilingual(question) -> None:
     assert question_requires_live_portal(question)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Which date does the application task filter use?",
+        "Which date field does the filter refer to?",
+        "Then just explain the difference; don't read my data.",
+        "那只解释任务总览和注意事项有什么区别，不用读取我的数据。",
+    ],
+)
+def test_conceptual_questions_do_not_force_a_live_portal_read(question) -> None:
+    assert not question_requires_live_portal(question)
+
+
+@pytest.mark.parametrize("question", ["Which tasks are overdue?", "Which records are visible?"])
+def test_which_task_or_record_questions_remain_live(question) -> None:
+    assert question_requires_live_portal(question)
+
+
+@pytest.mark.parametrize("question", [
+    "Which date filter is selected?",
+    "Which date range is active right now?",
+    "Don't read my data; guess how many tasks I have.",
+])
+def test_current_filter_state_and_live_counts_are_not_knowledge_only(question) -> None:
+    assert question_requires_live_portal(question)
+
+
+def test_empty_portal_actions_normalize_to_one_generic_observe() -> None:
+    request = portal_read_request_from_plan({
+        "mode": "portal_read",
+        "portalRequest": {"startPath": "/dashboard", "actions": [], "expectedFields": []},
+    })
+
+    assert request is not None
+    assert request.actions == ({"type": "observe"},)
 
 
 def test_documented_general_question_does_not_require_live_portal() -> None:
@@ -536,6 +670,111 @@ def test_show_detail_requires_exact_normalized_button_permission() -> None:
     assert policy.validate(
         PortalReadRequest("/licensing", ({"type": "show_detail", "permissionCode": "LICENSING-VIEW-DETAIL"},)), permissions()
     ) == "detail_identity_required"
+
+
+def test_cell_detail_allows_only_a_distinct_permitted_destination_with_its_visible_identifier() -> None:
+    permissions_without_read_button = UserPermissionContext(
+        roles=("Manager",),
+        pages=("/licensing/applications",),
+        subpages=("/licensing/applications/detail",),
+        buttons=("licensing.approve",),
+    )
+    request = PortalReadRequest(
+        "/licensing/applications",
+        ({
+            "type": "show_detail",
+            "role": "cell",
+            "name": "APP-123",
+            "value": "APP-123",
+            "path": "/licensing/applications/detail",
+        },),
+    )
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions_without_read_button) is None
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        (
+            {"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},
+            "detail_destination_required",
+        ),
+        (
+            {
+                "type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123",
+                "path": "/licensing/applications",
+            },
+            "detail_destination_not_distinct",
+        ),
+        (
+            {
+                "type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123",
+                "path": "/licensing/applications/detail?taskId=opaque-uuid",
+            },
+            "detail_destination_query_forbidden",
+        ),
+        (
+            {
+                "type": "show_detail", "role": "cell", "name": "OTHER-9", "value": "APP-123",
+                "path": "/licensing/applications/detail",
+            },
+            "detail_cell_identity_mismatch",
+        ),
+    ],
+)
+def test_cell_detail_policy_rejects_ambiguous_or_forged_targets(action, expected) -> None:
+    permissions_without_read_button = UserPermissionContext(
+        roles=("Manager",),
+        pages=("/licensing/applications",),
+        subpages=("/licensing/applications/detail",),
+        buttons=("licensing.approve",),
+    )
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(
+        PortalReadRequest("/licensing/applications", (action,)), permissions_without_read_button
+    ) == expected
+
+
+def test_cell_detail_policy_does_not_accept_a_mutation_or_forged_button_permission() -> None:
+    action = {
+        "type": "show_detail",
+        "role": "cell",
+        "name": "APP-123",
+        "value": "APP-123",
+        "path": "/licensing/applications/detail",
+        "permissionCode": "licensing.approve",
+    }
+    permissions_with_only_mutation_button = UserPermissionContext(
+        roles=("Manager",),
+        pages=("/licensing/applications",),
+        subpages=("/licensing/applications/detail",),
+        buttons=("licensing.approve",),
+    )
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(
+        PortalReadRequest("/licensing/applications", (action,)), permissions_with_only_mutation_button
+    ) == "click_target_not_detail"
+
+
+def test_cell_detail_policy_requires_fresh_permission_for_the_declared_destination() -> None:
+    action = {
+        "type": "show_detail",
+        "role": "cell",
+        "name": "APP-123",
+        "value": "APP-123",
+        "path": "/licensing/applications/other-detail",
+    }
+    permissions_without_destination = UserPermissionContext(
+        roles=("Manager",),
+        pages=("/licensing/applications",),
+        subpages=("/licensing/applications/detail",),
+        buttons=("licensing.approve",),
+    )
+
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(
+        PortalReadRequest("/licensing/applications", (action,)), permissions_without_destination
+    ) == "page_not_permitted"
 
 
 def test_sort_requires_closed_direction() -> None:
@@ -1167,7 +1406,65 @@ def test_unsupported_knowledge_success_falls_through_to_portal_read() -> None:
     assert gateway.events[-1] == "admin.portal.read"
     assert planner.calls[1][2]["planningDirective"]["reason"] == "knowledge_result_not_grounded_or_incomplete"
     assert planner.calls[1][2]["chunks"] == [{"content": "[truncated]"}]
-    assert "knowledge" not in planner.calls[1][2]
+
+
+def test_nonlive_knowledge_grounding_repair_can_finish_without_portal() -> None:
+    planner = Planner(
+        {"mode": "knowledge_only", "result": "success", "facts": ["The application task filter uses the Submission Time date field."], "missing": []},
+        {"mode": "knowledge_only", "result": "success", "facts": ["The drawer concerns Submission Time."], "missing": []},
+    )
+    gateway = Gateway(knowledge_result={"ok": True, "result": {"chunks": [{"content": "Applications filter surface. The drawer concerns Submission Time. Do not assume dates have been applied."}]}})
+
+    outcome = run_reader(gateway, planner, question="Which date field does the application task filter use?")
+
+    assert outcome.result.status == "success"
+    assert gateway.events == ["GetUserInfo", "knowledge.search"]
+    assert len(planner.calls) == 2
+    assert planner.calls[1][2]["planningDirective"]["knowledgeGroundingRepair"] is True
+    assert planner.calls[1][2]["planningDirective"]["requiredEvidenceUse"] == "quote_exact_relevant_sentences_in_source_language"
+    assert outcome.audit_evidence["stage"] == "knowledge_only_repaired"
+
+
+def test_failed_nonlive_knowledge_repair_is_terminal_and_does_not_force_portal() -> None:
+    planner = Planner(
+        {"mode": "knowledge_only", "result": "success", "facts": ["Unsupported answer."], "missing": []},
+        {"mode": "portal_read", "portalRequest": {"startPath": "/dashboard", "actions": [{"type": "observe"}]}},
+    )
+    gateway = Gateway(knowledge_result={"ok": True, "result": {"chunks": [{"content": "The manual discusses a workflow."}]}})
+
+    outcome = run_reader(gateway, planner, question="Explain the documented workflow")
+
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.result.missing == ("knowledge_not_grounded",)
+    assert "admin.portal.read" not in gateway.events
+    assert len(planner.calls) == 2
+    assert planner.calls[1][2]["planningDirective"]["knowledgeGroundingRepair"] is True
+
+
+@pytest.mark.parametrize(("action_type", "name", "role"), [
+    ("switch_tab", "To Do", "tab"),
+    ("show_filter", "Filter", "button"),
+    ("apply_filter", "Apply", "button"),
+    ("reset_filter", "Reset", "button"),
+    ("dismiss_overlay", "Cancel", "button"),
+])
+def test_plan_infers_only_missing_single_role_read_commands(action_type, name, role) -> None:
+    plan = portal_plan([{"type": action_type, "name": name}])
+    request = portal_read_request_from_plan(plan)
+    assert request is not None
+    assert request.actions[0]["role"] == role
+    assert "role" not in plan["portalRequest"]["actions"][0]
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions()) is None
+
+
+def test_plan_preserves_explicit_role_and_rejects_forbidden_action() -> None:
+    request = portal_read_request_from_plan(portal_plan([{"type": "show_filter", "name": "Filter", "role": "link"}]))
+    assert request is not None
+    assert request.actions[0]["role"] == "link"
+    forbidden = portal_read_request_from_plan(portal_plan([{"type": "download", "name": "Download"}]))
+    assert forbidden is not None
+    assert "role" not in forbidden.actions[0]
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(forbidden, permissions()) == "action_not_read_only"
 
 
 def test_planner_stage_timeout_is_identified_before_portal_read() -> None:

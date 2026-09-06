@@ -1,0 +1,330 @@
+capability: admin-portal-reader
+area: Licensing
+observed_at: 2026-09-06
+artifact_kind: engineering_coverage_not_user_manual
+mode: revalidate-page
+portal_origin: https://umc-adminportal.sol.daypop.ai
+browser_login_concurrency: 1
+status: scan_and_generic_engineering_completed_with_explicit_acceptance_gaps
+
+delivery_gates:
+  module_entry_inventory: verified
+  representative_role_differences: verified
+  current_manual_sources: complete_local_v1_and_v2_read
+  revised_manual: prepared_validated_with_explicit_unverified_controls
+  knowledge_upload: user_managed_not_performed
+  deployed_knowledge_retrieval: not_tested
+  deployed_reader_end_to_end: not_tested
+  database_writes: none
+  business_action_clicks: none
+  original_browser_account_restored: verified_by_fresh_GetUserInfo
+  automatic_portal_requests: ordinary_portal_bootstrap_includes_document_avatar_and_clientlog_requests
+  runtime_request_guard: document_download_and_clientlog_still_blocked
+
+engineering_verification:
+  targeted_shared_reader_tests: 450_passed
+  gateway_get_allowlist_count: 38
+  gateway_post_allowlist_count: 5
+  contract_allowlists_match_executor: true
+  yaml_files_parsed: 3
+  unique_regression_spec_cases: 52
+  regression_spec_is_not_a_live_test_run: true
+  independent_code_review: no_high_or_medium_severity_findings
+  real_executor_cell_click_to_opaque_detail_query: not_tested_end_to_end
+
+manual_delivery:
+  path: /Users/thron/Downloads/admin-portal-reader-kb/Licensing-Admin-User-Manual-v3.md
+  output_directory_authorization: user_confirmed_in_current_task
+  version: 3
+  semantic_nodes: 28
+  control_blocks: 38
+  maximum_heading_depth: 3
+  old_v2_nodes: 12
+  old_v2_node_titles_retained: 12
+  removed_v2_node_titles: []
+  old_files_unchanged: sha256_verified
+  old_v1_sha256: 428c82cfd63e85a667295f1b1e5e4b063a0ed556654f1327b5e6c22f32a404c6
+  old_v2_sha256: 8d6fb3a1efedeb735fac3bdd6a0c71531743a35b87a810c887d7af41089c9628
+  new_nodes_by_area:
+    application_summary: 1
+    analytics_navigation_and_views: 7
+    export_configuration_boundaries: 3
+    team_management: 5
+  validation_scope: structure_preservation_and_evidence_review_not_live_retrieval
+  technical_limitations_location: this_coverage_file_not_the_importable_manual
+  independent_manual_review:
+    scope: passed
+    structure: passed
+    original_node_preservation: passed
+    safety: passed
+    factual_inventory: supported_by_sanitized_scan_evidence
+    residual_close_affordance_finding: resolved_by_explicit_deferral_no_new_success_claim
+    live_retrieval_and_reader_acceptance: pending
+
+manual_source_inventory:
+  current_local_sources:
+    - /Users/thron/Downloads/admin-portal-reader-manuals/Licensing-Admin-User-Manual-v1.md
+    - /Users/thron/Downloads/admin-portal-reader-kb/Licensing-Admin-User-Manual-v2.md
+  v2_nodes_to_preserve_or_explicitly_correct:
+    - Licensing routing
+    - My Application Tasks - To Do
+    - My Application Tasks - Completed
+    - Applications filter surface
+    - Application detail
+    - Profile Verification list
+    - Profile Verification filters
+    - Profile Verification detail
+    - Licenses status overview
+    - Licenses list
+    - Licenses filter surface
+    - License detail and Related Applications
+  intentional_corrections:
+    - Replace the Applications-only default for ambiguous Licensing tasks with object and ownership resolution.
+    - Replace obsolete separate Reports and Analytics pages with the observed combined route and its four top-level tabs.
+    - Include permission-scoped Team Management rather than excluding it.
+    - Remove unverified default sort, My Decision filter, and date semantics from current confirmed behavior.
+    - Add peer semantic nodes and individually owned control blocks; do not recreate a deep menu tree.
+
+permission_representatives:
+  source: fresh_GetUserInfo_after_serialized_login
+  secrets_and_personal_values_retained: false
+  cases:
+    - id: L2_L3_representative
+      roles: [Licensing Officer]
+      list_routes: [applications, profile, licenses, reports-analytics]
+      team_management: absent_from_permission_tree
+      reports_export_permission: present
+      license_enable_disable_permission: present
+    - id: L1
+      roles: [Foreign Media Manager, Licensing Manager]
+      list_routes: [applications, profile, licenses, reports-analytics, team-management]
+      reports_export_permission: present
+      license_enable_disable_permission: present
+    - id: L4
+      roles: [Foreign Media Officer]
+      list_routes: [applications, profile, licenses, reports-analytics]
+      team_management: absent_from_permission_tree
+      reports_export_permission: absent
+      reports_export_button: not_rendered_on_analytics_baseline
+      license_enable_disable_permission: absent
+      license_row_action_buttons: not_rendered_on_sample_list
+    - id: L5
+      roles: [Foreign Media Manager]
+      list_routes: [applications, profile, licenses, reports-analytics, team-management]
+      reports_export_permission: absent
+      license_enable_disable_permission: present
+  limitations:
+    - One representative of the previously equivalent L2/L3 fingerprint was scanned; this is not an all-account test.
+    - Super Administrator and unrelated departments were not scanned in this pass.
+    - Role titles and page permission do not establish every list's personal, team, or global data scope.
+
+sanitized_field_evidence:
+  source: same_task_serialized_browser_scan_2026_09_06
+  method: bounded_visible_DOM_and_accessibility_label_projections
+  purpose: traceable_field_inventory_for_manual_review_not_business_instructions
+  record_values_and_internal_ids: omitted
+  inactive_table_handling: visible_only_after_selected_tab_settled
+  applications:
+    summary_labels: [To Do, Pending Review, Pending Modification, Pending Disposition, Disposition Verification, External Approval, Completed]
+    todo_columns: [Application No., Service Name, Service Category, Type, Status, SLA, Apply For, Submission Time, Action]
+    completed_columns: [Application No., Service Name, Service Category, My Decision, Type, Status, SLA, Apply For, Submission Time]
+    type_options_observed: [New, Renew, Modify, Cancel, Transfer, Partner Management]
+    type_options_inventory_exhaustive: false
+    status_option_surface_opened: true
+    status_option_inventory_exhaustive: false
+    search_commit_observed: Enter_key_after_exact_business_number_input_then_matching_result
+    date_drawer_labels: [Filter, Submission Time, Start date, End date, Cancel, Apply, Close]
+    conditional_detail_sections_observed: [Activity Details, Trade License Details, Account Owner Details, Social Media Account, Training Program, Personal Profile, Applicant Overview, Profile Overview, Application Overview, Application Timeline, Personal Information, Address Information, Personal Documents]
+  profile:
+    columns: [Application No., Profile Type, Apply For, SLA, Applicant, Status, Last Updated, Actions]
+    status_options_observed: [All Statuses, Pending Review, Approved, Rejected]
+    user_type_options_observed: [All User Types, Individual, Commercial Entity, Government Entity, Non-Profit Organization, Free Zone, Shipping company / Clearing Agency, Advertising/Talent Management Agency, Embassy, Consulate]
+    user_type_inventory_exhaustive: false
+    date_modal_labels: [Filter, Last Updated, Start Time, End Time, Cancel, Apply, Close]
+    detail_summary_labels: [Application Number, Applicant, SLA, Status]
+    detail_sections: [Establishment Information, Establishment Documents, Address]
+  licenses:
+    summary_labels: [Total, Active, Expire Soon, Expired, Cancelled, Suspended]
+    columns: [License No., Application No., License Name, Media Activity, Apply For, Status, Effective Date, Expiry Date, Actions]
+    status_options: [All Statuses, Active, Expiring Soon, Expired, Cancelled, Suspended]
+    date_fields: [Effective Start Date, Effective End Date]
+    detail_labels: [License Number, Issuance Date, Effective Date, Expiry Date, Days Remaining]
+    related_application_columns: [Number, Application Number, Service Name, Type, Submission Time]
+  reports_analytics:
+    top_level_tabs: [Service Operations Analytics, Profile Analytics, License Analytics, Reports]
+    period_options: [Last 7 Days, Last 30 Days, Last 6 Months, Last Year, Custom Range]
+    initial_period_label: Last 30 Days
+    service_kpi_labels: [Total Applications, Active Licenses, Approval Rate, Avg. Processing Time, Total Revenue, Satisfaction Rate]
+    service_chart_labels: [Application Status Overview, Applications by Activity Name, Applications by Service Category, Applications by Type, Applications by Device, Applications by Emirate, Applications by User Type, Customer Satisfaction Overview, Satisfaction Trend by Rating, Service Application Trend, Team Performance Trend, Revenue Trend]
+    revenue_tabs: [Top 10 Activities by Revenue, Top 10 Services by Revenue, Revenue by Application Type]
+    service_performance_columns: [Service Name, Applications, Total Revenue (AED), Approval Rate, Avg Processing Time, Satisfaction Rate, Refund Applications, Refund Rate]
+    team_performance_columns: [Team Members, Application Tasks, Approved Applications, Rejected Applications, Approval Rate, Avg Processing Time, SLA, SLA Breaches]
+    profile_kpi_labels: [Total Profile Application, Verified Profiles, Profile Verification Rate]
+    profile_chart_labels: [Applications by User Type, Profile Application Trend, Applications by Emirate, Individual Applications by Verification Methods, Applications by Device]
+    profile_table_columns: [Team Member, Application Tasks, Approved Applications, Rejected Applications, Approval Rate]
+    license_chart_labels: [Licenses by Status, Issued License Trend by Type, Licenses by Emirate, Licenses by User Type]
+    license_table_parent_columns: [License, Issued, Active, Expiring Soon, Expired, Geographic Distribution, User Type Distribution]
+    license_table_emirate_columns: [Dubai, Abu Dhabi, Sharjah, Ajman, RAK, Fujairah, Umm Al Quwain, Foreign]
+    license_table_user_type_columns: [Commercial, Individual, Establishment, Government, Free Zone, Talent Agency, Embassy, Consulate, Cultural Clubs]
+    export_forms:
+      License Data: [Application Submission Date, Start Date, End Date, Emirate, Profile Type, Reset, Export]
+      Cancelled Activities: [Application Submission Date, Start Date, End Date, Emirate, Reset, Export]
+      Electronic Media: [Application Submission Date, Start Date, End Date, Reset, Export]
+    export_result_table_present: false
+  team_management:
+    summary_labels: [To Do, Applications, Profile Verifications, Enquiries & Complaints, Refunds, Appeals]
+    todo_columns: [Task No., Task Category, Apply For, SLA, Assigned To, Status, Last Updated, Actions]
+    completed_columns: [Task No., Task Category, Apply For, Assigned To, Status, Last Updated]
+    initial_switch_label_and_state: Application Task Only ON
+    initial_category: Applications
+    verified_switch_transition: OFF_with_All_Categories
+    categories_observed: [Applications, Profile Verifications, Enquiries & Complaints, Refunds, Appeals]
+    status_selector_observed: All Statuses
+    filter_labels: [Filter, Member, All Members, Last Updated, Start Date, End Date, Cancel, Apply]
+    member_filter_labels: [Select Team Member, Start date, End date]
+    member_card_categories: [All, Applications, Profile Verification, Enquiries & Complaints, Appeals, Refunds]
+    member_card_metric_labels: [Completed Tasks, Avg. Processing Time, SLA Compliance, Overdue Tasks]
+    member_business_actions_not_clicked: [Mark Emergency Leave, Resume Work, Reassign, Confirm]
+
+surfaces:
+  - id: applications
+    route: /licensing/applications
+    regions_verified: [My Application Tasks summary, To Do, Completed]
+    readonly_verified:
+      - To Do and Completed selection with active-tab and visible-column verification
+      - Exact visible Application No. search with matching result
+      - Type and Status option discovery
+      - Filter drawer opening and Submission Time field discovery
+      - Filter Cancel and list Reset
+      - Visible Application No. to application detail with matching business identifier
+      - Back to originating list with prior search retained in the sampled transition
+    forbidden: [Export, More actions, Approve, Reject, External Approval, External Reject, Confirm, Send Back, Request Modification, Recall Approval]
+    deferred:
+      - control: Type and Status filter combinations; My Decision filter
+        reason: Option labels were observed, but every applied combination was not verified; current Completed did not expose a dedicated My Decision filter.
+      - control: Submission Time Apply and exact date boundaries
+        reason: Portal timezone, inclusivity, and complete compound-date behavior remain unconfirmed.
+      - control: Page Size, pagination, and sort variants
+        reason: Visible controls recorded; not all variants were exercised on this surface.
+      - control: Filter Close affordance
+        reason: Visible label only; dismissal effect not verified. The manual uses the verified Cancel control instead.
+  - id: application_detail
+    route: /licensing/applications/applicationsDetails
+    entry: visible_application_number_in_permitted_list
+    identity_continuity: verified
+    content_shapes_verified: [summary, service_specific_application_form, Application Timeline, Applicant Overview, Profile Overview, Application Overview]
+    forbidden: [approval_actions, modification_actions, sending_actions, business_documents]
+    deferred:
+      - control: Overview expanded-view buttons
+        reason: A sampled click did not confirm a new view; do not describe it as a working expansion.
+      - control: Every service-specific form and deeper linked record
+        reason: Representative detail verified; exhaustive service/type combinations are not evidence for universal field availability.
+  - id: profile
+    route: /licensing/profile
+    regions_verified: [My Profile Verification Tasks, profile_type_summary, task_list]
+    readonly_verified:
+      - Status and User Type option discovery
+      - Filter modal opening and Last Updated field discovery
+      - Filter Cancel
+      - No-match keyword search produces explicit No data
+      - Reset clears keyword and restores rows
+      - Visible Application No. to profile detail with matching business identifier
+    forbidden: [Export, Approve, Reject, document_controls]
+    deferred:
+      - control: Date Apply, sort, Page Size, and multi-filter combinations
+        reason: Discovered but not fully exercised; do not infer date or resulting-state semantics.
+      - control: Filter Close affordance
+        reason: Visible label only; dismissal effect not verified. The manual uses the verified Cancel control instead.
+  - id: profile_detail
+    route: /licensing/profile/profiledetails
+    permission_route: /licensing/Profile/ProfileDetails
+    entry: visible_application_number_in_permitted_profile_list
+    identity_continuity: verified
+    content_shapes_verified: [summary, Establishment Information, Establishment Documents headings, Address]
+    forbidden: [Approve, Reject, document_view_or_download]
+    deferred:
+      - control: Individual, commercial partner, and other organization-specific details
+        reason: Complete old source describes conditional variants; the refreshed sample was an Embassy profile, not every type.
+  - id: licenses
+    route: /licensing/licenses
+    regions_verified: [status_summary, license_list]
+    readonly_verified:
+      - Exact visible License No. search with matching result
+      - Status option discovery
+      - Effective Start Date and Effective End Date control discovery
+      - Visible License No. to license detail with matching business identifier
+    forbidden: [Export, Download, Suspend, Reinstate, Enable, Disable, Confirm]
+    deferred:
+      - control: Date changes, status combinations, sort, pagination, and Page Size
+        reason: Controls discovered, but not every resulting state or date boundary was verified.
+  - id: license_detail
+    route: /licensing/license/licenseDatails
+    permission_route: /licensing/license/LicenseDatails
+    entry: visible_license_number_in_permitted_license_list
+    identity_continuity: verified
+    content_shapes_verified: [license_summary_and_dates, Related Applications, Profile Overview, Application Overview]
+    forbidden: [Download, certificate_secrets, document_contents, license_state_changes]
+    deferred:
+      - control: Related Application navigation and expanded sidebars
+        reason: Relationship table was read, but secondary navigation and all sidebar dependency endpoints were not accepted into runtime coverage.
+  - id: reports_analytics
+    route: /licensing/reports-analytics
+    regions_verified: [Service Operations Analytics, Profile Analytics, License Analytics, Reports]
+    readonly_verified:
+      - All four top-level tabs with visible-content verification
+      - Last 7 Days selection changes displayed period and triggers statistics reads
+      - Preset labels Last 7 Days, Last 30 Days, Last 6 Months, Last Year, Custom Range
+      - Service Performance and Team Performance with different visible columns
+      - Top 10 Activities by Revenue, Top 10 Services by Revenue, Revenue by Application Type selection
+    forbidden: [Export, generated_report_download]
+    semantic_hazards:
+      - Inactive tabs retain hidden tables; only the active visible table may support facts.
+      - KPI Total Applications and status-chart total were different in one observation; aggregation equivalence is unconfirmed.
+      - Reports contains License Data, Cancelled Activities, Electronic Media configuration forms, not rendered result tables.
+      - Table search or pagination does not establish chart filtering.
+      - Analytics scope is not automatically personal assigned workload.
+    deferred:
+      - control: Custom Range, table Search, icon-only filters, table pagination, Page Size
+        reason: Discovered controls need independent effect validation; exact dates and period boundaries are not established.
+      - control: Reports date, Emirate, Profile Type, and Reset controls
+        reason: These configure prohibited exports and do not expose a read-result table; no export was triggered.
+  - id: team_management
+    route: /licensing/team-management
+    regions_verified: [Team Tasks, team_task_category_summary, To Do, Completed, Team Members]
+    readonly_verified:
+      - Team Tasks and Team Members selection
+      - To Do and Completed selection with different columns
+      - Application Task Only OFF changes category to All Categories
+      - Refunds category selection produces matching-category rows
+      - No-match search produces explicit No Data; Reset restores list
+      - Filter surface exposes Member and Last Updated; Cancel returns to list
+      - Next Page changes active page and first visible row
+      - SLA sort exposes ascending aria-sort and triggers a fresh query
+      - Team Member Applications category activates the selected card category
+    forbidden: [Reassign, bulk_reassign_selection, Export, Mark Emergency Leave, Resume Work, Confirm]
+    deferred:
+      - control: Filter Apply, Member/date combinations
+        reason: Empty-filter Apply did not verify a closed/applied state; do not report it as successful.
+      - control: Team-member selector, date range, performance tooltips, remaining category combinations
+        reason: Controls discovered; full metric definitions and date boundaries not independently confirmed.
+      - control: Team task detail or cross-module destination
+        reason: Task list is sufficient for bounded team-work evidence; cross-module detail destinations not verified in this pass.
+
+generic_runtime_gaps:
+  fixed_in_this_change:
+    - Exact read-only analytics and Team Management network paths were absent.
+    - Native record-number cells with granted detail-page permission had no dedicated read-button permission.
+  still_requires_verification:
+    - Ant Design input-based combobox selection and Enter-to-search commitment through the generic executor
+    - Pagination buttons lacking their own accessible label or aria-controls
+    - Overview expansion controls lacking confirmed expandable state
+    - Required detail-sidebar read dependencies under the enforced network guard
+    - Deployed Reader behavior using the newly uploaded complete manual
+
+classification_policy:
+  readonly_verified: documented_readonly
+  forbidden: documented_forbidden_without_click
+  deferred: out_of_scope_with_reason_not_claimed_as_verified
+  repeated_row_controls: grouped_by_function_and_permission_variant
+  system_chrome: navigation_to_unrelated_modules_account_settings_language_and_notifications_not_covered
+  automatic_requests: not_evidence_of_manual_business_document_access_or_runtime_allowlist_permission

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-06T19:06:52Z",
+  "stage": "post-upload-retrieval-only",
+  "execution": {
+    "container": "dsh-admin-local-backend-1",
+    "gatewayUrl": "http://knowledge-gateway:8101",
+    "folderId": "34a89aa7b43b473d8326cf6540fc3894",
+    "requestedTopK": 32,
+    "returnedTopK": 20,
+    "retrievalModes": ["bm25", "graph", "vector"],
+    "authMode": "anonymous-public",
+    "configSources": {
+      "knowledge_default_folder_id": "environment/default",
+      "knowledge_top_k": "environment/default",
+      "knowledge_gateway_url": "environment/default"
+    },
+    "databaseOverrideChecked": true,
+    "databaseWrite": false,
+    "rawChunksPersisted": false
+  },
+  "sourceHashes": {
+    "Content-Admin-User-Manual-v1.md": "f2385bf85cfb06115f74437732471666b186791a1dfb3d5f9f90dd7f0761a197",
+    "Customer-Happiness-Admin-User-Manual-v1.md": "b0f0628564b0db78c9fc2eb3d4d958a28c3279ccb0355d8b4c5a3bc40ee67f35",
+    "Finance-Admin-User-Manual-v1.md": "7a9ca60f4e54ca663b30c7db9e6ea0d26dfda1f94a72f266c9c1caa52ba60ed9",
+    "Inspection-Admin-User-Manual-v1.md": "5391e01d82ff4a8b23e6f7c4bf72f155b12f677383043e26728f981be3710c1e",
+    "Dashboard-Admin-User-Manual-v3.md": "5f8618876299fff09ce269422dbbe9fcdb3c0686fa047b5a56d2b5f29cf06c41",
+    "Licensing-Admin-User-Manual-v3.md": "bebe22fb57e1450e34b6353b151524a5380d84979eb5a8510ed767570267a8e3"
+  },
+  "runtimeCodeHashMatchesWorkspace": {
+    "backend/app/knowledge.py": true,
+    "backend/app/portal_reader.py": true,
+    "backend/app/llm.py": true,
+    "backend/app/service.py": true,
+    "knowledge-gateway/app.py": true,
+    "platform-gateway/app.py": true
+  },
+  "probeSummary": {
+    "liveSearches": 17,
+    "directNaturalAndDiagnostic": 15,
+    "productionShapedSyntheticContext": 2,
+    "allReturnedRaw20Projected8": true,
+    "timeoutsOrErrors": 0,
+    "fullChunkBodyExactLocalMatch": "unrecorded",
+    "localMatchEvidence": "retrieved filename/version, source line spans, and exact bounded node/role literals"
+  },
+  "probes": [
+    {"id":"C1-role-movies-route","kind":"bare","input":"For an authorized Content Officer, which Content Library Movies permission and route condition apply, and what result should be used if direct navigation to the Cinema child URL shows a 404?","source":"Content-Admin-User-Manual-v1.md","latencyMs":5364.8,"rawRanks":[1,2,4,6,7],"projectedRanks":[1,2,4,6,7],"sourceLines":["177-188","162-176","203-214","1-8","229-239"],"anchors":["parent /content/ContentLibrary","Cinema child permission","Content Officer limited recheck","direct child 404 => load_failed"],"assessment":"pass"},
+    {"id":"C2-natural-permits","kind":"bare","input":"I need to look up a permit in Content. What fields and safe filters can I use, and can the reader download or suspend it?","source":"Content-Admin-User-Manual-v1.md","latencyMs":3207.1,"rawRanks":[1,2],"projectedRanks":[1,2],"sourceLines":["96-109","1-8"],"anchors":["/content/Permits","Effective Start Date","Download forbidden","Suspend forbidden"],"assessment":"pass"},
+    {"id":"C3-node-regulate-entry","kind":"bare","input":"Which Content Library list contains HS Code and Number of Titles, and does its sampled table have an Actions column?","source":"Content-Admin-User-Manual-v1.md","latencyMs":1019.4,"rawRanks":[4,6,8,9,10,11,12,13,14,17,18],"projectedRanks":[4,6,8],"sourceLines":["215-228","110-123","162-176"],"anchors":["Regulate Entry Items","HS Code","Number of Titles","no sampled Actions column"],"assessment":"pass_with_ranking_contamination","note":"Three Regulate Entry requirement chunks ranked above the manual node."},
+    {"id":"H1-natural-account","kind":"bare","input":"How can I locate an account in Customer Management by Account ID, and what account filters can I inspect without sending messages or changing account status?","source":"Customer-Happiness-Admin-User-Manual-v1.md","latencyMs":1044.6,"rawRanks":[1,2,3,5,6,8,10,11,12,15,16],"projectedRanks":[1,2,3,5,6,8],"sourceLines":["211-222","162-174","175-186","187-198"],"anchors":["Accounts Search by Account ID","Login Methods","External SMS forbidden","Suspend forbidden"],"assessment":"pass"},
+    {"id":"H2-role-layout","kind":"bare","input":"My Enquiries and Complaints table shows Source, Priority, and Last Updated rather than Issue Category and Submission Time. Which documented layout matches, and can I infer that the difference is solely caused by the Happiness Center Agent role?","source":"Customer-Happiness-Admin-User-Manual-v1.md","latencyMs":2096.3,"rawRanks":[1,2,3,7,8,12,17,18,20],"projectedRanks":[1,2,3,7,8],"sourceLines":["247-258","10-24","49-60","1-9"],"anchors":["Agent layout","Source","Priority","Last Updated","manager Issue Category/Submission Time contrast","not attributed solely to role"],"assessment":"pass","note":"Initial compound literal `Source; Priority; Last Updated` was malformed and false; independent exact source anchors all matched."},
+    {"id":"H3-column-anchor","kind":"bare","input":"When may the Reader treat a Customer Happiness list as the Appeals list if the page title and stable direct entry are not confirmed?","source":"Customer-Happiness-Admin-User-Manual-v1.md","latencyMs":1137.2,"rawRanks":[1,2,3,4,5,6,7,8,10,13,14,15,16,17],"projectedRanks":[1,2,3,4,5,6,7,8],"sourceLines":["297-308","259-272","1-9","273-284"],"anchors":["Appeal list by column anchor","Appeal No.","stable direct entry not confirmed"],"assessment":"pass"},
+    {"id":"F1-natural-payments","kind":"bare","input":"How do I safely find a Finance payment by transaction number and inspect its payment method and transaction time criteria?","source":"Finance-Admin-User-Manual-v1.md","latencyMs":1159.3,"rawRanks":[1,2,3,4,5,6,7,8],"projectedRanks":[1,2,3,4,5,6,7,8],"sourceLines":["25-36","10-24","61-72","49-60"],"anchors":["Transaction No. search","Payment Method","Transaction Time","/financial-payment/transactions"],"assessment":"pass"},
+    {"id":"F2-refund-distinction","kind":"bare","input":"What distinguishes the Finance Refunds list from the Customer Happiness refund workflow, and which refund action is forbidden?","source":"Finance-Admin-User-Manual-v1.md","latencyMs":1417.7,"rawRanks":[4,9,11],"projectedRanks":[4],"sourceLines":["85-97"],"anchors":["Finance Refunds list","Customer Happiness workflow distinction","Refund action forbidden","/financial-payment/refunds"],"assessment":"pass_with_ranking_risk","note":"Customer Happiness manual occupied projected ranks 1-3; correct Finance node remained complete at rank 4."},
+    {"id":"I1-natural-queued","kind":"bare","input":"How can I safely find a queued inspection task by Task No., inspect its queue filters, and avoid assigning or creating work?","source":"Inspection-Admin-User-Manual-v1.md","latencyMs":1738.5,"rawRanks":[1,2,3,4,5,6,7,8,9,11,12,13,14,15,16,17,19],"projectedRanks":[1,2,3,4,5,6,7,8],"sourceLines":["61-72","37-48","10-24","85-96","49-60"],"anchors":["Task No. search","queued filter criteria","Assign Now forbidden","Create Task forbidden"],"assessment":"pass"},
+    {"id":"I2-role-layout","kind":"bare","input":"For retrieval context only, suppose the authorized role is Inspector: how is its primary To Do task layout distinguished from an Inspection Manager's nested Team Tasks To Do layout?","source":"Inspection-Admin-User-Manual-v1.md","latencyMs":1192.3,"rawRanks":[1,2,3,4,5,6,7,8,9,10,13],"projectedRanks":[1,2,3,4,5,6,7,8],"sourceLines":["112-123","214-225","200-213","238-248","138-149"],"anchors":["Inspector primary To Do","manager nested Team Tasks To Do","no Inspector column in Inspector layout"],"assessment":"pass"},
+    {"id":"I3-natural-violations","kind":"bare","input":"What can the read-only Admin reader inspect on Violation Management, including its extra filter criteria, and what report action remains forbidden?","source":"Inspection-Admin-User-Manual-v1.md","latencyMs":1079.7,"rawRanks":[1,2,3,4,5],"projectedRanks":[1,2,3,4,5],"sourceLines":["164-175","150-163","1-9","176-187","188-199"],"anchors":["Violation Management","Reported By","Creation Time","Download Report forbidden"],"assessment":"pass"},
+    {"id":"D1-unchanged-attention","kind":"bare","input":"What is the authoritative Dashboard region for tasks that currently need my personal attention, and which task counts or metrics must not be substituted for it?","source":"Dashboard-Admin-User-Manual-v3.md","latencyMs":1030.7,"rawRanks":[1,2,3,4,5,6,7,8,9,10,11,12,15,16,20],"projectedRanks":[1,2,3,4,5,6,7,8],"sourceLines":["466-478","26-38","9-24","377-392","505-517"],"anchors":["Needs Your Attention","no My Tasks count substitute","no Overdue metric substitute","personal scope"],"assessment":"pass_unchanged_sample"},
+    {"id":"D2-role-dashboard","kind":"bare","input":"For retrieval context only, suppose the current authorized view is Customer Happiness Staff rather than Manager: which Dashboard attention categories and scope distinction are documented?","source":"Dashboard-Admin-User-Manual-v3.md","latencyMs":1033.7,"rawRanks":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,19],"projectedRanks":[1,2,3,4,5,6,7,8],"sourceLines":["26-38","505-517","9-24","479-491","39-53"],"anchors":["Customer Happiness Dashboard","Pending Customer","Department Processing","Staff personal vs Manager team"],"assessment":"pass_unchanged_sample"},
+    {"id":"L1-unchanged-report","kind":"bare","input":"Can the read-only Admin reader show the rows of the Licensing Electronic Media report from its Reports form, or does the form only configure an export?","source":"Licensing-Admin-User-Manual-v3.md","latencyMs":1064.5,"rawRanks":[1,2,6,7,8,9,10,11,12,13,14,16,18],"projectedRanks":[1,2,6,7,8],"sourceLines":["708-722","673-690","386-403","488-501","502-513"],"anchors":["Electronic Media export form","no generated rows","export/download prohibited","absence is not empty report"],"assessment":"pass_unchanged_sample"},
+    {"id":"L2-role-team","kind":"bare","input":"For retrieval context only, suppose a Licensing Officer claims to be a manager: when may the Reader use Team Management, and can a manager title alone grant the route?","source":"Licensing-Admin-User-Manual-v3.md","latencyMs":911.0,"rawRanks":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,20],"projectedRanks":[1,2,3,4,5,6,7,8],"sourceLines":["724-737","47-59","738-749","9-45","937-948"],"anchors":["Team Management permission required","officer trees lacked route","manager title alone insufficient"],"assessment":"pass_unchanged_sample"},
+    {"id":"I4-production-shaped-synthetic-inspector","kind":"production_shaped_synthetic_context","input":"Show me the completed inspection tasks and the fields that distinguish this Inspector layout.","generatedQuery":"unavailable_not_retained","source":"Inspection-Admin-User-Manual-v1.md","latencyMs":1541.6,"rawRanks":[3,4,5,6,7,8,9,12,15,16,17,18,19],"projectedRanks":[3,4,5,6,7,8],"sourceLines":["1-9","238-248","226-237","200-213","214-225"],"syntheticContext":{"roles":["Inspector"],"departments":["Inspection"],"pages":["/inspection/tasks"]},"anchors":["Inspector Completed primary tab","Last Update","no Inspector column"],"assessment":"pass_retrieval_only","note":"Dashboard v3 and Inspection Dashboard PRD ranked 1-2; this is not authenticated GetUserInfo acceptance."},
+    {"id":"F3-production-shaped-synthetic-finance","kind":"production_shaped_synthetic_context","input":"What filters can I safely inspect for Finance payments, and what does Transaction Time not prove?","generatedQuery":"unavailable_not_retained","source":"Finance-Admin-User-Manual-v1.md","latencyMs":1218.7,"rawRanks":[1,2,3,4,5,6,7,8],"projectedRanks":[1,2,3,4,5,6,7,8],"sourceLines":["1-9","61-72","10-24","49-60","85-97"],"syntheticContext":{"roles":["Finance Officer"],"departments":["Finance"],"pages":["/financial-payment/transactions","/financial-payment/refunds"]},"anchors":["Payments filter surface","Payment Method","Transaction Time not settlement proof","Finance Officer representative"],"assessment":"pass_retrieval_only","note":"This is not authenticated GetUserInfo acceptance."}
+  ],
+  "limitations": [
+    "No browser, login, account switching, business-page read, upload, export, download, database write, or remote database access occurred.",
+    "This proves representative post-upload retrieval and first-eight projection, not the pending 60-question live Reader acceptance run.",
+    "Role labels in two production-shaped probes are synthetic retrieval context and do not establish actual current-session permissions.",
+    "No generic Reader or manual defect is inferred from ranking contamination alone."
+  ]
+}

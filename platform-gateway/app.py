@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -49,55 +50,56 @@ READER_MAX_PAGES = 3
 READER_TIMEOUT_SECONDS = 45
 READER_MAX_OUTPUT_ITEMS = 20
 READER_LOCK = asyncio.Lock()
-READER_READ_ONLY_GET_PATHS = frozenset(
-    {
-        "/api/license/dashboard/overview",
-        "/api/license/dashboard/license-distribution",
-        "/api/license/dashboard/performance",
-        "/api/license/dashboard/performance-trend",
-        "/api/license/dashboard/members-needing-coaching",
-        "/api/license/dashboard/members-on-leave",
-        "/api/license/dashboard/needs-attention",
-        "/api/Content/Dashboard/Overview",
-        "/api/Content/Dashboard/TaskList",
-        "/api/Inspection/Dashboard/Overview",
-        "/api/Inspection/Dashboard/TaskList",
-        "/api/CustomerHappiness/Dashboard/Overview",
-        "/api/CustomerHappiness/Dashboard/TaskList",
-        "/api/AdminUser/LoginMethod",
-        "/api/UserManagement/GetAdminUserAsync",
-        "/api/TypeDictionary/GetTypeDictionaries/ServiceConfigServiceType",
-        "/api/Application/UrgenCount",
-        "/api/UserManagement/UserProfile/Approves",
-        "/api/UserManagement/UserProfile/UserTypes",
-        "/api/UserManagement/UserProfile/Status",
-        "/api/UserManagement/UserProfile/Type/Count",
-        "/api/LicenseManagement/statistics",
-        "/api/TypeDictionary/GetTypeDictionaries/CertificateStatus",
-        "/api/Application/MyReviewDetail/:taskId",
-        "/api/UserManagement/UserProfile/:id/Personal",
-        "/api/UserManagement/UserProfile/:id/Establishment",
-        "/api/UserManagement/UserProfile/:id/Partners",
-        "/api/LicenseManagement/:id",
-    }
-)
-READER_STATIC_FETCH_PATHS = frozenset({"/config.json"})
-READER_READ_ONLY_POST_PATHS = frozenset(
-    {
-        "/api/AdminUser/GetUserInfo",
-        "/api/Application/MyComplatedPage",
-        "/api/Application/MyTodoPage",
-        "/api/LicenseManagement/list",
-    }
-)
-READER_BLOCKED_EXACT_PATHS = frozenset(
-    {
-        "/api/Document/Dowload",
-        "/api/Document/Download",
-        "/api/Document/OriginalNames",
-        "/api/clientlog/report",
-    }
-)
+
+
+def _reader_whitelist_enabled() -> bool:
+    value = os.getenv("PORTAL_READER_WHITELIST_ENABLED", "true").strip().lower()
+    if value not in {"true", "false", "1", "0"}:
+        raise ValueError("PORTAL_READER_WHITELIST_ENABLED must be true, false, 1 or 0")
+    return value in {"true", "1"}
+
+
+def _load_reader_network_policy(path: Path) -> dict[str, Any]:
+    policy = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(policy, dict) or set(policy) != {
+        "version", "allowedMethods", "staticFetchPaths", "blockedExactPaths",
+    } or type(policy["version"]) is not int or policy["version"] != 1:
+        raise ValueError("Invalid Reader network policy schema/version")
+    methods = policy["allowedMethods"]
+    if not isinstance(methods, dict) or set(methods) != {"GET", "POST"}:
+        raise ValueError("Reader network policy requires GET and POST path lists")
+    for name, paths in [*methods.items(), ("staticFetchPaths", policy["staticFetchPaths"]), ("blockedExactPaths", policy["blockedExactPaths"])]:
+        if not isinstance(paths, list) or any(not isinstance(p, str) for p in paths):
+            raise ValueError(f"Invalid Reader network policy list: {name}")
+        if len(paths) != len(set(paths)):
+            raise ValueError(f"Duplicate Reader network policy paths: {name}")
+        for value in paths:
+            if not re.fullmatch(r"/(?:[A-Za-z0-9_-]+|:[A-Za-z][A-Za-z0-9_]*)(?:/(?:[A-Za-z0-9_.-]+|:[A-Za-z][A-Za-z0-9_]*))*", value):
+                # Static fetch files can also be rooted directly at /config.json.
+                if not (name == "staticFetchPaths" and re.fullmatch(r"/[A-Za-z0-9_-]+\.[A-Za-z0-9]+", value)):
+                    raise ValueError(f"Invalid Reader network policy path in {name}")
+            if any(segment in {".", ".."} for segment in value.split("/")):
+                raise ValueError(f"Invalid Reader network policy traversal in {name}")
+            if name != "staticFetchPaths" and not value.startswith("/api/"):
+                raise ValueError(f"Reader API policy path must start with /api/ in {name}")
+            if name != "GET" and ":" in value:
+                raise ValueError(f"Reader policy placeholders are only supported for GET in {name}")
+    if set(policy["blockedExactPaths"]) & (set(methods["GET"]) | set(methods["POST"])):
+        raise ValueError("Reader policy cannot both allow and block the same path")
+    return policy
+
+
+READER_WHITELIST_ENABLED = _reader_whitelist_enabled()
+READER_NETWORK_POLICY_FILE = Path(os.getenv(
+    "PORTAL_READER_WHITELIST_FILE", str(Path(__file__).parent / "config" / "reader-network-policy.json"),
+))
+READER_NETWORK_POLICY = _load_reader_network_policy(READER_NETWORK_POLICY_FILE)
+READER_READ_ONLY_GET_PATHS = frozenset(READER_NETWORK_POLICY["allowedMethods"]["GET"])
+READER_READ_ONLY_POST_PATHS = frozenset(READER_NETWORK_POLICY["allowedMethods"]["POST"])
+READER_STATIC_FETCH_PATHS = frozenset(READER_NETWORK_POLICY["staticFetchPaths"])
+READER_BLOCKED_EXACT_PATHS = frozenset(READER_NETWORK_POLICY["blockedExactPaths"])
+if not READER_WHITELIST_ENABLED:
+    logger.warning("Reader API whitelist is DISABLED for business validation; network-level read-only enforcement is inactive")
 READER_BROAD_SELECTORS = frozenset({"html", "body", "main", "table", "*", "#root", "#app"})
 READER_QUERY_ROLES = frozenset({"row", "cell", "columnheader", "heading", "status", "listitem", "term", "definition"})
 READER_SENSITIVE_LOCATOR_TERMS = frozenset(
@@ -220,6 +222,9 @@ async def healthz() -> dict[str, Any]:
         "umcPortal": UMC_PORTAL,
         "umcUpstream": UMC_BASE_URL,
         "authMode": "umctoken-forwarded",
+        "readerWhitelistEnabled": READER_WHITELIST_ENABLED,
+        "readerWhitelistFile": str(READER_NETWORK_POLICY_FILE),
+        "readerNetworkMode": "allowlist" if READER_WHITELIST_ENABLED else "same-origin-unrestricted",
         "readOnlyGetPathCount": len(READER_READ_ONLY_GET_PATHS),
         "readOnlyPostPathCount": len(READER_READ_ONLY_POST_PATHS),
         "supportedOperations": ["admin.portal.read", "AdminUser.GetUserInfo"],
@@ -351,6 +356,46 @@ def _reader_relative_path(value: object) -> str | None:
     return candidate
 
 
+def _reader_semantic_tokens(value: object) -> set[str]:
+    return {
+        token[:-3] + "y" if token.endswith("ies") else token.rstrip("s")
+        for token in re.findall(r"[a-z0-9]+", str(value or "").casefold())
+        if len(token) > 2
+    }
+
+
+def _reader_surface_health(page: Page, semantic: object = "") -> dict[str, Any]:
+    health = getattr(page, "_reader_health", {}) or {}
+    if not health and getattr(page, "_reader_blocked_api_paths", None):
+        health = {"blocked": getattr(page, "_reader_blocked_api_paths"), "failed": [], "pending": []}
+    surface_tokens = _reader_semantic_tokens(urlsplit(getattr(page, "url", "")).path)
+    surface_tokens.update(_reader_semantic_tokens(semantic))
+
+    def paths_from(value: object) -> list[str]:
+        if isinstance(value, dict):
+            return [str(path) for path in (value.values() if any(not isinstance(key, str) for key in value) else value)]
+        return [str(path) for path in (value or ())]
+
+    def relevant(paths: object) -> list[str]:
+        return list(dict.fromkeys(path for path in paths_from(paths) if surface_tokens & _reader_semantic_tokens(path)))
+
+    def non_background(paths: object) -> list[str]:
+        return [path for path in paths_from(paths) if path not in READER_BLOCKED_EXACT_PATHS]
+
+    blocked = relevant(health.get("blocked"))
+    failed = relevant(health.get("failed"))
+    pending = relevant(health.get("pending"))
+    uncertain = [
+        path for source in (health.get("blocked"), health.get("failed"), health.get("pending"))
+        for path in non_background(source)
+        if path not in blocked and path not in failed and path not in pending
+    ]
+    return {
+        "blocked": blocked, "failed": failed, "pending": pending,
+        "uncertain": uncertain, "healthy": not (blocked or failed or pending or uncertain),
+    }
+
+
 def _named_values(payload: Any, names: frozenset[str]) -> list[Any]:
     values: list[Any] = []
     if isinstance(payload, dict):
@@ -449,6 +494,40 @@ def _gateway_button_permitted(action: PortalReadAction, allowed_buttons: tuple[s
     candidates = {_reader_compact(action.permission_code)} - {""}
     allowed = {_reader_compact(button) for button in allowed_buttons} - {""}
     return bool(candidates and allowed and candidates.intersection(allowed))
+
+
+def _reader_detail_identity(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _reader_cell_detail_destination(action: PortalReadAction) -> str | None:
+    destinations = [str(value).strip() for value in (action.path, action.url) if value]
+    return destinations[0] if len(destinations) == 1 else None
+
+
+def _reader_same_route(first: str, second: str) -> bool:
+    return (urlsplit(first).path.rstrip("/") or "/") == (urlsplit(second).path.rstrip("/") or "/")
+
+
+def _reader_is_cell_detail_without_button(action: PortalReadAction) -> bool:
+    return (
+        action.type.strip().casefold().replace("-", "_") == "show_detail"
+        and str(action.role or "").casefold() == "cell"
+        and not str(action.permission_code or "").strip()
+    )
+
+
+def _validate_cell_detail_request(action: PortalReadAction, start_path: str) -> None:
+    identity = _reader_detail_identity(action.value)
+    if not str(action.name or "").strip() or _reader_detail_identity(action.name) != identity:
+        raise HTTPException(status_code=422, detail={"code": "reader_detail_cell_identity_mismatch"})
+    destination = _reader_cell_detail_destination(action)
+    if destination is None:
+        raise HTTPException(status_code=422, detail={"code": "reader_detail_destination_required"})
+    if urlsplit(destination).query or urlsplit(destination).fragment:
+        raise HTTPException(status_code=422, detail={"code": "reader_detail_destination_query_forbidden"})
+    if _reader_same_route(start_path, destination):
+        raise HTTPException(status_code=422, detail={"code": "reader_detail_destination_not_distinct"})
 
 
 def _permission_fingerprint(context: dict[str, Any]) -> str:
@@ -556,11 +635,15 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
             raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_sort"})
         if action_type == "sort" and str(action.direction or "").casefold() not in {"ascending", "descending"}:
             raise HTTPException(status_code=422, detail={"code": "reader_sort_direction_required"})
-        if action_type == "show_detail" and action.role not in {"button", "link"}:
+        if action_type == "show_detail" and action.role not in {"button", "link", "cell"}:
             raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_detail"})
         if action_type == "show_detail" and not str(action.value or "").strip():
             raise HTTPException(status_code=422, detail={"code": "reader_detail_identity_required"})
-        if action_type in {"expand_details", "show_detail"} and not action.permission_code:
+        if action_type == "show_detail" and action.role == "cell" and action.permission_code:
+            raise HTTPException(status_code=422, detail={"code": "reader_click_target_not_detail"})
+        if _reader_is_cell_detail_without_button(action):
+            _validate_cell_detail_request(action, request.start_path)
+        if action_type in {"expand_details", "show_detail"} and not _reader_is_cell_detail_without_button(action) and not action.permission_code:
             raise HTTPException(status_code=422, detail={"code": "button_permission_required"})
         for candidate in (action.path, action.url):
             if candidate is None:
@@ -573,23 +656,26 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
         raise HTTPException(status_code=422, detail={"code": "page_limit_exceeded"})
 
 
-async def _guard_reader_request(
-    route: Route,
+def _reader_network_request_allowed(
+    request: Any,
     portal_origin: str,
     allowed_navigation_paths: frozenset[str] | None = None,
-) -> None:
-    request = route.request
+) -> bool:
     parsed = urlsplit(request.url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
     method = request.method.upper()
     resource_type = str(getattr(request, "resource_type", "") or "").casefold()
     if resource_type in {"websocket", "eventsource"} or origin != portal_origin:
-        await route.abort("blockedbyclient")
-        return
+        return False
+    if resource_type == "document" and allowed_navigation_paths is not None and not _path_is_permitted(parsed.path, tuple(allowed_navigation_paths)):
+        return False
+    # Local business validation bypasses only the HTTP method/path policy.
+    # Origin, navigation permissions and explicit Reader actions stay guarded.
+    if not READER_WHITELIST_ENABLED:
+        return True
     api_request = parsed.path.startswith("/api/")
     if parsed.path in READER_BLOCKED_EXACT_PATHS:
-        await route.abort("blockedbyclient")
-        return
+        return False
     get_path_allowed = _path_is_permitted(parsed.path, tuple(READER_READ_ONLY_GET_PATHS))
     api_allowed = (
         (method == "GET" and get_path_allowed)
@@ -600,14 +686,29 @@ async def _guard_reader_request(
         )
     )
     if api_request and not api_allowed:
-        await route.abort("blockedbyclient")
-        return
+        return False
     static_fetch_allowed = resource_type in {"xhr", "fetch"} and method == "GET" and parsed.path in READER_STATIC_FETCH_PATHS
     static_allowed = resource_type in {"document", "script", "stylesheet", "font", "image"} and method in {"GET", "HEAD"}
     if not api_request and not (static_allowed or static_fetch_allowed):
-        await route.abort("blockedbyclient")
-        return
-    if resource_type == "document" and allowed_navigation_paths is not None and not _path_is_permitted(parsed.path, tuple(allowed_navigation_paths)):
+        return False
+    return True
+
+
+async def _guard_reader_request(
+    route: Route,
+    portal_origin: str,
+    allowed_navigation_paths: frozenset[str] | None = None,
+    *,
+    reader_health: dict[str, Any] | None = None,
+) -> None:
+    allowed = _reader_network_request_allowed(route.request, portal_origin, allowed_navigation_paths)
+    request_path = urlsplit(route.request.url).path
+    if reader_health is not None and request_path.startswith("/api/"):
+        if allowed:
+            reader_health["pending"][id(route.request)] = request_path
+        else:
+            reader_health["blocked"].append(request_path)
+    if not allowed:
         await route.abort("blockedbyclient")
         return
     await route.continue_()
@@ -615,9 +716,37 @@ async def _guard_reader_request(
 
 async def _safe_click(page: Page, action: PortalReadAction) -> None:
     action_type = action.type.strip().casefold().replace("-", "_")
-    locator = _semantic_locator(page, action).first
+    target = _semantic_locator(page, action)
+    if _reader_is_cell_detail_without_button(action) and await target.count() != 1:
+        raise RuntimeError("reader_detail_cell_not_unique")
+    locator = target.first
+    if action_type == "switch_tab":
+        visible_targets = [
+            target.nth(index)
+            for index in range(await target.count())
+            if await target.nth(index).is_visible()
+        ]
+        if not visible_targets:
+            raise RuntimeError("reader_selector_not_found")
+        if len(visible_targets) != 1:
+            raise RuntimeError("reader_switch_tab_ambiguous")
+        locator = visible_targets[0]
     if await locator.count() == 0:
         raise RuntimeError("reader_selector_not_found")
+    tag_name = str(await locator.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
+    if _reader_is_cell_detail_without_button(action):
+        if not await locator.is_visible():
+            raise RuntimeError("reader_detail_cell_not_visible")
+        if tag_name != "td":
+            raise RuntimeError("reader_detail_cell_not_native")
+        identity = _reader_detail_identity(action.value)
+        if _reader_detail_identity(await locator.inner_text()) != identity:
+            raise RuntimeError("reader_detail_cell_identity_mismatch")
+        row = locator.locator("xpath=ancestor::tr[1]").first
+        if await row.count() != 1 or not await row.is_visible():
+            raise RuntimeError("reader_detail_row_not_visible")
+        if not _reader_detail_identity(await row.inner_text()):
+            raise RuntimeError("reader_detail_row_unverifiable")
     descriptor = " ".join(
         filter(
             None,
@@ -636,8 +765,7 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
     if not expected_descriptor or expected_descriptor not in _reader_compact(descriptor):
         raise RuntimeError("reader_click_descriptor_mismatch")
     explicit_role = (await locator.get_attribute("role") or "").casefold()
-    tag_name = str(await locator.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
-    role = explicit_role or {"button": "button", "a": "link", "th": "columnheader"}.get(tag_name, "")
+    role = explicit_role or {"button": "button", "a": "link", "th": "columnheader", "td": "cell"}.get(tag_name, "")
     if role != str(action.role or "").casefold():
         raise RuntimeError("reader_click_role_mismatch")
     rel = (await locator.get_attribute("rel") or "").casefold()
@@ -720,6 +848,19 @@ async def _detail_identity_is_visible(page: Page, identity: str, *, overlay_open
     return False
 
 
+async def _validate_cell_detail_navigation(page: Page, action: PortalReadAction, before_url: str) -> None:
+    destination = _reader_cell_detail_destination(action)
+    identity = _reader_detail_identity(action.value)
+    if (
+        destination is None
+        or page.url == before_url
+        or not _reader_same_route(page.url, destination)
+    ):
+        raise RuntimeError("reader_detail_destination_mismatch")
+    if not await _detail_identity_is_visible(page, identity, overlay_open=False):
+        raise RuntimeError("reader_detail_identity_mismatch")
+
+
 async def _settle_page(page: Page) -> None:
     await page.wait_for_function("document.readyState === 'interactive' || document.readyState === 'complete'", timeout=5_000)
     try:
@@ -786,18 +927,51 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
     async def texts(selector: str, *, max_each: int, max_chars: int = 200) -> list[str]:
         return await visible_texts(page.locator(selector), max_each=max_each, max_chars=max_chars)
 
-    async def table_values(container, *, row_limit: int) -> tuple[list[str], list[str], str]:
+    async def table_values(
+        container,
+        *,
+        row_limit: int,
+    ) -> tuple[list[str], list[str], list[dict[str, str]], str]:
+        async def has_complex_span(cell) -> bool:
+            for attribute in ("colspan", "rowspan"):
+                value = str(await cell.get_attribute(attribute) or "1").strip()
+                if value not in {"", "1"}:
+                    return True
+            return False
+
         tag_name = str(await container.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
         headers = container.locator("thead th,[role='columnheader']")
         header_values: list[str] = []
-        action_column_indexes: set[int] = set()
-        for header_index in range(await headers.count()):
+        excluded_column_indexes: set[int] = set()
+        structured_headers: list[str] = []
+        structured_headers_safe = True
+        seen_headers: set[str] = set()
+        header_count = await headers.count()
+        if not header_count or header_count > 50:
+            structured_headers_safe = False
+        for header_index in range(header_count):
             header = headers.nth(header_index)
             if not await header.is_visible():
+                structured_headers_safe = False
+                structured_headers.append("")
                 continue
             header_text = _sanitize_reader_text(await header.inner_text(), max_chars=120)
-            if re.sub(r"[^a-z]", "", header_text.casefold()) in {"action", "actions"}:
-                action_column_indexes.add(header_index)
+            header_key = header_text.casefold()
+            if (
+                not header_text
+                or header_key in seen_headers
+                or await has_complex_span(header)
+            ):
+                structured_headers_safe = False
+            seen_headers.add(header_key)
+            structured_headers.append(header_text)
+            compact_header = re.sub(r"[^a-z]", "", header_text.casefold())
+            if (
+                compact_header in {"action", "actions", "operation", "operations"}
+                or _reader_contains_sensitive_locator(header_text)
+                or "secret" in _reader_words(header_text)
+            ):
+                excluded_column_indexes.add(header_index)
             elif header_text and header_text not in header_values:
                 header_values.append(header_text)
         row_selector = (
@@ -807,15 +981,38 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
         )
         row_locator = container.locator(row_selector)
         rows: list[str] = []
+        row_fields: list[dict[str, str]] = []
         for row_index in range(await row_locator.count()):
             row = row_locator.nth(row_index)
             if not await row.is_visible():
                 continue
-            if action_column_indexes:
+            structured_row: dict[str, str] | None = None
+            cells = None
+            if excluded_column_indexes or structured_headers_safe:
                 cells = row.locator(":scope > td,:scope > [role='cell'],:scope > [role='gridcell']")
+            if structured_headers_safe and cells is not None and await cells.count() == header_count:
+                candidate_fields: dict[str, str] = {}
+                structured_row_safe = True
+                for cell_index in range(header_count):
+                    cell = cells.nth(cell_index)
+                    if (
+                        not await cell.is_visible()
+                        or await has_complex_span(cell)
+                    ):
+                        structured_row_safe = False
+                        break
+                    if cell_index in excluded_column_indexes or len(candidate_fields) >= 12:
+                        continue
+                    candidate_fields[structured_headers[cell_index]] = _sanitize_reader_text(
+                        await cell.inner_text(),
+                        max_chars=300,
+                    )
+                if structured_row_safe:
+                    structured_row = candidate_fields
+            if excluded_column_indexes and cells is not None:
                 parts: list[str] = []
                 for cell_index in range(await cells.count()):
-                    if cell_index in action_column_indexes:
+                    if cell_index in excluded_column_indexes:
                         continue
                     cell = cells.nth(cell_index)
                     if cell_index >= 50 or not await cell.is_visible():
@@ -835,6 +1032,8 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
                 continue
             if value not in rows:
                 rows.append(value)
+                if structured_row is not None and len(rows) <= 4:
+                    row_fields.append(structured_row)
             if len(rows) >= row_limit:
                 break
         empty_values = await visible_texts(
@@ -851,17 +1050,21 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
             ),
             "",
         )
-        return header_values[:20], rows, empty_state
+        return header_values[:20], rows, row_fields, empty_state
 
     containers = page.locator("table,[role='grid']")
-    section_summaries: list[dict[str, Any]] = []
-    first_rows: list[str] = []
+    visible_containers: list[tuple[int, Any]] = []
     for index in range(await containers.count()):
         container = containers.nth(index)
-        if not await container.is_visible() or await container.get_attribute("aria-busy") == "true":
+        if await container.is_visible():
+            visible_containers.append((index, container))
+    section_summaries: list[dict[str, Any]] = []
+    first_rows: list[str] = []
+    for index, container in visible_containers:
+        if await container.get_attribute("aria-busy") == "true":
             continue
         container_kind = "grid" if await container.get_attribute("role") == "grid" else "table"
-        headers, rows, empty_state = await table_values(
+        headers, rows, row_fields, empty_state = await table_values(
             container,
             row_limit=min(limit, 8) if not first_rows else min(limit, 4),
         )
@@ -917,6 +1120,7 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
             "sourceSection": heading,
             "columnHeaders": headers[:12],
             "rowSummaries": rows[:4],
+            "rowFields": row_fields[:4],
             "emptyState": empty_state,
         }
         if isinstance(parent_index, int) and parent_index >= 0:
@@ -924,6 +1128,25 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
         section_summaries.append(section_summary)
         if len(section_summaries) >= 4:
             break
+
+    active_tabs = page.locator("[role='tab'][aria-selected='true']")
+    active_tab_text = ""
+    visible_active_tab_count = 0
+    for index in range(await active_tabs.count()):
+        active_tab = active_tabs.nth(index)
+        if not await active_tab.is_visible():
+            continue
+        visible_active_tab_count += 1
+        if visible_active_tab_count == 1:
+            active_tab_text = _sanitize_reader_text(await active_tab.inner_text(), max_chars=200)
+        else:
+            break
+    if len(visible_containers) == 1 and visible_active_tab_count == 1 and active_tab_text:
+        visible_table_node_id = f"observation-table-{visible_containers[0][0] + 1:03d}"
+        for section_summary in section_summaries:
+            if section_summary.get("nodeId") == visible_table_node_id:
+                section_summary.setdefault("selectedState", active_tab_text)
+                break
 
     referenced_parent_refs = {
         str(summary.get("parentRef") or "")
@@ -1035,6 +1258,10 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
         "sectionSummaries": section_summaries,
         "regionSummaries": region_summaries,
         "dialogs": await texts(READER_OVERLAY_SELECTOR, max_each=min(limit, 4), max_chars=800),
+        "readHealth": {
+            **_reader_surface_health(page),
+            "pending": list(_reader_surface_health(page).get("pending", [])),
+        },
     }
 
 
@@ -1063,7 +1290,12 @@ async def _query_page_values(page: Page, action: PortalReadAction, limit: int) -
             if await empty_locator.nth(index).is_visible():
                 visible_empty_state = True
                 break
-    confirmed_empty = bool(visible_empty_state and not await _page_has_visible_failure_state(page))
+    surface_health = _reader_surface_health(page, action.label or action.field or action.name)
+    confirmed_empty = bool(
+        visible_empty_state
+        and not await _page_has_visible_failure_state(page)
+        and surface_health["healthy"]
+    )
     return label, values, confirmed_empty
 
 
@@ -1121,6 +1353,13 @@ async def _execute_reader_actions(
         action_type = action.type.strip().casefold().replace("-", "_")
         if action_type == "observe":
             observation = await _observe_semantics(page, request.max_output_items)
+            if observation.get("readHealth", {}).get("healthy") is not True:
+                has_empty = bool(
+                    observation.get("rowSummaries") == []
+                    and any(region.get("emptyState") for region in observation.get("regionSummaries", []))
+                )
+                if has_empty:
+                    confirmed_empty = False
         elif action_type == "navigate":
             path = action.path or action.url
             if path:
@@ -1153,9 +1392,11 @@ async def _execute_reader_actions(
             overlays_after = await _visible_overlay_count(page)
             if action_type == "show_filter" and overlays_after <= overlays_before:
                 raise RuntimeError("reader_filter_overlay_not_opened")
-            if action_type == "show_detail" and page.url == before_url and overlays_after <= overlays_before:
+            if _reader_is_cell_detail_without_button(action):
+                await _validate_cell_detail_navigation(page, action, before_url)
+            elif action_type == "show_detail" and page.url == before_url and overlays_after <= overlays_before:
                 raise RuntimeError("reader_detail_not_opened")
-            if action_type == "show_detail" and not await _detail_identity_is_visible(
+            if action_type == "show_detail" and not _reader_is_cell_detail_without_button(action) and not await _detail_identity_is_visible(
                 page,
                 str(action.value),
                 overlay_open=overlays_after > overlays_before,
@@ -1206,7 +1447,7 @@ async def admin_portal_read(
             if path and not _path_is_permitted(path, (*permission_context["pages"], *permission_context["subpages"])):
                 raise HTTPException(status_code=403, detail={"code": "page_not_permitted"})
         action_type = action.type.strip().casefold().replace("-", "_")
-        if action_type in {"expand_details", "show_detail"} and (
+        if action_type in {"expand_details", "show_detail"} and not _reader_is_cell_detail_without_button(action) and (
             not action.permission_code or not _gateway_button_permitted(action, permission_context["buttons"])
         ):
             raise HTTPException(status_code=403, detail={"code": "button_not_permitted"})
@@ -1230,16 +1471,41 @@ async def admin_portal_read(
                     service_workers="block",
                 )
                 await context.add_init_script(_auth_init_script(raw_token))
+                reader_health: dict[str, Any] = {
+                    "blocked": [], "failed": {}, "pending": {}, "responses": {},
+                }
 
                 async def route_handler(route: Route) -> None:
                     declared_paths = frozenset(
                         {request.start_path}
                         | {path for action in request.actions for path in (action.path, action.url) if path}
                     )
-                    await _guard_reader_request(route, portal_origin, declared_paths)
+                    await _guard_reader_request(route, portal_origin, declared_paths, reader_health=reader_health)
 
                 await context.route("**/*", route_handler)
                 page = await context.new_page()
+                setattr(page, "_reader_health", reader_health)
+                def request_finished(request_obj: Any) -> None:
+                    request_id = id(request_obj)
+                    request_path = reader_health["pending"].pop(request_id, "")
+                    if request_path and int(reader_health["responses"].pop(request_id, 200)) < 400:
+                        reader_health["failed"].pop(request_path, None)
+                def request_failed(request_obj: Any) -> None:
+                    request_id = id(request_obj)
+                    request_path = reader_health["pending"].pop(request_id, "")
+                    if request_path:
+                        reader_health["failed"][request_path] = reader_health["failed"].get(request_path, 0) + 1
+                def response_seen(response: Any) -> None:
+                    request_obj = getattr(response, "request", None)
+                    request_id = id(request_obj) if request_obj is not None else None
+                    request_path = urlsplit(getattr(response, "url", "")).path
+                    if request_id is not None:
+                        reader_health["responses"][request_id] = int(getattr(response, "status", 200))
+                    if request_path.startswith("/api/") and int(getattr(response, "status", 200)) >= 400:
+                        reader_health["failed"][request_path] = reader_health["failed"].get(request_path, 0) + 1
+                page.on("requestfinished", request_finished)
+                page.on("requestfailed", request_failed)
+                page.on("response", response_seen)
                 page.set_default_timeout(min(request.timeout_seconds * 1_000, 10_000))
                 page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
                 page.on("download", lambda download: asyncio.create_task(download.cancel()))

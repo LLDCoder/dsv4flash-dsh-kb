@@ -31,9 +31,15 @@ admin_portal_reader:
     - licensing_tasks
     - licensing_profile_verification
     - licensing_licenses
+    - licensing_reports_analytics
+    - licensing_team_management
   coverage_boundary:
-    included_modules: [Dashboard, Licensing]
-    excluded_licensing_children_until_documented_and_verified: [Reports, Analytics]
+    included_modules: [Dashboard, Licensing, Customer Happiness, Content, Inspection, Finance]
+    licensing_inventory: [Applications, Profile Verification, Licenses, Reports & Analytics, Team Management]
+    licensing_scan_evidence: doc/admin-portal-reader/licensing-coverage.yaml
+    basic_module_evidence: doc/admin-portal-reader/business-pilot-2026-09-06/results.md
+    manual_publication_and_live_reader_acceptance: user_reports_basic_v1_uploaded_representative_retrieval_checked_business_pilots_in_progress
+    reports_export_results: outside_readonly_boundary
     future_business_modules: out_of_scope
   limits:
     max_pages: 3
@@ -61,10 +67,15 @@ manual_semantic_contract:
     - time_semantics
     - role_differences
     - empty_state
+    - applicability
+    - entry_conditions
+    - alternate_sources
   requirements:
     - A node must be self-contained enough to choose the correct page region from one bounded knowledge retrieval.
     - Manuals describe business semantics and visible control behavior, not answer templates or regression assertions.
     - Manuals must not contain dynamic counts, account data, credentials, cookies, tokens, brittle selectors, or undocumented backend identifiers.
+    - Independently retrievable semantic nodes are peers; controls belong directly to their node, without a nested page-tree dependency.
+    - Alternate sources are valid only when business object, ownership, filters, time scope, and answer shape match; explicit page requests remain authoritative.
 
 conversation_context_contract:
   purpose: Preserve the minimum prior-turn meaning needed to resolve an elliptical follow-up without passing the full conversation to the Reader.
@@ -77,6 +88,8 @@ conversation_context_contract:
     - page
     - section
     - result_status
+    - record_identity_reference
+    - recent_intents
   requirements:
     - The current question remains authoritative; context may fill an omitted answer shape or category but must not override an explicit current request.
     - Context is bounded, sanitized, and derived only from the immediately relevant prior user question and Reader result.
@@ -84,11 +97,58 @@ conversation_context_contract:
     - Page and section come from a prior verified Reader result, never from an assistant claim alone.
     - Context contains no full transcript, page payload, record table, identity credential, cookie, token, or hidden field.
     - Answer-shape continuity is generic and must not introduce module-specific runtime routing.
+    - At most three recent user-turn boundaries may contribute intent metadata; event count is not a turn boundary.
+    - A bounded record identifier from an observed list or detail is a reference for a fresh lookup, not proof that prior status or ownership remains current.
+    - A failed follow-up must not erase the earlier business object; unrelated prior records must not be merged into a new topic.
+
+business_answer_quality:
+  knowledge_projection:
+    max_chunks: 8
+    max_chunk_characters: 4000
+    max_total_bytes: 48000
+    rules:
+      - Preserve bounded semantic-node content beyond the old 1000-character prefix and explicitly mark truncated nodes.
+      - Evidence validation must use the same retained node content as the planner, without a second shorter prefix.
+      - Strip only a verified complete retrieval envelope before truncation, preserving structured source provenance separately; metadata, Markdown headings, and truncated field prefixes are not business facts.
+      - General field meaning and control explanations may use grounded knowledge without forcing a live read.
+      - Knowledge retrieval success does not prove semantic relevance or permit live counts from a manual.
+      - Exact source sentences remain valid evidence across commas; do not require one clause to support a complete quoted sentence.
+      - A failed knowledge-grounding repair must copy relevant source sentences without expanded examples; final formatting handles the answer language.
+      - Every strong clause of a compound fact must be supported within one retained chunk; one matching clause cannot conceal another unsupported clause or a numeric or negative contradiction.
+      - Preserve source filenames in bounded retrieval traces even when a later early-failure outcome omits the full knowledge context.
+  read_health:
+    rules:
+      - Failed, blocked, pending, or uncertain data loading cannot prove an empty collection.
+      - Apply the same no-data gate to query results, observation reduction, and deterministic fallback.
+      - Preserve independently observed rows even when other requests are unhealthy.
+  tool_continuation:
+    rules:
+      - Each admin.portal.read invocation starts a fresh browser context; rebuild necessary read-only UI state explicitly.
+      - Follow-up reads must remain within the cumulative action, page, and turn-time budgets.
+      - Reduce each new observation before answering; tool success alone does not prove correct object, scope, or detail identity.
+      - An initial state-changing read with no direct facts must still reduce its returned observation; a pure observe action is not a prerequisite for evidence already present.
+      - Preserve original header/value relationships in list facts and final answers; do not invent semantic column labels from positional strings.
+      - Retain headingless table nodes by their explicit node ID and kind; a missing visible heading must not discard identified row evidence.
+      - Native rowFields mappings are bounded to four rows, twelve fields per row, and 300 characters per value; ambiguous cell alignment is not inferred.
+      - List facts using native cell maps must be JSON-object strings whose field/value pairs belong to one observed row; duplicate keys and cross-row or cross-column joins are rejected.
+      - A structured list fact must uniquely match one bounded native row, not collapse multiple records into a shared status value.
+      - A partial native row selection under an observed view receives at most one semantic review within the existing turn deadline; code never automatically fills omitted rows or infers field predicates from view names.
+      - Explicit user predicates and limits remain authoritative; semantic review is model-based and does not itself establish business acceptance.
+      - A bounded list observation cannot establish complete collection coverage.
+      - Validate claimed selectedState against observed node or parent state; do not preserve a model-only state claim when actual state is unknown.
+      - A unique visible active tab may supply the state of a unique visible table; multiple tabs or tables are ambiguous and must not be inferred.
+      - Policy validation precedes normalization of a redundant trailing pure observe after a state-changing read; all other mixed observation plans remain invalid.
+      - Tab clicks require exactly one visible semantic target; never silently select the first of several matches or broaden a missing section locator.
+      - A manual section name is not proof of an accessible region name, and a permission identifier is not proof of a verified navigation entry.
+  unchanged_boundaries:
+    - Current GetUserInfo permissions remain authoritative, regardless of a user's claimed role.
+    - Business writes, uploads, downloads, and exports remain forbidden; read-only filter Apply or Cancel is not a business submission.
 
 semantic_selection:
   general:
     - Resolve the requested answer shape and authoritative page region before reading business facts.
-    - A semantically related count, card, list, or role-specific region is not an acceptable substitute for the authoritative region.
+    - Similar labels alone do not establish equivalent evidence; verify the requested business object, ownership, filters, time scope, and answer shape.
+    - When no page was requested, use any sufficient authorized source supported by knowledge and live evidence; a recorded navigation path is not mandatory.
     - When the relevant manual node is missing or ambiguous, observe only within permission and return not_confirmed instead of inventing a mapping.
   dashboard:
     attention_request:
@@ -125,16 +185,34 @@ semantic_selection:
       primary_content: verified matching count
       rule: Do not enumerate records unless needed to explain the count or requested by the user.
     overview_request:
-      authoritative_page: /dashboard
-      authoritative_section: My Tasks
-      primary_content: visible task category counts
+      primary_content: verified summary appropriate to the requested task family and ownership
+      typical_sources: [Dashboard My Tasks, Applications task summary, Team Management task summary]
       forbidden_substitutes:
-        - My Application Tasks list total or rows
-        - Needs Your Attention tabs or rows
-      rule: A request for "my Licensing tasks overview" is a Dashboard workload summary; use the My Tasks categories and do not append list examples.
+        - team tasks presented as personal tasks
+        - application-only totals presented as all task categories
+        - attention rows presented as a workload distribution
+      rule: Resolve ambiguous Licensing tasks from the question and bounded context; clarify materially different scopes instead of hardcoding a Dashboard-only or Applications-only meaning.
     mixed_list_overview_request:
       primary_content: verified overview followed by bounded matching rows
       rule: Do not reduce an explicit tasks or records request to counts only.
+    analytics_request:
+      page: /licensing/reports-analytics
+      sections: [Service Operations Analytics, Profile Analytics, License Analytics]
+      requirements:
+        - Verify active top-level and nested tabs and the displayed period before using aggregate or table evidence.
+        - Ignore hidden tables mounted under inactive tabs.
+        - Do not interpret analytics as personal assigned work or assume independently displayed totals have identical aggregation.
+        - Search or pagination of a performance table does not establish that its surrounding charts changed.
+    export_report_request:
+      section: Reports
+      rule: License Data, Cancelled Activities, and Electronic Media are export configuration surfaces, not visible report-result tables. Do not dispatch Export or infer exported contents; separately label any sufficient permitted analytics fallback.
+    team_request:
+      page: /licensing/team-management
+      requirements:
+        - Require current Team Management page permission, not a manager title alone.
+        - Distinguish Team Tasks, personal Applications, and Team Members performance.
+        - Verify Application Task Only and the category before claiming a cross-category team result.
+        - Reassign, Mark Emergency Leave, Resume Work, selection for bulk reassignment, and Export remain forbidden.
 
 readonly_interaction_contract:
   common:
@@ -172,6 +250,9 @@ readonly_interaction_contract:
       - The selected list identifier and detail identifier must match before detail facts are returned.
       - Opening a detail must preserve current-session permission and the originating list context.
       - Direct guessed detail URLs and document contents are forbidden.
+      - A native visible record-ID cell may use a distinct, query-free, currently permitted detail route without a read-button code; the click, not the planner, supplies opaque query identifiers.
+      - The record-ID cell must be unique and match the requested identity; verify the resulting route and rendered business identifier before returning detail facts.
+      - A mutation-button code must never substitute for a read permission; non-cell details and expansions retain their button-permission requirements.
   action_dialog:
     rule: Approval, rejection, submission, modification, deletion, assignment, sending, upload, download, export, and unknown action dialogs are outside the Reader and must be refused without opening or confirming them.
 
@@ -212,49 +293,23 @@ tools:
       - download
       - export
     network_policy:
+      config_file: platform-gateway/config/reader-network-policy.json
+      enable_env: PORTAL_READER_WHITELIST_ENABLED
+      config_path_env: PORTAL_READER_WHITELIST_FILE
+      runtime_default_enabled: true
+      local_business_validation_enabled: false
+      config_loading: startup_only_invalid_or_missing_file_fails_startup
+      disabled_mode:
+        same_origin_http_method_and_path_checks: bypassed_including_explicit_path_blocks
+        account_and_navigation_permissions: enforced
+        cross_origin_and_stream_requests: blocked
+        explicit_reader_business_mutations: forbidden
+        browser_downloads: cancelled
+        network_level_read_only_guarantee: unavailable
+        health_mode: same-origin-unrestricted
       conditionally_allowed_methods: [GET, POST, OPTIONS]
-      condition: API and XHR requests must match the server-owned first-release read allowlist; static document, script, stylesheet, font, and image GET/HEAD requests remain same-origin only.
-      allowed_get_paths:
-        - /api/license/dashboard/overview
-        - /api/license/dashboard/license-distribution
-        - /api/license/dashboard/performance
-        - /api/license/dashboard/performance-trend
-        - /api/license/dashboard/members-needing-coaching
-        - /api/license/dashboard/members-on-leave
-        - /api/license/dashboard/needs-attention
-        - /api/Content/Dashboard/Overview
-        - /api/Content/Dashboard/TaskList
-        - /api/Inspection/Dashboard/Overview
-        - /api/Inspection/Dashboard/TaskList
-        - /api/CustomerHappiness/Dashboard/Overview
-        - /api/CustomerHappiness/Dashboard/TaskList
-        - /api/AdminUser/LoginMethod
-        - /api/UserManagement/GetAdminUserAsync
-        - /api/TypeDictionary/GetTypeDictionaries/ServiceConfigServiceType
-        - /api/Application/UrgenCount
-        - /api/UserManagement/UserProfile/Approves
-        - /api/UserManagement/UserProfile/UserTypes
-        - /api/UserManagement/UserProfile/Status
-        - /api/UserManagement/UserProfile/Type/Count
-        - /api/LicenseManagement/statistics
-        - /api/TypeDictionary/GetTypeDictionaries/CertificateStatus
-        - /api/Application/MyReviewDetail/:taskId
-        - /api/UserManagement/UserProfile/:id/Personal
-        - /api/UserManagement/UserProfile/:id/Establishment
-        - /api/UserManagement/UserProfile/:id/Partners
-        - /api/LicenseManagement/:id
-      allowed_static_fetch_paths:
-        - /config.json
-      allowed_post_paths:
-        - /api/AdminUser/GetUserInfo
-        - /api/Application/MyComplatedPage
-        - /api/Application/MyTodoPage
-        - /api/LicenseManagement/list
-      explicitly_blocked_automatic_calls:
-        - POST /api/Document/OriginalNames
-        - POST /api/clientlog/report
-        - GET /api/Document/Dowload
-      blocked_methods: [PUT, PATCH, DELETE]
+      condition: When enabled, use the method/path rules from config_file; API requests are default-deny and static reads remain same-origin only.
+      blocked_methods_when_enabled: [PUT, PATCH, DELETE]
 
 result_contract:
   result:
@@ -292,6 +347,7 @@ answer_contract:
     - page extraction
   partial_list_rule: State that records are examples or currently shown only when completeness cannot be established; do not expose implementation limits.
   not_confirmed_rule: State what could not be confirmed and, when useful, provide a clearly labeled confirmed fallback without presenting it as the requested result.
+  evidence_gap_guard: Non-success results use only confirmed facts and a status message; never turn missing, summary, historical prose, or common knowledge into a new business assertion. A successful result without facts is not permission to invent an answer.
 
 audit:
   retain:

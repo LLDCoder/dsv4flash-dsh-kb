@@ -79,6 +79,19 @@ def test_no_data_must_come_from_the_planned_section() -> None:
     assert exact_section.source_section == "Queue Overview"
 
 
+def test_unhealthy_read_health_does_not_become_no_data() -> None:
+    plan = {
+        "mode": "observation_result", "result": "no_data", "page": "/work",
+        "section": "Queue Overview", "answerShape": "overview", "facts": [], "missing": [],
+    }
+    observation = {
+        **structured_observation(),
+        "readHealth": {"healthy": False, "failed": ["/work"]},
+    }
+
+    assert observation_result_from_plan(plan, observation) is None
+
+
 def test_section_scoped_observe_falls_back_only_after_semantic_planner_error() -> None:
     planner = Planner(portal_plan_for("/work", [{"type": "observe", "section": "Items Requiring Review"}]))
     gateway = Gateway(
@@ -539,7 +552,18 @@ def test_category_list_switches_tab_and_uses_verified_post_action_observation() 
             "expectedFields": ["task cards"],
         },
     }
-    planner = Planner(initial_plan, invalid_switch_plan, switch_plan)
+    post_action_result = {
+        "mode": "observation_result",
+        "result": "success",
+        "page": "/work",
+        "section": "Task List",
+        "sourceSection": "observation-table-001",
+        "answerShape": "list",
+        "selectedState": "Enquiries & Complaints 2",
+        "facts": ["ENQ-202 Open Enquiry Service"],
+        "missing": [],
+    }
+    planner = Planner(initial_plan, invalid_switch_plan, switch_plan, post_action_result)
 
     class SequentialGateway(Gateway):
         def __init__(self):
@@ -549,9 +573,11 @@ def test_category_list_switches_tab_and_uses_verified_post_action_observation() 
                     "ok": True,
                     "result": {
                         "result": "not_confirmed",
-                        "observation": {
-                            "regionSummaries": [{
-                                "heading": "My Work",
+                            "observation": {
+                                "regionSummaries": [{
+                                    "nodeId": "observation-region-001",
+                                    "kind": "region",
+                                    "heading": "My Work",
                                 "selectedState": "Applications 14",
                                 "controls": [
                                     "Applications 14",
@@ -566,16 +592,24 @@ def test_category_list_switches_tab_and_uses_verified_post_action_observation() 
                     "ok": True,
                     "result": {
                         "result": "not_confirmed",
-                        "observation": {
-                            "regionSummaries": [{
-                                "heading": "My Work",
+                            "observation": {
+                                "regionSummaries": [{
+                                    "nodeId": "observation-region-001",
+                                    "kind": "region",
+                                    "heading": "My Work",
                                 "selectedState": "Enquiries & Complaints 2",
                                 "controls": [
                                     "Applications 14",
                                     "Enquiries & Complaints 2",
-                                    "ENQ-202 Open Enquiry Service",
-                                ],
-                            }],
+                                    ],
+                                }],
+                                "sectionSummaries": [{
+                                    "nodeId": "observation-table-001",
+                                    "kind": "table",
+                                    "parentRef": "observation-region-001",
+                                    "heading": "Task List",
+                                    "rowSummaries": ["ENQ-202 Open Enquiry Service"],
+                                }],
                         },
                     },
                 },
@@ -603,7 +637,8 @@ def test_category_list_switches_tab_and_uses_verified_post_action_observation() 
     assert outcome.result.answer_shape == "list"
     assert outcome.result.selected_state == "Enquiries & Complaints 2"
     assert outcome.result.facts == ("ENQ-202 Open Enquiry Service",)
-    assert outcome.audit_evidence["stage"] == "completed_after_read_state_change_fallback"
+    assert outcome.audit_evidence["stage"] == "completed_after_read_state_change"
+    assert outcome.audit_evidence["semanticResolution"]["decision"] == "llm_result"
 
 
 def test_single_observed_list_with_explicit_empty_state_returns_no_data() -> None:
