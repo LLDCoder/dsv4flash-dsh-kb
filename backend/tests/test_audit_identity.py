@@ -29,6 +29,18 @@ class AuditIdentityTests(unittest.TestCase):
 
         self.assertEqual(identity, {"account": "customer@example.test", "currentRole": "Customer User"})
 
+    def test_uses_customer_portal_list_roles_display_name(self):
+        identity = audit_identity_from_user_info({
+            "data": {
+                "email": "customer@example.test",
+                "listRoles": [
+                    {"nameEn": "Foreign Media Manager", "name": "foreign-media-manager", "nameAr": "مدير الإعلام الأجنبي"},
+                ],
+            }
+        })
+
+        self.assertEqual(identity, {"account": "customer@example.test", "currentRole": "Foreign Media Manager"})
+
     def test_uses_the_latest_message_identity_for_the_audit_overview(self):
         identity = audit_identity_from_payloads([
             {"auditIdentity": {"account": "new@example.test", "currentRole": "Customer Account Owner"}},

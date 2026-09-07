@@ -56,9 +56,48 @@ def audit_identity_from_user_info(payload: Any) -> dict[str, str]:
                     return found
         return ""
 
+    def first_role_from_containers(value: Any) -> str:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key).casefold() in {"roles", "listroles", "rolesinfo"}:
+                    found = role_display_name(item)
+                    if found:
+                        return found
+            for item in value.values():
+                found = first_role_from_containers(item)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = first_role_from_containers(item)
+                if found:
+                    return found
+        return ""
+
+    def role_display_name(value: Any) -> str:
+        if isinstance(value, (str, int)) and str(value).strip():
+            return str(value).strip()[:300]
+        if isinstance(value, dict):
+            for key in ("nameEn", "name", "nameAr", "roleName", "currentRoleName", "activeRoleName"):
+                item = value.get(key)
+                if isinstance(item, (str, int)) and str(item).strip():
+                    return str(item).strip()[:300]
+            for item in value.values():
+                found = role_display_name(item)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = role_display_name(item)
+                if found:
+                    return found
+        return ""
+
     source = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
     account = first_string(source, {"account", "accountname", "email", "emailaddress", "loginaccount", "loginname", "useremail", "username"})
-    current_role = first_string(source, {"activerole", "activerolename", "currentrole", "currentrolename", "selectedrole", "selectedrolename", "role", "rolename", "roles"})
+    current_role = first_string(source, {"activerole", "activerolename", "currentrole", "currentrolename", "selectedrole", "selectedrolename", "role", "rolename"})
+    if not current_role:
+        current_role = first_role_from_containers(source)
     return {"account": account, "currentRole": current_role}
 
 
