@@ -142,6 +142,95 @@ class FakeLocatorGroup:
     def nth(self, index):
         return self.locators[index]
 
+    def get_by_role(self, role, **kwargs):
+        matches = []
+        for locator in self.locators:
+            nested = locator.get_by_role(role, **kwargs)
+            matches.extend(nested.locators)
+        return FakeLocatorGroup(*matches)
+
+
+class FakeBadgedTab(FakeLocator):
+    def __init__(self, descriptor, *, parts=None, active=False, on_click=True, aria_selected=None, state_class="item--active", data_state=None):
+        super().__init__(descriptor=descriptor, role="tab", aria_selected=aria_selected)
+        self.parts = parts
+        self.attributes["class"] = state_class if active else "item"
+        self.attributes["data-state"] = data_state
+        self.state_class = state_class
+        self.on_click = on_click
+        self.group = [self]
+        self.scripts = []
+
+    def active(self):
+        if self.attributes.get("aria-selected") is not None:
+            return self.attributes["aria-selected"] == "true"
+        return self.attributes.get("data-state") in {"active", "selected"} or any(
+            token in {"active", "selected", "is-active", "is-selected"} or token.endswith(("--active", "--selected"))
+            for token in self.attributes.get("class", "").split()
+        )
+
+    async def evaluate(self, script):
+        self.scripts.append(script)
+        if "looseText" in script:
+            return self.parts
+        if "groupLabels" in script:
+            active = [tab for tab in self.group if tab.visible and tab.active()]
+            return {"selected": len(self.group) >= 2 and len(active) == 1 and active[0] is self,
+                    "native": False, "groupSize": len(self.group), "groupLabels": [tab.descriptor for tab in self.group]}
+        return self.tag
+
+    async def click(self, timeout):
+        self.clicked = True
+        if self.on_click:
+            for tab in self.group:
+                tab.attributes["class"] = "item"
+                tab.attributes["data-state"] = None
+            self.attributes["class"] = self.state_class
+
+
+class FakeTabHeading(FakeLocator):
+    def __init__(self, scope=None, visible=True):
+        super().__init__(role="heading", visible=visible)
+        self.scope = scope
+        self.selectors = []
+
+    def locator(self, selector):
+        self.selectors.append(selector)
+        assert selector == "xpath=ancestor::*[self::section or @role='region'][1]"
+        return FakeLocatorGroup(self.scope) if self.scope else FakeLocatorGroup()
+
+
+class FakeTabPage:
+    def __init__(self, tabs=(), sections=None, headings=None, visible=True):
+        self.tabs = tabs
+        self.sections = sections or {}
+        self.headings = headings or {}
+        self.visible = visible
+        self.lookups = []
+        for tab in tabs:
+            tab.group = list(tabs)
+
+    def get_by_role(self, role, name=None, exact=False):
+        self.lookups.append((role, name, exact))
+        if role == "region":
+            region = self.sections.get(name)
+            return FakeLocatorGroup(*(region if isinstance(region, list) else [region] if region else []))
+        if role == "heading":
+            return FakeLocatorGroup(*self.headings.get(name, []))
+        return FakeLocatorGroup(*(tab for tab in self.tabs if tab.attributes.get("role") == role and (
+            name.search(tab.descriptor) if hasattr(name, "search") else tab.descriptor == name
+        )))
+
+    def locator(self, selector):
+        if selector == "[role='tab'][aria-selected='true']":
+            return FakeLocatorGroup(*(tab for tab in self.tabs if tab.attributes.get("aria-selected") == "true"))
+        if selector == "[role='tab']:not([aria-selected])":
+            return FakeLocatorGroup(*(tab for tab in self.tabs if tab.attributes.get("aria-selected") is None))
+        return FakeLocatorGroup()
+
+    async def is_visible(self):
+        return self.visible
+
 
 class FakeDetailRow:
     def __init__(self, *, visible=True, text="Record row", count=1):
@@ -1449,6 +1538,230 @@ def test_runtime_switch_tab_keeps_missing_target_error() -> None:
 
     with pytest.raises(RuntimeError, match="reader_selector_not_found"):
         asyncio.run(gateway._safe_click(FakePage(FakeLocatorGroup()), action))
+
+
+def test_switch_tab_matches_separate_numeric_badge_and_confirms_unique_bem_active_transition():
+    initial = FakeBadgedTab("Urgent 0", parts=["Urgent", "0"], active=True)
+    target = FakeBadgedTab("Blocked 4", parts=["Blocked", "4"])
+    page = FakeTabPage([initial, target])
+    asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert target.clicked and not initial.clicked
+    assert target.active() and not initial.active()
+    assert asyncio.run(gateway._reader_selected_tab_texts(page)) == ["Blocked 4"]
+
+
+def test_switch_tab_exact_visible_match_wins_over_badged_candidate():
+    exact = FakeBadgedTab("Blocked", aria_selected="true")
+    badged = FakeBadgedTab("Blocked 4", parts=["Blocked", "4"])
+    page = FakeTabPage([exact, badged])
+    asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert exact.clicked and not badged.clicked
+    assert all(isinstance(name, str) for role, name, _ in page.lookups if role == "tab")
+
+
+@pytest.mark.parametrize("descriptor,parts", [
+    ("Blocked tasks 4", ["Blocked tasks", "4"]),
+    ("Blocked 4 more", ["Blocked", "4 more"]),
+    ("Blocked4", ["Blocked", "4"]),
+    ("Blocked 4", None),
+    ("Blocked 4", ["Blocked 4"]),
+    ("Blocked 4", ["Blocked", "4", "other"]),
+    ("Blocked 4", ["Other", "4"]),
+    ("Blocked 4", ["Blocked", "4 pending"]),
+])
+def test_switch_tab_badge_fallback_does_not_accept_arbitrary_prefix_or_unproven_number(descriptor, parts):
+    target = FakeBadgedTab(descriptor, parts=parts, aria_selected="true")
+    with pytest.raises(RuntimeError, match="reader_selector_not_found"):
+        asyncio.run(gateway._safe_click(FakeTabPage([target]), gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert not target.clicked
+
+
+def test_numeric_label_is_not_stripped_as_a_count_but_can_have_its_own_badge():
+    label_only = FakeBadgedTab("Phase 2", parts=["Phase 2"], aria_selected="true")
+    with pytest.raises(RuntimeError, match="reader_selector_not_found"):
+        asyncio.run(gateway._safe_click(FakeTabPage([label_only]), gateway.PortalReadAction(type="switch_tab", role="tab", name="Phase")))
+    numbered = FakeBadgedTab("Phase 2 4", parts=["Phase 2", "4"], aria_selected="true")
+    asyncio.run(gateway._safe_click(FakeTabPage([numbered]), gateway.PortalReadAction(type="switch_tab", role="tab", name="Phase 2")))
+    assert numbered.clicked
+
+
+def test_badged_tab_fallback_is_unique_visible_and_preserves_exact_region_scope():
+    hidden = FakeBadgedTab("Blocked 3", parts=["Blocked", "3"], aria_selected="true")
+    hidden.visible = False
+    selected = FakeBadgedTab("Blocked 4", parts=["Blocked", "4"], aria_selected="true")
+    unrelated = FakeBadgedTab("Blocked 9", parts=["Blocked", "9"], aria_selected="true")
+    region = FakeTabPage([hidden, selected])
+    page = FakeTabPage([unrelated], sections={"My Work": region})
+    action = gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked", section="My Work")
+    asyncio.run(gateway._safe_click(page, action))
+    assert selected.clicked and not unrelated.clicked and not hidden.clicked
+    assert all(role == "region" and name == "My Work" and exact for role, name, exact in page.lookups)
+    selected.clicked = False
+    hidden.visible = True
+    with pytest.raises(RuntimeError, match="reader_switch_tab_ambiguous"):
+        asyncio.run(gateway._safe_click(page, action))
+    assert not selected.clicked and not hidden.clicked
+
+
+def test_tab_scope_prefers_visible_named_region_to_same_named_heading():
+    target = FakeBadgedTab("Blocked 4", parts=["Blocked", "4"], aria_selected="true")
+    unrelated = FakeBadgedTab("Blocked 9", parts=["Blocked", "9"], aria_selected="true")
+    heading = FakeTabHeading(FakeTabPage([unrelated]))
+    page = FakeTabPage(sections={"Needs Review": FakeTabPage([target])}, headings={"Needs Review": [heading]})
+    asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked", section="Needs Review")))
+    assert target.clicked and not unrelated.clicked
+    assert not heading.selectors
+    assert not any(role == "heading" for role, _, _ in page.lookups)
+
+
+@pytest.mark.parametrize("badged", [True, False])
+def test_tab_scope_uses_unique_visible_exact_heading_nearest_semantic_ancestor(badged):
+    target = FakeBadgedTab("Blocked 4" if badged else "Blocked", parts=["Blocked", "4"] if badged else None, aria_selected="true")
+    extra_badge = FakeBadgedTab("Blocked 7", parts=["Blocked", "7"], aria_selected="true")
+    scope = FakeTabPage([target] if badged else [target, extra_badge])
+    heading = FakeTabHeading(scope)
+    hidden_heading = FakeTabHeading(FakeTabPage(), visible=False)
+    global_tab = FakeBadgedTab("Blocked", aria_selected="true")
+    page = FakeTabPage([global_tab], headings={"Needs Review": [hidden_heading, heading]})
+    asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked", section="Needs Review")))
+    assert target.clicked and not global_tab.clicked and not extra_badge.clicked
+    assert heading.selectors == ["xpath=ancestor::*[self::section or @role='region'][1]"]
+    assert all(exact and name == "Needs Review" for role, name, exact in page.lookups if role in {"region", "heading"})
+    assert not any(role == "tab" for role, _, _ in page.lookups)
+
+
+@pytest.mark.parametrize("multiple", ["regions", "headings"])
+def test_tab_scope_rejects_multiple_visible_scope_candidates(multiple):
+    targets = [FakeBadgedTab("Blocked 4", parts=["Blocked", "4"], aria_selected="true") for _ in range(2)]
+    scopes = [FakeTabPage([target]) for target in targets]
+    page = FakeTabPage(sections={"Needs Review": scopes} if multiple == "regions" else {},
+                       headings={"Needs Review": [FakeTabHeading(scope) for scope in scopes]} if multiple == "headings" else {})
+    with pytest.raises(RuntimeError, match="reader_switch_tab_ambiguous"):
+        asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked", section="Needs Review")))
+    assert not any(target.clicked for target in targets)
+
+
+@pytest.mark.parametrize("headings", [[], [FakeTabHeading()], [FakeTabHeading(FakeTabPage(visible=False))]])
+def test_tab_scope_does_not_fall_back_to_global_tabs_when_heading_scope_missing(headings):
+    global_tab = FakeBadgedTab("Blocked 4", parts=["Blocked", "4"], aria_selected="true")
+    page = FakeTabPage([global_tab], headings={"Needs Review": headings})
+    with pytest.raises(RuntimeError, match="reader_selector_not_found"):
+        asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked", section="Needs Review")))
+    assert not global_tab.clicked
+    assert not any(role == "tab" for role, _, _ in page.lookups)
+
+
+def test_heading_scope_fallback_does_not_apply_to_non_tab_actions():
+    target = FakeBadgedTab("Blocked", aria_selected="true")
+    heading = FakeTabHeading(FakeTabPage([target]))
+    page = FakeTabPage(headings={"Needs Review": [heading]})
+    action = gateway.PortalReadAction(type="paginate", role="link", name="Next", section="Needs Review")
+    assert asyncio.run(gateway._reader_tab_fallback_targets(page, action)) == []
+    assert not heading.selectors and not target.clicked
+
+
+def test_badged_mutation_tab_still_fails_before_click():
+    target = FakeBadgedTab("Approve 4", parts=["Approve", "4"], aria_selected="true")
+    with pytest.raises(RuntimeError, match="action_not_read_only"):
+        asyncio.run(gateway._safe_click(FakeTabPage([target]), gateway.PortalReadAction(type="switch_tab", role="tab", name="Approve")))
+    assert not target.clicked
+
+
+@pytest.mark.parametrize("aria_selected", ["false", ""])
+def test_explicit_aria_state_wins_over_active_class(aria_selected):
+    target = FakeBadgedTab("Blocked", aria_selected=aria_selected, active=True)
+    page = FakeTabPage([target, FakeBadgedTab("Urgent")])
+    with pytest.raises(RuntimeError, match="reader_tab_state_not_confirmed"):
+        asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert asyncio.run(gateway._reader_selected_tab_texts(page)) == []
+
+
+@pytest.mark.parametrize("state_class", ["item--active", "item--selected", "active", "selected", "is-active", "is-selected"])
+def test_missing_aria_tab_state_accepts_only_explicit_unique_selection_classes(state_class):
+    target = FakeBadgedTab("Blocked", state_class=state_class)
+    page = FakeTabPage([target, FakeBadgedTab("Urgent")])
+    asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert asyncio.run(gateway._reader_selected_tab_texts(page)) == ["Blocked"]
+
+
+@pytest.mark.parametrize("state_class", ["inactive", "unselected", "active-ish", "item--active-other", "item"])
+def test_missing_aria_tab_state_rejects_ambiguous_or_absent_selection_classes(state_class):
+    target = FakeBadgedTab("Blocked", state_class=state_class)
+    page = FakeTabPage([target, FakeBadgedTab("Urgent")])
+    with pytest.raises(RuntimeError, match="reader_tab_state_not_confirmed"):
+        asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert asyncio.run(gateway._reader_selected_tab_texts(page)) == []
+
+
+def test_missing_aria_does_not_pass_unchanged_unselected_or_ambiguous_group():
+    target = FakeBadgedTab("Blocked", on_click=False)
+    other = FakeBadgedTab("Urgent", active=True)
+    page = FakeTabPage([target, other])
+    action = gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")
+    with pytest.raises(RuntimeError, match="reader_tab_state_not_confirmed"):
+        asyncio.run(gateway._safe_click(page, action))
+    target.attributes["class"] = "item--active"
+    with pytest.raises(RuntimeError, match="reader_tab_state_not_confirmed"):
+        asyncio.run(gateway._safe_click(page, action))
+    assert asyncio.run(gateway._reader_selected_tab_texts(page)) == []
+
+
+@pytest.mark.parametrize("state", ["active", "selected"])
+def test_selected_data_state_is_observable_without_aria(state):
+    target = FakeBadgedTab("Blocked", data_state=state, on_click=False)
+    page = FakeTabPage([target, FakeBadgedTab("Urgent")])
+    asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert asyncio.run(gateway._reader_selected_tab_texts(page)) == ["Blocked"]
+
+
+def test_observation_attaches_unique_fallback_tab_state_to_region_and_single_table():
+    target = FakeBadgedTab("Blocked 4", active=True)
+    tabs = FakeTabPage([target, FakeBadgedTab("Urgent 0")])
+    section = FakeSemanticSection("Needs Review", ["Blocked 4", "Urgent 0"])
+    section_locator = section.locator
+    section.locator = lambda selector: tabs.locator(selector) if selector == "[role='tab']:not([aria-selected])" else section_locator(selector)
+    page = FakeObservationPage({}, sections=[section], containers=[FakeStructuredContainer(
+        [("Task No.", True)], [FakeStructuredRow([("T-100", True)])],
+    )])
+    page_locator = page.locator
+    page.locator = lambda selector: tabs.locator(selector) if selector == "[role='tab']:not([aria-selected])" else page_locator(selector)
+    observation = asyncio.run(gateway._observe_semantics(page, 20))
+    assert observation["regionSummaries"][0]["selectedState"] == "Blocked 4"
+    assert observation["sectionSummaries"][0]["selectedState"] == "Blocked 4"
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_switch_tab_waits_for_bounded_asynchronous_selection_update(monkeypatch, native):
+    target = FakeBadgedTab("Blocked", on_click=False, aria_selected="false" if native else None)
+    page = FakeTabPage([target, FakeBadgedTab("Urgent")])
+    waits = []
+
+    async def update_after_render(delay):
+        waits.append(delay)
+        if len(waits) == 2:
+            if native:
+                target.attributes["aria-selected"] = "true"
+            else:
+                target.attributes["class"] = "item--active"
+
+    monkeypatch.setattr(gateway.asyncio, "sleep", update_after_render)
+    asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert waits == [0.1, 0.1]
+    assert target.clicked
+
+
+def test_switch_tab_selection_wait_is_bounded(monkeypatch):
+    target = FakeBadgedTab("Blocked", on_click=False)
+    page = FakeTabPage([target, FakeBadgedTab("Urgent")])
+    waits = []
+
+    async def unchanged_after_render(delay):
+        waits.append(delay)
+
+    monkeypatch.setattr(gateway.asyncio, "sleep", unchanged_after_render)
+    with pytest.raises(RuntimeError, match="reader_tab_state_not_confirmed"):
+        asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked")))
+    assert len(waits) == 10 and sum(waits) <= 1.01
 
 
 @pytest.mark.parametrize("descriptor", ["Suspend", "Archive", "Enable", "Disable", "Close", "Open", "Activate", "Deactivate"])

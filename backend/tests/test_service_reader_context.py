@@ -71,7 +71,7 @@ def test_failed_reader_result_with_verified_facts_returns_only_those_facts() -> 
     assert reader_evidence_only_response({"result": "success", "facts": ["Verified record detail"]}, "en") is None
 
 
-def test_context_uses_bounded_public_reader_result_after_failed_follow_up() -> None:
+def test_failed_list_follow_up_does_not_implicitly_select_first_historical_record() -> None:
     first = event(1, "user.message", {"content": "Show my application tasks"})
     public_result = ReaderResult(
         status="success", summary="ok", page="/applications", section="To Do",
@@ -82,8 +82,9 @@ def test_context_uses_bounded_public_reader_result_after_failed_follow_up() -> N
     failed_result = event(4, "reader.result", ReaderResult(status="not_confirmed", summary="retry", page="/applications", scope="unknown").public_json())
     current = event(5, "user.message", {"content": "Tell me more about the first one"})
     context = _reader_conversation_context([first, event(2, "reader.result", public_result), failed_user, failed_result, current], current)
-    assert context["previousIntent"]["recordIdentity"] == "APP-100"
+    assert "recordIdentity" not in context["previousIntent"]
     assert context["previousIntent"]["scope"] == "team"
+    assert "APP-100" not in str(context)
     assert "APP-101" not in str(context)
 
 

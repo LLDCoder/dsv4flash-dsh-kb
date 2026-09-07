@@ -328,3 +328,100 @@ def test_cumulative_action_limit_blocks_third_read() -> None:
 
     assert outcome.result.status == "not_confirmed"
     assert gateway.events.count("admin.portal.read") == 2
+
+
+def _follow_up_tab_case(actions, *, repair_actions=None, initial_actions=None):
+    initial = portal_plan_for("/work", initial_actions or [{"type": "observe"}])
+    follow_up = portal_plan_for("/work", actions)
+    plans = [initial, follow_up]
+    if repair_actions is not None:
+        plans.append(portal_plan_for("/work", repair_actions))
+    plans.append({
+        "mode": "observation_result", "result": "success", "page": "/work", "section": "Applications",
+        "sourceSection": "observation-table-001", "selectedState": "Blocked", "answerShape": "list",
+        "facts": ["APP-200 Blocked"], "missing": [],
+    })
+    rows = _observation(rows=("APP-200 Blocked",))
+    rows["sectionSummaries"][0]["selectedState"] = "Blocked"
+    gateway = SequencedGateway([
+        {"result": "not_confirmed", "observation": _observation()},
+        {"result": "not_confirmed", "observation": rows},
+    ], info={"ok": True, "result": user_info_for_paths("/work")})
+    planner = Planner(*plans)
+    return gateway, planner
+
+
+def test_follow_up_switch_and_pure_observe_preserves_action_without_llm_schema_repair():
+    switch = {"type": "switch_tab", "role": "tab", "name": "Blocked"}
+    gateway, planner = _follow_up_tab_case([switch, {"type": "observe"}])
+    outcome = run_reader(gateway, planner, question="show me the blocked task list")
+    assert outcome.result.status == "success"
+    assert outcome.result.facts == ("APP-200 Blocked",)
+    assert gateway.events.count("admin.portal.read") == 2
+    assert gateway.calls[-1][1]["actions"] == [switch]
+    assert len(planner.calls) == 3
+    assert all(not call[2].get("planningDirective", {}).get("repairInvalidPortalReadPlan") for call in planner.calls)
+
+
+def test_follow_up_trailing_observe_unsafe_metadata_is_rejected_before_normalization_or_repair():
+    gateway, planner = _follow_up_tab_case([
+        {"type": "switch_tab", "role": "tab", "name": "Blocked"}, {"type": "observe", "method": "POST"},
+    ])
+    outcome = run_reader(gateway, planner, question="show me the blocked task list")
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.audit_evidence["stage"] == "policy_after_observe"
+    assert gateway.events.count("admin.portal.read") == 1
+    assert len(planner.calls) == 2
+
+
+@pytest.mark.parametrize("initial_actions,follow_up_count", [
+    ([{"type": "observe"}], 11),
+    ([{"type": "switch_tab", "role": "tab", "name": "Urgent"}, {"type": "observe"}], 10),
+])
+def test_follow_up_original_action_budget_is_checked_before_dropping_observe(initial_actions, follow_up_count):
+    gateway, planner = _follow_up_tab_case([
+        *([{"type": "switch_tab", "role": "tab", "name": "Blocked"}] * follow_up_count), {"type": "observe"},
+    ], initial_actions=initial_actions)
+    outcome = run_reader(gateway, planner, question="show me the blocked task list")
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.result.missing == ("invalid_follow_up_plan",)
+    assert gateway.events.count("admin.portal.read") == 1
+    assert len(planner.calls) == 2
+
+
+@pytest.mark.parametrize("invalid_actions", [
+    [{"type": "query", "role": "row", "name": "Blocked"}, {"type": "observe"}],
+    [{"type": "observe"}, {"type": "switch_tab", "role": "tab", "name": "Blocked"}],
+    [{"type": "switch_tab", "role": "tab", "name": "Urgent"}, {"type": "observe"}, {"type": "switch_tab", "role": "tab", "name": "Blocked"}],
+])
+def test_invalid_mixed_follow_up_still_requires_repair_and_repeated_invalid_repair_is_rejected(invalid_actions):
+    gateway, planner = _follow_up_tab_case(invalid_actions, repair_actions=invalid_actions)
+    outcome = run_reader(gateway, planner, question="show me the blocked task list")
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.result.missing == ("invalid_follow_up_plan",)
+    assert gateway.events.count("admin.portal.read") == 1
+    assert planner.calls[2][2]["planningDirective"]["repairInvalidPortalReadPlan"]
+
+
+def test_corrected_follow_up_switch_with_pure_observe_uses_same_safe_normalization():
+    switch = {"type": "switch_tab", "role": "tab", "name": "Blocked"}
+    gateway, planner = _follow_up_tab_case([{"type": "observe"}, switch], repair_actions=[switch, {"type": "observe"}])
+    outcome = run_reader(gateway, planner, question="show me the blocked task list")
+    assert outcome.result.status == "success"
+    assert outcome.result.facts == ("APP-200 Blocked",)
+    assert gateway.calls[-1][1]["actions"] == [switch]
+    assert len(planner.calls) == 4
+
+
+@pytest.mark.parametrize("corrected_actions,stage", [
+    ([{"type": "switch_tab", "role": "tab", "name": "Blocked"}, {"type": "observe", "method": "POST"}], "policy_after_observe"),
+    ([{"type": "switch_tab", "role": "tab", "name": "Blocked"}] * 11 + [{"type": "observe"}], "planning_after_observe"),
+])
+def test_corrected_follow_up_still_validates_raw_policy_and_raw_cumulative_budget(corrected_actions, stage):
+    switch = {"type": "switch_tab", "role": "tab", "name": "Blocked"}
+    gateway, planner = _follow_up_tab_case([{"type": "observe"}, switch], repair_actions=corrected_actions)
+    outcome = run_reader(gateway, planner, question="show me the blocked task list")
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.audit_evidence["stage"] == stage
+    assert gateway.events.count("admin.portal.read") == 1
+    assert len(planner.calls) == 3

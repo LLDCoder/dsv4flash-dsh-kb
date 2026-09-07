@@ -76,6 +76,8 @@ def test_conversation_context_keeps_previous_shape_and_reader_location() -> None
             "selectedState": "Open items",
             "scope": "personal",
             "workflowState": "Open",
+            "businessFocus": "Assigned work",
+            "sourceHint": {"page": "/work/items", "section": "Assigned work"},
         }
     }
 
@@ -186,6 +188,8 @@ def test_list_follow_up_keeps_the_previous_target_in_planner_context_without_fac
         "selectedState": "Enquiries & Complaints 2",
         "scope": "personal",
         "workflowState": "",
+        "businessFocus": "My Tasks",
+        "sourceHint": {"page": "/dashboard", "section": "My Tasks"},
     }
     assert "facts" not in previous
     assert "ENQ-PRIVATE-41" not in json.dumps(previous)

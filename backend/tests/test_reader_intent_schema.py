@@ -4,6 +4,7 @@ import pytest
 
 from app.reader_intent import (
     SLOT_NAMES, clarification_question, format_clarification_options, parse_intent_resolution,
+    semantic_source_hint,
 )
 
 
@@ -44,15 +45,20 @@ def slot(value, evidence=None, source="current"):
         "businessObject": slot("tasks"), "requestedScope": slot("personal", "my"),
     }),
 ])
-def test_relations_retain_only_explicitly_resolved_semantic_slots(relation, question, slots):
+def test_relations_apply_condition_deltas_and_limit_advisory_source_hint(relation, question, slots):
     payload = plan(relation, **slots)
     resolution = parse_intent_resolution(payload, question, CONTEXT)
-    assert resolution.public_json() == payload
-    assert resolution.planner_context(CONTEXT) == {"resolvedIntent": payload}
-    assert "/old-page" not in str(resolution.planner_context(CONTEXT))
+    resolved = resolution.public_json()
+    for name, value in slots.items():
+        assert resolved["slots"][name] == value
+    if relation in {"continue", "refine"}:
+        assert resolved["slots"]["businessFocus"] == slot("Appeals", source="previous")
+        assert resolution.planner_context(CONTEXT)["sourceHint"] == {"page": "/old-page", "section": "Appeals"}
+    else:
+        assert "/old-page" not in str(resolution.planner_context(CONTEXT))
     public = resolution.public_json()
     public["slots"]["businessObject"]["value"] = "mutated"
-    assert resolution.public_json() == payload
+    assert resolution.public_json() == resolved
 
 
 def test_clarification_allows_cleared_slots_and_uses_fixed_localized_question():
@@ -90,7 +96,7 @@ def test_unicode_and_whitespace_normalized_evidence():
 ])
 def test_record_identity_is_bound_to_current_literal_or_known_previous_identity(source, value, evidence, question, context):
     payload = plan(recordIdentity=slot(value, evidence, source))
-    assert parse_intent_resolution(payload, question, context).public_json() == payload
+    assert parse_intent_resolution(payload, question, context).public_json()["slots"]["recordIdentity"] == payload["slots"]["recordIdentity"]
 
 
 @pytest.mark.parametrize("value,evidence,source,question", [
@@ -112,6 +118,9 @@ def test_invented_or_unbound_record_identity_is_rejected(value, evidence, source
     lambda p: p["slots"].update(page=slot("/old-page")),
     lambda p: p["slots"].update(filter={"source": "history", "value": "a", "evidence": "a"}),
     lambda p: p["slots"].update(filter={"source": "clear", "value": "a", "evidence": ""}),
+    lambda p: p["slots"].update(filter={"source": "clear", "value": "", "evidence": "not requested"}),
+    lambda p: p["slots"].update(filter={"source": "unspecified", "value": "a", "evidence": ""}),
+    lambda p: p["slots"].update(filter={"source": "unspecified", "value": "", "evidence": "a"}),
     lambda p: p["slots"].update(filter={"source": "current", "value": "", "evidence": "a"}),
     lambda p: p["slots"].update(filter={"source": "current", "value": "a"}),
     lambda p: p["slots"].update(filter={**slot("a"), "permissions": "all"}),
@@ -164,3 +173,112 @@ def test_standalone_formatter_revalidates_labels_without_needing_provenance():
     assert format_clarification_options(("these appeals", "all tasks"), "en") == 'Do you mean "these appeals" or "all tasks"?'
     with pytest.raises(ValueError):
         format_clarification_options(("<script>bad</script>", "all tasks"), "en")
+
+
+@pytest.mark.parametrize("omitted_source", ["unspecified", "clear"])
+def test_format_only_list_retains_confirmed_focus_view_and_filter(omitted_source):
+    context = {"previousIntent": {
+        "question": "What tasks need attention?", "businessObject": "tasks",
+        "businessFocus": "Needs Manager Attention", "view": "Blocked",
+        "filter": "waiting on customer", "answerShape": "attention",
+        "page": "/dashboard", "section": "Needs Manager Attention",
+    }}
+    payload = plan("refine", answerShape=slot("list"))
+    for name in SLOT_NAMES:
+        if name != "answerShape":
+            payload["slots"][name] = {"source": omitted_source, "value": "", "evidence": ""}
+    resolved = parse_intent_resolution(payload, "show me the list", context)
+    slots = resolved.public_json()["slots"]
+    for name in ("businessObject", "businessFocus", "view", "filter"):
+        assert slots[name] == slot(context["previousIntent"][name], source="previous")
+    assert slots["recordIdentity"]["value"] == ""
+    assert slots["answerShape"] == slot("list")
+    planner = resolved.planner_context(context)
+    assert planner["sourceHint"] == {"page": "/dashboard", "section": "Needs Manager Attention"}
+    assert "question" not in planner and "previousIntent" not in planner
+
+
+def test_explicit_clear_is_grounded_in_current_request_and_not_reinherited():
+    context = deepcopy(CONTEXT)
+    context["previousIntent"]["filter"] = "Blocked"
+    payload = plan("refine", filter={"source": "clear", "value": "", "evidence": "without that filter"})
+    resolved = parse_intent_resolution(payload, "Show the list without that filter", context)
+    assert resolved.public_json()["slots"]["filter"] == payload["slots"]["filter"]
+    assert resolved.public_json()["slots"]["businessObject"]["value"] == "appeals"
+
+
+@pytest.mark.parametrize("relation", ["switch", "broaden"])
+def test_switch_and_broaden_do_not_restore_old_focus_or_navigation_hint(relation):
+    payload = plan(relation, businessObject=slot("tasks"), businessFocus=slot("Appeals", source="previous"))
+    resolved = parse_intent_resolution(payload, "Show all tasks", CONTEXT)
+    assert resolved.public_json()["slots"]["businessFocus"] == {"source": "unspecified", "value": "", "evidence": ""}
+    assert resolved.public_json()["slots"]["recordIdentity"]["value"] == ""
+    assert "sourceHint" not in resolved.planner_context(CONTEXT)
+
+
+def test_legacy_seven_slot_payload_is_accepted_and_focus_recovered_from_human_section():
+    payload = plan("refine", answerShape=slot("list"))
+    payload["slots"].pop("businessFocus")
+    resolved = parse_intent_resolution(payload, "show me the list", CONTEXT)
+    assert resolved.public_json()["slots"]["businessFocus"] == slot("Appeals", source="previous")
+    assert set(resolved.public_json()["slots"]) == set(SLOT_NAMES)
+
+
+@pytest.mark.parametrize("section", ["observation-table-001", "observation-region-7", "table-123", "/dashboard"])
+def test_technical_section_ids_are_neither_business_focus_nor_provenance(section):
+    context = {"previousIntent": {"sourceSection": section, "page": "/dashboard"}}
+    resolved = parse_intent_resolution(plan("refine"), "List them", context)
+    assert resolved.public_json()["slots"]["businessFocus"]["value"] == ""
+    assert semantic_source_hint(context) == {"page": "/dashboard"}
+    with pytest.raises(ValueError):
+        parse_intent_resolution(plan(businessFocus=slot(section, source="previous")), "List them", context)
+
+
+def test_explicit_focus_clear_or_new_focus_drops_old_source_hint():
+    cleared = {"source": "clear", "value": "", "evidence": "not just Appeals"}
+    resolved = parse_intent_resolution(plan("refine", businessFocus=cleared), "Show tasks, not just Appeals", CONTEXT)
+    assert "sourceHint" not in resolved.planner_context(CONTEXT)
+    resolved = parse_intent_resolution(plan("refine", businessFocus=slot("Refunds")), "Show Refunds", CONTEXT)
+    assert "sourceHint" not in resolved.planner_context(CONTEXT)
+
+
+def test_source_hint_is_bounded_and_does_not_forward_authority_or_facts():
+    context = {"previousIntent": {"sourceHint": {
+        "page": "/dashboard", "section": "Needs Manager Attention",
+        "permissions": ["all"], "facts": ["one", "two"],
+    }}}
+    assert semantic_source_hint(context) == {"page": "/dashboard", "section": "Needs Manager Attention"}
+    context["previousIntent"]["sourceHint"]["page"] = "//untrusted.example"
+    assert semantic_source_hint(context) == {"section": "Needs Manager Attention"}
+
+
+def test_auto_inheritance_does_not_infer_record_identity_from_fact_bundles():
+    context = {"previousIntent": {"businessObject": "tasks", "facts": [{"value": "REF-99"}]}}
+    resolved = parse_intent_resolution(plan("continue"), "Show its details", context)
+    assert resolved.public_json()["slots"]["recordIdentity"]["value"] == ""
+
+
+def test_previous_explicit_clear_overrides_stale_top_level_value():
+    context = deepcopy(CONTEXT)
+    context["previousIntent"]["intentContext"] = plan("refine", businessFocus={
+        "source": "clear", "value": "", "evidence": "all categories",
+    })
+    resolved = parse_intent_resolution(plan("continue"), "Show a list", context)
+    assert resolved.public_json()["slots"]["businessFocus"]["value"] == ""
+    assert "sourceHint" not in resolved.planner_context(context)
+
+
+def test_human_source_hint_section_can_supply_focus_provenance():
+    context = {"previousIntent": {"sourceHint": {"page": "/dashboard", "section": "Needs Manager Attention"}}}
+    payload = plan("refine", businessFocus=slot("Needs Manager Attention", source="previous"))
+    resolved = parse_intent_resolution(payload, "Show that list", context)
+    assert resolved.public_json()["slots"]["businessFocus"] == payload["slots"]["businessFocus"]
+
+
+def test_previous_explicit_identity_clear_does_not_allow_stale_identity_inheritance():
+    context = deepcopy(CONTEXT)
+    context["previousIntent"]["intentContext"] = plan("refine", recordIdentity={
+        "source": "clear", "value": "", "evidence": "all records",
+    })
+    with pytest.raises(ValueError):
+        parse_intent_resolution(plan(recordIdentity=slot("REF-41", source="previous")), "Show it", context)

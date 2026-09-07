@@ -714,6 +714,98 @@ async def _guard_reader_request(
     await route.continue_()
 
 
+async def _reader_tab_scope(page: Page, action: PortalReadAction) -> Any:
+    if not action.section:
+        return page
+    regions = page.get_by_role("region", name=action.section, exact=True)
+    visible_regions = [regions.nth(index) for index in range(await regions.count()) if await regions.nth(index).is_visible()]
+    if len(visible_regions) > 1:
+        raise RuntimeError("reader_switch_tab_ambiguous")
+    if visible_regions:
+        return visible_regions[0]
+    headings = page.get_by_role("heading", name=action.section, exact=True)
+    visible_headings = [headings.nth(index) for index in range(await headings.count()) if await headings.nth(index).is_visible()]
+    if len(visible_headings) > 1:
+        raise RuntimeError("reader_switch_tab_ambiguous")
+    if not visible_headings:
+        raise RuntimeError("reader_selector_not_found")
+    scope = visible_headings[0].locator("xpath=ancestor::*[self::section or @role='region'][1]")
+    if await scope.count() != 1 or not await scope.nth(0).is_visible():
+        raise RuntimeError("reader_selector_not_found")
+    return scope.nth(0)
+
+
+async def _reader_tab_fallback_targets(page: Page, action: PortalReadAction) -> list[Any]:
+    """Preserve a unique semantic scope; match exact names before numeric badges."""
+    if action.selector or action.role != "tab":
+        return []
+    label = " ".join(str(action.name or action.label or "").split())
+    if not label:
+        return []
+    root = await _reader_tab_scope(page, action)
+    exact = root.get_by_role("tab", name=action.name or action.label, exact=True)
+    visible_exact = [exact.nth(index) for index in range(await exact.count()) if await exact.nth(index).is_visible()]
+    if visible_exact:
+        return visible_exact
+    candidates = root.get_by_role("tab", name=re.compile(r"^" + re.escape(label) + r"\s+[0-9]+$"))
+    matches = []
+    for index in range(await candidates.count()):
+        candidate = candidates.nth(index)
+        if not await candidate.is_visible():
+            continue
+        parts = await candidate.evaluate("""element => {
+            const visible = node => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden';
+            const children = Array.from(element.children).filter(visible);
+            const looseText = Array.from(element.childNodes).some(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+            if (looseText || children.length !== 2) return null;
+            return children.map(child => (child.innerText || '').trim().replace(/\\s+/g, ' '));
+        }""")
+        if isinstance(parts, list) and len(parts) == 2 and parts[0] == label and re.fullmatch(r"[0-9]+", str(parts[1])):
+            matches.append(candidate)
+    return matches
+
+
+async def _reader_tab_selection(locator: Any) -> dict[str, Any]:
+    aria_selected = await locator.get_attribute("aria-selected")
+    if aria_selected is not None:
+        return {"selected": aria_selected == "true", "native": True}
+    state = await locator.evaluate("""element => {
+        const visible = node => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden';
+        const active = node => {
+            if (node.hasAttribute('aria-selected')) return node.getAttribute('aria-selected') === 'true';
+            return ['active', 'selected'].includes(node.getAttribute('data-state')) ||
+                Array.from(node.classList).some(token => /^(?:active|selected|is-active|is-selected)$|--(?:active|selected)$/.test(token));
+        };
+        const group = element.closest('[role="tablist"]') || element.parentElement;
+        if (!group || element.getAttribute('role') !== 'tab') return null;
+        const tabs = Array.from(group.querySelectorAll('[role="tab"]')).filter(visible);
+        const selected = tabs.filter(active);
+        return {
+            selected: tabs.length >= 2 && selected.length === 1 && selected[0] === element,
+            native: false,
+            groupLabels: tabs.slice(0, 40).map(tab => (tab.innerText || '').trim().slice(0, 200)),
+            groupSize: tabs.length
+        };
+    }""")
+    return state if isinstance(state, dict) else {"selected": False, "native": False}
+
+
+async def _reader_selected_tab_texts(root: Any) -> list[str]:
+    selected = []
+    for selector in ("[role='tab'][aria-selected='true']", "[role='tab']:not([aria-selected])"):
+        tabs = root.locator(selector)
+        for index in range(await tabs.count()):
+            tab = tabs.nth(index)
+            if not await tab.is_visible():
+                continue
+            if selector.endswith(":not([aria-selected])") and not (await _reader_tab_selection(tab)).get("selected"):
+                continue
+            selected.append(_sanitize_reader_text(await tab.inner_text(), max_chars=200))
+            if len(selected) >= 2:
+                return selected
+    return selected
+
+
 async def _safe_click(page: Page, action: PortalReadAction) -> None:
     action_type = action.type.strip().casefold().replace("-", "_")
     target = _semantic_locator(page, action)
@@ -726,6 +818,8 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
             for index in range(await target.count())
             if await target.nth(index).is_visible()
         ]
+        if not visible_targets:
+            visible_targets = await _reader_tab_fallback_targets(page, action)
         if not visible_targets:
             raise RuntimeError("reader_selector_not_found")
         if len(visible_targets) != 1:
@@ -776,9 +870,21 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
         raise RuntimeError("reader_click_target_not_pagination")
     if action_type == "expand_details" and aria_expanded not in {"true", "false"}:
         raise RuntimeError("reader_click_target_not_expandable")
+    before_tab = await _reader_tab_selection(locator) if action_type == "switch_tab" else {}
     await locator.click(timeout=5_000)
-    if action_type == "switch_tab" and await locator.get_attribute("aria-selected") != "true":
-        raise RuntimeError("reader_tab_state_not_confirmed")
+    if action_type == "switch_tab":
+        for attempt in range(11):
+            after_tab = await _reader_tab_selection(locator)
+            stable_group = after_tab.get("native") or (
+                before_tab.get("groupSize") == after_tab.get("groupSize")
+                and before_tab.get("groupLabels") == after_tab.get("groupLabels")
+            )
+            if after_tab.get("selected") and stable_group:
+                break
+            if attempt < 10:
+                await asyncio.sleep(0.1)
+        else:
+            raise RuntimeError("reader_tab_state_not_confirmed")
     if action_type == "sort" and str(await locator.get_attribute("aria-sort") or "").casefold() != str(action.direction).casefold():
         raise RuntimeError("reader_sort_state_not_confirmed")
 
@@ -1129,18 +1235,9 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
         if len(section_summaries) >= 4:
             break
 
-    active_tabs = page.locator("[role='tab'][aria-selected='true']")
-    active_tab_text = ""
-    visible_active_tab_count = 0
-    for index in range(await active_tabs.count()):
-        active_tab = active_tabs.nth(index)
-        if not await active_tab.is_visible():
-            continue
-        visible_active_tab_count += 1
-        if visible_active_tab_count == 1:
-            active_tab_text = _sanitize_reader_text(await active_tab.inner_text(), max_chars=200)
-        else:
-            break
+    active_tab_texts = await _reader_selected_tab_texts(page)
+    visible_active_tab_count = len(active_tab_texts)
+    active_tab_text = active_tab_texts[0] if active_tab_texts else ""
     if len(visible_containers) == 1 and visible_active_tab_count == 1 and active_tab_text:
         visible_table_node_id = f"observation-table-{visible_containers[0][0] + 1:03d}"
         for section_summary in section_summaries:
@@ -1183,11 +1280,7 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
             max_each=min(limit, 12),
             max_chars=200,
         )
-        selected_states = await visible_texts(
-            section.locator("[role='tab'][aria-selected='true']"),
-            max_each=1,
-            max_chars=200,
-        )
+        selected_states = await _reader_selected_tab_texts(section)
         card_summaries = await visible_texts(
             section.locator(".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))"),
             max_each=min(limit, 12),
@@ -1220,7 +1313,7 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
             "controls": controls,
             "emptyState": empty_state,
         }
-        if selected_states:
+        if len(selected_states) == 1 and selected_states[0]:
             region_summary["selectedState"] = selected_states[0]
         if card_summaries:
             region_summary["cardSummaries"] = card_summaries

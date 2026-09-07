@@ -9,6 +9,42 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-attention-summary-list-followup
+    questions:
+      - What tasks show I pay attention?
+      - show me the list
+      - show me the blocked task list
+    expect:
+      business_focus_independent_of_answer_shape: true
+      unspecified_means_explicit_clear: false
+      followup_reads_fresh_matching_rows: true
+      known_section_in_retrieval: true
+      prior_source_hint: advisory_not_required_route
+      counts_substituted_for_list: forbidden
+      legacy_failed_refine_loses_verified_focus: false
+      recovery_crosses_topic_change_or_resolver_failure: forbidden
+
+  - id: reader-focus-switch-and-expansion
+    expect:
+      continue_and_refine_preserve_omitted_compatible_focus: true
+      explicit_clear_requires_current_question_evidence: true
+      switch_and_broaden_restore_old_narrow_focus: false
+      source_hint_grants_page_permission: false
+      facts_or_technical_ids_establish_focus: false
+
+  - id: reader-readonly-tab-count-badge
+    observed: [role_tab, separate_label_and_numeric_count_children, active_class_without_aria_selected]
+    expect:
+      exact_accessible_name_preferred: true
+      fallback_scope_expansion: forbidden
+      heading_scope_fallback: unique_exact_heading_nearest_semantic_section_only
+      arbitrary_label_prefix_match: forbidden
+      multiple_visible_matches: rejected
+      explicit_aria_selected_false_overridden_by_class: false
+      fallback_selection: unique_active_tab_in_verified_group
+      selected_state_in_observation: same_signal_as_click_verification
+      unconfirmed_or_mutating_control: rejected
+
   - id: reader-conditional-intent-before-retrieval
     expect:
       order: [get_user_info, resolve_intent, knowledge_search, plan, read]

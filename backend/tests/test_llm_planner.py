@@ -87,7 +87,10 @@ def test_reader_planner_disables_thinking_and_bounds_output(monkeypatch) -> None
     assert "do not additionally filter a row's status from the tab name" in system_prompt
     assert "documented role, view, business object, and scope" in system_prompt
     assert "permitted child-path identifier does not prove a working page entry" in system_prompt
-    assert "Omit action.section unless the observation establishes that accessible region" in system_prompt
+    assert "Omit action.section when that scope has not been observed" in system_prompt
+    assert "one exact visible heading inside a unique semantic section" in system_prompt
+    assert "A region heading is NOT a tab or an action" in system_prompt
+    assert "Every state-changing read already returns a fresh observation" in system_prompt
 
 
 def test_observed_phase_repeats_closed_modes_and_unhealthy_empty_guard(monkeypatch) -> None:

@@ -70,8 +70,58 @@ def test_first_turn_does_not_pay_for_history_resolution():
     assert planner.intent_calls == []
 
 
+@pytest.mark.parametrize("destination", ["/work/overview", "/work/review"])
+def test_attention_to_list_keeps_focus_and_candidate_source_without_requiring_that_route(destination):
+    history = {"previousIntent": {
+        "question": "What needs review?", "answerShape": "attention", "resultStatus": "success",
+        "page": "/work/overview", "section": "Needs Review",
+    }}
+    candidate = resolution("refine", answerShape=slot("list"))
+    planner = IntentPlanner(candidate, portal_plan_for(destination))
+    gateway = Gateway(info={"ok": True, "result": user_info_for_paths("/work/overview", "/work/review")},
+                      portal_result={"ok": True, "result": {
+                          "result": "success", "page": destination, "section": "Needs Review",
+                          "answerShape": "list", "facts": ["Task No. T-100 Waiting for review"],
+                      }})
+    outcome = run_reader(gateway, planner, question="show me the list", conversation_context=history)
+    context = planner.contexts[0]
+    assert gateway.events[:3] == ["GetUserInfo", "knowledge.search", "admin.portal.read"]
+    assert context["resolvedIntent"]["slots"]["businessFocus"]["value"] == "Needs Review"
+    assert context["sourceHint"] == {"page": "/work/overview", "section": "Needs Review"}
+    assert "Needs Review" in gateway.calls[0][1]["query"]
+    assert "/work/overview" in gateway.calls[0][1]["query"]
+    assert outcome.result.status == "success"
+    assert outcome.result.answer_shape == "list"
+    assert outcome.result.public_json()["sourceHint"] == context["sourceHint"]
+
+
+def test_source_hint_cannot_authorize_an_unpermitted_page():
+    history = {"previousIntent": {"businessFocus": "Needs Review", "answerShape": "attention",
+                                   "sourceHint": {"page": "/restricted", "section": "Needs Review"}}}
+    candidate = resolution("refine", answerShape=slot("list"))
+    gateway = Gateway(info={"ok": True, "result": user_info_for_paths("/work")})
+    outcome = run_reader(gateway, IntentPlanner(candidate, portal_plan_for("/restricted")),
+                         question="show me the list", conversation_context=history)
+    assert outcome.result.status == "no_permission"
+    assert "admin.portal.read" not in gateway.events
+
+
+def test_attention_counts_do_not_pass_as_a_followup_list():
+    history = {"previousIntent": {"businessFocus": "Needs Review", "answerShape": "attention"}}
+    candidate = resolution("refine", answerShape=slot("list"))
+    gateway = Gateway(portal_result={"ok": True, "result": {
+        "result": "success", "answerShape": "attention", "facts": ["Needs Review 4"],
+    }})
+    outcome = run_reader(gateway, IntentPlanner(candidate, portal_plan_for("/licensing")),
+                         question="show me the list", conversation_context=history)
+    assert outcome.result.status == "not_confirmed"
+    assert not outcome.result.facts
+    assert "answer_intent_mismatch" in outcome.result.missing
+
+
 def test_refinement_inherits_only_needed_business_object():
-    intent = resolution("refine", businessObject=slot("appeals", source="previous"), view=slot("Completed"))
+    intent = resolution("refine", businessObject=slot("appeals", source="previous"), view=slot("Completed"),
+                        recordIdentity={"source": "clear", "value": "", "evidence": "Completed"})
     planner = IntentPlanner(intent, portal_plan_for("/happiness/appeals"))
     gateway = Gateway(info={"ok": True, "result": user_info_for_paths("/happiness/appeals")})
     run_reader(gateway, planner, question="Completed?", conversation_context=HISTORY)
@@ -170,7 +220,8 @@ def test_attention_fallback_cannot_relabel_an_ordinary_completed_list():
 ])
 def test_conceptual_followup_still_accepts_grounded_manual_evidence(question, evidence):
     fact = "Use the date filter to select a date range."
-    intent = resolution("refine", answerShape=slot("detail", evidence))
+    intent = resolution("refine", answerShape=slot("detail", evidence),
+                        recordIdentity={"source": "clear", "value": "", "evidence": evidence})
     planner = IntentPlanner(intent, {"mode": "knowledge_only", "result": "success",
                                     "answerShape": "detail", "facts": [fact]})
     gateway = Gateway(knowledge_result={"ok": True, "result": {"chunks": [{"chunk": {"content": fact}}]}})

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.reader_intent import SLOT_NAMES, parse_intent_resolution
-from app.service import _reader_conversation_context, reader_evidence_only_response
+from app.service import _reader_conversation_context, _reader_focus_anchor, reader_evidence_only_response
 
 
 def event(seq, kind, payload):
@@ -245,7 +245,10 @@ def test_explicit_one_record_list_can_support_find_same_follow_up(question):
     assert "Paid" not in str(context)
     follow_up = intent("continue")
     follow_up["slots"]["recordIdentity"] = {"source": "previous", "value": "TX-12345", "evidence": "TX-12345"}
-    assert parse_intent_resolution(follow_up, "Find the same transaction", context).public_json() == follow_up
+    parsed = parse_intent_resolution(follow_up, "Find the same transaction", context).public_json()
+    assert parsed["slots"]["recordIdentity"] == follow_up["slots"]["recordIdentity"]
+    assert parsed["slots"]["answerShape"] == {"source": "previous", "value": "list", "evidence": "list"}
+    assert "facts" not in str(parsed) and "Paid" not in str(parsed)
 
 
 @pytest.mark.parametrize("question", [
@@ -261,3 +264,180 @@ def test_broad_or_time_bounded_list_with_one_observed_row_does_not_acquire_ident
     current = event(3, "user.message", {"content": "Which need attention?"})
     context = _reader_conversation_context([previous, result, current], current)
     assert "recordIdentity" not in context["previousIntent"]
+
+
+def verified_attention():
+    return {
+        "result": "success", "answerShape": "attention", "page": "/dashboard",
+        "section": "Needs Manager Attention", "sourceSection": "observation-table-001",
+        "selectedState": "Blocked", "recordIdentity": "REF-OLD", "view": "Blocked",
+        "filter": "old filter", "dateRange": "last week", "scope": "team",
+        "facts": ["Urgent 0", "Blocked 4", "Private row detail"],
+    }
+
+
+def test_screenshot_attention_then_list_keeps_verified_focus_as_advisory_only():
+    initial = event(1, "user.message", {"content": "What tasks show I pay attention?"})
+    result = event(2, "reader.result", verified_attention())
+    follow_up = event(3, "user.message", {"content": "show me the list"})
+    context = _reader_conversation_context([initial, result, follow_up], follow_up)
+    previous = context["previousIntent"]
+    assert previous["businessFocus"] == "Needs Manager Attention"
+    resolved = parse_intent_resolution(intent("refine", answerShape="list"), "show me the list", context)
+    assert resolved.public_json()["slots"]["businessFocus"]["value"] == "Needs Manager Attention"
+    assert resolved.planner_context(context)["sourceHint"] == {"page": "/dashboard", "section": "Needs Manager Attention"}
+    assert "Private row detail" not in str(context)
+
+
+def test_screenshot_failed_legacy_list_then_blocked_list_recovers_only_verified_focus():
+    initial = event(1, "user.message", {"content": "What tasks show I pay attention?"})
+    first_result = event(2, "reader.result", verified_attention())
+    second = event(3, "user.message", {"content": "show me the list"})
+    legacy = intent("refine", answerShape="list")
+    legacy["slots"].pop("businessFocus")
+    failed = event(4, "reader.result", {"result": "not_confirmed", "facts": [], "intentContext": legacy})
+    current = event(5, "user.message", {"content": "show me the blocked task list"})
+    context = _reader_conversation_context([initial, first_result, second, failed, current], current)
+    previous = context["previousIntent"]
+    assert previous["businessFocus"] == "Needs Manager Attention"
+    assert previous["sourceHint"] == {"page": "/dashboard", "section": "Needs Manager Attention"}
+    for name in ("recordIdentity", "view", "filter", "dateRange", "scope", "facts", "page"):
+        assert name not in previous
+    assert "REF-OLD" not in str(context) and "Private row detail" not in str(context)
+    resolved = parse_intent_resolution(intent("refine", businessObject="task", view="blocked", answerShape="list"),
+                                       "show me the blocked task list", context)
+    assert resolved.public_json()["slots"]["businessFocus"]["value"] == "Needs Manager Attention"
+    assert resolved.public_json()["slots"]["view"]["value"] == "blocked"
+
+
+@pytest.mark.parametrize("boundary", [
+    {"result": "not_confirmed", "intentContext": intent("switch")},
+    {"result": "not_confirmed", "intentContext": intent("broaden")},
+    {"result": "not_confirmed", "intentContext": intent("clarify")},
+    {"result": "not_confirmed", "intentContext": {"relation": "refine", "slots": {"businessFocus": {
+        "source": "clear", "value": "", "evidence": "all categories",
+    }}}},
+    {"result": "not_confirmed", "missing": ["intent_resolution_invalid"]},
+    {"result": "not_confirmed", "missing": ["intent_resolution_timeout"]},
+    {"result": "not_confirmed", "intentContext": "broken"},
+    {"result": "not_confirmed", "intentContext": {"slots": []}},
+    {"result": "not_confirmed", "intentContext": {"slots": {"businessFocus": []}}},
+    ["not a result"],
+])
+def test_focus_history_recovery_stops_at_semantic_or_malformed_boundaries(boundary):
+    history = [
+        event(1, "user.message", {"content": "What needs attention?"}),
+        event(2, "reader.result", verified_attention()),
+        event(3, "user.message", {"content": "A different request"}),
+        event(4, "reader.result", boundary),
+        event(5, "user.message", {"content": "Show the list"}),
+        event(6, "reader.result", {"result": "not_confirmed", "intentContext": intent("refine", answerShape="list")}),
+        event(7, "user.message", {"content": "Try again"}),
+    ]
+    previous = _reader_conversation_context(history, history[-1])["previousIntent"]
+    assert "businessFocus" not in previous and "sourceHint" not in previous
+    assert "REF-OLD" not in str(previous)
+
+
+@pytest.mark.parametrize("status", ["success", "no_data", "not_confirmed"])
+def test_current_explicit_focus_clear_never_recreates_focus_from_own_or_older_section(status):
+    cleared = intent("refine", answerShape="list")
+    cleared["slots"]["businessFocus"] = {"source": "clear", "value": "", "evidence": "all categories"}
+    result = {**verified_attention(), "result": status, "intentContext": cleared}
+    history = [event(1, "user.message", {"content": "Show all categories"}), event(2, "reader.result", result),
+               event(3, "user.message", {"content": "Show the list"})]
+    previous = _reader_conversation_context(history, history[-1])["previousIntent"]
+    assert "businessFocus" not in previous and "sourceHint" not in previous
+
+
+@pytest.mark.parametrize("patch", [
+    {"page": "http://[bad"}, {"page": "https://other.example/dashboard"},
+    {"page": "//other.example/dashboard"}, {"page": "/dashboard?access_token=secret"},
+    {"page": "/" + "x" * 241}, {"page": "password=secret"},
+    {"section": "observation-table-001"}, {"section": "table-123"},
+    {"section": "cookie=secret"}, {"section": "name\nmore"}, {"section": {"name": "Tasks"}},
+])
+def test_focus_anchor_rejects_bad_routes_technical_ids_and_credentials(patch):
+    result = {**verified_attention(), **patch}
+    assert _reader_focus_anchor(result) == {}
+
+
+@pytest.mark.parametrize("candidate", [None, [], "bad", {"result": "not_confirmed"}])
+def test_focus_anchor_rejects_non_verified_or_malformed_results(candidate):
+    assert _reader_focus_anchor(candidate) == {}
+
+
+def test_persisted_source_hint_is_revalidated_and_stripped_to_advisory_fields():
+    history = [event(1, "user.message", {"content": "Show the list"}), event(2, "reader.result", {
+        "result": "not_confirmed", "intentContext": intent("refine", answerShape="list"),
+        "sourceHint": {"page": "/dashboard", "section": "Needs Manager Attention", "facts": ["old row"], "permissions": ["all"]},
+    }), event(3, "user.message", {"content": "Try again"})]
+    previous = _reader_conversation_context(history, history[-1])["previousIntent"]
+    assert previous["sourceHint"] == {"page": "/dashboard", "section": "Needs Manager Attention"}
+    assert previous["businessFocus"] == "Needs Manager Attention"
+    assert "old row" not in str(previous) and "permissions" not in str(previous)
+    history[1].event_json["sourceHint"]["page"] = "http://[bad"
+    previous = _reader_conversation_context(history, history[-1])["previousIntent"]
+    assert "sourceHint" not in previous
+
+
+@pytest.mark.parametrize("persisted_hint", [False, True])
+def test_changed_focus_after_failed_refine_does_not_recover_incompatible_old_section(persisted_hint):
+    first = event(1, "user.message", {"content": "Show Pending work"})
+    old_result = event(2, "reader.result", {
+        "result": "success", "page": "/work", "section": "Pending work", "answerShape": "list",
+    })
+    second = event(3, "user.message", {"content": "Show Completed work"})
+    failed_payload = {"result": "not_confirmed", "intentContext": intent("refine", businessFocus="Completed work", answerShape="list")}
+    if persisted_hint:
+        failed_payload["sourceHint"] = {"page": "/work", "section": "Pending work"}
+    failed = event(4, "reader.result", failed_payload)
+    current = event(5, "user.message", {"content": "show the list"})
+    context = _reader_conversation_context([first, old_result, second, failed, current], current)
+    assert context["previousIntent"]["businessFocus"] == "Completed work"
+    assert "sourceHint" not in context["previousIntent"]
+    resolved = parse_intent_resolution(intent("refine", answerShape="list"), "show the list", context)
+    planner = resolved.planner_context(context)
+    assert planner["resolvedIntent"]["slots"]["businessFocus"]["value"] == "Completed work"
+    assert "Pending work" not in str(planner)
+
+
+@pytest.mark.parametrize("facts", [["Task No. T-100 Pending"], ["Task No. T-100 Pending", "Task No. T-101 Pending"]])
+def test_first_turn_list_does_not_implicitly_narrow_followup_to_first_identity(facts):
+    history = [event(1, "user.message", {"content": "Show my task list"}), event(2, "reader.result", {
+        "result": "success", "page": "/work", "section": "Tasks", "answerShape": "list", "facts": facts,
+    }), event(3, "user.message", {"content": "show the list"})]
+    context = _reader_conversation_context(history, history[-1])
+    assert "recordIdentity" not in context["previousIntent"]
+    resolved = parse_intent_resolution(intent("refine", answerShape="list"), "show the list", context)
+    assert resolved.public_json()["slots"]["recordIdentity"]["value"] == ""
+    assert "T-100" not in str(context) and "T-101" not in str(context)
+
+
+@pytest.mark.parametrize("question,shape", [
+    ("Show the first task's details", "detail"),
+    ("Give me one task and its status", "list"),
+    ("展示一条记录和状态", "list"),
+])
+def test_first_turn_explicit_single_result_keeps_identity_for_same_record(question, shape):
+    history = [event(1, "user.message", {"content": question}), event(2, "reader.result", {
+        "result": "success", "page": "/work", "section": "Tasks", "answerShape": shape,
+        "facts": ["Task No. T-100 Pending"],
+    }), event(3, "user.message", {"content": "Find the same record"})]
+    context = _reader_conversation_context(history, history[-1])
+    assert context["previousIntent"]["recordIdentity"] == "T-100"
+    follow_up = intent("continue")
+    resolved = parse_intent_resolution(follow_up, "Find the same record", context)
+    assert resolved.public_json()["slots"]["recordIdentity"] == {"source": "previous", "value": "T-100", "evidence": "T-100"}
+    assert "Pending" not in str(context) and "facts" not in context["previousIntent"]
+
+
+@pytest.mark.parametrize("status,facts", [
+    ("not_confirmed", ["Task No. T-100 Pending"]),
+    ("success", ["Task No. T-100 Pending", "Task No. T-101 Pending"]),
+])
+def test_first_turn_detail_identity_requires_one_verified_fact(status, facts):
+    history = [event(1, "user.message", {"content": "Show the task details"}), event(2, "reader.result", {
+        "result": status, "page": "/work", "section": "Tasks", "answerShape": "detail", "facts": facts,
+    }), event(3, "user.message", {"content": "Find the same record"})]
+    assert "recordIdentity" not in _reader_conversation_context(history, history[-1])["previousIntent"]

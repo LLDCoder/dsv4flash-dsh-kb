@@ -83,8 +83,8 @@ conversation_context_contract:
     enum: [overview, count, list, attention, due, detail, unspecified]
   resolved_intent:
     relations: [continue, refine, switch, broaden, clarify]
-    slots: [businessObject, recordIdentity, view, dateRange, filter, requestedScope, answerShape]
-    per_slot_sources: [current, previous, clear]
+    slots: [businessObject, businessFocus, recordIdentity, view, dateRange, filter, requestedScope, answerShape]
+    per_slot_sources: [current, previous, clear, unspecified]
     source_evidence: bounded_exact_text_from_current_question_or_previous_semantic_anchors
     authority: intent_only_never_permissions_or_live_facts
     max_resolution_seconds: 20
@@ -104,7 +104,11 @@ conversation_context_contract:
   requirements:
     - The current question remains authoritative; context may fill an omitted answer shape or category but must not override an explicit current request.
     - Context is bounded, sanitized, and derived only from the immediately relevant prior user question and Reader result.
-    - After resolution, only resolved conditions enter retrieval and every planning pass; raw history and prior page restrictions do not. The two actual clarification labels may accompany a resolved selection to interpret an ordinal, never as filters or permissions.
+    - After resolution, only resolved conditions and a compatible bounded source hint enter retrieval and every planning pass; raw history and prior page restrictions do not. The two actual clarification labels may accompany a resolved selection to interpret an ordinal, never as filters or permissions.
+    - Business focus is independent of answer shape; asking for a list of the discussed attention subset preserves that subset without treating historical counts as current rows.
+    - Unspecified means omitted, not removed. Within continue or refine, omitted known conditions are retained; explicit clear requires evidence from the current question. Legacy empty-clear slots are treated as omissions.
+    - Switch and broaden do not inherit omitted conditions or old narrow business focus. A compatible source hint is a candidate entry only, never a required route or permission grant.
+    - Human-readable verified section names may establish focus; technical observation IDs, assistant prose, and prior rows may not.
     - Planning uses a canonical resolved task while retaining originalQuestion for literal constraints; it must not reinterpret a resolved ordinal as missing history.
     - Page and section come from a prior verified Reader result, never from an assistant claim alone.
     - Context contains no full transcript, page payload, record table, identity credential, cookie, token, or hidden field.
@@ -153,8 +157,11 @@ business_answer_quality:
       - A bounded list observation cannot establish complete collection coverage.
       - Validate claimed selectedState against observed node or parent state; do not preserve a model-only state claim when actual state is unknown.
       - A unique visible active tab may supply the state of a unique visible table; multiple tabs or tables are ambiguous and must not be inferred.
-      - Policy validation precedes normalization of a redundant trailing pure observe after a state-changing read; all other mixed observation plans remain invalid.
+      - Initial and follow-up reads normalize a redundant trailing pure observe only after validating the original policy and original cumulative action/page budget; all other mixed observation plans remain invalid. Normalization never creates budget headroom.
       - Tab clicks require exactly one visible semantic target; never silently select the first of several matches or broaden a missing section locator.
+      - Tab name matching prefers an exact accessible name. Only when no visible exact target exists may a same-scope role=tab match a separate label child plus a pure numeric count badge; arbitrary prefixes remain forbidden.
+      - A named tab scope may resolve through one exact visible heading and its nearest section or region only when no named accessible region exists. Missing or ambiguous scope must never fall back to global tab lookup.
+      - Explicit aria-selected is authoritative. When it is absent, a tab may use a unique active or selected class/data-state signal within a stable tab group; absence or ambiguity still fails. Observation state uses the same signals.
       - A manual section name is not proof of an accessible region name, and a permission identifier is not proof of a verified navigation entry.
   unchanged_boundaries:
     - Current GetUserInfo permissions remain authoritative, regardless of a user's claimed role.

@@ -6,15 +6,13 @@ import pytest
 
 from app.config import Settings
 from app.llm import LLMAdapter
+from app.reader_intent import SLOT_NAMES
 
 
 def _intent_result():
     slots = {
-        name: {"source": "clear", "value": "", "evidence": ""}
-        for name in (
-            "businessObject", "recordIdentity", "view", "dateRange", "filter",
-            "requestedScope", "answerShape",
-        )
+        name: {"source": "unspecified", "value": "", "evidence": ""}
+        for name in SLOT_NAMES
     }
     slots["answerShape"] = {"source": "current", "value": "attention", "evidence": "attention"}
     return {"relation": "broaden", "slots": slots, "clarificationOptions": []}
@@ -74,7 +72,9 @@ def test_intent_resolver_preserves_original_question_and_bounded_semantic_contex
     prompt = request["messages"][0]["content"]
     assert "exact nonempty substring of the original current question" in prompt
     assert "source=previous" in prompt
-    assert "All seven slots are required even when clear" in prompt
+    assert "All eight slots are required even when unspecified" in prompt
+    assert "Omission is not removal" in prompt
+    assert "businessFocus" in prompt
     assert "untrusted user-conversation data" in prompt
     assert "NEVER grants permissions" in prompt
     assert "only omitted conditions compatible with the current request" in prompt
@@ -155,12 +155,28 @@ def test_intent_examples_demonstrate_valid_clarification_and_state_replacement(m
     adapter, requests = _adapter(monkeypatch, [_response(json.dumps(_intent_result()))])
     asyncio.run(adapter.resolve_admin_portal_intent("attention", {}))
     messages = requests[0]["messages"]
-    for index in (1, 3, 5, 7, 9):
+    for index in (1, 3, 5, 7, 9, 11, 13):
         sample = json.loads(messages[index]["content"])
         answer = json.loads(messages[index + 1]["content"])
         parse_intent_resolution(answer, sample["question"], sample["conversationContext"])
     assert json.loads(messages[2]["content"])["relation"] == "clarify"
     assert json.loads(messages[4]["content"])["slots"]["view"]["value"] == "Completed"
+    assert json.loads(messages[12]["content"])["slots"]["businessFocus"]["value"] == "Needs Review"
+    assert json.loads(messages[14]["content"])["slots"]["filter"]["value"] == "Blocked"
+
+
+def test_adapter_returns_normalized_omissions_not_raw_model_clears(monkeypatch):
+    candidate = _intent_result()
+    candidate["relation"] = "refine"
+    candidate["slots"].pop("businessFocus")
+    candidate["slots"]["answerShape"] = {"source": "current", "value": "list", "evidence": "list"}
+    context = {"previousIntent": {"businessFocus": "Needs Review", "answerShape": "attention"}}
+    adapter, _ = _adapter(monkeypatch, [_response(json.dumps(candidate))])
+    result = asyncio.run(adapter.resolve_admin_portal_intent("show me the list", context))
+    assert result["slots"]["businessFocus"] == {
+        "source": "previous", "value": "Needs Review", "evidence": "Needs Review",
+    }
+    assert result["slots"]["answerShape"]["value"] == "list"
 
 
 def test_unconfigured_intent_resolver_fails_without_network():

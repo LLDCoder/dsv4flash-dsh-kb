@@ -18,7 +18,7 @@ from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
 from .portal_reader import AdminPortalReader, ReaderTimeoutBudget, bounded_json, reader_answer_shape
-from .reader_intent import format_clarification_options
+from .reader_intent import format_clarification_options, semantic_source_hint
 from .principal import Principal
 from .reader_limits import (
     MAX_PLATFORM_TIMEOUT_SECONDS,
@@ -164,6 +164,25 @@ def _reader_requested_single_record(question: str) -> bool:
     return bool(english or chinese or arabic)
 
 
+def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep a verified semantic region, never its historical counts or rows."""
+
+    if not isinstance(result, dict) or result.get("result") not in {"success", "no_data"}:
+        return {}
+    intent = result.get("intentContext")
+    slots = intent.get("slots") if isinstance(intent, dict) else None
+    focus = slots.get("businessFocus") if isinstance(slots, dict) else None
+    if isinstance(focus, dict) and focus.get("source") == "clear" and focus.get("evidence"):
+        return {}
+    hint = semantic_source_hint({"previousIntent": {
+        "page": result.get("page"), "section": result.get("section"),
+        "sourceSection": result.get("sourceSection"),
+    }})
+    if hint.get("page") and hint.get("section"):
+        return {"businessFocus": hint["section"], "sourceHint": hint}
+    return {}
+
+
 def _reader_conversation_context(
     history: list[SessionEvent],
     latest_user: SessionEvent | None,
@@ -216,10 +235,58 @@ def _reader_conversation_context(
             "intentContext": resolved,
         }
         slots = resolved.get("slots", {})
-        for key in ("businessObject", "recordIdentity", "view", "dateRange", "filter", "requestedScope", "answerShape"):
+        for key in ("businessObject", "businessFocus", "recordIdentity", "view", "dateRange", "filter", "requestedScope", "answerShape"):
             slot = slots.get(key, {}) if isinstance(slots, dict) else {}
-            if isinstance(slot, dict) and slot.get("source") != "clear" and isinstance(slot.get("value"), str):
+            if isinstance(slot, dict) and slot.get("source") in {"current", "previous"} and isinstance(slot.get("value"), str):
                 current[key] = DSHService._redact_audit_string(slot["value"])[:300]
+        focus_anchor = _reader_focus_anchor(previous_result)
+        focus_slot = slots.get("businessFocus", {}) if isinstance(slots, dict) else {}
+        focus_cleared = isinstance(focus_slot, dict) and focus_slot.get("source") == "clear" and bool(focus_slot.get("evidence"))
+        if not focus_anchor and resolved.get("relation") in {"continue", "refine"} and not focus_cleared:
+            if isinstance(previous_result.get("sourceHint"), dict):
+                hint = semantic_source_hint({"previousIntent": {"sourceHint": previous_result["sourceHint"]}})
+                if hint.get("page") and hint.get("section"):
+                    focus_anchor = {"businessFocus": hint["section"], "sourceHint": hint}
+            # Older failed turns did not persist a source hint. Recover only a
+            # verified region, stopping at a topic change or explicit focus clear.
+            if not focus_anchor:
+                boundaries = [i for i in range(previous_index) if history[i].event_type == "user.message"][-3:]
+                for index in range(previous_index - 1, (boundaries[0] if boundaries else 0) - 1, -1):
+                    if history[index].event_type != "reader.result":
+                        continue
+                    candidate = history[index].event_json
+                    if not isinstance(candidate, dict):
+                        break
+                    candidate_missing = candidate.get("missing")
+                    if isinstance(candidate_missing, (list, tuple)) and any(
+                        marker in candidate_missing for marker in ("intent_resolution_invalid", "intent_resolution_timeout")
+                    ):
+                        break
+                    candidate_intent = candidate.get("intentContext")
+                    if candidate_intent is not None and not isinstance(candidate_intent, dict):
+                        break
+                    candidate_intent = candidate_intent or {}
+                    candidate_slots = candidate_intent.get("slots", {})
+                    if not isinstance(candidate_slots, dict):
+                        break
+                    candidate_focus = candidate_slots.get("businessFocus", {})
+                    if not isinstance(candidate_focus, dict):
+                        break
+                    if candidate_intent.get("relation") in {"switch", "broaden", "clarify"} or (
+                        candidate_focus.get("source") == "clear" and candidate_focus.get("evidence")
+                    ):
+                        break
+                    focus_anchor = _reader_focus_anchor(candidate)
+                    if focus_anchor:
+                        break
+        if focus_anchor and current.get("businessFocus"):
+            known_focus = " ".join(current["businessFocus"].casefold().split())
+            candidate_focus = " ".join(focus_anchor["businessFocus"].casefold().split())
+            if known_focus != candidate_focus:
+                focus_anchor = {}
+        if focus_anchor:
+            current.setdefault("businessFocus", focus_anchor["businessFocus"])
+            current["sourceHint"] = focus_anchor["sourceHint"]
         facts = previous_result.get("facts")
         focused_detail = current.get("answerShape") == "detail" and previous_result.get("answerShape") == "detail"
         explicit_single_list = (
@@ -280,6 +347,7 @@ def _reader_conversation_context(
             str(previous_result.get("workflowState") or "")
         )[:500],
     }
+    intent.update(_reader_focus_anchor(previous_result))
     # Preserve only stable semantic anchors needed by an elliptical follow-up;
     # never carry prior facts or unrestricted page payloads forward.
     for key, limit in (
@@ -301,6 +369,19 @@ def _reader_conversation_context(
             if safe:
                 intent[key] = safe
     anchors = _reader_semantic_anchors(anchor_result)
+    if not anchor_result.get("recordIdentity"):
+        anchor_facts = anchor_result.get("facts")
+        selected_single = anchor_result.get("answerShape") == "detail" or (
+            anchor_result.get("answerShape") == "list" and _reader_requested_single_record(previous_question)
+        )
+        if not (
+            anchor_result.get("result") == "success" and selected_single
+            and isinstance(anchor_facts, list) and len(anchor_facts) == 1
+            and isinstance(anchor_facts[0], str) and anchor_facts[0].strip()
+        ):
+            # A first-turn list has no resolved intent yet; do not turn its first
+            # observed row into an implicitly selected record on the next turn.
+            anchors.pop("recordIdentity", None)
     for key, value in anchors.items():
         if key not in intent:
             if isinstance(value, dict):

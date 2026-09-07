@@ -241,6 +241,7 @@ class ReaderResult:
     missing: tuple[str, ...] = ()
     intent_context: dict[str, Any] = field(default_factory=dict)
     clarification_options: tuple[str, ...] = ()
+    source_hint: dict[str, str] = field(default_factory=dict)
 
     def public_json(self) -> dict[str, Any]:
         result = {
@@ -258,6 +259,9 @@ class ReaderResult:
         }
         if self.intent_context:
             result["intentContext"] = bounded_json(self.intent_context, max_depth=4, max_items=10, max_string=500)
+        if self.source_hint:
+            result["sourceHint"] = {key: _sanitize_untrusted_text(value, max_length=500)
+                                    for key, value in self.source_hint.items() if key in {"page", "section"}}
         if self.clarification_options:
             result["clarificationOptions"] = [
                 _sanitize_untrusted_text(option, max_length=120) for option in self.clarification_options[:2]
@@ -511,6 +515,10 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
         options = value.get("resolvedChoiceOptions")
         if isinstance(options, list) and len(options) == 2 and all(isinstance(option, str) for option in options):
             resolved_context["resolvedChoiceOptions"] = [_sanitize_untrusted_text(option, max_length=120) for option in options]
+        if isinstance(value.get("sourceHint"), dict):
+            resolved_context["sourceHint"] = {key: _sanitize_untrusted_text(item, max_length=500)
+                                              for key, item in value["sourceHint"].items()
+                                              if key in {"page", "section"} and isinstance(item, str)}
         return resolved_context
     if not isinstance(value.get("previousIntent"), dict):
         return {}
@@ -519,6 +527,7 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
         "question": 500,
         "answerShape": 40,
         "businessObject": 160,
+        "businessFocus": 240,
         "recordIdentity": 300,
         "view": 200,
         "dateRange": 240,
@@ -545,6 +554,10 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
         )
     if isinstance(previous.get("intentContext"), dict):
         bounded["intentContext"] = bounded_json(previous["intentContext"], max_depth=4, max_items=10, max_string=500)
+    if isinstance(previous.get("sourceHint"), dict):
+        bounded["sourceHint"] = {key: _sanitize_untrusted_text(item, max_length=500)
+                                 for key, item in previous["sourceHint"].items()
+                                 if key in {"page", "section"} and isinstance(item, str)}
     if isinstance(previous.get("clarificationOptions"), list):
         bounded["clarificationOptions"] = [
             _sanitize_untrusted_text(option, max_length=120)
@@ -559,7 +572,7 @@ def _resolved_intent_values(conversation_context: Any) -> dict[str, str]:
     return {
         key: str(slot.get("value") or "")
         for key, slot in slots.items()
-        if isinstance(slot, dict) and slot.get("source") != "clear" and slot.get("value")
+        if isinstance(slot, dict) and slot.get("source") in {"current", "previous"} and slot.get("value")
     } if isinstance(slots, dict) else {}
 
 
@@ -616,6 +629,9 @@ def knowledge_search_query(
             parts.append("Current roles: " + ", ".join(context.roles[:4])[:160])
         # Reserve space for every resolved condition before the original wording.
         parts.extend(f"Current task {name}: {value[:180]}" for name, value in resolved_values.items())
+        hint = bounded_context.get("sourceHint", {})
+        if hint:
+            parts.append("Verified candidate source, not a restriction: " + str(hint.get("page", ""))[:200] + " " + str(hint.get("section", ""))[:180])
         parts.append("Original question: " + question_text)
         return ". ".join(parts)[:2_000]
     previous = bounded_context.get("previousIntent")
@@ -2666,7 +2682,8 @@ class AdminPortalReader:
             )
             raise
         if intent_state:
-            result = replace(outcome.result, intent_context=intent_state)
+            hint = parse_intent_resolution(intent_state, question, bounded_context).planner_context(bounded_context).get("sourceHint", {})
+            result = replace(outcome.result, intent_context=intent_state, source_hint=hint)
             expected_shape = _resolved_intent_values({"resolvedIntent": intent_state}).get("answerShape")
             if result.status in {"success", "no_data"} and expected_shape not in {None, "unspecified", result.answer_shape}:
                 result = replace(result, status="not_confirmed", facts=(), missing=("answer_intent_mismatch",))
@@ -3841,13 +3858,33 @@ class AdminPortalReader:
                             "semanticResolution": semantic_resolution,
                         },
                     )
-            mixed_follow_up_observe = bool(
-                next_request is not None
-                and any(str(action.get("type") or "").casefold() == "observe" for action in next_request.actions)
-                and any(str(action.get("type") or "").casefold() != "observe" for action in next_request.actions)
-            )
+            def normalize_follow_up(candidate: PortalReadRequest | None) -> tuple[PortalReadRequest | None, ReaderOutcome | None]:
+                if candidate is None:
+                    return None, None
+                initial_original = planned_request or request
+                if (
+                    len(initial_original.actions) + len(candidate.actions) > self.policy.max_actions
+                    or len(portal_request_paths(initial_original) | portal_request_paths(candidate)) > self.policy.max_pages
+                ):
+                    result = ReaderResult(status="not_confirmed", summary="The follow-up portal plan exceeded the cumulative read budget.", missing=("invalid_follow_up_plan",))
+                    return None, ReaderOutcome(result, {"stage": "planning_after_observe", "permission": permission_audit,
+                                                        "plan": bounded_json(candidate.as_payload()), "observation": observed_context["portalObservation"]})
+                policy_error = validate_policy(candidate, reason="after_observe_before_normalization")
+                if policy_error:
+                    status: ReaderStatus = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
+                    result = ReaderResult(status=status, summary="The follow-up portal operation is not permitted.", missing=(policy_error,))
+                    return None, ReaderOutcome(result, {"stage": "policy_after_observe", "permission": permission_audit,
+                                                        "policyError": policy_error, "plan": bounded_json(candidate.as_payload())})
+                action_types = {str(action.get("type") or "").strip().casefold().replace("-", "_") for action in candidate.actions}
+                if "observe" in action_types and action_types != {"observe"}:
+                    return _normalize_initial_observation_request(candidate), None
+                return candidate, None
+
+            next_request, follow_up_rejection = normalize_follow_up(next_request)
+            if follow_up_rejection is not None:
+                return follow_up_rejection
             if (
-                (next_request is None or mixed_follow_up_observe)
+                next_request is None
                 and isinstance(next_plan, dict)
                 and next_plan.get("mode") == "portal_read"
             ):
@@ -3902,6 +3939,13 @@ class AdminPortalReader:
                         },
                     )
                 next_request = portal_read_request_from_plan(next_plan)
+                next_request, follow_up_rejection = normalize_follow_up(next_request)
+                if follow_up_rejection is not None:
+                    return follow_up_rejection
+                if next_request is None:
+                    result = ReaderResult(status="not_confirmed", summary="The corrected follow-up portal plan was still invalid.", missing=("invalid_follow_up_plan",))
+                    return ReaderOutcome(result, {"stage": "planning_after_observe_correction", "permission": permission_audit,
+                                                  "plan": bounded_json(next_plan), "observation": observed_context["portalObservation"]})
             repeated_observe = (
                 next_request is not None
                 and (urlsplit(next_request.start_path).path.rstrip("/") or "/")
