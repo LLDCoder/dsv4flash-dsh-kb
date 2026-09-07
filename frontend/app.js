@@ -1089,9 +1089,12 @@ function renderAuditOverview(conversation) {
   heading.append(headingText, status);
   const grid = document.createElement("div");
   grid.className = "audit-overview-grid";
+  const auditIdentity = conversation.auditIdentity || {};
   const fields = [
     ["创建时间", auditTime(conversation.createdAt)],
     ["最近活动", auditTime(conversation.lastActivityAt)],
+    ["登录账号", auditIdentity.account || "未记录"],
+    ["当前角色", auditIdentity.currentRole || "未记录"],
     ["运行时", conversation.runtimeId || "尚未分配"],
     ["DSH Session", conversation.dshSessionId || "-"],
     ["Skill Profile", conversation.skillProfile || "default"],

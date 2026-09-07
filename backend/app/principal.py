@@ -17,6 +17,8 @@ class Principal:
     # The caller's UMC token is kept in memory for the lifetime of one
     # request/turn only. It is never serialized into session events or logs.
     umc_token: str | None = None
+    audit_account: str = ""
+    audit_current_role: str = ""
 
 
 def _token_reference(raw_token: str | None) -> str | None:

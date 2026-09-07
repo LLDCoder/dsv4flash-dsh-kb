@@ -1082,6 +1082,12 @@ class DSHService:
                     "clientMessageId": client_message_id,
                     "requestId": principal.request_id,
                 }
+                audit_identity = {
+                    "account": principal.audit_account,
+                    "currentRole": principal.audit_current_role,
+                }
+                if audit_identity["account"] or audit_identity["currentRole"]:
+                    event_payload["auditIdentity"] = audit_identity
                 if attachment:
                     event_payload["attachment"] = attachment
                 event = await self.append_event(db, conversation, "user.message", event_payload)

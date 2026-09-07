@@ -33,6 +33,53 @@ from .umc_auth import UMCAuthError
 logger = logging.getLogger("uvicorn.error")
 
 
+def audit_identity_from_user_info(payload: Any) -> dict[str, str]:
+    """Extract the display-safe login identity from a verified UMC response."""
+
+    def first_string(value: Any, keys: set[str]) -> str:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key).casefold() in keys and isinstance(item, (str, int)) and str(item).strip():
+                    return str(item).strip()[:300]
+                if str(key).casefold() in keys and isinstance(item, list):
+                    first_item = next((entry for entry in item if isinstance(entry, (str, int)) and str(entry).strip()), None)
+                    if first_item is not None:
+                        return str(first_item).strip()[:300]
+            for item in value.values():
+                found = first_string(item, keys)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = first_string(item, keys)
+                if found:
+                    return found
+        return ""
+
+    source = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+    account = first_string(source, {"account", "accountname", "email", "emailaddress", "loginaccount", "loginname", "useremail", "username"})
+    current_role = first_string(source, {"activerole", "activerolename", "currentrole", "currentrolename", "selectedrole", "selectedrolename", "role", "rolename", "roles"})
+    return {"account": account, "currentRole": current_role}
+
+
+def audit_identity_from_payloads(payloads: list[Any]) -> dict[str, str]:
+    """Project the latest available customer identity into the audit overview."""
+
+    for payload in payloads:
+        identity = payload.get("auditIdentity") if isinstance(payload, dict) else None
+        if not isinstance(identity, dict):
+            continue
+        account = identity.get("account")
+        current_role = identity.get("currentRole")
+        result = {
+            "account": str(account).strip()[:300] if isinstance(account, (str, int)) else "",
+            "currentRole": str(current_role).strip()[:300] if isinstance(current_role, (str, int)) else "",
+        }
+        if result["account"] or result["currentRole"]:
+            return result
+    return {"account": "", "currentRole": ""}
+
+
 def make_router(service: DSHService) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
 
@@ -451,6 +498,12 @@ def make_router(service: DSHService) -> APIRouter:
                 AuditRecord.user_id == principal.user_id,
             ))
         has_audit_records = (await db.execute(select(AuditRecord.id).where(*base_conditions).limit(1))).scalar_one_or_none() is not None
+        identity_payloads = list((await db.execute(
+            select(AuditRecord.payload)
+            .where(*base_conditions, AuditRecord.record_type == "user.message")
+            .order_by(AuditRecord.created_at.desc(), AuditRecord.id.desc())
+            .limit(25)
+        )).scalars().all())
         query = select(AuditRecord).where(*base_conditions)
         if category:
             query = query.where(AuditRecord.category == category.strip().lower())
@@ -509,6 +562,7 @@ def make_router(service: DSHService) -> APIRouter:
                 )
             source = "session_event_history"
         conversation_json = service.conversation_json(conversation)
+        conversation_json["auditIdentity"] = audit_identity_from_payloads(identity_payloads)
         if is_admin:
             conversation_json["owner"] = {
                 "userId": conversation.user_id,
@@ -1128,9 +1182,11 @@ def make_router(service: DSHService) -> APIRouter:
                                         found = find_user_id(child)
                                         if found: return found
                                 return None
+                            identity = audit_identity_from_user_info(payload)
                             claims_user_id = find_user_id(payload)
                         except (httpx.HTTPError, ValueError, TypeError):
                             claims_user_id = None
+                            identity = {"account": "", "currentRole": ""}
                     if not claims_user_id:
                         await send({"type": "error", "code": "missing_user_identity"})
                         continue
@@ -1149,6 +1205,8 @@ def make_router(service: DSHService) -> APIRouter:
                         token_ref=_token_reference(f"Bearer {token}"),
                         umc_token=token,
                         profile_id=token_profile_id(token),
+                        audit_account=identity["account"],
+                        audit_current_role=identity["currentRole"],
                     )
                     logger.info(
                         "umc_ws_authenticated request_id=%s token_ref=%s",
