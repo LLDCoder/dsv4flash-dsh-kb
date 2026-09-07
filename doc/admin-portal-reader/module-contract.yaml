@@ -141,6 +141,7 @@ business_answer_quality:
       - Failed, blocked, pending, or uncertain data loading cannot prove an empty collection.
       - Apply the same no-data gate to query results, observation reduction, and deterministic fallback.
       - Preserve independently observed rows even when other requests are unhealthy.
+      - Detect page failures from explicit error surfaces and standalone loading states, not substrings inside business records. Validate the selected section independently of unrelated loading regions.
   tool_continuation:
     rules:
       - Each admin.portal.read invocation starts a fresh browser context; rebuild necessary read-only UI state explicitly.
@@ -155,6 +156,7 @@ business_answer_quality:
       - A partial native row selection under an observed view receives at most one semantic review within the existing turn deadline; code never automatically fills omitted rows or infers field predicates from view names.
       - Explicit user predicates and limits remain authoritative; semantic review is model-based and does not itself establish business acceptance.
       - A bounded list observation cannot establish complete collection coverage.
+      - A plain selected-view list may recover from native rowFields when the observed selected state and heading cover every requested condition. Extra dates, identities, ownership, or predicates must not be inferred.
       - Validate claimed selectedState against observed node or parent state; do not preserve a model-only state claim when actual state is unknown.
       - A unique visible active tab may supply the state of a unique visible table; multiple tabs or tables are ambiguous and must not be inferred.
       - Initial and follow-up reads normalize a redundant trailing pure observe only after validating the original policy and original cumulative action/page budget; all other mixed observation plans remain invalid. Normalization never creates budget headroom.
@@ -361,6 +363,18 @@ answer_contract:
     - Do not narrate visibility, page reads, bounded snapshots, extraction, Tool execution, or audit evidence in an ordinary successful answer.
     - Express a confirmed scope naturally, for example currently, in your Dashboard, or for your account.
     - Add one concise limitation only when partial evidence or an unconfirmed scope materially changes how the answer should be interpreted.
+    - Validate facts independently for both success and not_confirmed; retain grounded fields when other fields are unavailable. A rejected source, page, or selected-state claim must never bypass grounding through a failure fallback.
+    - A failed completion review retains the candidate facts only after validating them against the current permitted observation; previous-turn facts are not reused.
+    - Rejected observation facts receive at most one grounding review per turn within the existing deadline. Corrected facts must pass the same source, state, field-binding, and numeric checks; a failed repair preserves only already validated partial facts.
+    - Answer-shape mismatches must not erase verified evidence. Narrow content equivalence may satisfy the shape; otherwise preserve the facts as partial without claiming the requested list, ranking, date range, or details were established.
+    - Attention-region counts may be retained as partial evidence when item details are unavailable; ordinary workload counts cannot establish priority.
+    - Invalid observation references remain an evidence-validation failure, not an invalid follow-up action plan.
+    - Bind an observation result using its section, sourceSection, and observed selectedState together. A control or active-view label cannot globally match a similarly named region; explicit parentRef descendants may supply child evidence within the declared region.
+    - Canonicalize a verified source to its current-observation nodeId. An exact observed selectedState may disambiguate repeated headings, but different evidence under identical heading and state remains ambiguous. Do not carry node IDs across fresh reads as current evidence.
+    - An observed active control may match its exact label without a trailing numeric count badge. Require that control in the same evidence node; do not accept arbitrary prefixes, conflicting explicit counts, or missing controls.
+    - Grounding repair receives the bounded program-resolved source when available and records its acceptance or rejection in the quality trace. Initial, post-action, replay, and recovery fallbacks must preserve the same source, page, and selected-state constraints.
+    - After source binding succeeds, the grounding-repair planner receives only that source node and the original read health as its page observation. Validate its answer against the original observation; do not reintroduce unrelated regions or replace a bound source during repair.
+    - A required pre-observation read is an evidence-acquisition phase. Missing current records or indicators is not itself a reason to stop; establish a documented permitted entry and observe it, or report the actual entry or permission gap without guessing routes.
     - Never turn a nonzero category count into a recommendation or an attention claim without authoritative attention evidence.
   internal_process_phrases_forbidden_in_success:
     - Based on the visible

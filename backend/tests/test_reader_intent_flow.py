@@ -115,7 +115,8 @@ def test_attention_counts_do_not_pass_as_a_followup_list():
     outcome = run_reader(gateway, IntentPlanner(candidate, portal_plan_for("/licensing")),
                          question="show me the list", conversation_context=history)
     assert outcome.result.status == "not_confirmed"
-    assert not outcome.result.facts
+    assert outcome.result.facts == ("Needs Review 4",)
+    assert outcome.result.answer_shape == "attention"
     assert "answer_intent_mismatch" in outcome.result.missing
 
 

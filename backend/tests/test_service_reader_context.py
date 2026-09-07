@@ -66,7 +66,7 @@ def test_failed_reader_result_with_verified_facts_returns_only_those_facts() -> 
     }
     assert reader_evidence_only_response(evidence, "en") == (
         "Confirmed details:\nThe selected list includes Cancelled records.\n\n"
-        "I could not confirm the requested information."
+        "The remaining requested details could not be confirmed."
     )
     assert reader_evidence_only_response({"result": "success", "facts": ["Verified record detail"]}, "en") is None
 

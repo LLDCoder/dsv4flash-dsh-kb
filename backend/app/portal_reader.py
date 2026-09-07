@@ -1479,20 +1479,31 @@ def _data_observation_control(value: str) -> bool:
 
 
 def _observation_has_error_state(observation: Any) -> bool:
-    text = " ".join(_observation_scalar_strings(observation)).casefold()
+    if not isinstance(observation, dict):
+        return False
+    # Page-level signals are distinct from record descriptions and other regions.
+    surface = _observation_scalar_strings({
+        key: observation.get(key) for key in ("title", "headings", "error", "errorState", "loadingState")
+    })
+    error_marker = re.compile(
+        r"unauthorized|forbidden|access denied|permission denied|something went wrong|"
+        r"internal server error|page not found|loading|please wait|retry|"
+        r"未授权|无权限|禁止访问|加载中|重试", re.IGNORECASE,
+    )
     if any(
-        marker in text
-        for marker in (
-            "unauthorized", "forbidden", "access denied", "permission denied", "something went wrong",
-            "internal server error", "page not found", "loading", "please wait", "retry",
-            "未授权", "无权限", "禁止访问", "加载中", "重试",
-        )
+        error_marker.fullmatch(value.strip(" .!…"))
+        or re.search(r"\b(?:http|error|status code)\s*:?[45]\d{2}\b", value, re.IGNORECASE)
+        or re.search(r"\b[45]\d{2}\s+(?:error|unauthorized|forbidden|not found|server error)\b", value, re.IGNORECASE)
+        for value in surface
     ):
         return True
-    return bool(
-        re.search(r"\b(?:http|error|status code)\s*:?[45]\d{2}\b", text)
-        or re.search(r"\b[45]\d{2}\s+(?:error|unauthorized|forbidden|not found|server error)\b", text)
-    )
+    if _observation_semantic_nodes(observation):
+        return False
+    # Legacy, unstructured observations may consist solely of a loading/error row.
+    content = _observation_scalar_strings({
+        key: observation.get(key) for key in ("regions", "rowSummaries", "summaries")
+    })
+    return bool(content) and all(error_marker.fullmatch(value.strip(" .!…")) for value in content)
 
 
 def _bounded_observation_field(observation: Any, name: str, *, limit: int) -> tuple[str, ...]:
@@ -1747,6 +1758,79 @@ def _observation_evidence_for_section(observation: Any, section_name: str) -> di
             # The explicit empty state remains valid evidence for a no-data result.
             return with_parent_state(empty_tables[0])
     return None
+
+
+def _observation_selected_state_matches(claim: str, node: dict[str, Any]) -> bool:
+    claimed = re.sub(r"\s+", " ", claim).strip().casefold()
+    actual = re.sub(r"\s+", " ", str(node.get("selectedState") or "")).strip().casefold()
+    if claimed == actual:
+        return True
+    controls = {re.sub(r"\s+", " ", value).strip().casefold()
+                for value in _bounded_observation_field(node, "controls", limit=20)}
+    badge = re.fullmatch(r"(.+?)\s+\d+", actual)
+    return bool(actual in controls and badge and claimed == badge.group(1))
+
+
+def _observation_evidence_for_result(observation: Any, result: ReaderResult) -> dict[str, Any] | None:
+    """Bind a source within its declared region and observed view, never globally by a tab label."""
+
+    def normalized(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+    nodes = _observation_semantic_nodes(observation)
+    source = normalized(result.source_section or result.section)
+    section = normalized(result.section)
+    state = normalized(result.selected_state)
+    nodes_by_id = {normalized(node.get("nodeId")): node for node in nodes if node.get("nodeId")}
+    roots = [node for node in nodes if section and section in {
+        normalized(node.get("nodeId")), normalized(node.get("heading")),
+    }]
+    if not roots:
+        if result.status != "no_data" and nodes_by_id and source not in nodes_by_id and not any(
+            normalized(node.get("heading")) == source for node in nodes
+        ):
+            return None
+        return _observation_evidence_for_section(observation, result.source_section or result.section)
+
+    root_ids = {normalized(node.get("nodeId")) for node in roots if node.get("nodeId")}
+
+    def in_region(node: dict[str, Any]) -> bool:
+        if node in roots:
+            return True
+        parent = normalized(node.get("parentRef"))
+        seen: set[str] = set()
+        while parent and parent not in seen:
+            if parent in root_ids:
+                return True
+            seen.add(parent)
+            parent = normalized(nodes_by_id.get(parent, {}).get("parentRef"))
+        return False
+
+    def with_state(node: dict[str, Any]) -> dict[str, Any]:
+        parent = nodes_by_id.get(normalized(node.get("parentRef")), {})
+        return {**node, "selectedState": node.get("selectedState") or parent.get("selectedState") or ""}
+
+    scoped = [with_state(node) for node in nodes if in_region(node)]
+    if source in nodes_by_id:
+        return next((node for node in scoped if normalized(node.get("nodeId")) == source), None)
+    # A control can name the source only when it is the observed active view in
+    # the declared region. An unrelated same-name heading is not an alternative.
+    candidates = [node for node in scoped if source == normalized(node.get("heading"))
+                  or node.get("selectedState") and _observation_selected_state_matches(source, node)]
+    if state:
+        matching_state = [node for node in candidates if _observation_selected_state_matches(state, node)]
+        if not matching_state and any(node.get("selectedState") for node in candidates):
+            return None
+        candidates = matching_state or [node for node in candidates if not node.get("selectedState")]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        return None
+    if len({normalized(node.get("heading")) for node in candidates}) != 1:
+        return None
+    return _observation_evidence_for_section(
+        {"sectionSummaries": candidates}, str(candidates[0].get("heading") or ""),
+    )
 
 
 _SECTION_INFERENCE_STOP_WORDS = frozenset({
@@ -2017,7 +2101,7 @@ def _result_from_structured_observation(
     ):
         return None
     section = _observation_evidence_for_section(observation, section_name)
-    if section is None:
+    if section is None or _observation_has_error_state(section):
         return None
     heading = str(section.get("heading") or "")
     attention_heading = reader_answer_shape(heading) == "attention" or bool(re.search(
@@ -2073,6 +2157,15 @@ def _result_from_structured_observation(
             ):
                 return None
         candidates = rows or card_summaries or non_count_controls
+        if answer_shape == "attention" and not candidates and category_controls:
+            return ReaderResult(
+                status="not_confirmed",
+                summary="Attention counts are confirmed; the requested item details are not.",
+                page=page, section=heading, source_section=str(section.get("nodeId") or heading),
+                answer_shape="attention", completeness="bounded", scope=scope,
+                selected_state=selected_state, facts=_bounded_fact_candidates(category_controls),
+                missing=("attention_details_not_confirmed",),
+            )
     else:
         candidates = rows
     facts = _bounded_fact_candidates(candidates)
@@ -2403,9 +2496,7 @@ def _list_selection_review_context(plan: Any, context: dict[str, Any]) -> dict[s
     result = _observation_plan_result_from_plan(plan)
     if result is None or result.status != "success" or result.answer_shape != "list":
         return None
-    section = _observation_evidence_for_section(
-        context.get("portalObservation"), result.source_section or result.section,
-    )
+    section = _observation_evidence_for_result(context.get("portalObservation"), result)
     if not section or not section.get("selectedState"):
         return None
     rows = [row for row in section.get("rowFields", [])[:4] if isinstance(row, dict)]
@@ -2455,7 +2546,9 @@ def observation_result_from_plan(
     ):
         return None
     source_ref = result.source_section or result.section
-    scoped_observation = _observation_evidence_for_section(observation, source_ref)
+    scoped_observation = _observation_evidence_for_result(observation, result)
+    if scoped_observation is not None and _observation_has_error_state(scoped_observation):
+        return None
     actual_selected_state = ""
     if scoped_observation is not None:
         actual_selected_state = re.sub(
@@ -2465,10 +2558,12 @@ def observation_result_from_plan(
         ).strip()[:300]
     claimed_selected_state = re.sub(r"\s+", " ", result.selected_state).strip()
     if actual_selected_state and claimed_selected_state and (
-        actual_selected_state.casefold() != claimed_selected_state.casefold()
+        not _observation_selected_state_matches(claimed_selected_state, scoped_observation)
     ):
         return None
-    if result.status == "not_confirmed":
+    if scoped_observation is not None and scoped_observation.get("nodeId"):
+        result = replace(result, source_section=str(scoped_observation["nodeId"]))
+    if result.status == "not_confirmed" and not result.facts:
         if source_ref and scoped_observation is None:
             return None
         return ReaderResult(
@@ -2485,7 +2580,7 @@ def observation_result_from_plan(
         )
     if scoped_observation is None:
         return None
-    if result.status == "success":
+    if result.status in {"success", "not_confirmed"}:
         supported: list[str] = []
         unsupported: list[str] = []
         structured_list = result.answer_shape == "list" and bool(scoped_observation.get("rowFields"))
@@ -2496,10 +2591,10 @@ def observation_result_from_plan(
             )
             (supported if fact_supported else unsupported).append(fact)
         supported_facts = tuple(supported)
-        if not supported_facts:
+        if not supported_facts and result.status == "success":
             return None
         visible_rows = _bounded_observation_field(scoped_observation, "rowSummaries", limit=8)
-        if result.answer_shape == "list" and visible_rows and not structured_list:
+        if supported_facts and result.answer_shape == "list" and visible_rows and not structured_list:
             column_headers = _bounded_observation_field(scoped_observation, "columnHeaders", limit=20)
             row_fact_supported = any(
                 _table_row_supports_fact(fact, row, column_headers=column_headers)
@@ -2516,8 +2611,22 @@ def observation_result_from_plan(
         missing = tuple(
             [*result.missing, *(_unconfirmed_observation_fact(fact) for fact in unsupported)][:10]
         )
+        count_source = {
+            "heading": str(scoped_observation.get("heading") or ""),
+            "controls": [
+                value for value in (
+                    *_bounded_observation_field(scoped_observation, "controls", limit=20),
+                    *_bounded_observation_field(scoped_observation, "summaries", limit=20),
+                ) if re.search(r"(?:^|\s)\d+(?:[.,]\d+)?\s*$", value)
+            ],
+        }
+        count_only_attention = result.answer_shape == "attention" and bool(supported_facts) and all(
+            _observation_supports_fact(fact, count_source) for fact in supported_facts
+        )
+        if count_only_attention:
+            missing = tuple(dict.fromkeys(("attention_details_not_confirmed", *missing)))[:10]
         result = ReaderResult(
-            status=result.status,
+            status="not_confirmed" if unsupported or count_only_attention else result.status,
             summary=result.summary,
             page=result.page,
             section=result.section,
@@ -2621,6 +2730,76 @@ def _align_result_to_answer_shape(
     )
 
 
+def _reconcile_verified_answer_shape(result: ReaderResult, expected_shape: str, question: str) -> ReaderResult:
+    """Check narrow content equivalence; retain other verified evidence as partial."""
+    if (
+        result.status == "success" and result.answer_shape == "list" and expected_shape == "due"
+        and result.facts and re.search(r"\boverdue\b|逾期|متأخر", question, re.IGNORECASE)
+        and not re.search(r"\d|today|tomorrow|yesterday|\bdays?\b|\bweeks?\b|\bmonths?\b|今天|明天|昨天", question, re.IGNORECASE)
+        and all(
+            re.search(r"\boverdue\b|逾期|متأخر", fact, re.IGNORECASE)
+            and not _negative_polarity(fact)
+            and not re.search(r"\b0(?:d|\s+days?)?\s+overdue\b|\boverdue\s*:?\s*0\b", fact, re.IGNORECASE)
+            for fact in result.facts
+        )
+    ):
+        return replace(result, answer_shape="due")
+    return replace(
+        result, status="not_confirmed", completeness="bounded",
+        missing=tuple(dict.fromkeys((*result.missing, "answer_intent_mismatch")))[:10],
+    )
+
+
+def _selected_view_list_fallback(
+    observation: Any, *, section_name: str, question: str, page: str,
+    scope: Literal["personal", "team", "global", "unknown"], conversation_context: Any,
+) -> ReaderResult | None:
+    """Recover a plain request for one verified view, never infer extra predicates."""
+    resolved = _resolved_intent_values(conversation_context)
+    if any(resolved.get(key) for key in ("dateRange", "recordIdentity")):
+        return None
+    section = _observation_evidence_for_section(observation, section_name)
+    if section is None or not section.get("selectedState") or not section.get("rowFields"):
+        return None
+    if re.search(r"\d", question) or _observation_has_error_state(observation):
+        return None
+
+    def tokens(value: str) -> set[str]:
+        return {word[:-1] if len(word) > 3 and word.endswith("s") else word
+                for word in _section_match_tokens(value)}
+
+    question_tokens = tokens(question)
+    view_tokens = tokens(str(section["selectedState"]))
+    if any(tokens(resolved.get(key, "")) - view_tokens for key in ("filter", "view")):
+        return None
+    if not question_tokens & view_tokens:
+        return None
+    request_words = tokens("show list display please me the all records items tasks")
+    if scope == "personal":
+        request_words.add("my")
+    if scope == "team":
+        request_words.add("our")
+    if question_tokens - view_tokens - tokens(str(section.get("heading") or "")) - request_words:
+        return None
+    # Native field bindings avoid reconstructing cells from flattened text.
+    facts = tuple(
+        json.dumps(row, ensure_ascii=False)
+        for row in section["rowFields"][:4] if row
+    )
+    if (
+        not facts or any(len(fact) > 500 for fact in facts)
+        or sum(len(f.encode("utf-8")) for f in facts) > 2400
+        or any(not _structured_row_supports_fact(fact, section) for fact in facts)
+    ):
+        return None
+    return ReaderResult(
+        status="success", summary="The requested selected view was observed.", page=page,
+        section=str(section.get("heading") or ""), source_section=str(section.get("nodeId") or section_name),
+        answer_shape="list", completeness="bounded", scope=scope,
+        selected_state=str(section["selectedState"]), facts=facts,
+    )
+
+
 class AdminPortalReader:
     """GetUserInfo-first orchestration for one serialized Admin reader turn."""
 
@@ -2686,7 +2865,7 @@ class AdminPortalReader:
             result = replace(outcome.result, intent_context=intent_state, source_hint=hint)
             expected_shape = _resolved_intent_values({"resolvedIntent": intent_state}).get("answerShape")
             if result.status in {"success", "no_data"} and expected_shape not in {None, "unspecified", result.answer_shape}:
-                result = replace(result, status="not_confirmed", facts=(), missing=("answer_intent_mismatch",))
+                result = _reconcile_verified_answer_shape(result, expected_shape, question)
             outcome = ReaderOutcome(result, {
                 **outcome.audit_evidence, "intentResolution": intent_state, "result": result.public_json(),
             })
@@ -2723,6 +2902,7 @@ class AdminPortalReader:
         budget = self.timeout_budget
         bounded_conversation_context = _bounded_conversation_context(conversation_context)
         list_selection_reviewed = False
+        observation_grounding_reviewed = False
         intent_completion_reviewed = False
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
@@ -2828,16 +3008,31 @@ class AdminPortalReader:
                 )
             ):
                 intent_completion_reviewed = True
-                return await plan_stage(
-                    {**knowledge_or_observation, "planningDirective": {
-                        **knowledge_or_observation.get("planningDirective", {}),
-                        "intentCompletionReview": True,
-                        "requestedAnswerShape": expected_shape,
-                        "priorCandidate": bounded_json(plan),
-                    }},
-                    timeout_stage=timeout_stage,
-                    reason="current_intent_completion_review",
-                )
+                try:
+                    return await plan_stage(
+                        {**knowledge_or_observation, "planningDirective": {
+                            **knowledge_or_observation.get("planningDirective", {}),
+                            "intentCompletionReview": True,
+                            "requestedAnswerShape": expected_shape,
+                            "priorCandidate": bounded_json(plan),
+                        }},
+                        timeout_stage=timeout_stage,
+                        reason="current_intent_completion_review",
+                    )
+                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError):
+                    prior_read = knowledge_or_observation.get("priorPortalRead") or {}
+                    candidate = observation_result_from_plan(
+                        plan, knowledge_or_observation.get("portalObservation"),
+                        observed_page=str(prior_read.get("startPath") or ""),
+                        verified_scope=_permission_result_scope(permission_context),
+                        permitted_paths=(*permission_context.pages, *permission_context.subpages),
+                    )
+                    if candidate is None or not candidate.facts:
+                        raise
+                    return {
+                        **plan, "result": "not_confirmed", "facts": list(candidate.facts),
+                        "missing": [*candidate.missing, "completion_review_unavailable"][:10],
+                    }
             review_context = (
                 _list_selection_review_context(plan, knowledge_or_observation)
                 if not list_selection_reviewed else None
@@ -2935,6 +3130,76 @@ class AdminPortalReader:
             )
             return tool_result
 
+        async def repair_partial_observation(
+            candidate_plan: Any, candidate: ReaderResult | None, context: dict[str, Any], *, page: str,
+        ) -> tuple[Any, ReaderResult | None]:
+            nonlocal observation_grounding_reviewed
+            original = _observation_plan_result_from_plan(candidate_plan)
+            if (
+                observation_grounding_reviewed or original is None or not original.facts
+                or original.status not in {"success", "not_confirmed"}
+                or candidate is not None and not any(item.startswith("unconfirmed_fact:") for item in candidate.missing)
+            ):
+                return candidate_plan, candidate
+            observation_grounding_reviewed = True
+            bound_source = _observation_evidence_for_result(context.get("portalObservation"), original)
+            repair_context = dict(context)
+            if bound_source is not None:
+                repair_observation: dict[str, Any] = {"sectionSummaries": [bound_source]}
+                full_observation = context.get("portalObservation")
+                if isinstance(full_observation, dict) and "readHealth" in full_observation:
+                    repair_observation["readHealth"] = full_observation["readHealth"]
+                repair_context["portalObservation"] = repair_observation
+            repair_started_at = time.perf_counter()
+            try:
+                repaired_plan = await plan_stage(
+                    {**repair_context, "planningDirective": {
+                        "repairObservationGrounding": True,
+                        "priorCandidate": bounded_json(candidate_plan),
+                        "confirmedFacts": list(candidate.facts) if candidate is not None else [],
+                        "boundSource": bounded_json(bound_source, max_depth=4, max_items=20, max_string=500),
+                        "reason": "Candidate facts or their source were not grounded. Cite one exact observed nodeId when headings repeat, use its actual selectedState, and copy its original evidence units without inventing field labels.",
+                    }},
+                    timeout_stage="planning_observation_grounding", reason="repair_observation_grounding",
+                )
+                repaired = observation_result_from_plan(
+                    repaired_plan, context.get("portalObservation"), observed_page=page,
+                    verified_scope=_permission_result_scope(permission_context),
+                    permitted_paths=(*permission_context.pages, *permission_context.subpages),
+                )
+                source_changed = bool(
+                    bound_source and bound_source.get("nodeId") and repaired is not None
+                    and repaired.source_section != bound_source["nodeId"]
+                )
+                if source_changed:
+                    repaired = None
+                trace.record(
+                    "observation_grounding", "passed" if repaired is not None and repaired.facts else "degraded",
+                    started_at=repair_started_at,
+                    input_summary={"boundSource": str((bound_source or {}).get("nodeId") or "")},
+                    output_summary={
+                        "sourceSection": str(repaired_plan.get("sourceSection") or "")[:120]
+                        if isinstance(repaired_plan, dict) else "",
+                        "selectedState": str(repaired_plan.get("selectedState") or "")[:120]
+                        if isinstance(repaired_plan, dict) else "",
+                        "factCount": len(repaired.facts) if repaired is not None else 0,
+                    },
+                    failure_code=("grounding_repair_source_changed" if source_changed else
+                                  "" if repaired is not None and repaired.facts else "grounding_repair_rejected"),
+                )
+                if repaired is not None and repaired.facts and (
+                    repaired.status == "success" or candidate is None or len(repaired.facts) >= len(candidate.facts)
+                ):
+                    return repaired_plan, repaired
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError) as exc:
+                trace.record(
+                    "observation_grounding", "degraded", started_at=repair_started_at,
+                    input_summary={"boundSource": str((bound_source or {}).get("nodeId") or "")},
+                    output_summary={"errorType": type(exc).__name__},
+                    failure_code="grounding_repair_unavailable",
+                )
+            return candidate_plan, candidate
+
         def deterministic_observation_fallback(
             observation: Any,
             *,
@@ -2942,8 +3207,26 @@ class AdminPortalReader:
             section: str,
             answer_shape: Literal["overview", "count", "list", "attention", "due", "detail", "unspecified"],
             scope: Literal["personal", "team", "global", "unknown"],
+            selection: ReaderResult | None = None,
         ) -> tuple[ReaderResult | None, str]:
+            if selection is not None:
+                binding = observation_result_from_plan(
+                    {**selection.public_json(), "mode": "observation_result", "result": "not_confirmed",
+                     "facts": [], "missing": ["binding_validation"]},
+                    observation, observed_page=page, verified_scope=scope,
+                    permitted_paths=(*permission_context.pages, *permission_context.subpages),
+                )
+                if binding is None:
+                    return None, "none"
+                section = binding.source_section or binding.section
             fallback_intent = _observation_fallback_intent(question, answer_shape)
+            if fallback_intent is None and answer_shape == "list":
+                selected_view = _selected_view_list_fallback(
+                    observation, section_name=section, question=question, page=page,
+                    scope=scope, conversation_context=bounded_conversation_context,
+                )
+                if selected_view is not None:
+                    return selected_view, "verified_selected_view"
             if fallback_intent is None and answer_shape in {"count", "attention", "due"}:
                 unique_section = _observation_evidence_for_section(observation, section)
                 if unique_section is not None:
@@ -3757,7 +4040,11 @@ class AdminPortalReader:
                 observed_page=request.start_path,
                 permitted_paths=(*permission_context.pages, *permission_context.subpages),
             )
-            if observed_result is not None and observed_result.status in {"success", "no_data"}:
+            next_plan, observed_result = await repair_partial_observation(
+                next_plan, observed_result, observed_context, page=request.start_path,
+            )
+            planned_result = _observation_plan_result_from_plan(next_plan)
+            if observed_result is not None and (observed_result.status in {"success", "no_data"} or observed_result.facts):
                 semantic_resolution = record_semantic_resolution(
                     decision="llm_result",
                     reason="validated_observation_result",
@@ -3806,6 +4093,7 @@ class AdminPortalReader:
                     section=fallback_section,
                     answer_shape=fallback_shape,
                     scope=verified_scope,
+                    selection=planned_result,
                 )
                 semantic_resolution = record_semantic_resolution(
                     decision="fallback" if fallback_result is not None else "llm_not_confirmed",
@@ -3845,6 +4133,7 @@ class AdminPortalReader:
                         planned_result,
                         page=request.start_path,
                         scope=verified_scope,
+                        facts=(),
                     )
                     return ReaderOutcome(
                         unconfirmed_result,
@@ -3858,6 +4147,16 @@ class AdminPortalReader:
                             "semanticResolution": semantic_resolution,
                         },
                     )
+                if planned_result is not None:
+                    result = ReaderResult(
+                        status="not_confirmed", summary="The observed result could not be grounded.",
+                        page=request.start_path, missing=(fallback_reason,),
+                    )
+                    return ReaderOutcome(result, {
+                        "stage": "observation_result_validation", "permission": permission_audit,
+                        "plan": bounded_json(next_plan), "observation": observed_context["portalObservation"],
+                        "semanticResolution": semantic_resolution,
+                    })
             def normalize_follow_up(candidate: PortalReadRequest | None) -> tuple[PortalReadRequest | None, ReaderOutcome | None]:
                 if candidate is None:
                     return None, None
@@ -4087,6 +4386,10 @@ class AdminPortalReader:
                     observed_page=next_request.start_path,
                     permitted_paths=(*permission_context.pages, *permission_context.subpages),
                 )
+                post_action_plan, follow_up_result = await repair_partial_observation(
+                    post_action_plan, follow_up_result, post_action_context, page=next_request.start_path,
+                )
+                post_action_request = portal_read_request_from_plan(post_action_plan)
                 if (
                     category_requirement
                     and category_read_is_in_place
@@ -4125,7 +4428,7 @@ class AdminPortalReader:
                             "semanticResolution": semantic_resolution,
                         },
                     )
-                if follow_up_result is not None and follow_up_result.status in {"success", "no_data"}:
+                if follow_up_result is not None and (follow_up_result.status in {"success", "no_data"} or follow_up_result.facts):
                     semantic_resolution = record_semantic_resolution(
                         decision="llm_result",
                         reason="validated_post_action_observation_result",
@@ -4175,6 +4478,7 @@ class AdminPortalReader:
                         section=fallback_section,
                         answer_shape=fallback_answer_shape,
                         scope=verified_scope,
+                        selection=post_action_planned_result,
                     )
                     semantic_resolution = record_semantic_resolution(
                         decision="fallback" if fallback_result is not None else "not_confirmed",
@@ -4219,6 +4523,7 @@ class AdminPortalReader:
                             post_action_planned_result,
                             page=next_request.start_path,
                             scope=verified_scope,
+                            facts=(),
                         )
                         return ReaderOutcome(
                             unconfirmed_result,
@@ -4335,6 +4640,7 @@ class AdminPortalReader:
                                             section=follow_up_section,
                                             answer_shape=follow_up_shape,
                                             scope=verified_scope,
+                                            selection=_observation_plan_result_from_plan(replay_plan),
                                         )[0]
                                 if replay_reader_result is not None and replay_reader_result.status in {"success", "no_data"}:
                                     semantic_resolution = record_semantic_resolution(
@@ -4464,7 +4770,12 @@ class AdminPortalReader:
                         observed_page=request.start_path,
                         permitted_paths=(*permission_context.pages, *permission_context.subpages),
                     )
-                    if observed_result is not None and observed_result.status in {"success", "no_data"}:
+                    recovery_plan, observed_result = await repair_partial_observation(
+                        recovery_plan, observed_result,
+                        {**knowledge_context, "portalObservation": bounded_retry_observation},
+                        page=request.start_path,
+                    )
+                    if observed_result is not None and (observed_result.status in {"success", "no_data"} or observed_result.facts):
                         semantic_resolution = record_semantic_resolution(
                             decision="llm_result",
                             reason="validated_control_failure_observation_result",
@@ -4513,6 +4824,7 @@ class AdminPortalReader:
                                 else retry_shape
                             ),
                             scope=verified_scope,
+                            selection=recovery_planned_result,
                         )
                         semantic_resolution = record_semantic_resolution(
                             decision="fallback" if fallback_result is not None else "not_confirmed",

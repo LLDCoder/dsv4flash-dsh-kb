@@ -93,7 +93,26 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str) 
             "zh": "已确认的信息：",
             "en": "Confirmed details:",
         }
-        return f"{fact_prefix.get(language, fact_prefix['en'])}\n" + "\n".join(facts) + f"\n\n{messages.get(language, messages['en'])[status]}"
+        limitation = messages.get(language, messages["en"])[status]
+        if status == "not_confirmed":
+            partial_messages = {
+                "ar": "تعذر تأكيد بقية التفاصيل المطلوبة.",
+                "zh": "其余所请求的详情尚未确认。",
+                "en": "The remaining requested details could not be confirmed.",
+            }
+            limitation = partial_messages.get(language, partial_messages["en"])
+        display_facts = []
+        for fact in facts:
+            try:
+                fields = json.loads(fact)
+            except (TypeError, ValueError):
+                fields = None
+            display_facts.append(
+                "; ".join(f"{key}: {value}" for key, value in fields.items())
+                if isinstance(fields, dict) and fields and all(isinstance(value, str) for value in fields.values())
+                else fact
+            )
+        return f"{fact_prefix.get(language, fact_prefix['en'])}\n" + "\n".join(display_facts) + f"\n\n{limitation}"
     if facts:
         return None
     generic = {

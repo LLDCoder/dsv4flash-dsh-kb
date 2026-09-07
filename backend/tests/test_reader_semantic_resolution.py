@@ -544,7 +544,7 @@ def test_source_node_uses_parent_selected_state_without_merging_same_heading_sib
         observed_page="/dashboard",
         permitted_paths=("/dashboard",),
     )
-    ambiguous_heading = observation_result_from_plan(
+    state_resolved_heading = observation_result_from_plan(
         {**base_plan, "sourceSection": "Task List", "facts": ["EC-101 Open"]},
         observation,
         observed_page="/dashboard",
@@ -554,7 +554,12 @@ def test_source_node_uses_parent_selected_state_without_merging_same_heading_sib
     assert valid is not None
     assert valid.selected_state == "Enquiries & Complaints"
     assert cross_sibling is None
-    assert ambiguous_heading is None
+    assert state_resolved_heading is not None
+    assert state_resolved_heading.source_section == "observation-table-002"
+    assert observation_result_from_plan(
+        {**base_plan, "sourceSection": "Task List", "selectedState": "", "facts": ["EC-101 Open"]},
+        observation, observed_page="/dashboard", permitted_paths=("/dashboard",),
+    ) is None
 
 
 def test_identical_same_heading_semantic_nodes_can_support_one_llm_result() -> None:
@@ -600,7 +605,7 @@ def test_identical_same_heading_semantic_nodes_can_support_one_llm_result() -> N
 
     assert outcome.result.status == "success"
     assert outcome.result.facts == ("My Tasks shows Enquiries & Complaints: 2",)
-    assert outcome.result.source_section == "My Tasks"
+    assert outcome.result.source_section == "observation-region-001"
     assert outcome.audit_evidence["stage"] == "completed_after_observe"
     assert outcome.audit_evidence["semanticResolution"]["decision"] == "llm_result"
     assert gateway.events.count("admin.portal.read") == 1

@@ -373,8 +373,17 @@ class LLMAdapter:
             "sourceSection:'',answerShape:'overview|count|list|attention|due|detail|unspecified',"
             "completeness:'bounded|complete|unknown',selectedState:'',scope:'personal|team|global|unknown',"
             "facts:[strings],workflowState:'',missing:[strings]}. Never return knowledge_only after portalObservation. "
-            "If the observation is ambiguous or insufficient, return observation_result not_confirmed with no facts "
-            "and a concise missing list. In an observation_result, every fact must only "
+            "If another bounded permitted read can resolve the missing information, plan that read. Otherwise, "
+            "when the observation answers only part of the question, return observation_result not_confirmed "
+            "with the independently confirmed facts and a concise missing list. Return no facts only when none "
+            "can be grounded. Do not discard confirmed fields because another field is unavailable. "
+            "Keep evidence selection separate from final wording: copy raw labels and counts as separate facts; "
+            "leave explanations and translations to the final formatter. Counts alone do not rank individual "
+            "records. When repairObservationGrounding is set, return a corrected observation_result from the "
+            "same observation. Retain confirmed facts and copy the relevant complete original row or card text "
+            "without assigning new field labels; if the missing detail still cannot be grounded, keep the result partial. "
+            "An attention answer needs the actual attention or overdue evidence, not just its category count. "
+            "Counts alone do not establish record details. In an observation_result, every fact must only "
             "restate visible labels, statuses, dates or counts from portalObservation; quote their exact Latin text and "
             "numbers, and do not infer absent values or data scope. Choose result semantics from the question, "
             "For a list answer, write each returned task or row as a separate fact copied from one visible row. Do not "
@@ -394,6 +403,11 @@ class LLMAdapter:
             "fields and retrieved semantics actually establish that relationship. When an observed region or "
             "table includes nodeId, kind, parentRef, or "
             "selectedState, keep the visible heading in section and cite the selected nodeId in sourceSection. If the "
+            "selected category is a control inside that region, put its exact label only in selectedState, not "
+            "sourceSection. A similarly named heading elsewhere is a different source. During grounding repair, "
+            "planningDirective.boundSource, when present, is the program-resolved current evidence node: cite its "
+            "nodeId and copy relevant original evidence units from that node, without inventing labels or combining "
+            "unrelated controls. Do not replace an unresolved source with a same-name region outside section. If the "
             "question explicitly requests a list or detail, a category's parent count or overview does not prove its "
             "child records or current details. Treat selectedState and parentRef as helpful evidence signals, not a "
             "required page-tree contract. If matching child evidence is absent, plan a permitted read-only action that "
@@ -445,6 +459,19 @@ class LLMAdapter:
                 "unavailable; do not invent rows or repeat a control that has no verified locator."
             )
         directive = knowledge_context.get("planningDirective")
+        if (
+            isinstance(directive, dict) and directive.get("requirePortalRead") is True
+            and knowledge_context.get("portalObservation") is None
+        ):
+            system += (
+                " Current phase: acquire live evidence, not compose the final answer. Missing current records, "
+                "counts, or urgency indicators before observation is the reason to read, not a reason to stop. "
+                "Select a relevant entry documented by retrieved knowledge and allowed by current permissions, "
+                "then return portal_read with one pure observe action. Inspect that evidence before deciding "
+                "whether the requested business conclusion is supported. Return knowledge_only not_confirmed "
+                "only if no relevant documented permitted entry can be established; name that entry or access "
+                "gap, not merely the current data you have not read. Never guess a route or broaden permissions."
+            )
         if isinstance(directive, dict) and directive.get("intentCompletionReview") is True:
             system += (
                 " Intent completion review: the priorCandidate did not satisfy the current resolved business "

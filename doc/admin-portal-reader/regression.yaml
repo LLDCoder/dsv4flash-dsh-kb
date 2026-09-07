@@ -9,6 +9,86 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-joint-source-binding
+    observed: [declared_region, selected_category_with_count, unrelated_same_name_region]
+    expect:
+      source_bound_with_section_and_observed_state: true
+      verified_source_is_current_node_id: true
+      category_label_globally_matched_to_other_heading: false
+      explicit_parent_child_reference_supported: true
+      wrong_region_or_state_recovered_by_unscoped_fallback: false
+      observed_active_control_label_without_count_badge_supported: true
+      conflicting_counts_or_arbitrary_prefixes_accepted: false
+
+  - id: reader-repeated-source-disambiguation
+    observed: [repeated_headings, differing_selected_states]
+    expect:
+      unique_observed_state_disambiguates: true
+      identical_evidence_duplicates_supported: true
+      different_records_under_same_heading_and_state_guessed: false
+      missing_or_cyclic_parent_reference_grants_region_membership: false
+
+  - id: reader-bound-source-grounding-repair
+    observed: [resolved_source, unsupported_planner_field_labels]
+    expect:
+      repair_receives_bounded_resolved_source_and_original_units: true
+      unrelated_regions_visible_during_bound_source_repair: false
+      repaired_fields_and_numbers_revalidated: true
+      acceptance_rejection_and_unavailability_audited: true
+      module_or_question_specific_answers: forbidden
+
+  - id: reader-required-evidence-acquisition
+    observed: [no_portal_observation_yet, require_portal_read_directive]
+    expect:
+      missing_live_data_treated_as_missing_access: false
+      entry_requires_retrieved_documentation_and_current_permission: true
+      invented_route_or_permission_bypass: false
+      pre_read_directive_applied_after_observation: false
+
+  - id: reader-partial-evidence-retention
+    observed: [confirmed_status, unavailable_reviewer]
+    expect:
+      result: not_confirmed
+      confirmed_status_retained: true
+      unsupported_reviewer_returned: false
+      invalid_source_page_or_selected_state_bypasses_grounding: false
+      completion_review_failure_discards_confirmed_fields: false
+
+  - id: reader-business-text-is-not-page-health
+    observed: [healthy_record_with_retry_loading_or_forbidden_in_subject]
+    expect:
+      result: success
+      business_text_causes_page_failure: false
+      genuine_error_or_loading_surface_still_rejected: true
+      unrelated_loading_region_discards_confirmed_fields: false
+
+  - id: reader-verified-selected-view-fallback
+    question: Show pending application records.
+    observed: [selected_pending_view, bounded_native_row_fields, planner_row_format_failure]
+    expect:
+      result: success
+      original_field_bindings_preserved: true
+      unknown_selected_state_or_extra_date_identity_assignee_predicate_inferred: false
+
+  - id: reader-content-aware-shape-retention
+    question: Which tasks are overdue?
+    observed: [verified_overdue_rows, planner_answer_shape_list]
+    expect:
+      result: success
+      answer_shape: due
+      facts_discarded_for_label_mismatch: false
+      overdue_rows_assumed_due_today: false
+      ordinary_counts_substituted_for_list: false
+
+  - id: reader-attention-counts-partial-recovery
+    question: What should I prioritize today?
+    observed: [authoritative_attention_region, urgent_zero, blocked_nonzero, unsupported_planner_paraphrase]
+    expect:
+      result: not_confirmed
+      confirmed_raw_counts_retained: true
+      individual_priorities_or_details_invented: false
+      failure_misclassified_as_invalid_follow_up_plan: false
+
   - id: reader-attention-summary-list-followup
     questions:
       - What tasks show I pay attention?

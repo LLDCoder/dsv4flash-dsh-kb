@@ -103,6 +103,20 @@ def test_observed_phase_repeats_closed_modes_and_unhealthy_empty_guard(monkeypat
     assert "uncertain data dependencies cannot support no_data" in prompt
 
 
+@pytest.mark.parametrize("observed", [False, True])
+def test_required_read_distinguishes_missing_live_evidence_from_missing_access(monkeypatch, observed):
+    context = {"planningDirective": {"requirePortalRead": True}}
+    if observed:
+        context["portalObservation"] = {"headings": ["Work"]}
+    _, requests = _run_planner(monkeypatch, ['{"mode":"portal_read","portalRequest":{}}'], knowledge_context=context)
+    prompt = requests[0]["messages"][0]["content"]
+    assert ("Current phase: acquire live evidence" in prompt) is not observed
+    if not observed:
+        assert "before observation is the reason to read, not a reason to stop" in prompt
+        assert "no relevant documented permitted entry can be established" in prompt
+        assert "Never guess a route or broaden permissions" in prompt
+
+
 def test_grounding_repair_requires_exact_source_facts_at_system_priority(monkeypatch) -> None:
     _, requests = _run_planner(monkeypatch, ['{"mode":"knowledge_only","result":"not_confirmed","facts":[]}'], knowledge_context={
         "planningDirective": {"knowledgeGroundingRepair": True},
