@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from typing import Any
 
@@ -70,7 +71,7 @@ def routing_contract(workflow: dict[str, Any] | None) -> dict[str, Any]:
             "type": str(specification.get("type") or "string"),
             "description": str(specification.get("description") or ""),
         }
-        if item["type"] == "enum":
+        if item["type"] in {"enum", "enum_array"}:
             item["options"] = [
                 {"id": str(option.get("id") or ""), "description": str(option.get("description") or "")}
                 for option in specification.get("options", [])
@@ -86,14 +87,38 @@ def _normalized_filter_value(specification: dict[str, Any], value: Any) -> Any |
         option_ids = {str(item.get("id")) for item in specification.get("options", []) if isinstance(item, dict)}
         candidate = str(value or "").strip()
         return candidate if candidate in option_ids else None
+    if value_type == "enum_array":
+        if not isinstance(value, list):
+            return None
+        option_ids = {str(item.get("id")) for item in specification.get("options", []) if isinstance(item, dict)}
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        return normalized if normalized and all(item in option_ids for item in normalized) else None
+    if value_type in {"string_array", "integer_array"}:
+        if not isinstance(value, list):
+            return None
+        if value_type == "string_array":
+            normalized = [str(item).strip()[:500] for item in value if str(item).strip()]
+        else:
+            try:
+                normalized = [int(item) for item in value]
+            except (TypeError, ValueError):
+                return None
+        return normalized or None
     if value_type == "string":
         candidate = str(value or "").strip()
         return candidate[:500] if candidate else None
     if value_type == "integer":
         try:
-            return int(value)
+            normalized = int(value)
         except (TypeError, ValueError):
             return None
+        minimum = specification.get("minimum")
+        maximum = specification.get("maximum")
+        if isinstance(minimum, int) and normalized < minimum:
+            return None
+        if isinstance(maximum, int) and normalized > maximum:
+            return None
+        return normalized
     if value_type == "date_range":
         if not isinstance(value, dict):
             return None
@@ -153,11 +178,64 @@ def _selection_items(history: list[Any], selection: dict[str, Any]) -> list[dict
         payload = getattr(event, "event_json", {}) or {}
         if getattr(event, "event_type", "") != "tool.result" or payload.get("toolName") != source_tool:
             continue
+        if payload.get("ok") is False:
+            return []
         result = _decode_result(payload.get("result"))
         items = _value_at_path(result, selection.get("itemsPath"))
         if isinstance(items, list):
             return [item for item in items if isinstance(item, dict)]
+        return []
     return []
+
+
+def _has_current_empty_selection(history: list[Any], selection: dict[str, Any]) -> bool:
+    source_tool = str(selection.get("sourceTool") or "")
+    later_skill_ids: set[str] = set()
+    for index in range(len(history) - 1, -1, -1):
+        event = history[index]
+        event_type = getattr(event, "event_type", "")
+        payload = getattr(event, "event_json", {}) or {}
+        if event_type == "skill.route":
+            later_skill_ids.add(str(payload.get("skillId") or ""))
+        if event_type != "tool.result":
+            continue
+        # A failed, malformed, or newer unrelated lookup cannot prove that
+        # the current selection is empty, and must not revive an older list.
+        if payload.get("toolName") != source_tool or payload.get("ok") is not True:
+            return False
+        result = _decode_result(payload.get("result"))
+        if _value_at_path(result, selection.get("itemsPath")) != []:
+            return False
+        source_skill_id = next(
+            (
+                str((getattr(prior, "event_json", {}) or {}).get("skillId") or "")
+                for prior in reversed(history[:index])
+                if getattr(prior, "event_type", "") == "skill.route"
+            ),
+            "",
+        )
+        return not later_skill_ids or bool(source_skill_id and later_skill_ids == {source_skill_id})
+    return False
+
+
+def _is_generic_selection_follow_up(text: str, selection: dict[str, Any]) -> bool:
+    ordinal_terms = dict(DEFAULT_ORDINAL_TERMS)
+    configured_terms = selection.get("ordinalTerms", {})
+    if isinstance(configured_terms, dict):
+        ordinal_terms.update({str(index): terms for index, terms in configured_terms.items() if isinstance(terms, list)})
+    terms = sorted(
+        {str(term).casefold() for values in ordinal_terms.values() for term in values if str(term).strip()},
+        key=len,
+        reverse=True,
+    )
+    ordinal = "(?:" + "|".join(re.escape(term) for term in terms) + r"|\d+)"
+    target = rf"(?:the\s+)?{ordinal}(?:\s+(?:one|item|record|result))?"
+    command = r"(?:(?:please\s+)?(?:show|view|open|inspect|check)(?:\s+me)?\s+)?"
+    normalized = " ".join(text.casefold().split()).strip(" .!?")
+    return bool(
+        re.fullmatch(command + target + r"(?:\s+(?:in\s+(?:full\s+)?detail|in\s+full))?", normalized)
+        or re.fullmatch(command + r"(?:the\s+)?(?:full\s+)?details\s+(?:of|for|about)\s+" + target, normalized)
+    )
 
 
 def _selected_item(selector: object, items: list[dict[str, Any]], selection: dict[str, Any]) -> dict[str, Any] | None:
@@ -167,6 +245,10 @@ def _selected_item(selector: object, items: list[dict[str, Any]], selection: dic
             return items[ordinal - 1] if 1 <= ordinal <= len(items) else None
         selector = str(selector.get("identifier") or "")
     normalized = str(selector or "").casefold()
+    numeric_ordinal = re.fullmatch(r"\s*(\d+)\s*[.)]?\s*", normalized)
+    if numeric_ordinal:
+        ordinal = int(numeric_ordinal.group(1))
+        return items[ordinal - 1] if 1 <= ordinal <= len(items) else None
     identifier_fields = [str(field) for field in selection.get("identifierFields", []) if str(field).strip()]
     matches = [
         item for item in items
@@ -208,13 +290,44 @@ def _bound_filter_value(workflow: dict[str, Any], filters: dict[str, Any], sourc
     specification = dict((workflow.get("routing") or {}).get("filters") or {}).get(root)
     if not isinstance(specification, dict) or value is None:
         return value
-    if specification.get("type") != "enum" or "." in source_path:
+    if specification.get("type") not in {"enum", "enum_array"} or "." in source_path:
         return value
-    option = next(
-        (item for item in specification.get("options", []) if isinstance(item, dict) and str(item.get("id")) == str(value)),
-        None,
-    )
-    return option.get("value", value) if option else value
+    options = {
+        str(item.get("id")): item.get("value", item.get("id"))
+        for item in specification.get("options", [])
+        if isinstance(item, dict)
+    }
+    if specification.get("type") == "enum_array":
+        return [options.get(str(item), item) for item in value]
+    return options.get(str(value), value)
+
+
+def _text_bound_filters(
+    workflow: dict[str, Any],
+    text: str,
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    """Populate declared filters from bounded regex captures in the user text."""
+
+    result = dict(filters)
+    specifications = dict((workflow.get("routing") or {}).get("filters") or {})
+    for binding in workflow.get("textFilterBindings", []):
+        if not isinstance(binding, dict):
+            continue
+        filter_name = str(binding.get("filter") or "").strip()
+        pattern = str(binding.get("pattern") or "")
+        specification = specifications.get(filter_name)
+        if filter_name in result or not isinstance(specification, dict) or not (1 <= len(pattern) <= 300):
+            continue
+        try:
+            match = re.search(pattern, text[:2000], re.IGNORECASE)
+            candidate = match.group(int(binding.get("group", 0))) if match else None
+        except (IndexError, re.error, TypeError, ValueError):
+            continue
+        normalized = _normalized_filter_value(specification, candidate)
+        if normalized is not None:
+            result[filter_name] = normalized
+    return result
 
 
 def _request_from_definition(
@@ -248,9 +361,13 @@ def matches_configured_selection_follow_up(
     if not isinstance(selection, dict):
         return False
     items = _selection_items(history, selection)
-    if not items:
-        return False
     request = selection.get("toolRequest") or selection.get("detailRequest")
+    if not items:
+        return (
+            isinstance(request, dict)
+            and _has_current_empty_selection(history, selection)
+            and _is_generic_selection_follow_up(text, selection)
+        )
     return isinstance(request, dict) and (
         _matches(text, request.get("when"))
         or _selected_item(text, items, selection) is not None
@@ -270,7 +387,7 @@ def build_configured_tool_request(
 
     workflow = workflow or {}
     allowed = set(allowed_tools)
-    filters = filters or {}
+    filters = _text_bound_filters(workflow, text, filters or {})
     selection = workflow.get("selection")
     if isinstance(selection, dict):
         selection_request = selection.get("toolRequest") or selection.get("detailRequest")

@@ -63,6 +63,83 @@ function containsArabic(text) {
   return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/u.test(text);
 }
 
+const allowedExternalMessageHosts = ["umc-customerportal.sol.daypop.ai"];
+
+function isIpLiteral(hostname) {
+  return hostname.startsWith("[")
+    || hostname.endsWith("]")
+    || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+function hostMatchesPolicy(hostname) {
+  const normalizedHostname = hostname.toLowerCase().replace(/\.$/, "");
+  return allowedExternalMessageHosts.some((entry) => {
+    const allowed = entry.trim().toLowerCase().replace(/\.$/, "");
+    if (!allowed) return false;
+    if (allowed.startsWith("*.")) {
+      const suffix = allowed.slice(2);
+      return Boolean(suffix) && normalizedHostname.endsWith("." + suffix);
+    }
+    return normalizedHostname === allowed;
+  });
+}
+
+function normalizeMessageHref(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate || candidate.includes("\\")) return null;
+  try {
+    if (candidate.startsWith("/") && !candidate.startsWith("//")) {
+      const url = new URL(candidate, window.location.origin);
+      if (url.origin !== window.location.origin || url.username || url.password) return null;
+      return url.pathname + url.search + url.hash;
+    }
+
+    const url = new URL(candidate);
+    if (url.origin === window.location.origin && !url.username && !url.password) {
+      return url.pathname + url.search + url.hash;
+    }
+    if (
+      url.protocol !== "https:"
+      || url.username
+      || url.password
+      || (url.port && url.port !== "443")
+      || !url.hostname
+      || isIpLiteral(url.hostname)
+      || !hostMatchesPolicy(url.hostname)
+    ) {
+      return null;
+    }
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function renderMarkdownLinks(node, text) {
+  const linkPattern = /\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+  let cursor = 0;
+  let match;
+  while ((match = linkPattern.exec(text)) !== null) {
+    node.append(document.createTextNode(text.slice(cursor, match.index)));
+    const href = normalizeMessageHref(match[2]);
+    if (href) {
+      const link = document.createElement("a");
+      link.textContent = match[1];
+      link.href = href;
+      link.className = "message-link";
+      if (href.startsWith("https://")) {
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+      }
+      node.append(link);
+    } else {
+      node.append(document.createTextNode(match[0]));
+    }
+    cursor = match.index + match[0].length;
+  }
+  node.append(document.createTextNode(text.slice(cursor)));
+}
+
 function renderLocalizedContent(node, content) {
   node.replaceChildren();
   const text = String(content || "");
@@ -71,7 +148,7 @@ function renderLocalizedContent(node, content) {
     const block = document.createElement("div");
     block.className = "localized-block";
     block.dir = containsArabic(paragraph) ? "rtl" : "ltr";
-    block.textContent = paragraph;
+    renderMarkdownLinks(block, paragraph);
     node.appendChild(block);
   });
 }

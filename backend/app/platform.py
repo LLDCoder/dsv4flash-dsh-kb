@@ -103,6 +103,28 @@ class PlatformGatewayClient:
             response.raise_for_status()
             return response.json()
 
+    async def media_licensing_eligible_services(self, *, umc_token: str | None = None, request_id: str | None = None) -> dict[str, Any]:
+        """List Media Licensing services for the Profile selected in the live UMC token."""
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.base_url}/services/media-licensing/eligible",
+                headers=self._headers(umc_token, request_id),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def eligible_services(self, *, umc_token: str | None = None, request_id: str | None = None) -> dict[str, Any]:
+        """List the full service catalog for the Profile selected in the live UMC token."""
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.base_url}/services/eligible",
+                headers=self._headers(umc_token, request_id),
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def invoke_swagger_tool(
         self,
         method: str,

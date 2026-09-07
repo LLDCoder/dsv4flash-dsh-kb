@@ -138,13 +138,19 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks about their current Profile, available individual or establishment Profiles, whether they have a Profile, Profile review/rejection state, or the validity/expiry of their own identity or establishment documents.",
         "the user asks for a specific application status, issued License/Permit status, a refund, a violation, or data belonging to another account/Profile.",
         "a current UMC bearer token. Query only the server-derived current account; never accept a user ID or Profile ID from the model as an authorization scope.",
-        "use only live Profile data. Keep Profile state separate from application state. Do not infer that the Individual Profile is the currently selected establishment Profile: say when current selection is not explicitly returned. Report document expiry only when the live record provides it. This Skill is read-only: never create, edit, upload, submit, cancel, or switch a Profile.",
+        "use only live Profile data. Keep Profile state separate from application state. Do not infer that the Individual Profile is the currently selected establishment Profile: say when current selection is not explicitly returned. Report document expiry only when the live record provides it. Never display or repeat any full or partial identity number, Profile ID, establishment identifier, license number, document number, authentication token, credential, or internal authorization detail. When the user requests one of those values, refuse briefly and direct them to the My Account page using the relative link [My Account](/my-account); offer only a non-sensitive summary such as Profile type, review status, validity, and expiry status. This Skill is read-only: never create, edit, upload, submit, cancel, or switch a Profile.",
     ),
     "service_eligibility": _guidance(
         "the user asks which services are available to their account/profile.",
-        "the user asks for general policy only, or provides no applicant type and no media activity.",
-        "the current account's collected services and service categories; request media activity only when those records do not identify the needed service.",
-        "query the current account before asking the customer to repeat profile information already available in the portal. Return candidate services and only the genuinely missing inputs, not a binding eligibility decision.",
+        "the user asks for general policy only, a different person's account, or specifically for Media Licensing services, which belong to media_licensing_account_services.",
+        "a current UMC bearer token and an individual or establishment Profile selected in Customer Portal. The server derives the selected Profile and user type; never request or accept a username, user ID, Profile ID, account type, or media activity as a query selector.",
+        "query the current Profile's complete service catalog with umc.services.eligible before answering. This is the All Services catalog, not the account's collected or favorite services. Use the returned total and list every returned service, grouped by returned service category or type; include Filming Permit services whenever present. Do not hard-code a total or omit a category. Keep the total distinct from the number of services in one category. Use only live Tool data and never replace a personal catalog query with knowledge search. If the result is empty, state that no services are currently available for the selected Profile. If the Tool returns profile_selection_required, guide the user to select an individual or establishment Profile in Customer Portal. If it returns selected_profile_not_available, explain that the selected Profile is no longer available and guide them to select another Profile. For authentication or upstream errors, explain the error without claiming the service list is empty. Service availability permits review or starting an application; it is not a binding eligibility decision or approval. This Skill is read-only and never starts or submits an application.",
+    ),
+    "media_licensing_account_services": _guidance(
+        "the user asks which Media Licensing services the currently selected account or Profile can apply for.",
+        "the user asks for general eligibility policy, a different person's account, another service category, or requirements for a named service.",
+        "a current UMC bearer token and an individual or establishment Profile selected in Customer Portal. The server derives the Profile and user type; never request or accept a username, user ID, Profile ID, account type, or media activity as a query selector.",
+        "always use the live account-scoped Tool result and never fall back to the knowledge base. If services are returned, list their names and only fields present in the result. If the result is empty, explicitly state that no Media Licensing services are available for the currently selected Profile. If the Tool returns profile_selection_required, tell the user to select an individual or establishment Profile in Customer Portal and retry. If it returns selected_profile_not_available, tell the user that the selected Profile is no longer available and to select another Profile. Never describe either Profile-selection error as temporary or recommend waiting and retrying without changing the Profile. Do not ask the user to repeat identity or Profile information and do not make a binding legal eligibility decision.",
     ),
     "application_payment": _guidance(
         "the user asks which My Requests applications are awaiting payment or asks to inspect the payment details for a selected application.",
@@ -156,7 +162,7 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks for the status, progress, filters, counts, or history of their own My Requests applications.",
         "the user asks for an issued license/permit count or general application requirements.",
         "trusted UMC identity; query the current account's application list and use detail only for a selected application.",
-        "include Application No., Service Name, Request Type, Profile Name, Submission Time, current status, and result scope when returned by UMC. Keep Request Type separate from status and call an application a renewal only when Request Type is Renew. This Skill is read-only and never edits, cancels, duplicates, submits, or pays.",
+        "include Application No., Service Name, Request Type, Profile Name, Submission Time, current status, and result scope when returned by UMC. A four-part UMC reference such as HC-02-2026-3194244 or MC-3-203-2852058 is an application number: always query the current account's live application list with that exact keyword and never use the knowledge base. If an exact match is returned, report its available status or stage; if no exact match is returned for the selected Profile, say so and guide the user to [My Requests](/my-requests). Keep Request Type separate from status and call an application a renewal only when Request Type is Renew. This Skill is read-only and never edits, cancels, duplicates, submits, or pays.",
     ),
     "license_permit_status": _guidance(
         "the user asks about their own issued License/Permit list, count, status, validity, expiry, number, or available portal actions, including a named document such as 'How about my Social Media Advertiser Permit?'.",
@@ -279,6 +285,7 @@ SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
     "admin_audit": {"domain": "admin", "aliases": ["audit", "permissions", "审计", "权限"]},
     "profile_status": {"domain": "profile", "aliases": ["my profile", "profile review", "profile status", "profile expiry", "资料审核", "档案", "身份"]},
     "service_eligibility": {"domain": "services", "aliases": ["my eligibility", "eligible for", "资格", "适用服务"]},
+    "media_licensing_account_services": {"domain": "services", "aliases": ["media licensing services for this account", "media licensing services for my account", "media licensing services available to this profile", "which media licensing services can this account apply for"]},
     "application_payment": {"domain": "payments", "aliases": ["pending payment", "pay application", "待付款", "付款申请"]},
     "my_requests_pending_actions": {"domain": "applications", "aliases": ["my requests pending", "pending actions", "what needs attention", "待处理事项", "待办申请"]},
     "application_status": {"domain": "applications", "aliases": ["application status", "application progress", "申请状态", "申请进度"]},
@@ -384,10 +391,18 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "skill_id": "service_eligibility",
         "name": "Service eligibility",
-        "allowed_tools": ["umc.collected-services", "umc.service-categories"],
+        "allowed_tools": ["umc.services.eligible", "umc.service-categories"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
-        "workflow": {"defaultToolRequest": {"toolName": "umc.collected-services", "arguments": {}}},
+        "workflow": {"defaultToolRequest": {"toolName": "umc.services.eligible", "arguments": {}}},
         "content": SKILL_GUIDANCE["service_eligibility"],
+    },
+    {
+        "skill_id": "media_licensing_account_services",
+        "name": "Media Licensing services for my Profile",
+        "allowed_tools": ["umc.media-licensing.eligible-services"],
+        "dependencies": ["trusted_principal", "umc_customer_api"],
+        "workflow": {"defaultToolRequest": {"toolName": "umc.media-licensing.eligible-services", "arguments": {}}},
+        "content": SKILL_GUIDANCE["media_licensing_account_services"],
     },
     {
         "skill_id": "application_payment",
@@ -488,6 +503,12 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                     "record": {"type": "selection", "description": "A record from the latest application list, by ordinal or application identifier."},
                 },
             },
+            "textFilterBindings": [
+                {
+                    "filter": "keyword",
+                    "pattern": r"\b[A-Z]{2,6}(?:-\d{1,8}){3,}\b",
+                },
+            ],
             "requests": [
                 {
                     "intentId": "list",
@@ -504,6 +525,12 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
             "defaultToolRequest": {
                 "toolName": "umc.applications",
                 "arguments": {"pageIndex": 1, "pageSize": 100, "sortBy": "createdOn", "sortDirection": 0},
+                "bindings": [
+                    {"filter": "keyword", "argument": "keyword"},
+                    {"filter": "submissionDate.start", "argument": "startTime"},
+                    {"filter": "submissionDate.end", "argument": "endTime"},
+                    {"filter": "status", "argument": "applicationStatusId"},
+                ],
             },
             "selection": {
                 "intentId": "detail",
@@ -785,7 +812,8 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
     "admin_finance": [{"priority": 820, "anyTerms": ["revenue", "fine collection", "last 7 days", "finance trend", "收入", "罚款回收", "الإيرادات", "تحصيل الغرامات"], "route": {"category": "data_query"}}],
     "admin_audit": [{"priority": 820, "anyTerms": ["audit", "low-confidence", "full user details", "permissions", "审计", "低置信度", "用户详情"], "route": {"category": "data_query"}}],
     "application_status": [
-        {"priority": 950, "patterns": ["application_number"], "route": {"category": "data_query"}},
+        {"priority": 940, "patterns": [r"\b[A-Z]{2,6}(?:-\d{1,8}){3,}\b"], "route": {"category": "data_query", "routingLocked": True}},
+        {"priority": 950, "patterns": ["application_number"], "route": {"category": "data_query", "routingLocked": True}},
         {"priority": 810, "anyTerms": ["latest status", "application status", "application history", "application histories", "status of my application", "what's the status of my application", "open applications", "summarize my open", "my requests", "我的申请", "我的请求", "申请状态", "申请进度", "申请历史", "حالة الطلب", "حالة طلبي", "آخر حالة"], "route": {"category": "data_query"}},
     ],
     "license_application_knowledge": [{"priority": 800, "anyTerms": ["how to apply", "how do i apply", "apply for", "application requirements", "license requirements", "permit requirements", "photography", "filming", "filming permit", "photocopying equipment", "advertising license", "new permit", "license application", "media license", "newspaper", "publication", "broadcasting", "radio", "television", "申请许可", "申请许可证", "办理牌照", "摄影", "طلب تصريح", "متطلبات الترخيص", "رخصة إعلامية", "تصريح", "ترخيص", "صحيفة", "منشور", "بث"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["permit_or_service_type", "account_type"], "choices": ["Individual", "Commercial", "Government"]}}],
@@ -798,8 +826,37 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
     "profile_status": [{"priority": 880, "anyTerms": ["my profile", "profile status", "profile review", "profile is under review", "profile expired", "profile expiry", "my identity", "my establishment", "do i have a profile", "个人身份", "企业身份", "身份是否过期", "profile 审核", "资料审核", "档案状态", "الملف قيد المراجعة", "ملفي قيد المراجعة", "مراجعة الملف"], "route": {"category": "data_query", "routingLocked": True}}],
     "service_eligibility_info": [{"priority": 750, "anyTerms": ["who is eligible", "eligible for media services", "media service eligibility", "مؤهل", "الأهلية", "الخدمات الإعلامية"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["account_type", "media_activity"], "choices": ["Individual", "Commercial", "Government"]}}],
     "service_eligibility": [
-        {"priority": 825, "allTerms": ["service", "eligible", "apply"], "route": {"category": "data_query", "routingLocked": True}},
-        {"priority": 740, "anyTerms": ["eligible", "eligibility", "资格", "مؤهل", "الأهلية"], "route": {"category": "data_query", "fields": ["profile_id", "account_type", "media_activity"], "choices": ["Individual", "Commercial", "Government"]}},
+        {
+            "priority": 1255,
+            "allTerms": ["services"],
+            "anyTermGroups": [["eligible", "apply"], ["can", "apply"], ["available"]],
+            "patterns": [
+                r"\b(?:my\s*(?:current\s+)?(?:profile|file|account)|(?:this|current)\s+(?:profile|file|account)|am\s+i|can\s+i|available\s+to\s+me)\b",
+                r"^(?!.*\bmedia[\s-]+licen[sc](?:ing|es?)\b)",
+            ],
+            "route": {"category": "data_query", "toolName": "umc.services.eligible", "mode": "answer", "routingLocked": True},
+        },
+        {"priority": 825, "allTerms": ["service", "eligible", "apply"], "noneTerms": ["media licensing", "media-licensing", "media license", "media licence"], "route": {"category": "data_query", "routingLocked": True}},
+        {"priority": 740, "anyTerms": ["eligible", "eligibility", "资格", "مؤهل", "الأهلية"], "noneTerms": ["media licensing", "media-licensing", "media license", "media licence"], "route": {"category": "data_query", "fields": ["profile_id", "account_type", "media_activity"], "choices": ["Individual", "Commercial", "Government"]}},
+    ],
+    "media_licensing_account_services": [
+        {
+            "id": "current-profile-media-licensing-catalogue-v1",
+            "priority": 1260,
+            "anyTermGroups": [["can", "apply"], ["eligible", "apply"], ["available"], ["show"], ["list"]],
+            "patterns": [
+                r"\bmedia[\s-]+licensing\s+services\b",
+                r"\b(?:my\s*(?:(?:current|selected)\s+)?(?:profile|file|account)|(?:this|current|selected)\s+(?:profile|file|account)|can\s+i|am\s+i|available\s+to\s+me)\b",
+            ],
+            "noneTerms": [
+                "general policy", "eligibility policy", "eligibility criteria", "requirements", "conditions",
+                "documents", "processing time", "fees", "who can", "who is eligible", "how to apply", "how do i apply",
+                "another account", "another profile", "another user", "different account", "different profile",
+                "someone else", "other user", "someone's account", "someone's profile",
+            ],
+            "route": {"category": "data_query", "toolName": "umc.media-licensing.eligible-services", "mode": "answer", "routingLocked": True},
+        },
+        {"priority": 1260, "anyTerms": ["which media licensing services can this account apply for", "which media licensing services can my account apply for", "what media licensing services can this account apply for", "what media licensing services can my account apply for", "media licensing services available to this account", "media licensing services available to my account", "media licensing services available to this profile", "media licensing services available to my profile"], "route": {"category": "data_query", "routingLocked": True}},
     ],
 }
 
@@ -933,7 +990,7 @@ def exact_quote_source_sufficient(text: str) -> bool:
 def build_flow_prompt(route: SkillRoute) -> dict[str, Any]:
     prompt = {
         "profile_status": "Query the current account's live Profile summary. Report only returned Individual and establishment Profile records, their available status/review fields, and document expiry fields. Do not ask the customer to provide a user or Profile ID and do not change their selected Profile.",
-        "service_eligibility": "Provide the account/profile type and media activity so I can identify candidate services.",
+        "service_eligibility": "Query the complete live service catalog for the Profile selected in the current UMC session. Report the returned total and every available service, including all returned categories. Never ask for identity selectors and never treat a failed lookup as an empty catalog.",
         "application_payment": "Select the Pending Payment application to inspect its read-only payment details; this Skill never starts or confirms payment.",
         "my_requests_pending_actions": "Query the current account's My Requests pending actions and identify the related application; no mutation is allowed.",
         "application_status": "Provide the application number. If it is unavailable, query the latest applications and state the result scope.",

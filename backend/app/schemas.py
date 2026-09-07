@@ -7,6 +7,37 @@ class APIModel(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class ServiceEligibilityProfileType(APIModel):
+    id: int | str | None = None
+    code: str
+    name_en: str | None = Field(default=None, alias="nameEn")
+    name_ar: str | None = Field(default=None, alias="nameAr")
+
+
+class AvailableService(APIModel):
+    id: int | str | None = None
+    code: str | None = None
+    name_en: str | None = Field(default=None, alias="nameEn")
+    name_ar: str | None = Field(default=None, alias="nameAr")
+    type_en: str | None = Field(default=None, alias="typeEn")
+    type_ar: str | None = Field(default=None, alias="typeAr")
+    is_public: bool | None = Field(default=None, alias="isPublic")
+    category_id: int | str | None = Field(default=None, alias="categoryId")
+    category_name_en: str | None = Field(default=None, alias="categoryNameEn")
+    category_name_ar: str | None = Field(default=None, alias="categoryNameAr")
+
+
+class ServiceEligibilityResponse(APIModel):
+    """Complete available-service catalog for the authenticated selected Profile."""
+
+    scope: Literal["current_profile_available_services"]
+    category_id: Literal[0] = Field(alias="categoryId", description="All service categories")
+    profile_user_type: ServiceEligibilityProfileType = Field(alias="profileUserType")
+    total: int = Field(ge=0, description="Authoritative total after fetching every service page")
+    services: list[AvailableService]
+    limitations: list[str]
+
+
 class ConversationCreate(APIModel):
     workspace: str = "default"
     skill_profile: str = Field(default="default", validation_alias=AliasChoices("skillProfile", "skill_profile"))
@@ -78,7 +109,13 @@ class SkillUpsert(APIModel):
     aliases: list[str] = Field(default_factory=list)
     positive_examples: list[str] = Field(default_factory=list, validation_alias=AliasChoices("positiveExamples", "positive_examples"))
     negative_examples: list[str] = Field(default_factory=list, validation_alias=AliasChoices("negativeExamples", "negative_examples"))
-    workflow: dict[str, Any] = Field(default_factory=dict)
+    workflow: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Declarative Skill routing and Tool workflow. Optional textFilterBindings entries may map "
+            "a bounded regular-expression match from the user's text into a declared routing filter."
+        ),
+    )
     content: str = ""
 
 

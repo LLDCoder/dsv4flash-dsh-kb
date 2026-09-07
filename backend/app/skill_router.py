@@ -236,6 +236,7 @@ def route_context_from_history(history: list[Any], catalog: list[dict[str, Any]]
 
     messages: list[dict[str, str]] = []
     active_skill_id = ""
+    published_ids = {str(item.get("skillId") or "") for item in catalog}
     for event in history:
         event_type = getattr(event, "event_type", "")
         payload = getattr(event, "event_json", {}) or {}
@@ -244,7 +245,9 @@ def route_context_from_history(history: list[Any], catalog: list[dict[str, Any]]
             if content:
                 messages.append({"role": "user" if event_type == "user.message" else "assistant", "content": content[-1200:]})
         elif event_type == "skill.route":
-            active_skill_id = canonical_skill_id(str(payload.get("skillId") or active_skill_id))
+            recorded_id = str(payload.get("skillId") or active_skill_id).strip()
+            # Legacy aliases may still be valid published workflow IDs.
+            active_skill_id = recorded_id if recorded_id in published_ids else canonical_skill_id(recorded_id)
     messages = messages[-max_messages:]
     active_domain = ""
     if active_skill_id:

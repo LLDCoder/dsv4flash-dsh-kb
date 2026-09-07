@@ -22,7 +22,7 @@ from .customer_documents import CustomerDocumentNotConfigured
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, Tool, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .profile_scope import normalize_profile_scope
-from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
+from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key, is_system_default_tool, system_default_tool_definitions
@@ -270,6 +270,61 @@ def make_router(service: DSHService) -> APIRouter:
             return session
         except UMCAuthError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.get(
+        "/umc/services/eligible",
+        response_model=ServiceEligibilityResponse,
+        tags=["UMC Services"],
+        summary="List all services available to the current Profile",
+        description=(
+            "Read-only complete Customer Portal All Services catalog for the Profile selected in the current "
+            "UMC bearer token. Includes all available categories and every page. No user, Profile, user-type, "
+            "category, or pagination selectors are accepted. Availability is not an application approval."
+        ),
+        responses={
+            401: {"description": "UMC bearer token is missing or invalid"},
+            403: {"description": "The current UMC session is not authorized"},
+            422: {"description": "Profile selection is required, the selected Profile is unavailable, or query selectors were supplied"},
+            502: {"description": "The upstream catalog is invalid, incomplete, inconsistent, or unavailable"},
+            503: {"description": "Customer Portal is unavailable"},
+        },
+    )
+    async def get_eligible_services(
+        request: Request,
+        authorization: str | None = Header(default=None, description="Bearer token for the current UMC session"),
+        x_request_id: str | None = Header(default=None),
+    ):
+        token = _bearer_token(authorization)
+        if not token:
+            raise HTTPException(status_code=401, detail="UMC authentication is required to read available services")
+        if request.query_params:
+            raise HTTPException(status_code=422, detail={
+                "code": "identity_selectors_not_allowed",
+                "message": "This endpoint uses only the Profile selected in the current UMC session and accepts no query parameters.",
+            })
+        try:
+            return await service.tool_gateway.platform.eligible_services(
+                umc_token=token,
+                request_id=x_request_id or str(uuid4()),
+            )
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {401, 403}:
+                raise HTTPException(status_code=status, detail="The current UMC session is not authorized") from exc
+            if status == 422:
+                try:
+                    payload = exc.response.json()
+                except ValueError:
+                    payload = None
+                detail = payload.get("detail") if isinstance(payload, dict) else None
+                if isinstance(detail, dict) and detail.get("code") in {"profile_selection_required", "selected_profile_not_available"}:
+                    raise HTTPException(status_code=422, detail={
+                        "code": detail["code"],
+                        "message": "Select an available Profile in Customer Portal and retry.",
+                    }) from exc
+            raise HTTPException(status_code=503 if status == 503 else 502, detail="The current Profile service catalog could not be retrieved") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="The current Profile service catalog could not be retrieved") from exc
 
     @router.post("/umc/documents/upload")
     async def upload_umc_document(file: UploadFile = File(...), principal: Principal = Depends(get_principal)):
@@ -561,11 +616,28 @@ def make_router(service: DSHService) -> APIRouter:
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(get_principal)):
         """Submit a conversation turn with read-only cross-Skill handoff support.
 
+        A valid ``attachment`` always takes priority over text-only Skill
+        routing: the turn is locked to ``document_ocr`` and invokes document
+        analysis before any knowledge retrieval.  If OCR is unavailable, the
+        response is a controlled document-analysis error and is never
+        redirected to a knowledge Skill.
+
+        Attachment OCR is privacy-preserving by default: document text stays
+        inside the DSH service, is not sent to an external LLM, and is not
+        persisted in the conversation audit.  The service may extract bounded
+        reference identifiers locally and use them only for an eligible
+        read-only business lookup.  Attachment turns return a deterministic
+        local response rather than an external-LLM drafted response.
+
         When a Refund or Complaints detail has a verified related application,
         a follow-up explicitly asking for that application's status or details
         is routed to the existing My Requests Skill.  If the identifier is not
         present, the response asks for an application number instead of
         querying unrelated records.
+
+        After a list response, a bare positive ordinal such as ``1`` or ``2.``
+        selects that item and invokes the configured read-only detail Tool.
+        Out-of-range ordinals do not select another item by partial matching.
 
         """
         try:

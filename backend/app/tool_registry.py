@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+from .schemas import ServiceEligibilityResponse
 from urllib.parse import urlsplit
 import re
 
@@ -10,7 +12,7 @@ from .profile_scope import infer_profile_scope
 
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
-SYSTEM_DEFAULT_TOOL_NAMES = frozenset({"knowledge.search", "ocr.layout_parsing", "umc.profile.summary"})
+SYSTEM_DEFAULT_TOOL_NAMES = frozenset({"knowledge.search", "ocr.layout_parsing", "umc.profile.summary", "umc.media-licensing.eligible-services", "umc.services.eligible"})
 
 
 DEFAULT_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
@@ -251,11 +253,49 @@ def system_default_tool_definitions(settings: Any) -> list[dict[str, Any]]:
         {
             "toolName": "umc.profile.summary",
             "displayName": "Read my profile status",
-            "description": "Read-only summary of the current UMC user's individual and establishment Profile records. The server derives the user identity from the live UMC session; callers cannot supply another user or Profile ID.",
+            "description": "Read-only details for the Profile currently selected in the live UMC portal session. The server derives the selected Profile from the UMC token; callers cannot supply another user or Profile ID.",
             "operationId": "umc_profile_summary",
             "httpMethod": "GET",
             "httpPath": "/profiles/summary",
             "interfaceKey": "GET /profiles/summary",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "responseSchema": {},
+            "authStrategy": "current_umc_bearer_token",
+            "sideEffect": "read",
+            "confirmationRequired": False,
+            "source": "runtime_config",
+            "toolType": "system_default",
+            "enabled": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
+            "published": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
+            "mutable": False,
+        },
+        {
+            "toolName": "umc.services.eligible",
+            "displayName": "List all services available to my Profile",
+            "description": "Read-only complete service catalog across all categories for the Profile selected in the live UMC portal session. The server derives the selected Profile and user type from the UMC token; callers cannot supply identity selectors. Returns the accurate total and every available service, including Filming Permit services when available.",
+            "operationId": "umc_services_eligible",
+            "httpMethod": "GET",
+            "httpPath": "/services/eligible",
+            "interfaceKey": "GET /services/eligible",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "responseSchema": ServiceEligibilityResponse.model_json_schema(by_alias=True),
+            "authStrategy": "current_umc_bearer_token",
+            "sideEffect": "read",
+            "confirmationRequired": False,
+            "source": "runtime_config",
+            "toolType": "system_default",
+            "enabled": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
+            "published": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
+            "mutable": False,
+        },
+        {
+            "toolName": "umc.media-licensing.eligible-services",
+            "displayName": "List available Media Licensing services",
+            "description": "Read-only Media Licensing services available to the Profile selected in the live UMC portal session. The server derives the selected Profile and user type from the UMC token; callers cannot supply identity selectors.",
+            "operationId": "umc_media_licensing_eligible_services",
+            "httpMethod": "GET",
+            "httpPath": "/services/media-licensing/eligible",
+            "interfaceKey": "GET /services/media-licensing/eligible",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
             "responseSchema": {},
             "authStrategy": "current_umc_bearer_token",

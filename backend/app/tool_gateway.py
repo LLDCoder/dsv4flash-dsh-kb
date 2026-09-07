@@ -180,6 +180,39 @@ class ToolGateway:
                     return {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}
                 except httpx.HTTPError as exc:
                     return {"ok": False, "code": "tool_unavailable", "toolName": tool_name, "error": str(exc)[:500]}
+            if tool_name in {"umc.media-licensing.eligible-services", "umc.services.eligible"}:
+                if arguments:
+                    return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "message": "this tool uses only the Profile selected in the current authenticated UMC session"}
+                try:
+                    list_services = (
+                        self.platform.eligible_services
+                        if tool_name == "umc.services.eligible"
+                        else self.platform.media_licensing_eligible_services
+                    )
+                    result = await list_services(
+                        umc_token=principal.umc_token,
+                        request_id=principal.request_id,
+                    )
+                    return {"ok": True, "code": "ok", "toolName": tool_name, "result": result}
+                except httpx.HTTPStatusError as exc:
+                    code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"
+                    error = {"ok": False, "code": code, "toolName": tool_name, "status": exc.response.status_code}
+                    if exc.response.status_code == 422:
+                        try:
+                            payload = exc.response.json()
+                        except ValueError:
+                            payload = None
+                        detail = payload.get("detail") if isinstance(payload, dict) else None
+                        if isinstance(detail, dict) and detail.get("code") in {
+                            "profile_selection_required",
+                            "selected_profile_not_available",
+                        }:
+                            error["code"] = detail["code"]
+                            if isinstance(detail.get("message"), str):
+                                error["message"] = detail["message"]
+                    return error
+                except httpx.HTTPError as exc:
+                    return {"ok": False, "code": "tool_unavailable", "toolName": tool_name, "error": str(exc)[:500]}
             if tool_name == "knowledge.search":
                 query = arguments.get("query")
                 folder_id = arguments.get("folder_id") or arguments.get("folderId")
