@@ -9,6 +9,25 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-explicit-filter-completion
+    observed: [default_task_sample, nonzero_requested_category_metric, input_combobox, inline_filter_button]
+    expect:
+      default_sample_absence_proves_no_data: false
+      unrelated_real_rows_returned_as_partial_answer: false
+      filter_continuation_before_answer: true
+      status_value_requires_selected_option_readback: true
+      query_specific_answer_or_status_mapping: forbidden
+      schema_error_reported_as_failed_navigation: false
+
+  - id: reader-native-filter-surface
+    observed: [unnamed_ant_input_combobox, virtual_options, numeric_label_siblings, hidden_metric]
+    expect:
+      bounded_observed_control_locator: true
+      virtual_option_scoped_to_own_popup: true
+      placeholder_disappearance_breaks_selection_readback: false
+      inline_and_overlay_filter_supported: true
+      hidden_metric_or_neighboring_count_used: false
+
   - id: reader-joint-source-binding
     observed: [declared_region, selected_category_with_count, unrelated_same_name_region]
     expect:

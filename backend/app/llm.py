@@ -353,10 +353,19 @@ class LLMAdapter:
             "matching row is found, retry the permitted source-list entry/read path when budget allows, then return "
             "not_confirmed with the missing match rather than opening an unverified route. This contract is generic and "
             "must not name or hard-code a module-specific path. "
-            "Use show_filter only for a named filter dialog or drawer; apply_filter, reset_filter, and "
-            "dismiss_overlay only target controls inside the currently visible overlay. "
+            "Use show_filter only for a named filter dialog or drawer. apply_filter and reset_filter target "
+            "the visible overlay when one exists, otherwise the documented inline filter toolbar. "
+            "dismiss_overlay only targets controls inside the currently visible overlay. "
             "For filter, use value for one text, option, or date value and values for a bounded multi-select; "
             "represent a date range as two filter actions against its named start and end fields. "
+            "filterControls supplies observed labels, selected values and narrow selectors for otherwise unnamed "
+            "controls. Use its exact selector when no accessible field label exists; do not invent a field label. "
+            "metrics binds each visible numeric value to its own label; never associate neighboring flattened numbers. "
+            "For an explicitly requested filtered list, set the documented filter, then read the resulting rows. "
+            "A selection may auto-apply. Click Apply/Filter only when the manual requires committing that field; "
+            "a button named Filter may instead open additional filters. A default page sample without matching rows "
+            "does not prove no_data. Returned rows must satisfy the user's explicit conditions even when other rows "
+            "are real and correctly grounded. Do not substitute a category count for a requested list. "
             "When semantic page structure is not present in knowledgeContext, use an observe action first. "
             "An observation plan must contain exactly one pure action {'type':'observe'} with no other action "
             "fields. Never emit multiple observe actions or combine observe with another action. "
@@ -459,6 +468,35 @@ class LLMAdapter:
                 "unavailable; do not invent rows or repeat a control that has no verified locator."
             )
         directive = knowledge_context.get("planningDirective")
+        if isinstance(directive, dict) and directive.get("filterActionContractReview") is True:
+            system += (
+                " Correct the filter action contract: selecting an option is type filter with value equal to "
+                "the desired option, targeting the observed combobox selector, not the option itself. "
+                "apply_filter only clicks a button such as Filter/Apply after selection. Do not use "
+                "show_filter for an inline toolbar. Rebuild the full stateless action sequence."
+                " observedFilterActions contains ready-shaped filter actions for the currently observed "
+                "comboboxes. Select the appropriate control using the manual and copy its action exactly, "
+                "then read the automatically returned observation. Append an apply action only when the manual "
+                "requires committing that field, never merely because a Filter button exists. Observed placeholder text does not establish a button or "
+                "accessible field label. Never use show_filter to select an option."
+            )
+        if isinstance(directive, dict) and directive.get("filterCompletionReview") is True:
+            system += (
+                " Filter completion review: the previous candidate did not establish the requested filter. "
+                "Use requestedFilterValues with the observed filterControls and documented toolbar to plan a "
+                "portal_read continuation. observedFilterActions supplies correctly shaped actions: choose "
+                "the appropriate observed control from the manual and copy its action. Read the fresh result "
+                "before assuming an additional Filter/Apply click is needed. A combobox placeholder is not a button. Rebuild "
+                "all needed state. Do not repeat a default observation, "
+                "return unrelated rows, or infer zero from a bounded sample. If no safe filter can be identified, "
+                "return observation_result not_confirmed without unrelated facts."
+            )
+        if isinstance(directive, dict) and directive.get("observationSchemaReview") is True:
+            system += (
+                " Correct the invalid observation result schema. no_data must have no facts and requires an "
+                "explicit healthy empty result for the requested conditions, never a guessed zero. When evidence "
+                "is insufficient and a permitted filter/read is available, return portal_read instead."
+            )
         if (
             isinstance(directive, dict) and directive.get("requirePortalRead") is True
             and knowledge_context.get("portalObservation") is None

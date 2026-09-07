@@ -65,6 +65,113 @@ def principal(user_id="admin-7") -> Principal:
     return Principal(user_id=user_id, tenant_id="tenant", request_id="request", umc_token="token")
 
 
+def filtered_task_observation(status="Final Approval"):
+    row = {"Application No.": "APP-17", "Status": status}
+    return {
+        "filterControls": [{"label": "All Statuses", "selected": [], "options": []}],
+        "metrics": [{"label": "Pending Modification", "value": "13"}],
+        "readHealth": {"healthy": True},
+        "sectionSummaries": [{"nodeId": "table-1", "kind": "table", "selectedState": "To Do",
+                              "rowFields": [row], "rowSummaries": ["APP-17 " + status]}],
+    }
+
+
+@pytest.mark.parametrize("label", ["Pending Modification", "Awaiting Documents", "Under Review"])
+def test_explicit_filter_is_derived_from_observed_labels_not_business_mapping(label):
+    from app.portal_reader import _explicit_observed_filter
+    observation = filtered_task_observation()
+    observation["metrics"] = [{"label": label, "value": "13"}]
+    assert _explicit_observed_filter(f"I want to check the {label.lower()} tasks", observation) == label
+    assert _explicit_observed_filter(f"Show tasks excluding {label}", observation) == ""
+    assert _explicit_observed_filter("Show To Do tasks", observation) == ""
+
+
+@pytest.mark.parametrize("status", ["success", "not_confirmed", "no_data"])
+def test_default_rows_and_invented_zero_require_filter_continuation(status):
+    from app.portal_reader import _filter_result_needs_read
+    plan = {"mode": "observation_result", "result": status, "answerShape": "list",
+            "sourceSection": "table-1", "facts": [json.dumps({"Application No.": "APP-17", "Status": "Final Approval"})],
+            "missing": ["Missing requested status"] if status == "not_confirmed" else []}
+    assert _filter_result_needs_read(plan, filtered_task_observation(), "Pending Modification")
+    if status == "success":
+        plan["facts"] = [json.dumps({"Application No.": "APP-17", "Status": "Pending Modification"})]
+        assert not _filter_result_needs_read(plan, filtered_task_observation("Pending Modification"), "Pending Modification")
+
+
+def test_no_data_requires_applied_filter_not_just_empty_default_table():
+    from app.portal_reader import _filter_result_needs_read
+    observation = filtered_task_observation()
+    observation["sectionSummaries"][0].update(rowFields=[], rowSummaries=[], emptyState="No data")
+    plan = {"mode": "observation_result", "result": "no_data", "answerShape": "list", "sourceSection": "table-1", "facts": []}
+    assert _filter_result_needs_read(plan, observation, "Pending Modification")
+    observation["appliedFilters"] = ["Pending Modification"]
+    assert not _filter_result_needs_read(plan, observation, "Pending Modification")
+
+
+@pytest.mark.parametrize("known_options", [False, True])
+def test_reader_repairs_false_empty_plan_with_filter_read_and_returns_only_matching_rows(known_options):
+    class SequentialGateway(Gateway):
+        async def invoke(self, current_principal, tool_name, arguments, *, allowed_tools=None):
+            if tool_name == "admin.portal.read":
+                self.portal_result = {"ok": True, "result": {"result": "not_confirmed", "observation":
+                    filtered_task_observation("Pending Modification" if any(a["type"] == "filter" for a in arguments["actions"]) else "Final Approval")}}
+                if known_options:
+                    self.portal_result["result"]["observation"]["filterControls"][0].update(
+                        role="combobox", filterSurface=True, selector='[role="combobox"][aria-label="Status"]', options=["Pending Modification", "Final Approval"],
+                    )
+            return await super().invoke(current_principal, tool_name, arguments, allowed_tools=allowed_tools)
+    planner = Planner(
+        portal_plan_for("/licensing/applications", [{"type": "observe"}]),
+        {"mode": "observation_result", "result": "no_data", "answerShape": "list", "facts": ["Pending Modification count: 0"]},
+        portal_plan_for("/licensing/applications", [{"type": "filter", "field": "Status", "value": "Pending Modification"},
+                                                   {"type": "apply_filter", "role": "button", "name": "Filter"}]),
+        {"mode": "observation_result", "result": "success", "answerShape": "list", "sourceSection": "table-1",
+         "facts": [json.dumps({"Application No.": "APP-17", "Status": "Pending Modification"})]},
+    )
+    if known_options:
+        planner.plans.pop(2)
+    outcome = run_reader(SequentialGateway(), planner, question="I want to check the pending modification application tasks.")
+    assert outcome.result.status == "success"
+    assert all("Pending Modification" in fact and "Final Approval" not in fact for fact in outcome.result.facts)
+    if not known_options:
+        assert planner.calls[2][2]["planningDirective"]["filterCompletionReview"] is True
+
+
+def test_repeated_unrelated_candidate_does_not_escape_as_partial_answer():
+    wrong = {"mode": "observation_result", "result": "not_confirmed", "answerShape": "list", "sourceSection": "table-1",
+             "facts": [json.dumps({"Application No.": "APP-17", "Status": "Final Approval"})], "missing": ["Status missing"]}
+    planner = Planner(portal_plan_for("/licensing/applications", [{"type": "observe"}]), wrong, wrong)
+    outcome = run_reader(Gateway(portal_result={"ok": True, "result": {"result": "not_confirmed", "observation": filtered_task_observation()}}),
+                         planner, question="Check pending modification application tasks")
+    assert outcome.result.status == "not_confirmed"
+    assert not outcome.result.facts
+    assert "requested_filter_not_confirmed" in outcome.result.missing
+
+
+def test_pre_observation_result_is_corrected_into_required_live_read():
+    planner = Planner({"mode": "observation_result", "result": "not_confirmed", "facts": [], "missing": ["No evidence yet"]},
+                      portal_plan())
+    outcome = run_reader(Gateway(), planner, question="Check the application tasks")
+    assert outcome.result.status == "success"
+    assert planner.calls[1][2]["planningDirective"]["requirePortalRead"] is True
+
+
+def test_invalid_option_apply_action_is_replanned_before_tool_execution():
+    planner = Planner(portal_plan([{"type": "apply_filter", "role": "option", "name": "Under Review"}]), portal_plan())
+    gateway = Gateway()
+    outcome = run_reader(gateway, planner)
+    assert outcome.result.status == "success"
+    assert planner.calls[1][2]["planningDirective"]["filterActionContractReview"] is True
+    assert len([call for call in gateway.calls if call[0] == "admin.portal.read"]) == 1
+
+
+@pytest.mark.parametrize("question", ["Check the application tasks", "Find pending records", "View submitted items"])
+def test_generic_collection_lookup_requires_live_list(question):
+    from app.portal_reader import reader_answer_shape
+    assert reader_answer_shape(question) == "list"
+    assert question_requires_live_portal(question)
+
+
 def portal_plan(actions=None) -> dict:
     return {
         "mode": "portal_read",

@@ -597,7 +597,7 @@ def reader_answer_shape(
         ("detail", r"\bdetails?\b|详情|明细"),
         ("count", r"\bhow many\b|\bcount\b|\bnumber of\b|多少|几个|几项"),
         ("overview", r"\boverview\b|\bsummary\b|\bwhat (?:is shown|can i see)\b|概览|概况|总览"),
-        ("list", r"\bshow\b|\blist\b|\bwhich\b|\bwhat are\b|显示|列出|哪些|有什么"),
+        ("list", r"\bshow\b|\blist\b|\bwhich\b|\bwhat are\b|\b(?:check|view|find)\b.*\b(?:tasks|items|records|applications)\b|显示|列出|哪些|有什么"),
     )
     for shape, pattern in patterns:
         if re.search(pattern, normalized):
@@ -1200,6 +1200,8 @@ def question_requires_live_portal(question: str) -> bool:
         return True
     if documentation_intent:
         return False
+    if re.search(r"\b(?:check|view|find)\b.*\b(?:tasks|items|records|applications)\b", normalized):
+        return True
     if re.search(r"\b(?:how|what) about\b.*\b(?:tasks?|items?|records?)\b", normalized):
         return True
     return any(marker in normalized for marker in _LIVE_STATE_MARKERS)
@@ -2491,6 +2493,50 @@ def _permission_result_scope(context: UserPermissionContext) -> Literal["persona
     return "unknown"
 
 
+def _explicit_observed_filter(question: str, observation: Any) -> str:
+    """Recognize one literal observed category, not a business-specific status map."""
+    if not isinstance(observation, dict) or not observation.get("filterControls"):
+        return ""
+    question_text = re.sub(r"\s+", " ", question).strip().casefold()
+    if re.search(r"\b(not|except|excluding|without|compare|versus)\b|不要|排除|不包括|对比", question_text):
+        return ""
+    selected_tabs = {str(node.get("selectedState") or "").casefold()
+                     for node in _observation_semantic_nodes(observation)}
+    labels = [item.get("label") for item in observation.get("metrics", []) if isinstance(item, dict)]
+    for control in observation.get("filterControls", []):
+        if isinstance(control, dict):
+            labels.extend(control.get("options") or [])
+            labels.extend(control.get("selected") or [])
+    matches = {str(label).strip() for label in labels if isinstance(label, str) and len(label.strip()) >= 3
+               and label.strip().casefold() not in selected_tabs
+               and re.search(r"(?<!\w)" + re.escape(label.strip().casefold()) + r"(?!\w)", question_text)}
+    # Nested labels are not separate predicates (e.g. Review / Pending Review).
+    matches = {label for label in matches if not any(label.casefold() in other.casefold() and label != other for other in matches)}
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
+def _filter_result_needs_read(plan: Any, observation: Any, requested_value: str, requested_shape: str = "unspecified") -> bool:
+    if not requested_value or not isinstance(plan, dict) or plan.get("mode") != "observation_result":
+        return False
+    if requested_shape in {"count", "overview"} or requested_shape == "unspecified" and plan.get("answerShape") in {"count", "overview"}:
+        return False
+    result = _observation_plan_result_from_plan(plan)
+    source = _observation_evidence_for_result(observation, result) if result else None
+    rows = source.get("rowFields", []) if source else []
+    matching_rows = [row for row in rows if isinstance(row, dict)
+                     and requested_value.casefold() in {str(value).strip().casefold() for value in row.values()}]
+    if matching_rows and len(matching_rows) == len(rows):
+        # The read is complete; ordinary source/shape validation can repair the
+        # candidate without selecting the same filter again.
+        return False
+    if result and result.facts:
+        return not all(_structured_row_supports_fact(fact, {"rowFields": matching_rows}) for fact in result.facts)
+    if plan.get("result") == "no_data":
+        applied = {str(value).casefold() for value in observation.get("appliedFilters", [])}
+        return requested_value.casefold() not in applied or bool(rows)
+    return True
+
+
 def _list_selection_review_context(plan: Any, context: dict[str, Any]) -> dict[str, Any] | None:
     """Ask for semantic review of a partial selection, never infer a row filter."""
     result = _observation_plan_result_from_plan(plan)
@@ -2904,6 +2950,9 @@ class AdminPortalReader:
         list_selection_reviewed = False
         observation_grounding_reviewed = False
         intent_completion_reviewed = False
+        filter_completion_reviewed = False
+        observation_schema_reviewed = False
+        action_contract_reviewed = False
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
             if bounded_conversation_context:
@@ -2953,7 +3002,7 @@ class AdminPortalReader:
             timeout_stage: str,
             reason: str,
         ) -> dict[str, Any]:
-            nonlocal list_selection_reviewed, intent_completion_reviewed
+            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed
             started_at = time.perf_counter()
             input_summary = {
                 "reason": reason,
@@ -2998,7 +3047,81 @@ class AdminPortalReader:
                 input_summary=input_summary,
                 output_summary=plan_summary(plan),
             )
-            expected_shape = _resolved_intent_values(bounded_conversation_context).get("answerShape")
+            observation = knowledge_or_observation.get("portalObservation")
+            requested_filter = _explicit_observed_filter(question, observation)
+            filter_controls = observation.get("filterControls", []) if isinstance(observation, dict) else []
+            observed_filter_actions = [
+                {"controlLabel": control.get("label"), "action": {
+                    "type": "filter", "selector": control["selector"], "value": requested_filter,
+                }} for control in filter_controls if isinstance(control, dict)
+                and control.get("role") == "combobox" and control.get("selector") and requested_filter
+            ]
+            request_candidate = portal_read_request_from_plan(plan)
+            invalid_filter_actions = request_candidate and any(
+                (action.get("type") in {"apply_filter", "reset_filter", "show_filter"}
+                 and action.get("role") not in {None, "button"})
+                or (action.get("type") == "show_filter" and any(
+                    str(control.get("label") or "").casefold() == str(action.get("field") or action.get("name") or action.get("label") or "").casefold()
+                    for control in filter_controls if isinstance(control, dict) and control.get("role") == "combobox"
+                ))
+                for action in request_candidate.actions
+            )
+            if invalid_filter_actions:
+                if not action_contract_reviewed:
+                    action_contract_reviewed = True
+                    return await plan_stage(
+                        {**knowledge_or_observation, "planningDirective": {
+                            **knowledge_or_observation.get("planningDirective", {}),
+                            "filterActionContractReview": True, "priorCandidate": bounded_json(plan),
+                            "observedFilterActions": observed_filter_actions,
+                        }}, timeout_stage=timeout_stage, reason="filter_action_contract_review",
+                    )
+                return {"mode": "observation_result" if observation is not None else "knowledge_only",
+                        "result": "not_confirmed", "facts": [], "missing": ["invalid_filter_action_contract"]}
+            if _filter_result_needs_read(plan, observation, requested_filter, reader_answer_shape(question, bounded_conversation_context)):
+                trace.record("filter_completion", "degraded", input_summary={"requestedValue": requested_filter},
+                             output_summary={"decision": "read_required"}, failure_code="requested_filter_not_confirmed")
+                if not filter_completion_reviewed:
+                    filter_completion_reviewed = True
+                    matching_controls = [control for control in filter_controls if isinstance(control, dict)
+                                         and control.get("filterSurface") is True
+                                         and control.get("role") == "combobox" and control.get("selector")
+                                         and requested_filter.casefold() in {str(value).casefold() for value in control.get("options", [])}]
+                    prior_read = knowledge_or_observation.get("priorPortalRead") or {}
+                    if len(matching_controls) == 1 and prior_read.get("startPath"):
+                        # A literal user condition and a unique observed option
+                        # determine a read action, not a business answer.
+                        return {"mode": "portal_read", "portalRequest": {
+                            "startPath": prior_read["startPath"],
+                            "actions": [{"type": "filter", "selector": matching_controls[0]["selector"], "value": requested_filter}],
+                            "expectedFields": [],
+                        }}
+                    return await plan_stage(
+                        {**knowledge_or_observation, "planningDirective": {
+                            **knowledge_or_observation.get("planningDirective", {}),
+                            "filterCompletionReview": True,
+                            "requestedFilterValues": [requested_filter],
+                            "observedFilterActions": observed_filter_actions,
+                            "priorCandidate": bounded_json(plan),
+                        }}, timeout_stage=timeout_stage, reason="requested_filter_completion_review",
+                    )
+                return {"mode": "observation_result", "result": "not_confirmed", "facts": [],
+                        "answerShape": "list", "missing": ["requested_filter_not_confirmed"]}
+            if (observation is not None and plan.get("mode") == "observation_result"
+                    and _observation_plan_result_from_plan(plan) is None):
+                if not observation_schema_reviewed:
+                    observation_schema_reviewed = True
+                    return await plan_stage(
+                        {**knowledge_or_observation, "planningDirective": {
+                            **knowledge_or_observation.get("planningDirective", {}),
+                            "observationSchemaReview": True, "priorCandidate": bounded_json(plan),
+                        }}, timeout_stage=timeout_stage, reason="invalid_observation_schema_review",
+                    )
+                return {"mode": "observation_result", "result": "not_confirmed", "facts": [],
+                        "missing": ["invalid_observation_schema"]}
+            expected_shape = _resolved_intent_values(bounded_conversation_context).get("answerShape") or (
+                reader_answer_shape(question, bounded_conversation_context) if requested_filter else None
+            )
             if (
                 not intent_completion_reviewed and expected_shape not in {None, "unspecified"}
                 and plan.get("mode") in {"observation_result", "knowledge_only"}
@@ -3591,7 +3714,7 @@ class AdminPortalReader:
             )
         if (
             isinstance(plan, dict)
-            and plan.get("mode") == "knowledge_only"
+            and (plan.get("mode") == "knowledge_only" or needs_live_read and plan.get("mode") == "observation_result")
         ):
             force_reason = (
                 "current_portal_state_required"

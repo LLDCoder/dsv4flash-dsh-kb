@@ -564,7 +564,7 @@ def _validate_reader_selector(selector: str | None) -> None:
     compact = re.sub(r"\s+", " ", value.casefold())
     if not value or compact in READER_BROAD_SELECTORS or any(part in compact for part in (" body", "body ", " table", "table ", ">table", ">body")):
         raise HTTPException(status_code=422, detail={"code": "reader_selector_too_broad"})
-    semantic_markers = ("[data-", "[aria-", "[role=", "[role\"", ".field", ".value", ".row", ".cell", ".card", "[class*=")
+    semantic_markers = ("[data-", "[aria-", "[role=", "[role\"", "input[placeholder=", ".field", ".value", ".row", ".cell", ".card", "[class*=")
     if not any(marker in compact for marker in semantic_markers):
         raise HTTPException(status_code=422, detail={"code": "reader_selector_not_field_or_row"})
 
@@ -808,7 +808,9 @@ async def _reader_selected_tab_texts(root: Any) -> list[str]:
 
 async def _safe_click(page: Page, action: PortalReadAction) -> None:
     action_type = action.type.strip().casefold().replace("-", "_")
-    target = _semantic_locator(page, action)
+    target = _semantic_locator(page, action, prefer_overlay=(
+        action_type in {"apply_filter", "reset_filter"} and await _visible_overlay_count(page) > 0
+    ))
     if _reader_is_cell_detail_without_button(action) and await target.count() != 1:
         raise RuntimeError("reader_detail_cell_not_unique")
     locator = target.first
@@ -903,7 +905,7 @@ async def _visible_overlay_count(page: Page) -> int:
 
 def _semantic_locator(page: Page, action: PortalReadAction, *, prefer_overlay: bool = False):
     action_type = action.type.strip().casefold().replace("-", "_")
-    root = _visible_overlay(page) if prefer_overlay or action_type in READER_OVERLAY_ACTIONS else page
+    root = _visible_overlay(page) if prefer_overlay or action_type == "dismiss_overlay" else page
     if action.selector:
         return root.locator(action.selector)
     if action.field:
@@ -917,9 +919,11 @@ def _semantic_locator(page: Page, action: PortalReadAction, *, prefer_overlay: b
 
 
 async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
-    locator = _semantic_locator(page, action, prefer_overlay=await _visible_overlay_count(page) > 0).first
+    locator = _semantic_locator(page, action, prefer_overlay=await _visible_overlay_count(page) > 0)
     if await locator.count() == 0:
         raise RuntimeError("reader_selector_not_found")
+    if await locator.count() != 1 or not await locator.is_visible():
+        raise RuntimeError("reader_filter_control_not_unique")
     tag_name = str(await locator.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
     role = str(await locator.get_attribute("role") or "").casefold()
     input_type = str(await locator.get_attribute("type") or "").casefold()
@@ -930,19 +934,120 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
     if tag_name == "select":
         await locator.select_option(label=[str(item) for item in values], timeout=5_000)
         return
-    if role == "combobox" and tag_name not in {"input", "textarea"}:
-        await locator.click(timeout=5_000)
+    if role == "combobox":
+        handle = await locator.element_handle()
+        if handle is None:
+            raise RuntimeError("reader_filter_control_not_unique")
+        popup_id = await locator.get_attribute("aria-controls") or await locator.get_attribute("aria-owns")
+        ant_root = locator.locator("xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' ant-select ')][1]")
+        is_ant = await ant_root.count() == 1
         for item in values:
-            option = page.get_by_role("option", name=str(item), exact=True).first
-            if await option.count() == 0 or not await option.is_visible():
+            await handle.click(timeout=5_000)
+            # Ant's virtualized accessibility list may omit the desired option.
+            # Restrict its rendered fallback to this control's own popup.
+            root = page.locator(f'[id={json.dumps(popup_id)}]') if popup_id else page
+            option = root.get_by_role("option", name=str(item), exact=True)
+            if is_ant and popup_id:
+                popup = root.locator("xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' ant-select-dropdown ')][1]")
+                option = popup.locator(".ant-select-item-option").filter(has_text=re.compile(r"^" + re.escape(str(item)) + r"$"))
+            if await option.count() != 1 or not await option.is_visible():
                 raise RuntimeError("reader_filter_option_not_found")
             await option.click(timeout=5_000)
+            selected = await handle.evaluate("""element => {
+                const ant = element.closest('.ant-select');
+                return ant ? Array.from(ant.querySelectorAll('.ant-select-selection-item')).map(x => x.getAttribute('title') || x.textContent.trim())
+                    : [element.value || element.textContent.trim()];
+            }""")
+            if not isinstance(selected, list) or str(item) not in selected:
+                raise RuntimeError("reader_filter_value_not_confirmed")
         return
     if len(values) != 1:
         raise RuntimeError("reader_filter_control_not_multiselect")
     if tag_name not in {"input", "textarea"}:
         raise RuntimeError("reader_filter_control_unsupported")
     await locator.fill(value, timeout=5_000)
+
+
+async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
+    raw = await page.evaluate("""limit => {
+        const visible = el => !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+        const text = el => (el?.innerText || el?.textContent || '').trim();
+        const controls = [];
+        for (const el of document.querySelectorAll('select,[role="combobox"],input[placeholder]')) {
+            const ant = el.closest('.ant-select');
+            if (!visible(ant || el) || el.type === 'password' || el.closest('nav,aside')) continue;
+            const filterSurface = !!el.closest('[role="search"],[class*="filter"],[class*="Filter"]');
+            const placeholder = el.getAttribute('placeholder') || text(ant?.querySelector('.ant-select-selection-placeholder'));
+            const label = el.getAttribute('aria-label') || text(el.labels?.[0]) || placeholder || text(ant?.querySelector('.ant-select-selection-item'));
+            if (!label || /page size/i.test(label)) continue;
+            const selected = ant ? Array.from(ant.querySelectorAll('.ant-select-selection-item')).map(text)
+                : el.tagName === 'SELECT' ? Array.from(el.selectedOptions).map(text) : [el.value].filter(Boolean);
+            const selector = ant && placeholder
+                ? '.ant-select:has(.ant-select-selection-placeholder:text-is(' + JSON.stringify(placeholder) + ')) [role="combobox"]'
+                : el.id && el.getAttribute('role') ? '[id=' + JSON.stringify(el.id) + '][role=' + JSON.stringify(el.getAttribute('role')) + ']'
+                : el.getAttribute('placeholder') ? 'input[placeholder=' + JSON.stringify(placeholder) + ']'
+                : '';
+            controls.push({label, role:el.getAttribute('role') || (el.tagName === 'SELECT' ? 'combobox' : 'textbox'),
+                selector, selected, filterSurface, options:el.tagName === 'SELECT' ? Array.from(el.options).slice(0,20).map(text) : []});
+            if (controls.length >= limit) break;
+        }
+        // Bind only local label/value siblings, never adjacent flattened page text.
+        const metrics = [];
+        for (const el of document.querySelectorAll('div,span,dd')) {
+            if (el.children.length || !visible(el) || !/^\\d[\\d,.]*$/.test(text(el))) continue;
+            const parent = el.parentElement;
+            if (!parent || parent.children.length !== 2 || parent.closest('table,[role="grid"],nav,aside,button,[role="tab"],.ant-pagination')) continue;
+            const other = Array.from(parent.children).find(x => x !== el);
+            const label = text(other);
+            if (!visible(other) || !label || label.length > 120 || /^\\d[\\d,.]*$/.test(label) || other.querySelector('input,button,a,select')) continue;
+            metrics.push({label, value:text(el)});
+            if (metrics.length >= limit) break;
+        }
+        return {filterControls:controls, metrics};
+    }""", min(limit, 12))
+    if not isinstance(raw, dict):
+        return {"filterControls": [], "metrics": []}
+    controls = []
+    for item in raw.get("filterControls", [])[:12]:
+        if not isinstance(item, dict) or _reader_contains_sensitive_locator(str(item.get("label") or "")):
+            continue
+        controls.append({key: value if key == "filterSurface" and isinstance(value, bool) else [_sanitize_reader_text(str(v), max_chars=120) for v in value[:20]]
+                         if isinstance(value, list) else _sanitize_reader_text(str(value), max_chars=300)
+                         for key, value in item.items() if key in {"label", "role", "selector", "selected", "options", "filterSurface"}})
+    metrics = [{"label": _sanitize_reader_text(str(item.get("label") or ""), max_chars=120),
+                "value": _sanitize_reader_text(str(item.get("value") or ""), max_chars=40)}
+               for item in raw.get("metrics", [])[:12] if isinstance(item, dict)
+               and not _reader_contains_sensitive_locator(str(item.get("label") or ""))]
+    for control in controls[:4]:
+        if control.get("role") != "combobox" or control.get("options") or not control.get("selector") or control.get("filterSurface") is not True:
+            continue
+        locator = page.locator(control["selector"])
+        if await locator.count() != 1:
+            continue
+        ant = locator.locator("xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' ant-select ')][1]")
+        if await ant.count() != 1:
+            continue
+        handle = await locator.element_handle()
+        popup_id = await locator.get_attribute("aria-controls") or await locator.get_attribute("aria-owns")
+        if handle is None or not popup_id:
+            continue
+        try:
+            # Inspect bounded enumerated choices without selecting or changing a value.
+            await handle.click(timeout=1_000)
+            popup = page.locator(f'[id={json.dumps(popup_id)}]').locator(
+                "xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' ant-select-dropdown ')][1]"
+            )
+            options = popup.locator(".ant-select-item-option:visible")
+            await options.first.wait_for(state="visible", timeout=1_000)
+            control["options"] = [
+                _sanitize_reader_text(await options.nth(index).inner_text(), max_chars=120)
+                for index in range(min(await options.count(), 20))
+            ]
+        except Exception:
+            control["options"] = []
+        finally:
+            await handle.press("Escape", timeout=1_000)
+    return {"filterControls": controls, "metrics": metrics}
 
 
 async def _detail_identity_is_visible(page: Page, identity: str, *, overlay_open: bool) -> bool:
@@ -993,6 +1098,25 @@ async def _settle_page(page: Page) -> None:
 
 
 async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
+    stamp_script = """() => {
+        const text = Array.from(document.querySelectorAll('table,[role="grid"]')).slice(0,8)
+            .map(el => el.innerText.slice(0,40000)).join('|');
+        let hash = 2166136261;
+        for (let i=0; i<text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+        return text.length + ':' + (hash >>> 0);
+    }"""
+    for _ in range(3):
+        before = await page.evaluate(stamp_script, None)
+        observation = await _observe_semantics_once(page, limit)
+        after = await page.evaluate(stamp_script, None)
+        if before == after:
+            return observation
+        await _settle_page(page)
+    return {"readHealth": {"healthy": False, "pending": ["table_updated_during_observation"]},
+            "sectionSummaries": [], "regionSummaries": [], "rowSummaries": []}
+
+
+async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
     async def visible_texts(
         locator,
         *,
@@ -1057,11 +1181,17 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
             structured_headers_safe = False
         for header_index in range(header_count):
             header = headers.nth(header_index)
+            header_text = _sanitize_reader_text(await header.inner_text(), max_chars=120)
+            compact_header = re.sub(r"[^a-z]", "", header_text.casefold())
+            excluded = compact_header in {"action", "actions", "operation", "operations"} or _reader_contains_sensitive_locator(header_text) or "secret" in _reader_words(header_text)
+            if excluded:
+                excluded_column_indexes.add(header_index)
+                structured_headers.append(header_text)
+                continue
             if not await header.is_visible():
                 structured_headers_safe = False
                 structured_headers.append("")
                 continue
-            header_text = _sanitize_reader_text(await header.inner_text(), max_chars=120)
             header_key = header_text.casefold()
             if (
                 not header_text
@@ -1101,6 +1231,8 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
                 structured_row_safe = True
                 for cell_index in range(header_count):
                     cell = cells.nth(cell_index)
+                    if cell_index in excluded_column_indexes:
+                        continue
                     if (
                         not await cell.is_visible()
                         or await has_complex_span(cell)
@@ -1336,11 +1468,12 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
     )
 
     return {
+        **(await _observe_filter_surface(page, limit)),
         "headings": await texts("h1,h2,h3,[role='heading']", max_each=min(limit, 12)),
         "labels": await texts("label", max_each=min(limit, 12)),
         "columnHeaders": await texts("th,[role='columnheader']", max_each=min(limit, 20), max_chars=120),
         "regions": await texts("[role='region'][aria-label],section[aria-label]", max_each=min(limit, 8)),
-        "controls": await texts("[role='tab'],.ant-pagination button,.ant-pagination a,button[aria-label],a[aria-label]", max_each=min(limit, 12)),
+        "controls": await texts("[role='tab'],.ant-pagination button,.ant-pagination a,button,a[aria-label]", max_each=min(limit, 20)),
         "summaries": await visible_texts(
             page.locator(".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))"),
             max_each=min(limit, 12),
@@ -1420,6 +1553,8 @@ async def _execute_reader_actions(
     observed_fields: list[str] = []
     confirmed_empty = False
     observation: dict[str, Any] | None = None
+    pending_filters: dict[str, list[str]] = {}
+    applied_filters: list[str] = []
     declared_paths = {request.start_path}
     declared_paths.update(
         path
@@ -1461,8 +1596,14 @@ async def _execute_reader_actions(
                     raise PermissionError("page_not_permitted")
                 await _settle_page(page)
                 await record_page()
+                pending_filters.clear()
+                applied_filters.clear()
         elif action_type == "filter":
             await _set_filter_value(page, action)
+            pending_filters[action.selector or action.field or action.name or action.label or "filter"] = [
+                str(value) for value in (action.values or [action.value]) if value is not None
+            ]
+            applied_filters.clear()
             await _settle_page(page)
         elif action_type == "query":
             label, values, query_confirmed_empty = await _query_page_values(
@@ -1480,6 +1621,11 @@ async def _execute_reader_actions(
             before_url = page.url
             overlays_before = await _visible_overlay_count(page)
             await _safe_click(page, action)
+            if action_type == "apply_filter":
+                applied_filters = [value for values in pending_filters.values() for value in values]
+            elif action_type in {"reset_filter", "switch_tab"} or page.url != before_url:
+                pending_filters.clear()
+                applied_filters.clear()
             await _settle_page(page)
             await record_page()
             overlays_after = await _visible_overlay_count(page)
@@ -1506,6 +1652,8 @@ async def _execute_reader_actions(
         # Capture the bounded semantic state after a verified read-only
         # interaction so callers can validate the resulting tab, page, or view.
         observation = await _observe_semantics(page, request.max_output_items)
+    if observation is not None:
+        observation["appliedFilters"] = [_sanitize_reader_text(value, max_chars=120) for value in applied_filters[:12]]
     return facts[: request.max_output_items], visited[: request.max_pages], observed_fields, confirmed_empty, observation
 
 
@@ -1560,6 +1708,7 @@ async def admin_portal_read(
             try:
                 context = await browser.new_context(
                     accept_downloads=False,
+                    viewport={"width": 1920, "height": 1080},
                     extra_http_headers={"Authorization": forwarded},
                     service_workers="block",
                 )

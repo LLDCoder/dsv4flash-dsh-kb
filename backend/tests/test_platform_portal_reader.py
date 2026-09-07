@@ -469,6 +469,9 @@ class FakeObservationPage:
         self.sections = sections or []
         self.selectors = []
 
+    async def evaluate(self, script, limit):
+        return {"filterControls": [], "metrics": []}
+
     def locator(self, selector):
         self.selectors.append(selector)
         if selector == "table,[role='grid']":
@@ -1074,6 +1077,42 @@ def test_observe_semantics_collects_bounded_visible_non_error_stat_cards() -> No
     )
 
 
+def test_hidden_operation_column_does_not_discard_visible_native_fields():
+    container = FakeStructuredContainer(
+        [("Record No.", True), ("Status", True), ("Action", False)],
+        [FakeStructuredRow([("R-17", True), ("Awaiting Documents", True), ("", False)])],
+    )
+    observation = asyncio.run(gateway._observe_semantics(FakeObservationPage({}, containers=[container]), 20))
+    assert observation["sectionSummaries"][0]["rowFields"] == [{"Record No.": "R-17", "Status": "Awaiting Documents"}]
+
+
+@pytest.mark.parametrize("stable", [True, False])
+def test_observation_retries_table_changes_without_returning_mixed_rows(monkeypatch, stable):
+    class Page:
+        calls = 0
+
+        async def evaluate(self, script, arg):
+            self.calls += 1
+            return min(self.calls, 2) if stable else self.calls
+
+    observations = []
+    async def observe(page, limit):
+        result = {"rowSummaries": ["old" if not observations else "new"]}
+        observations.append(result)
+        return result
+    async def settle(page):
+        pass
+    monkeypatch.setattr(gateway, "_observe_semantics_once", observe)
+    monkeypatch.setattr(gateway, "_settle_page", settle)
+    result = asyncio.run(gateway._observe_semantics(Page(), 20))
+    if stable:
+        assert result["rowSummaries"] == ["new"]
+        assert len(observations) == 2
+    else:
+        assert not result["rowSummaries"]
+        assert result["readHealth"]["healthy"] is False
+
+
 def test_observe_semantics_records_selected_tab_per_region() -> None:
     selected_tab_selector = "[role='tab'][aria-selected='true']"
     section = FakeSemanticSection(
@@ -1463,6 +1502,65 @@ def test_filter_sets_supported_text_and_native_select_controls() -> None:
 
     assert text_locator.filled == "ML-123"
     assert select_locator.selected == ["Pending Review"]
+
+
+@pytest.mark.parametrize("selected", [["Under Review"], []])
+def test_input_combobox_clicks_exact_option_and_verifies_selection(selected):
+    class Combo(FakeLocator):
+        async def element_handle(self):
+            return self
+
+        def locator(self, selector):
+            return FakeLocatorGroup()
+
+        async def evaluate(self, script):
+            return selected if "selection-item" in script else "input"
+
+    combo = Combo(descriptor="Status", tag="input", role="combobox")
+    option = FakeLocator(descriptor="Under Review", role="option")
+
+    class Page(FakePage):
+        def locator(self, selector):
+            return FakeLocatorGroup() if "dialog" in selector else combo
+
+        def get_by_role(self, role, **kwargs):
+            assert role == "option" and kwargs == {"name": "Under Review", "exact": True}
+            return option
+
+    operation = gateway._set_filter_value(Page(combo), gateway.PortalReadAction(type="filter", field="Status", value="Under Review"))
+    if selected:
+        asyncio.run(operation)
+    else:
+        with pytest.raises(RuntimeError, match="reader_filter_value_not_confirmed"):
+            asyncio.run(operation)
+    assert combo.clicked and option.clicked
+    assert combo.filled is None
+
+
+def test_filter_surface_is_bounded_and_redacts_sensitive_labels_and_values():
+    class Page:
+        async def evaluate(self, script, limit):
+            assert limit == 12
+            return {"filterControls": [{"label": "Password", "selected": ["secret"]},
+                                       {"label": "Status", "selected": ["Under Review"], "options": ["x"] * 25}],
+                    "metrics": [{"label": "Under Review", "value": "13"}] * 25}
+    result = asyncio.run(gateway._observe_filter_surface(Page(), 20))
+    assert len(result["filterControls"]) == 1
+    assert len(result["filterControls"][0]["options"]) == 20
+    assert len(result["metrics"]) == 12
+    assert result["metrics"][0] == {"label": "Under Review", "value": "13"}
+
+
+def test_inline_apply_filter_uses_page_but_overlay_apply_stays_scoped():
+    page = FakePage(FakeLocator(descriptor="Filter"))
+    action = gateway.PortalReadAction(type="apply_filter", role="button", name="Filter")
+    assert gateway._semantic_locator(page, action) is page.result
+    # Overlay scoping remains explicit, so a page button cannot shadow a dialog button.
+    overlay = FakeLocator(descriptor="Apply")
+    class OverlayPage(FakePage):
+        def locator(self, selector):
+            return overlay
+    assert gateway._semantic_locator(OverlayPage(page.result), action, prefer_overlay=True) is overlay
 
 
 def test_filter_sets_bounded_native_multiselect_values() -> None:

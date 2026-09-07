@@ -2,6 +2,18 @@ capability: admin-portal-reader
 portal: admin
 mode: assistant-readonly
 
+filter_evidence_contract:
+  viewport: A stable 1920x1080 desktop viewport avoids accidentally selecting a collapsed responsive filter surface.
+  controls: Bounded visible labels, selected values, native options and narrow observed locators; inspect at most four Ant combobox option popups without selecting values, and close them with Escape; never sensitive fields.
+  metrics: Bind numeric values to local label siblings, never neighboring flattened page text.
+  execution: Select an exact option for input comboboxes, verify selected values, and apply documented inline or overlay filters.
+  result: Real rows must also satisfy explicit user conditions; a default bounded sample cannot establish an empty filtered result.
+  recovery: A literal user condition matching one unique observed option in an identified search/filter surface can produce one generic filter read; arbitrary form controls never qualify. Otherwise request one bounded semantic correction. Never infer an Apply click merely from a Filter button, which may open additional filters.
+  native_rows: A hidden excluded operation column must not discard visible native data columns; ambiguous data-column spans remain rejected.
+  consistency: Compare table fingerprints before and after bounded collection; retry changing tables, and never return mixed old/new rows or infer emptiness from an unstable observation.
+  literal_guard: Uses one unambiguous label observed in controls or metrics, with no domain status dictionary; complex or implicit predicates remain semantic planning responsibilities.
+  safety: Existing identity, route, business-mutation and sensitive-field restrictions remain in force.
+
 routing:
   default_skill: admin_portal_reader
   retained_skills:
