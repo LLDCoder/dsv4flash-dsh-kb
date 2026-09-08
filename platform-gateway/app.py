@@ -123,7 +123,7 @@ READER_OVERLAY_ACTIONS = frozenset({"apply_filter", "reset_filter", "dismiss_ove
 
 class PortalReadAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: str = Field(description="Read-only UI action. query reads existing values; filter sets or clears a criterion. query must not carry value, values, nonempty parameters or filters. reset_filter, apply_filter and dismiss_overlay target a filter overlay only; clearing a page search uses filter with an empty value.")
+    type: str = Field(description="Read-only UI action. query reads existing values; filter sets or clears a criterion. query must not carry value, values, nonempty parameters or filters. reset_filter and apply_filter target an observed filter overlay or a verified inline filter toolbar. dismiss_overlay is overlay-only. Clearing a page search uses filter with an empty value.")
     path: str | None = None
     url: str | None = None
     selector: str | None = Field(default=None, max_length=500)
@@ -377,7 +377,9 @@ def _reader_surface_health(page: Page, semantic: object = "") -> dict[str, Any]:
         return [str(path) for path in (value or ())]
 
     def relevant(paths: object) -> list[str]:
-        return list(dict.fromkeys(path for path in paths_from(paths) if surface_tokens & _reader_semantic_tokens(path)))
+        return list(dict.fromkeys(path for path in paths_from(paths)
+                                 if path not in READER_BLOCKED_EXACT_PATHS
+                                 and surface_tokens & _reader_semantic_tokens(path)))
 
     def non_background(paths: object) -> list[str]:
         return [path for path in paths_from(paths) if path not in READER_BLOCKED_EXACT_PATHS]
@@ -998,7 +1000,12 @@ async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
         for (const el of document.querySelectorAll('select,[role="combobox"],input[placeholder]')) {
             const ant = el.closest('.ant-select');
             if (!visible(ant || el) || el.type === 'password' || el.closest('nav,aside')) continue;
-            const filterSurface = !!el.closest('[role="search"],[class*="filter"],[class*="Filter"]');
+            const filterRoot = el.closest('[role="search"],[class*="filter"],[class*="Filter"]');
+            const filterSurface = !!filterRoot;
+            const commands = filterRoot ? Array.from(filterRoot.querySelectorAll('button,[role="button"]'))
+                .filter(visible).map(button => button.getAttribute('aria-label') || text(button))
+                .filter(name => /^(?:filter|apply|apply filters|reset|reset filters|clear|clear filters)$/i.test(name))
+                .slice(0, 6) : [];
             const placeholder = el.getAttribute('placeholder') || text(ant?.querySelector('.ant-select-selection-placeholder'));
             const label = el.getAttribute('aria-label') || text(el.labels?.[0]) || placeholder || text(ant?.querySelector('.ant-select-selection-item'));
             if (!label || /page size/i.test(label)) continue;
@@ -1010,7 +1017,7 @@ async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
                 : el.getAttribute('placeholder') ? 'input[placeholder=' + JSON.stringify(placeholder) + ']'
                 : '';
             controls.push({label, role:el.getAttribute('role') || (el.tagName === 'SELECT' ? 'combobox' : 'textbox'),
-                selector, selected, filterSurface, options:el.tagName === 'SELECT' ? Array.from(el.options).slice(0,20).map(text) : []});
+                selector, selected, filterSurface, commands, options:el.tagName === 'SELECT' ? Array.from(el.options).slice(0,20).map(text) : []});
             if (controls.length >= limit) break;
         }
         // Bind only local label/value siblings, never adjacent flattened page text.
@@ -1035,7 +1042,7 @@ async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
             continue
         controls.append({key: value if key == "filterSurface" and isinstance(value, bool) else [_sanitize_reader_text(str(v), max_chars=120) for v in value[:20]]
                          if isinstance(value, list) else _sanitize_reader_text(str(value), max_chars=300)
-                         for key, value in item.items() if key in {"label", "role", "selector", "selected", "options", "filterSurface"}})
+                         for key, value in item.items() if key in {"label", "role", "selector", "selected", "options", "filterSurface", "commands"}})
     metrics = [{"label": _sanitize_reader_text(str(item.get("label") or ""), max_chars=120),
                 "value": _sanitize_reader_text(str(item.get("value") or ""), max_chars=40)}
                for item in raw.get("metrics", [])[:12] if isinstance(item, dict)
@@ -1139,6 +1146,134 @@ async def _settle_page(page: Page) -> None:
     except Exception:
         pass
     await _settle_reader_requests(page)
+
+
+READER_TABLE_SNAPSHOT_SCRIPT = """element => {
+    const visible = node => !!node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
+    const cell = node => ({text: (node.innerText || '').slice(0, 1000), visible: visible(node),
+        colSpan: Number(node.getAttribute('colspan') || 1), rowSpan: Number(node.getAttribute('rowspan') || 1)});
+    const tag = element.tagName.toLowerCase();
+    const selector = tag === 'table'
+        ? "tbody > tr:has(> td):not(.ant-table-placeholder):not([class*='skeleton']):not(:has([class*='skeleton']))"
+        : "[role='row']:has([role='cell'],[role='gridcell']):not([class*='skeleton']):not(:has([class*='skeleton']))";
+    return {format: 'reader_table_v1', tag,
+        headers: Array.from(element.querySelectorAll("thead th,[role='columnheader']")).slice(0, 51).map(cell),
+        headerRows: Array.from(element.tHead?.rows || []).slice(0, 7).map(row => Array.from(row.cells).slice(0, 51).map(cell)),
+        rows: Array.from(element.querySelectorAll(selector)).filter(visible).slice(0, 8).map(row => ({
+            text: (row.innerText || '').slice(0, 4000),
+            cells: Array.from(row.querySelectorAll(":scope > td,:scope > [role='cell'],:scope > [role='gridcell']")).slice(0, 51).map(cell)
+        })),
+        empty: Array.from(element.querySelectorAll(".ant-empty-description,[role='status'],.ant-table-placeholder"))
+            .filter(visible).slice(0, 4).map(node => (node.innerText || '').slice(0, 200))
+    };
+}"""
+
+
+def _reader_table_snapshot_values(snapshot: Any, row_limit: int):
+    if not isinstance(snapshot, dict) or snapshot.get('format') != 'reader_table_v1':
+        return None
+    headers = snapshot['headers']
+    names = [_sanitize_reader_text(cell['text'], max_chars=120) for cell in headers]
+
+    def excluded(label):
+        return any(re.sub(r'[^a-z]', '', part.casefold()) in {'action', 'actions', 'operation', 'operations'}
+                   or _reader_contains_sensitive_locator(part) or 'secret' in _reader_words(part)
+                   for part in label.split(' / '))
+
+    excluded_indexes = {i for i, name in enumerate(names) if excluded(name) or not name}
+    seen = [name.casefold() for i, name in enumerate(names) if i not in excluded_indexes]
+    safe = (0 < len(headers) <= 50 and len(seen) == len(set(seen))
+            and all(cell['visible'] and cell['colSpan'] == 1 and cell['rowSpan'] == 1
+                    for i, cell in enumerate(headers) if i not in excluded_indexes))
+    if not safe and snapshot['tag'] == 'table':
+        leaves = _reader_leaf_headers(snapshot['headerRows'])
+        if leaves is not None:
+            names, safe = leaves, True
+            excluded_indexes = {i for i, name in enumerate(names) if excluded(name)}
+    header_values = list(dict.fromkeys(name for i, name in enumerate(names)
+                                      if i not in excluded_indexes and (safe or headers[i]['visible'])))
+    rows, fields = [], []
+    for row in snapshot['rows']:
+        cells = row['cells']
+        value = _sanitize_reader_text(
+            ' '.join(cell['text'] for i, cell in enumerate(cells)
+                     if i not in excluded_indexes and cell['visible'])
+            if excluded_indexes else row['text'], max_chars=400,
+        )
+        normalized = value.casefold()
+        if (not value or any(marker in normalized for marker in
+                ('no data', 'no records', 'no results', 'nothing found', '暂无数据', '暂无记录', '没有数据'))
+                or normalized in {'loading', 'loading...', 'please wait', 'please wait...'}):
+            continue
+        if value in rows:
+            continue
+        rows.append(value)
+        if (safe and len(cells) == len(names) and len(rows) <= 4
+                and all(cell['visible'] and cell['colSpan'] == 1 and cell['rowSpan'] == 1
+                        for i, cell in enumerate(cells) if i not in excluded_indexes)):
+            fields.append({names[i]: _sanitize_reader_text(cell['text'], max_chars=300)
+                           for i, cell in list(enumerate(cells))[:50] if i not in excluded_indexes
+                           and sum(j not in excluded_indexes for j in range(i + 1)) <= 12})
+        if len(rows) >= row_limit:
+            break
+    empty = next((_sanitize_reader_text(value, max_chars=200) for value in snapshot['empty']
+                  if any(marker in value.casefold() for marker in
+                      ('no data', 'no records', 'no results', 'nothing found', '暂无数据', '暂无记录', '没有数据'))), '')
+    return header_values[:20], rows, fields, empty
+
+
+READER_TABLE_HEADERS_SCRIPT = """element => Array.from(element.tHead?.rows || []).map(row =>
+    Array.from(row.cells).map(cell => ({text: cell.innerText, colSpan: cell.colSpan, rowSpan: cell.rowSpan,
+        visible: !!cell.getClientRects().length && getComputedStyle(cell).visibility !== 'hidden'})))"""
+
+
+def _reader_leaf_headers(rows: Any) -> list[str] | None:
+    """Resolve only complete rectangular HTML header grids, preserving parent labels."""
+    if not isinstance(rows, list) or not 2 <= len(rows) <= 6:
+        return None
+    grid: dict[tuple[int, int], tuple[int, str]] = {}
+    cell_id = 0
+    for row_index, cells in enumerate(rows):
+        if not isinstance(cells, list) or len(cells) > 50:
+            return None
+        column = 0
+        for cell in cells:
+            if not isinstance(cell, dict) or cell.get("visible") is not True:
+                return None
+            label = _sanitize_reader_text(cell.get("text"), max_chars=120)
+            width, height = cell.get("colSpan"), cell.get("rowSpan")
+            if (not label or type(width) is not int or type(height) is not int
+                    or not 1 <= width <= 50 or not 1 <= height <= len(rows) - row_index):
+                return None
+            while (row_index, column) in grid:
+                column += 1
+            if column + width > 50:
+                return None
+            cell_id += 1
+            for r in range(row_index, row_index + height):
+                for c in range(column, column + width):
+                    if (r, c) in grid:
+                        return None
+                    grid[r, c] = (cell_id, label)
+            column += width
+    if not grid:
+        return None
+    width = max(c for _, c in grid) + 1
+    if len(grid) != len(rows) * width:
+        return None
+    headers = []
+    for column in range(width):
+        chain = []
+        seen = set()
+        for row_index in range(len(rows)):
+            cell_id, label = grid[row_index, column]
+            if cell_id not in seen:
+                chain.append(label)
+                seen.add(cell_id)
+        headers.append(" / ".join(chain))
+    if any(len(value) > 120 for value in headers) or len({value.casefold() for value in headers}) != len(headers):
+        return None
+    return headers
 
 
 READER_TABLE_PAGINATION_SCRIPT = """element => {
@@ -1292,6 +1427,10 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
         *,
         row_limit: int,
     ) -> tuple[list[str], list[str], list[dict[str, str]], str]:
+        # Capture cells and their headers in one DOM read while filters replace rows.
+        snapshot = _reader_table_snapshot_values(await container.evaluate(READER_TABLE_SNAPSHOT_SCRIPT), row_limit)
+        if snapshot is not None:
+            return snapshot
         async def has_complex_span(cell) -> bool:
             for attribute in ("colspan", "rowspan"):
                 value = str(await cell.get_attribute(attribute) or "1").strip()
@@ -1341,6 +1480,19 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
                 excluded_column_indexes.add(header_index)
             elif header_text and header_text not in header_values:
                 header_values.append(header_text)
+        if tag_name == "table" and not structured_headers_safe:
+            leaf_headers = _reader_leaf_headers(await container.evaluate(READER_TABLE_HEADERS_SCRIPT))
+            if leaf_headers is not None:
+                structured_headers = leaf_headers
+                header_count = len(leaf_headers)
+                excluded_column_indexes = {
+                    index for index, label in enumerate(leaf_headers)
+                    if any(re.sub(r"[^a-z]", "", part.casefold()) in {"action", "actions", "operation", "operations"}
+                           or _reader_contains_sensitive_locator(part) or "secret" in _reader_words(part)
+                           for part in label.split(" / "))
+                }
+                header_values = [label for index, label in enumerate(leaf_headers) if index not in excluded_column_indexes]
+                structured_headers_safe = True
         row_selector = (
             "tbody > tr:has(> td):not(.ant-table-placeholder):not([class*='skeleton']):not(:has([class*='skeleton']))"
             if tag_name == "table"
@@ -1521,6 +1673,32 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
             tab_controls.append({"name": name, "selected": bool((await _reader_tab_selection(tab)).get("selected"))})
         if len(tab_controls) >= 20:
             break
+    for container_index, container in visible_containers:
+        state = await container.evaluate("""element => {
+            let panel = element.closest('[role="tabpanel"]');
+            const labels = [];
+            while (panel) {
+                const label = panel.getAttribute('aria-labelledby') || '';
+                const tab = !/\\s/.test(label) && document.getElementById(label);
+                if (tab && tab.getAttribute('role') === 'tab' &&
+                    tab.getAttribute('aria-controls') === panel.id &&
+                    tab.getAttribute('aria-selected') === 'true' && tab.getClientRects().length) {
+                    labels.push((tab.innerText || '').trim());
+                }
+                panel = panel.parentElement && panel.parentElement.closest('[role="tabpanel"]');
+            }
+            return labels;
+        }""")
+        if isinstance(state, str):
+            state = [state]
+        if isinstance(state, list):
+            state = [_sanitize_reader_text(value, max_chars=200) for value in state[:4] if isinstance(value, str) and value.strip()]
+        if isinstance(state, list) and state:
+            for section_summary in section_summaries:
+                if section_summary.get('nodeId') == f'observation-table-{container_index + 1:03d}':
+                    section_summary['selectedState'] = state[0]
+                    section_summary['selectedTabPath'] = list(reversed(state))
+                    break
     visible_active_tab_count = len(active_tab_texts)
     active_tab_text = active_tab_texts[0] if active_tab_texts else ""
     metric_collections = await page.evaluate(READER_LABELED_METRICS_SCRIPT)

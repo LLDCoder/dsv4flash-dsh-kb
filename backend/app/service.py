@@ -17,7 +17,7 @@ from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
-from .portal_reader import AdminPortalReader, PRIOR_LIST_SAMPLE_FACT, ReaderTimeoutBudget, bounded_json, reader_answer_shape
+from .portal_reader import AdminPortalReader, PRIOR_EMPTY_LIST_FACT, PRIOR_LIST_SAMPLE_FACT, ReaderTimeoutBudget, bounded_json, reader_answer_shape
 from .reader_intent import format_clarification_options, semantic_source_hint
 from .principal import Principal
 from .reader_limits import (
@@ -56,12 +56,43 @@ def reader_evidence_only_response(
 
     facts = [fact.strip() for fact in reader_result.get("facts", []) if isinstance(fact, str) and fact.strip()] if isinstance(reader_result.get("facts"), list) else []
     status = str(reader_result.get("result") or "")
+    if status == 'not_confirmed' and not facts and reader_result.get('missing') == ['observed_queue_not_available']:
+        return {
+            'en': 'The requested queue was not visible in the current page layout; no named queue tabs were shown. This is not a no-matching-records result, and no other queue was substituted.',
+            'zh': '当前页面布局未显示具名队列标签，未能找到所请求的队列。这不是“没有匹配记录”，也没有用其他队列代替。',
+            'ar': 'لم يظهر عرض قائمة العمل المطلوبة في تخطيط الصفحة الحالي. هذا ليس نتيجة عدم وجود سجلات مطابقة، ولم يتم استبداله بقائمة أخرى.',
+        }.get(language, 'The requested queue was not visible in the current page layout; this is not an empty business result.')
+    if status == 'load_failed' and not facts and reader_result.get('missing') == ['observed_page_not_found']:
+        return {
+            'en': 'The requested page displayed "404 Page not found or unavailable". It was not usable during this check; this is not an empty business-data result.',
+            'zh': '所请求的页面显示“404 Page not found or unavailable”，本次检查时不可用。这不是业务查询无数据。',
+            'ar': 'عرضت الصفحة المطلوبة رسالة 404 تفيد بأن الصفحة غير موجودة أو غير متاحة. هذا ليس نتيجة خالية من بيانات الأعمال.',
+        }.get(language, 'The requested page displayed a 404 unavailable state, not an empty business-data result.')
+    if status == "not_confirmed" and not facts and reader_result.get("missing") == ["requested_queue_view_unverified"]:
+        return {
+            "en": "I could not confirm the requested queue view. The available list belongs to a different view, so I have not used its records or total as the requested result.",
+            "zh": "未能确认所请求的队列视图。当前可读取的列表属于另一个视图，因此没有用它的记录或总数代替所请求的结果。",
+            "ar": "لم أتمكن من تأكيد عرض قائمة العمل المطلوبة. القائمة المتاحة تخص عرضًا مختلفًا، لذلك لم أستخدم سجلاتها أو إجماليها بدلًا من النتيجة المطلوبة.",
+        }.get(language, "The available queue is not the requested view; its records and total have not been substituted.")
+    if status == "not_confirmed" and not facts and reader_result.get("missing") == ["requested_team_scope_unverified"]:
+        return {
+            "en": "I could not verify a team-scoped view for this request. I have not treated the current list as team data or used its count as the team total.",
+            "zh": "当前未核实到所请求的团队范围视图，不能把当前列表当作团队数据，也不能把它的数量当作团队总数。",
+            "ar": "لم أتمكن من التحقق من عرض بنطاق الفريق لهذا الطلب. لم أعتبر القائمة الحالية بيانات للفريق أو عددها إجمالي الفريق.",
+        }.get(language, "The requested team scope could not be verified; the current list is not a verified team result.")
     if (prior_answer_coverage and status == "success" and reader_result.get("answerShape") == "detail"
-            and facts == [PRIOR_LIST_SAMPLE_FACT] and not reader_result.get("missing")):
+            and len(facts) == 1 and facts[0] in {PRIOR_LIST_SAMPLE_FACT, PRIOR_EMPTY_LIST_FACT}
+            and not reader_result.get("missing")):
+        if facts == [PRIOR_EMPTY_LIST_FACT]:
+            return {
+                "en": PRIOR_EMPTY_LIST_FACT,
+                "zh": "上一轮查询在已核实的视图和条件内没有匹配记录。这是该次查询的空结果，不是样本数量，也不是整个集合的总数；不能据此断定其他范围没有记录，或现在仍是同一结果。",
+                "ar": "لم يُظهر الاستعلام السابق سجلات مطابقة ضمن العرض والشروط التي تم التحقق منها. هذه نتيجة استعلام فارغة وليست عدد عينة أو إجمالي المجموعة. ولا تثبت عدم وجود سجلات في نطاق آخر أو أن النتيجة ما زالت حديثة.",
+            }.get(language, PRIOR_EMPTY_LIST_FACT)
         return {
             "en": PRIOR_LIST_SAMPLE_FACT,
-            "zh": "刚才列出的记录只是有界样本，不是完整列表。这不改变此前另行核实过的总数。",
-            "ar": "السجلات في القائمة السابقة مباشرة هي عينة محدودة وليست القائمة الكاملة. وهذا لا يغيّر أي إجمالي تم التحقق منه بشكل منفصل.",
+            "zh": "刚才列表的覆盖范围有限，仅凭列出的记录条数不能确定整个集合的总数。这不改变此前另行核实过的总数。",
+            "ar": "تغطية القائمة السابقة مباشرة محدودة؛ وعدد السجلات المدرجة وحده لا يثبت إجمالي المجموعة. وهذا لا يغيّر أي إجمالي تم التحقق منه بشكل منفصل.",
         }.get(language, PRIOR_LIST_SAMPLE_FACT)
     if status != "success" and not facts and any(
         reason in {"action_not_read_only", "method_not_read_only"}
@@ -183,7 +214,7 @@ def _reader_requested_single_record(question: str) -> bool:
     """Recognize explicit single-item selection, not a merely one-row observation."""
 
     english = re.search(
-        r"(?i)\b(?:give|show|find|pick|select|choose|provide|return|get|list)\s+"
+        r"(?i)\b(?:give|show|find|pick|select|choose|provide|return|get|list|identify)\s+"
         r"(?:(?:me|us)\s+)?(?:one|a\s+single|an?\s+example|a\s+sample)\b"
         r"(?!\s+(?:second|minute|hour|day|week|month|year)s?\b)",
         question,
@@ -199,6 +230,24 @@ def _reader_requested_single_record(question: str) -> bool:
     if arabic and re.search(r"(?:يوم|أسبوع|اسبوع|شهر|سنة|عام|ساعة|دقيقة)\s+واحد(?:ة|ا|ًا)?", arabic.group(0)):
         arabic = None
     return bool(english or chinese or arabic)
+
+
+def _reader_select_requested_single_record(result: dict[str, Any], question: str) -> dict[str, Any]:
+    facts = result.get('facts')
+    if (result.get('result') != 'success' or result.get('answerShape') != 'list'
+            or not isinstance(facts, list) or len(facts) < 2
+            or not _reader_requested_single_record(question)
+            or len(re.findall(r'\b(?:one|single|example|sample)\b', question, re.I)) != 1
+            or re.search(r'\d|\b(?:two|three|four|five|six|seven|eight|nine|ten|total|count)\b', question, re.I)):
+        return result
+    try:
+        first = json.loads(facts[0])
+    except (ValueError, TypeError):
+        return result
+    if (not isinstance(first, dict) or not first or not all(isinstance(value, str) for value in first.values())
+            or not _reader_semantic_anchors({**result, 'facts': facts[:1]}).get('recordIdentity')):
+        return result
+    return {**result, 'facts': facts[:1], 'completeness': 'bounded'}
 
 
 def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
@@ -1133,7 +1182,7 @@ class DSHService:
                                 ),
                                 timeout=total_timeout,
                             )
-                            evidence = outcome.result.public_json()
+                            evidence = _reader_select_requested_single_record(outcome.result.public_json(), latest_content)
                             audit_evidence = outcome.audit_evidence
                         except asyncio.TimeoutError:
                             evidence = {

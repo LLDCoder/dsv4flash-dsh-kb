@@ -385,8 +385,26 @@ def make_router(service: DSHService) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"deleted": True, "conversationId": conversation_id}
 
-    @router.post("/conversations/{conversation_id}/messages")
+    @router.post("/conversations/{conversation_id}/messages", summary="Submit an owner-scoped assistant request",
+                 responses={401: {"description": "Authentication required"},
+                            404: {"description": "Conversation not owned by the current principal"}})
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(get_principal)):
+        """Queue a message; read the eventual answer and reader.result in conversation events.
+
+        Admin Portal requests use GetUserInfo permissions and read-only page operations.
+        Reader results distinguish success, no_data, no_permission, load_failed and
+        not_confirmed. A bounded row sample is not a collection total or proof of
+        personal assignment. Knowledge answers require retrieved supporting text.
+        Planner schema repair is bounded and does not relax access or evidence checks.
+        Grouped table headers retain their parent labels for native value binding;
+        ambiguous layouts remain unconfirmed. Search-only clears retain unrelated
+        criteria. Approval, modification, export and download are not reader operations.
+        Follow-ups may explain a prior verified empty list within its original view
+        and criteria; they do not establish a global total or a fresh query result.
+        Team-scoped requests require a bound team view or verified permission scope;
+        personal lists cannot be relabeled as team results. Catalogue captions may
+        supply a bounded overview, but never establish record counts.
+        """
         try:
             return await service.submit_message(
                 principal,

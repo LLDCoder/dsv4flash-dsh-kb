@@ -181,7 +181,7 @@ def test_result_mode_must_match_current_evidence_phase(monkeypatch, context, inv
 
 def test_reader_planner_retries_once_without_replaying_invalid_output(monkeypatch) -> None:
     invalid_marker = "INVALID-RAW-DO-NOT-REPLAY"
-    valid = '{"mode":"portal_read","portalRequest":{"startPath":"/"}}'
+    valid = '{"mode":"portal_read","portalRequest":{"startPath":"/","actions":[]}}'
 
     result, requests = _run_planner(monkeypatch, [invalid_marker, valid])
 
@@ -192,6 +192,18 @@ def test_reader_planner_retries_once_without_replaying_invalid_output(monkeypatc
     assert "exactly one complete strict JSON object" in retry_messages[-2]["content"]
     assert "one JSON object only" in retry_messages[-1]["content"]
     assert invalid_marker not in json.dumps(requests[1])
+
+
+def test_reader_planner_does_not_replay_parsed_invalid_output(monkeypatch) -> None:
+    invalid_marker = "UNTRUSTED-PARSED-OUTPUT-DO-NOT-REPLAY"
+    valid = {"mode": "portal_read", "portalRequest": {"startPath": "/", "actions": []}}
+    result, requests = _run_planner(monkeypatch, [
+        json.dumps({**valid, "summary": invalid_marker}), json.dumps(valid),
+    ])
+    assert result == valid
+    assert len(requests) == 2
+    assert invalid_marker not in json.dumps(requests[1])
+    assert not any(message["role"] == "assistant" for message in requests[1]["messages"])
 
 
 @pytest.mark.parametrize(
@@ -373,6 +385,76 @@ def test_filter_overlay_opened_in_same_plan_can_be_reset(monkeypatch):
     assert result == plan and len(requests) == 1
 
 
+@pytest.mark.parametrize('action_type', ['apply_filter', 'reset_filter'])
+def test_observed_inline_filter_commands_are_allowed(monkeypatch, action_type):
+    plan = {'mode': 'portal_read', 'portalRequest': {'startPath': '/queue', 'actions': [
+        {'type': action_type, 'role': 'button', 'name': 'Filter' if action_type == 'apply_filter' else 'Reset'},
+    ]}}
+    observation = {'dialogs': [], 'controls': ['Filter', 'Reset'],
+                   'filterControls': [{'label': 'Status', 'filterSurface': True, 'commands': ['Filter', 'Reset']}]}
+    result, requests = _run_planner(monkeypatch, [json.dumps(plan)], knowledge_context={'portalObservation': observation})
+    assert result == plan and len(requests) == 1
+
+
+@pytest.mark.parametrize('extra', [{'result': 'success'}, {'reason': 'read needed'}, {'sourceSection': 'table-1'}])
+def test_portal_plan_extra_result_fields_are_retried_not_silently_dropped(monkeypatch, extra):
+    good = {'mode': 'portal_read', 'portalRequest': {'startPath': '/queue', 'actions': [
+        {'type': 'switch_tab', 'role': 'tab', 'name': 'Completed'},
+    ]}}
+    result, requests = _run_planner(monkeypatch, [json.dumps({**good, **extra}), json.dumps(good)])
+    assert result == good and len(requests) == 2
+    assert 'No result fields' in requests[1]['messages'][-2]['content']
+
+
+@pytest.mark.parametrize('controls,fields', [(['Reset', 'Reset'], [{'filterSurface': True}]),
+                                           (['Reset'], [{'filterSurface': False}]),
+                                           (['Reset'], [{'filterSurface': True, 'commands': ['Filter']}]),
+                                           (['Other'], [{'filterSurface': True}])])
+def test_unverified_inline_reset_is_rejected(monkeypatch, controls, fields):
+    plan = {'mode': 'portal_read', 'portalRequest': {'actions': [
+        {'type': 'reset_filter', 'role': 'button', 'name': 'Reset'},
+    ]}}
+    with pytest.raises(ValueError):
+        _run_planner(monkeypatch, [json.dumps(plan), json.dumps(plan)], knowledge_context={
+            'portalObservation': {'dialogs': [], 'controls': controls, 'filterControls': fields},
+        })
+
+
+def test_inline_reset_correction_names_only_observed_bound_commands(monkeypatch):
+    plan = {'mode': 'portal_read', 'portalRequest': {'startPath': '/queue', 'actions': [
+        {'type': 'reset_filter', 'role': 'button', 'name': 'Reset filters'},
+    ]}}
+    good = {'mode': 'portal_read', 'portalRequest': {'startPath': '/queue', 'actions': [
+        {'type': 'reset_filter', 'role': 'button', 'name': 'Reset'},
+    ]}}
+    result, requests = _run_planner(monkeypatch, [json.dumps(plan), json.dumps(good)], knowledge_context={
+        'portalObservation': {'controls': ['Reset'], 'filterControls': [
+            {'filterSurface': True, 'commands': ['Reset']}], 'dialogs': []},
+    })
+    assert result == good
+    assert 'Available commands: ["Reset"]' in requests[1]['messages'][-2]['content']
+
+
+def test_message_openapi_documents_reader_evidence_contract():
+    from fastapi import FastAPI
+    from app.api import make_router
+    app = FastAPI()
+    app.include_router(make_router(object()))
+    endpoint = app.openapi()['paths']['/api/v1/conversations/{conversation_id}/messages']['post']
+    assert {'200', '401', '404', '422'} <= set(endpoint['responses'])
+    assert all(status in endpoint['description'] for status in ['success', 'no_data', 'no_permission', 'load_failed', 'not_confirmed'])
+    assert 'GetUserInfo' in endpoint['description']
+
+
+def test_reader_prompt_separates_completed_input_changes_and_policy_proposals(monkeypatch):
+    _, requests = _run_planner(monkeypatch, ['{"mode":"knowledge_only","result":"not_confirmed","facts":[]}'])
+    prompt = requests[0]['messages'][0]['content']
+    assert 'ALREADY EXECUTED in this turn' in prompt
+    assert 'An empty input on a fresh baseline alone does not prove' in prompt
+    assert 'no_permission before any page access' in prompt
+    assert 'Never invent a path solely to trigger a permission response' in prompt
+
+
 def test_invented_initial_section_is_not_promoted_to_user_scope(monkeypatch):
     plan = {"mode": "portal_read", "portalRequest": {"startPath": "/queue", "actions": [
         {"type": "switch_tab", "role": "tab", "name": "Completed"},
@@ -433,10 +515,57 @@ def test_query_with_filter_values_is_repaired_before_execution(monkeypatch, sett
     repaired = {"mode": "portal_read", "portalRequest": {"startPath": "/queue", "actions": [
         {"type": "filter", "field": "Search", "value": settings.get("value", "R-1")},
     ]}}
-    result, requests = _run_planner(monkeypatch, [json.dumps(bad), json.dumps(repaired)])
+    result, requests = _run_planner(monkeypatch, [json.dumps(bad), json.dumps(repaired)],
+                                   knowledge_context={"portalObservation": {"filterControls": []}})
     assert result == repaired
     assert len(requests) == 2
     assert "cannot set or clear" in requests[1]["messages"][-2]["content"]
+
+
+@pytest.mark.parametrize("settings", [{"value": "R-1"}, {"filters": {"Search": "R-1"}}, {"value": ""},
+                                      {"name": "Search", "role": "textbox", "value": "R-1"}])
+def test_initial_parameterized_query_only_acquires_structure(monkeypatch, settings):
+    plan = {"mode": "portal_read", "portalRequest": {"startPath": "/queue", "actions": [
+        {"type": "query", "field": "Search", **settings},
+    ], "expectedFields": ["Reference"]}}
+    result, requests = _run_planner(monkeypatch, [json.dumps(plan)])
+    assert result["portalRequest"] == {"startPath": "/queue", "actions": [{"type": "observe"}],
+                                       "expectedFields": ["Reference"]}
+    assert len(requests) == 1
+
+
+def test_knowledge_repair_selects_exact_existing_evidence_without_extra_claims(monkeypatch):
+    context = {'ok': True, 'chunks': [{'content': '- **section:** Records - **meaning:** Published records. '
+               '- **evidence_limits:** An empty query does not establish deletion.'}],
+               'planningDirective': {'knowledgeGroundingRepair': True}}
+    plan = {'mode': 'knowledge_only', 'result': 'success', 'evidenceIndices': [1], 'missing': []}
+    result, _ = _run_planner(monkeypatch, [json.dumps(plan)], knowledge_context=context)
+    assert result['facts'] == ['An empty query does not establish deletion.']
+    assert 'evidenceIndices' not in result
+
+
+def test_planner_does_not_treat_first_n_as_a_minimum_count(monkeypatch):
+    adapter = LLMAdapter(Settings(_env_file=None, llm_base_url='https://llm.example.test', llm_api_key='test-key'))
+    captured = []
+    original_client = httpx.AsyncClient
+    async def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {'content': json.dumps({
+            'mode': 'knowledge_only', 'result': 'not_confirmed', 'facts': [], 'missing': ['read_required'],
+        })}}]})
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    asyncio.run(adapter.plan_admin_portal_read('Show only the first three records.', {}, {}))
+    assert json.loads(captured[0]['messages'][1]['content'])['requestedListLimit'] == 3
+    assert 'upper bound, not a minimum' in captured[0]['messages'][0]['content']
+
+
+@pytest.mark.parametrize('indices', [[99], [-1], [True], [0, 0], ['0']])
+def test_knowledge_repair_rejects_invalid_source_indices(monkeypatch, indices):
+    context = {'ok': True, 'chunks': [{'content': '- **meaning:** Published records.'}],
+               'planningDirective': {'knowledgeGroundingRepair': True}}
+    plan = json.dumps({'mode': 'knowledge_only', 'result': 'success', 'evidenceIndices': indices, 'missing': []})
+    with pytest.raises(ValueError, match='invalid knowledge evidence selection'):
+        _run_planner(monkeypatch, [plan, plan], knowledge_context=context)
 
 
 def test_unconfigured_stream_uses_chinese_system_language() -> None:

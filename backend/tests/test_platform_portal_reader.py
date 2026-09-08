@@ -443,6 +443,8 @@ class FakeObservationContainer:
     async def evaluate(self, script):
         if "tagName" in script:
             return self.tag
+        if "let panel = element.closest" in script:
+            return ""
         if "parentIndex" in script:
             return {"heading": self.heading, "parentIndex": self.parent_index}
         return self.heading
@@ -795,6 +797,18 @@ def test_surface_health_ignores_only_exact_blocked_notification_background_paths
     assert result["uncertain"] == ["/api/SignalR/GetNotificationInfoList/extra"]
 
 
+def test_report_page_does_not_treat_explicitly_blocked_telemetry_as_business_data():
+    class Page:
+        url = 'https://admin.example.test/content/reports-analytics'
+        _reader_health = {'blocked': ['/api/clientlog/report'], 'failed': [], 'pending': []}
+    page = Page()
+    assert gateway._reader_surface_health(page)['healthy'] is True
+    page._reader_health = {'blocked': ['/api/clientlog/report/unknown'], 'failed': [], 'pending': []}
+    assert gateway._reader_surface_health(page)['healthy'] is False
+    page._reader_health = {'blocked': [], 'failed': ['/api/ContentReports/GetData'], 'pending': []}
+    assert gateway._reader_surface_health(page)['healthy'] is False
+
+
 @pytest.mark.parametrize(
     "locator",
     [
@@ -1143,6 +1157,27 @@ def test_unlabelled_utility_columns_are_excluded_without_losing_native_bindings(
     assert observation['sectionSummaries'][0]['rowFields']==[{'Reference':'R-1','Status':'Open'}]
     assert observation['rowSummaries']==['R-1 Open']
     assert 'unlabelled-content' not in str(observation)
+
+
+def test_reader_leaf_headers_preserves_grouped_labels_and_rowspan_identity():
+    def cell(text, width=1, height=1):
+        return {"text": text, "colSpan": width, "rowSpan": height, "visible": True}
+    assert gateway._reader_leaf_headers([
+        [cell("Reference", height=2), cell("Distribution", width=2)],
+        [cell("North"), cell("South")],
+    ]) == ["Reference", "Distribution / North", "Distribution / South"]
+
+
+@pytest.mark.parametrize("rows", [
+    [[{"text": "Group", "colSpan": 2, "rowSpan": 1, "visible": True}], []],
+    [[{"text": "Group", "colSpan": 2, "rowSpan": 1, "visible": True}],
+     [{"text": "Same", "colSpan": 1, "rowSpan": 1, "visible": True}] * 2],
+    [[{"text": "Group", "colSpan": 1, "rowSpan": 3, "visible": True}], []],
+    [[{"text": "", "colSpan": 1, "rowSpan": 2, "visible": True}], []],
+    [[{"text": "Group", "colSpan": 1, "rowSpan": 2, "visible": False}], []],
+])
+def test_reader_leaf_headers_rejects_incomplete_ambiguous_or_hidden_grids(rows):
+    assert gateway._reader_leaf_headers(rows) is None
 
 
 def test_blank_header_with_colspan_still_rejects_ambiguous_field_alignment():

@@ -205,6 +205,60 @@ class IntentResolution:
         return context
 
 
+def resolve_literal_same_record_reference(question: str, conversation_context: Any) -> IntentResolution | None:
+    """Resolve one literal same-record command from an already selected identity."""
+    match = re.fullmatch(
+        r"\s*(?:please\s+)?(?P<command>find|locate)\s+(?:that|the)\s+same\s+"
+        r"(?P<object>[a-z]+(?:\s+[a-z]+)?)(?:\s+by\s+its\s+(?P<field>[a-z ]+(?:no\.?|number|id)))?\.?\s*",
+        question, re.I,
+    )
+    if not match:
+        return None
+    prior = _previous_slots(conversation_context)
+    previous = conversation_context.get("previousIntent", {}) if isinstance(conversation_context, dict) else {}
+    antecedent = str(previous.get("question") or "")
+    anchors = (antecedent, prior.get('businessObject', ''), prior.get('businessFocus', ''))
+    object_matches = any(re.search(r"\b" + re.escape(match['object']) + r"s?\b", text, re.I) for text in anchors)
+    words = match['object'].casefold().split()
+    if not object_matches and len(words) == 2:
+        # A route can disambiguate an object qualifier, but is never slot evidence
+        # or a permission grant. The noun and identity must still come from history.
+        route_words = semantic_source_hint(conversation_context).get('page', '').casefold().split('/')
+        object_matches = words[0] in route_words and any(
+            re.search(r'\b' + re.escape(words[1]) + r's?\b', text, re.I) for text in anchors)
+    if (not prior.get("recordIdentity")
+            or not object_matches
+            or (match['field'] and _normalized(match['field']).rstrip('.') not in _normalized(antecedent))):
+        return None
+    slots = {
+        name: ({"source": "previous", "value": prior[name], "evidence": prior[name]}
+               if name in prior else {"source": "unspecified", "value": "", "evidence": ""})
+        for name in SLOT_NAMES
+    }
+    slots["answerShape"] = {"source": "current", "value": "detail", "evidence": match["command"]}
+    return parse_intent_resolution({"relation": "continue", "slots": slots, "clarificationOptions": []},
+                                   question, conversation_context)
+
+
+def resolve_literal_view_followup(question: str, conversation_context: Any) -> IntentResolution | None:
+    """Resolve a simple named queue change while retaining only known prior slots."""
+    match = re.fullmatch(r"\s*(?:how|what)\s+about\s+(?:the\s+)?(?P<view>completed|to do|queued)\s+"
+                         r"(?P<object>applications?|tasks?|records?|items?)\s*[?.]?\s*", question, re.I)
+    if not match:
+        return None
+    prior = _previous_slots(conversation_context)
+    previous = conversation_context.get('previousIntent', {}) if isinstance(conversation_context, dict) else {}
+    anchors = [str(previous.get('question') or ''), prior.get('businessObject', ''), prior.get('businessFocus', '')]
+    noun = match['object'].casefold().rstrip('s')
+    if (not prior or prior.get('recordIdentity') or not any(
+            re.search(r'\b' + re.escape(noun) + r's?\b', anchor, re.I) for anchor in anchors)):
+        return None
+    slots = {name: ({'source': 'previous', 'value': prior[name], 'evidence': prior[name]}
+                   if name in prior else {'source': 'unspecified', 'value': '', 'evidence': ''}) for name in SLOT_NAMES}
+    slots['view'] = {'source': 'current', 'value': match['view'], 'evidence': match['view']}
+    return parse_intent_resolution({'relation': 'refine', 'slots': slots, 'clarificationOptions': []}, question, conversation_context)
+
+
 def parse_intent_resolution(
     payload: Any, question: str, conversation_context: Any,
 ) -> IntentResolution:

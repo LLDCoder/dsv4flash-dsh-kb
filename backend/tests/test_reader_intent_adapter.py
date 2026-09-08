@@ -86,6 +86,49 @@ def test_intent_resolver_preserves_original_question_and_bounded_semantic_contex
     assert "An enum value is not its evidence" in prompt
 
 
+@pytest.mark.parametrize("question,shape,quote", [
+    ("Clear that task search and show three queued tasks again.", "list", "show"),
+    ("Show me three records.", "list", "Show"),
+    ("Please display these items.", "list", "display"),
+    ("How many items are visible?", "count", "How many"),
+    ("Find that same record again.", "detail", "Find"),
+])
+def test_enum_echo_is_bound_to_an_explicit_command_without_another_model_call(monkeypatch, question, shape, quote):
+    candidate = _intent_result()
+    candidate["slots"]["answerShape"] = {"source": "current", "value": shape, "evidence": shape}
+    adapter, requests = _adapter(monkeypatch, [_response(json.dumps(candidate))])
+    result = asyncio.run(adapter.resolve_admin_portal_intent(question, {}))
+    assert result["slots"]["answerShape"] == {"source": "current", "value": shape, "evidence": quote}
+    assert candidate["slots"]["answerShape"]["evidence"] == shape
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("question,source,evidence", [
+    ("Do not show these records.", "current", "list"),
+    ("Explain what show means.", "current", "list"),
+    ('The caption says "show records".', "current", "list"),
+    ("Show records.", "previous", "list"),
+    ("Show records.", "current", "invented evidence"),
+    ("Which records are these?", "current", "list"),
+])
+def test_enum_quote_repair_does_not_bypass_other_provenance_failures(monkeypatch, question, source, evidence):
+    candidate = _intent_result()
+    candidate["slots"]["answerShape"] = {"source": source, "value": "list", "evidence": evidence}
+    adapter, requests = _adapter(monkeypatch, [_response(json.dumps(candidate))] * 2)
+    with pytest.raises(ValueError, match="absent from its declared source"):
+        asyncio.run(adapter.resolve_admin_portal_intent(question, {}))
+    assert len(requests) == 2
+
+
+def test_enum_quote_repair_never_repairs_record_identity(monkeypatch):
+    candidate = _intent_result()
+    candidate["slots"]["answerShape"] = {"source": "current", "value": "list", "evidence": "list"}
+    candidate["slots"]["recordIdentity"] = {"source": "current", "value": "REF-999", "evidence": "records"}
+    adapter, _ = _adapter(monkeypatch, [_response(json.dumps(candidate))] * 2)
+    with pytest.raises(ValueError, match="record identity is absent"):
+        asyncio.run(adapter.resolve_admin_portal_intent("Show records.", {}))
+
+
 def test_intent_resolver_does_not_truncate_original_question(monkeypatch):
     question = "x" * 10_001 + " attention"
     adapter, requests = _adapter(monkeypatch, [_response(json.dumps(_intent_result()))])
@@ -93,6 +136,31 @@ def test_intent_resolver_does_not_truncate_original_question(monkeypatch):
     asyncio.run(adapter.resolve_admin_portal_intent(question, {}))
 
     assert json.loads(requests[0]["messages"][-1]["content"])["question"] == question
+
+
+@pytest.mark.parametrize("question", [
+    "Find that same account by its Account ID.", "Find the same account.",
+])
+def test_explicit_same_selected_record_does_not_need_a_model_call(monkeypatch, question):
+    adapter, requests = _adapter(monkeypatch, [])
+    context = {"previousIntent": {"question": "Show accounts and identify one Account ID", "recordIdentity": "2026090300001"}}
+    result = asyncio.run(adapter.resolve_admin_portal_intent(question, context))
+    assert result['slots']['recordIdentity']['value'] == '2026090300001'
+    assert result['slots']['answerShape']['value'] == 'detail'
+    assert requests == []
+
+
+@pytest.mark.parametrize('question,context', [
+    ('Find that same account by its Account ID.', {}),
+    ('Find that same account by its Account ID.', {'previousIntent': {'question': 'Show tasks', 'recordIdentity': 'TASK-123'}}),
+    ('Do not find that same account.', {'previousIntent': {'question': 'Show accounts', 'recordIdentity': 'ACC-123'}}),
+    ('Find that same account in another department.', {'previousIntent': {'question': 'Show accounts', 'recordIdentity': 'ACC-123'}}),
+    ('Find that same account by its External ID.', {'previousIntent': {'question': 'Show accounts and identify one Account ID', 'recordIdentity': 'ACC-123'}}),
+    ('Find that same account by its Account ID.', {'previousIntent': {'question': 'Show accounts', 'intentContext': {'slots': {'recordIdentity': {'source': 'clear', 'value': '', 'evidence': 'clear'}}}}}),
+])
+def test_literal_reference_does_not_guess_identity_or_ignore_additional_constraints(question, context):
+    from app.reader_intent import resolve_literal_same_record_reference
+    assert resolve_literal_same_record_reference(question, context) is None
 
 
 def test_intent_resolver_accepts_one_fenced_object(monkeypatch):
@@ -222,6 +290,54 @@ def test_adapter_returns_normalized_omissions_not_raw_model_clears(monkeypatch):
         "source": "previous", "value": "Needs Review", "evidence": "Needs Review",
     }
     assert result["slots"]["answerShape"]["value"] == "list"
+
+
+@pytest.mark.parametrize('question', ['How about the completed applications?', 'What about completed applications?'])
+def test_literal_view_followup_retains_prior_object_without_model_call(question):
+    adapter = LLMAdapter(Settings(_env_file=None, llm_base_url='', llm_api_key=''))
+    context = {'previousIntent': {'question': 'Show the application queue.', 'businessObject': 'Applications',
+                                 'businessFocus': 'My Application Tasks', 'answerShape': 'list', 'view': 'To Do'}}
+    result = asyncio.run(adapter.resolve_admin_portal_intent(question, context))
+    assert result['relation'] == 'refine'
+    assert result['slots']['businessObject']['value'] == 'Applications'
+    assert result['slots']['businessFocus']['value'] == 'My Application Tasks'
+    assert result['slots']['view']['source'] == 'current'
+    assert result['slots']['view']['value'] == 'completed'
+
+
+@pytest.mark.parametrize('question,identity', [
+    ('How about completed refunds?', ''), ('How about completed applications today?', ''),
+    ('How about completed applications?', 'REF-1'),
+])
+def test_complex_or_changed_view_followups_still_need_normal_resolution(question, identity):
+    from app.reader_intent import resolve_literal_view_followup
+    context = {'previousIntent': {'question': 'Show applications.', 'answerShape': 'list', 'recordIdentity': identity}}
+    assert resolve_literal_view_followup(question, context) is None
+
+
+def test_same_record_reference_accepts_prior_multiword_business_object():
+    adapter = LLMAdapter(Settings(_env_file=None, llm_base_url='', llm_api_key=''))
+    context = {'previousIntent': {'question': 'Give me one Task No. from the queued task list.',
+        'businessObject': 'Inspection Task', 'businessFocus': 'Queued Tasks', 'recordIdentity': 'REF-1', 'answerShape': 'detail'}}
+    result = asyncio.run(adapter.resolve_admin_portal_intent('Find that same inspection task by its Task No.', context))
+    assert result['slots']['recordIdentity']['value'] == 'REF-1'
+
+
+def test_same_record_qualifier_can_match_prior_route_without_using_route_as_evidence():
+    adapter = LLMAdapter(Settings(_env_file=None, llm_base_url='', llm_api_key=''))
+    context = {'previousIntent': {'question': 'Give me one Task No. from the queued task list.',
+        'page': '/inspection/tasks', 'section': 'Queued Tasks', 'recordIdentity': 'REF-1', 'answerShape': 'detail'}}
+    result = asyncio.run(adapter.resolve_admin_portal_intent('Find that same inspection task by its Task No.', context))
+    assert result['slots']['recordIdentity']['value'] == 'REF-1'
+    assert all('/inspection/tasks' not in slot['evidence'] for slot in result['slots'].values())
+
+
+@pytest.mark.parametrize('page', ['', '/customer/tasks', '/inspection-records/tasks'])
+def test_same_record_qualifier_cannot_switch_domain_or_use_a_partial_route_match(page):
+    from app.reader_intent import resolve_literal_same_record_reference
+    context = {'previousIntent': {'question': 'Give me one Task No. from the queued task list.',
+        'page': page, 'section': 'Queued Tasks', 'recordIdentity': 'REF-1', 'answerShape': 'detail'}}
+    assert resolve_literal_same_record_reference('Find that same inspection task by its Task No.', context) is None
 
 
 def test_unconfigured_intent_resolver_fails_without_network():

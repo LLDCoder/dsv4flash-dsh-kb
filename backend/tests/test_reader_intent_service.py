@@ -227,6 +227,7 @@ def test_successful_explicit_single_detail_can_establish_new_observed_identity()
     "From the transaction list, give me one Transaction No. and its status.",
     "Show me a single record with its status.",
     "Provide an example record and its status.",
+    "Show the transactions and identify one Transaction No. without extra personal details.",
     "从列表给我一条记录及其状态。",
     "展示一笔交易和状态。",
     "أعطني رقم معاملة واحد وحالتها",
@@ -249,6 +250,43 @@ def test_explicit_one_record_list_can_support_find_same_follow_up(question):
     assert parsed["slots"]["recordIdentity"] == follow_up["slots"]["recordIdentity"]
     assert parsed["slots"]["answerShape"] == {"source": "previous", "value": "list", "evidence": "list"}
     assert "facts" not in str(parsed) and "Paid" not in str(parsed)
+
+
+def test_identify_one_account_retains_numeric_id_not_the_column_label():
+    previous = event(1, "user.message", {"content": "Show the customer accounts and identify one Account ID without revealing extra personal details."})
+    result = event(2, "reader.result", {
+        "result": "success", "answerShape": "list", "intentContext": intent(answerShape="list"),
+        "facts": ['{"Account ID": "2026090300001", "Name": "Example"}'],
+    })
+    current = event(3, "user.message", {"content": "Find that same account by its Account ID."})
+    context = _reader_conversation_context([previous, result, current], current)
+    assert context["previousIntent"]["recordIdentity"] == "2026090300001"
+    assert "Example" not in str(context)
+
+
+def test_requested_single_account_is_presented_as_one_record_before_context_selection():
+    from app.service import _reader_select_requested_single_record
+    question = 'Show the customer accounts and identify one Account ID without revealing extra personal details.'
+    raw = {'result': 'success', 'answerShape': 'list', 'facts': [
+        '{"Account ID":"2026090300001"}', '{"Account ID":"2026090100001"}',
+    ]}
+    selected = _reader_select_requested_single_record(raw, question)
+    assert selected['facts'] == raw['facts'][:1]
+    assert len(raw['facts']) == 2
+    previous = event(1, 'user.message', {'content': question})
+    current = event(3, 'user.message', {'content': 'Find that same account by its Account ID.'})
+    context = _reader_conversation_context([previous, event(2, 'reader.result', selected), current], current)
+    assert context['previousIntent']['recordIdentity'] == '2026090300001'
+
+
+@pytest.mark.parametrize('question', ['Show all accounts', 'Show one month of accounts',
+                                   'Show one account and three more', 'Show one account and the total'])
+def test_single_presentation_does_not_narrow_other_requests(question):
+    from app.service import _reader_select_requested_single_record
+    result = {'result': 'success', 'answerShape': 'list', 'facts': [
+        '{"Account ID":"2026090300001"}', '{"Account ID":"2026090100001"}',
+    ]}
+    assert _reader_select_requested_single_record(result, question) == result
 
 
 @pytest.mark.parametrize("question", [
