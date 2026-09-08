@@ -71,8 +71,29 @@ def test_failed_reader_result_with_verified_facts_returns_only_those_facts() -> 
     assert reader_evidence_only_response(
         {"result": "success", "facts": ["Verified record detail"]}, "en",
     ) == "**Confirmed details:**\n\n- Verified record detail"
-
-
+ 
+ 
+def test_reader_response_omits_placeholder_identity_fields_but_keeps_zero_metrics() -> None:
+    response = reader_evidence_only_response(
+        {
+            "result": "success",
+            "facts": [
+                '{"taskID":0,"referenceNumber":"unknown","taskCount":0,"urgentCount":2}',
+            ],
+        },
+        "en",
+    )
+    assert "Task ID" not in response
+    assert "Reference Number" not in response
+    assert "Task Count: 0" in response
+    assert "Urgent Count: 2" in response
+ 
+    assert reader_evidence_only_response(
+        {"result": "success", "facts": ['{"taskID":0}']},
+        "en",
+    ) == "I do not have verified details to answer that request."
+ 
+ 
 def test_failed_list_follow_up_does_not_implicitly_select_first_historical_record() -> None:
     first = event(1, "user.message", {"content": "Show my application tasks"})
     public_result = ReaderResult(

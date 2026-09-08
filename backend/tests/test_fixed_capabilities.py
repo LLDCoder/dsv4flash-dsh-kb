@@ -107,6 +107,16 @@ def test_reader_response_prompt_does_not_infer_attention_from_nonzero_counts() -
     assert "nonzero task-category count is workload information" in prompt
     assert "not evidence that the category or its tasks need attention" in prompt
     assert "never infer attention from a nonzero count" in prompt
+ 
+ 
+def test_reader_response_prompt_requires_natural_question_focused_answers() -> None:
+    prompt = DSHService._runtime_system_prompt("admin_portal_reader", "en", "", "")
+ 
+    assert "do not mechanically repeat every supplied field" in prompt
+    assert "lead with a concise conclusion" in prompt
+    assert "instead of presenting an API-shaped field dump" in prompt
+    assert "Task ID 0 is a placeholder and must not be shown" in prompt
+    assert "offer a practical ordering based on verified statuses and counts" in prompt
 
 
 def test_reader_timeout_defaults_cover_two_stage_planning_and_portal_executor() -> None:

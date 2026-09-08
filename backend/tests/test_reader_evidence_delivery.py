@@ -2,12 +2,13 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from app.portal_reader import AdminPortalReader, _observation_evidence_for_section
 from app.principal import Principal
-from app.service import reader_evidence_only_response
+from app.service import DSHService, reader_evidence_only_response, reader_natural_answer_is_grounded
 
 
 PAGE = "/workspace"
@@ -498,6 +499,113 @@ def test_deterministic_service_response_renders_numeric_json_facts() -> None:
     assert "total" in response.casefold()
     assert "571" in response
     assert "- Total: 571" in response
+ 
+ 
+def test_service_omits_placeholder_identity_but_keeps_zero_business_metric() -> None:
+    response = reader_evidence_only_response(
+        {
+            "result": "success",
+            "answerShape": "attention",
+            "facts": [json.dumps({
+                "totalCount": 7,
+                "urgentCount": 0,
+                "taskNo": "ML-1-8007-0457147",
+                "taskId": 0,
+            })],
+            "missing": [],
+        },
+        "en",
+    )
+ 
+    assert "Total Count: 7" in response
+    assert "Urgent Count: 0" in response
+    assert "ML-1-8007-0457147" in response
+    assert "Task Id" not in response
+ 
+ 
+def test_natural_answer_guard_rejects_invented_numbers_and_identifiers() -> None:
+    verified = "There are 7 tasks. Task ML-1-8007-0457147 is awaiting External Approval."
+ 
+    assert reader_natural_answer_is_grounded(
+        "There are 7 tasks, including ML-1-8007-0457147.",
+        verified,
+        "What should I prioritize?",
+    )
+    assert not reader_natural_answer_is_grounded(
+        "There are 8 tasks, including ML-1-9999.",
+        verified,
+        "What should I prioritize?",
+    )
+ 
+ 
+def test_natural_reader_response_uses_model_for_concise_grounded_answer() -> None:
+    class _AnswerLLM:
+        async def stream(self, messages):
+            assert "Do not use a 'Confirmed details' heading" in messages[0]["content"]
+            assert "What should I prioritize?" in messages[1]["content"]
+            yield "You have 7 tasks. None is marked urgent, so review the 5 awaiting External Approval first."
+ 
+    service = object.__new__(DSHService)
+    service.settings = SimpleNamespace(
+        llm_base_url="https://llm.example.test",
+        llm_api_key="test",
+        system_prompt="",
+    )
+    service.llm = _AnswerLLM()
+    evidence = {
+        "result": "success",
+        "answerShape": "attention",
+        "facts": [json.dumps({
+            "totalCount": 7,
+            "urgentCount": 0,
+            "tabCounts.ExternalApproval": 5,
+            "tabCounts.PendingModification": 2,
+            "taskId": 0,
+        })],
+        "missing": [],
+    }
+ 
+    response, formatting_failed = asyncio.run(service._natural_reader_response(
+        "What should I prioritize?",
+        evidence,
+        "en",
+    ))
+ 
+    assert not formatting_failed
+    assert response.startswith("You have 7 tasks.")
+    assert "Task Id" not in response
+    assert "Confirmed details" not in response
+ 
+ 
+def test_natural_reader_response_falls_back_when_model_invents_a_fact() -> None:
+    class _AnswerLLM:
+        async def stream(self, messages):
+            yield "You have 8 tasks. Start with ML-1-9999."
+ 
+    service = object.__new__(DSHService)
+    service.settings = SimpleNamespace(
+        llm_base_url="https://llm.example.test",
+        llm_api_key="test",
+        system_prompt="",
+    )
+    service.llm = _AnswerLLM()
+    evidence = {
+        "result": "success",
+        "answerShape": "count",
+        "facts": [json.dumps({"totalCount": 7})],
+        "missing": [],
+    }
+ 
+    response, formatting_failed = asyncio.run(service._natural_reader_response(
+        "How many tasks do I have?",
+        evidence,
+        "en",
+    ))
+ 
+    assert formatting_failed
+    assert "Total Count: 7" in response
+    assert "8" not in response
+    assert "ML-1-9999" not in response
 
 
 def test_due_fallback_keeps_only_relevant_business_evidence() -> None:
@@ -818,3 +926,65 @@ def test_service_renders_dashboard_overview_as_category_counts() -> None:
     assert "Profile Verification: 0" in response
     assert "Total Tasks" not in response
     assert "Department Stats" not in response
+def test_service_groups_current_metrics_and_repeated_period_trends() -> None:
+    response = reader_evidence_only_response(
+        {
+            "result": "success",
+            "page": "/performance",
+            "answerShape": "overview",
+            "facts": [
+                json.dumps({
+                    "slaPerformance.slaComplianceRate": 91.66,
+                    "slaPerformance.slaBreachRate": 8.34,
+                    "slaPerformance.avgProcessingTimeDays": 0.34,
+                    "slaPerformance.totalCompleted": 1043,
+                    "slaPerformance.slaCompliant": 956,
+                    "slaPerformance.slaBreached": 87,
+                }),
+                json.dumps({
+                    "slaPerformanceTrend.period": "08-2026",
+                    "slaPerformanceTrend.slaComplianceRate": 95.15,
+                    "slaPerformanceTrend.avgProcessingTimeDays": 0.08,
+                }),
+                json.dumps({
+                    "slaPerformanceTrend.period": "07-2026",
+                    "slaPerformanceTrend.slaComplianceRate": 94.27,
+                    "slaPerformanceTrend.avgProcessingTimeDays": 0.2,
+                }),
+            ],
+            "missing": [],
+        },
+        "en",
+    )
+    assert response.startswith("**Overview:**\n\n**Current metrics:**")
+    assert "Sla Performance Sla Compliance Rate" not in response
+    assert "- Sla Compliance Rate: 91.66" in response
+    assert "**Trend:**" in response
+    assert "- **08-2026** — Sla Compliance Rate: 95.15; Avg Processing Time Days: 0.08" in response
+    assert "1. Sla Performance" not in response
+def test_service_formats_iso_datetimes_without_changing_timezone() -> None:
+    response = reader_evidence_only_response(
+        {
+            "result": "success",
+            "page": "/performance",
+            "answerShape": "overview",
+            "facts": [
+                json.dumps({
+                    "startDate": "2026-09-02T00:00:00",
+                    "endDate": "2026-09-08T23:59:59",
+                    "generatedAt": "2026-09-09T01:59:32Z",
+                    "reviewedAt": "2026-09-09T05:59:32+04:00",
+                    "period": "08-2026",
+                    "duration": "1.2h",
+                }),
+            ],
+            "missing": [],
+        },
+        "en",
+    )
+    assert "Start Date: 2026-09-02 00:00:00" in response
+    assert "End Date: 2026-09-08 23:59:59" in response
+    assert "Generated At: 2026-09-09 01:59:32 UTC" in response
+    assert "Reviewed At: 2026-09-09 05:59:32 +04:00" in response
+    assert "Period: 08-2026" in response
+    assert "Duration: 1.2h" in response
