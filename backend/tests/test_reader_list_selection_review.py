@@ -12,6 +12,7 @@ ROWS = [
 ]
 OBSERVATION = {"sectionSummaries": [{
     "nodeId": "table-1", "kind": "table", "heading": "Records", "selectedState": "Completed",
+    "controls": ["Completed"],
     "columnHeaders": ["Record No.", "Status"], "rowFields": ROWS,
     "rowSummaries": ["R-1 Cancelled", "R-2 Completed"],
 }]}
@@ -81,5 +82,5 @@ def test_review_runs_once_and_respects_reducer_selection(question, reviewed_indi
     assert outcome.result.completeness == "bounded"
     assert len(planner.calls) == 3
     assert planner.calls[2][2]["planningDirective"]["listSelectionReview"] is True
-    assert gateway.events.count("admin.portal.read") == 1
+    assert gateway.events.count("admin.portal.read") == 2
     assert any(entry["stage"] == "list_selection_review" for entry in outcome.audit_evidence["qualityTrace"])

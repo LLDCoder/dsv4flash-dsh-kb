@@ -2,6 +2,8 @@
 
 这是 Admin Portal 的知识库与只读页面问答服务，所有运行依赖通过 Docker Compose 管理。
 
+团队接手请先读 [中文架构、Skill 与排障交接指南](doc/team-handoff.zh-CN.md)，其中区分运行时与开发 Skill，列出本机 Skill 位置、协作约定、最新验收边界和本地网络白名单临时例外。
+
 ## 已实现的架构边界
 
 - API Gateway/BFF：Principal 由 `X-User-Id`、`X-Tenant-Id` 传入；前端获取的 `umctoken` 使用 `Authorization: Bearer <UMC_TOKEN>` 按请求透传，原始 Token 不写入 Session 或普通日志，仅保留短指纹引用。

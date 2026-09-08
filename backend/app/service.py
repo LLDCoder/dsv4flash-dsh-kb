@@ -28,7 +28,6 @@ from .reader_limits import (
     bounded_reader_total_timeout,
     effective_platform_timeout,
 )
-from .response_safety import is_internal_tool_protocol, strip_unverified_links
 from .runtime import RuntimeManager
 from .skills import response_language_for
 from .tool_gateway import ToolGateway
@@ -42,17 +41,44 @@ def _response_language_for(text: str) -> str:
     return response_language_for(text)
 
 
-def reader_evidence_only_response(reader_result: dict[str, Any], language: str) -> str | None:
-    """Return evidence-only output unless a successful result has direct facts.
+def reader_evidence_only_response(reader_result: dict[str, Any], language: str) -> str:
+    """Render the bounded Reader result without another source of business facts."""
 
-    Conversation history can identify the user's target, but it cannot prove a
-    current business rule or result. Bypassing final answer generation in this
-    case prevents it from filling an evidence gap with prior wording or common
-    knowledge. Successful results with facts remain available to the final
-    formatter; failed results return only their direct facts and status.
-    """
+    raw_facts = reader_result.get("facts")
 
-    facts = [fact.strip() for fact in reader_result.get("facts", []) if isinstance(fact, str) and fact.strip()] if isinstance(reader_result.get("facts"), list) else []
+    def deliverable_fact(value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            return ""
+        fact = value.strip()[:500]
+        if any(marker in fact.casefold() for marker in (
+            "[truncated]", "<truncated>", "[max-depth]", "[depth]",
+        )):
+            return ""
+        try:
+            fields = json.loads(fact)
+        except (TypeError, ValueError):
+            return fact
+        if not isinstance(fields, dict):
+            return fact
+        envelope_fields = {
+            "actioncode", "actionlabel", "actionurl", "code", "detailtarget", "httpcode",
+            "httpstatus", "issuccess", "message", "openmode", "operationkey", "requestid",
+            "statuscode", "success", "timestamp", "traceid",
+        }
+        filtered = {
+            key: child for key, child in fields.items()
+            if re.sub(r"[^a-z0-9]", "", str(key).casefold()) not in envelope_fields
+        }
+        if not filtered:
+            return ""
+        try:
+            return json.dumps(filtered, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError):
+            return ""
+
+    facts = [fact for fact in (
+        deliverable_fact(value) for value in raw_facts[:20]
+    ) if fact] if isinstance(raw_facts, list) else []
     status = str(reader_result.get("result") or "")
     intent = reader_result.get("intentContext")
     options = reader_result.get("clarificationOptions")
@@ -85,36 +111,75 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str) 
             "no_data": "No matching information is available for the requested scope.",
         },
     }
-    if status in messages["en"]:
-        if not facts:
-            return messages.get(language, messages["en"])[status]
-        fact_prefix = {
-            "ar": "التفاصيل المؤكدة:",
-            "zh": "已确认的信息：",
-            "en": "Confirmed details:",
-        }
-        limitation = messages.get(language, messages["en"])[status]
-        if status == "not_confirmed":
-            partial_messages = {
-                "ar": "تعذر تأكيد بقية التفاصيل المطلوبة.",
-                "zh": "其余所请求的详情尚未确认。",
-                "en": "The remaining requested details could not be confirmed.",
-            }
-            limitation = partial_messages.get(language, partial_messages["en"])
-        display_facts = []
-        for fact in facts:
-            try:
-                fields = json.loads(fact)
-            except (TypeError, ValueError):
-                fields = None
-            display_facts.append(
-                "; ".join(f"{key}: {value}" for key, value in fields.items())
-                if isinstance(fields, dict) and fields and all(isinstance(value, str) for value in fields.values())
-                else fact
-            )
-        return f"{fact_prefix.get(language, fact_prefix['en'])}\n" + "\n".join(display_facts) + f"\n\n{limitation}"
+    fact_prefix = {
+        "ar": "التفاصيل المؤكدة:",
+        "zh": "已确认的信息：",
+        "en": "Confirmed details:",
+    }
+
+    def display_fact_fields(fact: str) -> list[tuple[str, str]]:
+        try:
+            fields = json.loads(fact)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(fields, dict) or not fields or not all(
+            isinstance(key, str) and isinstance(value, (str, int, float, bool, type(None)))
+            for key, value in fields.items()
+        ):
+            return []
+        display_fields: list[tuple[str, str]] = []
+        for key, value in fields.items():
+            display_segments: list[str] = []
+            for segment in re.split(r"[_\-.]+", key):
+                words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", segment)
+                words = re.sub(r"\s+", " ", words).strip()
+                display_segments.append(words[:1].upper() + words[1:] if words else segment)
+            display_key = " ".join(segment for segment in display_segments if segment) or key
+            if isinstance(value, str):
+                rendered = value
+            else:
+                try:
+                    rendered = json.dumps(value, ensure_ascii=False, allow_nan=False)
+                except (TypeError, ValueError):
+                    return []
+            display_fields.append((display_key, rendered))
+        return display_fields
+    def render_facts() -> str:
+        blocks: list[str] = []
+        structured = [display_fact_fields(fact) for fact in facts]
+        numbered = len(facts) > 1 and any(len(fields) > 1 for fields in structured)
+        for index, (fact, fields) in enumerate(zip(facts, structured), start=1):
+            if not fields:
+                blocks.append(f"- {fact}")
+                continue
+            if len(fields) == 1:
+                key, value = fields[0]
+                blocks.append(f"- {key}: {value}")
+                continue
+            prefix = f"{index}." if numbered else "-"
+            first_key, first_value = fields[0]
+            lines = [f"{prefix} {first_key}: {first_value}"]
+            lines.extend(f"   - {key}: {value}" for key, value in fields[1:])
+            blocks.append("\n".join(lines))
+        return "\n".join(blocks)
+
     if facts:
-        return None
+        rendered_facts = render_facts()
+        if status == "success":
+            return f"**{fact_prefix.get(language, fact_prefix['en'])}**\n\n{rendered_facts}"
+        if status in messages["en"]:
+            limitation = messages.get(language, messages["en"])[status]
+            if status == "not_confirmed":
+                partial_messages = {
+                    "ar": "تعذر تأكيد بقية التفاصيل المطلوبة.",
+                    "zh": "其余所请求的详情尚未确认。",
+                    "en": "The remaining requested details could not be confirmed.",
+                }
+                limitation = partial_messages.get(language, partial_messages["en"])
+            return f"**{fact_prefix.get(language, fact_prefix['en'])}**\n\n{rendered_facts}\n\n{limitation}"
+        return f"**{fact_prefix.get(language, fact_prefix['en'])}**\n\n{rendered_facts}"
+    if status in messages["en"]:
+        return messages.get(language, messages["en"])[status]
     generic = {
         "ar": "لا توجد تفاصيل مؤكدة يمكن استخدامها للإجابة على هذا الطلب.",
         "zh": "没有可用于回答该请求的已确认信息。",
@@ -1131,77 +1196,23 @@ class DSHService:
                             "reader.result",
                             {**evidence, "requestId": principal.request_id, "runtimeId": conversation.runtime_id},
                         )
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": self._runtime_system_prompt(
-                                skill_id,
-                                language,
-                                str(getattr(self.settings, "system_prompt", "") or ""),
-                                selected_skill.content if selected_skill else "",
-                            ),
-                        }
-                    ]
-                    messages.extend(
-                        {
-                            "role": "user" if event.event_type == "user.message" else "assistant",
-                            "content": str(event.event_json.get("content") or ""),
-                        }
-                        for event in history
-                        if event.event_type in {"user.message", "assistant.message"}
-                    )
-                    messages.append(
-                        {
-                            "role": "system",
-                            "content": "BOUNDED VERIFIED RESULT:\n" + json.dumps(evidence, ensure_ascii=False),
-                        }
-                    )
                     await self.append_status(db, conversation, "drafting", language, request_id=principal.request_id)
-                    llm_started = time.perf_counter()
+                    assembly_started = time.perf_counter()
                     content = reader_evidence_only_response(evidence, language)
-                    llm_used = content is None
-                    reasoning = ""
                     formatting_failed = False
-                    if llm_used:
-                        await self.append_audit(
-                            db,
-                            conversation,
-                            "llm.request",
-                            {"model": self.settings.llm_model, "stream": True, "messages": messages},
-                            request_id=principal.request_id,
-                            runtime_id=conversation.runtime_id,
-                        )
-                        chunks: list[str] = []
-                        reasoning_chunks: list[str] = []
-
-                        async def capture_reasoning(value: str) -> None:
-                            reasoning_chunks.append(value)
-
-                        async for token in self.llm.stream(messages, on_reasoning=capture_reasoning):
-                            chunks.append(token)
-                        content = strip_unverified_links("".join(chunks), evidence)
-                        formatting_failed = is_internal_tool_protocol(content)
-                        if formatting_failed:
-                            content = (
-                                "تعذر تنسيق النتيجة المطلوبة. يرجى المحاولة مرة أخرى."
-                                if language == "ar"
-                                else "I could not format the requested result. Please try again."
-                            )
-                        reasoning = "".join(reasoning_chunks)
-                    else:
-                        guarded_facts = evidence.get("facts") if isinstance(evidence.get("facts"), list) else []
-                        await self.append_audit(
-                            db,
-                            conversation,
-                            "reader.answer_guard",
-                            {
-                                "readerStatus": str(evidence.get("result") or "")[:40],
-                                "factCount": len(guarded_facts),
-                                "reason": "reader_status_guard",
-                            },
-                            request_id=principal.request_id,
-                            runtime_id=conversation.runtime_id,
-                        )
+                    guarded_facts = evidence.get("facts") if isinstance(evidence.get("facts"), list) else []
+                    await self.append_audit(
+                        db,
+                        conversation,
+                        "reader.answer_guard",
+                        {
+                            "readerStatus": str(evidence.get("result") or "")[:40],
+                            "factCount": len(guarded_facts),
+                            "reason": "deterministic_evidence_delivery",
+                        },
+                        request_id=principal.request_id,
+                        runtime_id=conversation.runtime_id,
+                    )
                     if content:
                         await self.publish_stream_event(
                             conversation,
@@ -1215,26 +1226,12 @@ class DSHService:
                         reader_answer_assembly_evidence(
                             evidence,
                             content,
-                            duration_ms=(time.perf_counter() - llm_started) * 1000,
+                            duration_ms=(time.perf_counter() - assembly_started) * 1000,
                             formatting_failed=formatting_failed,
                         ),
                         request_id=principal.request_id,
                         runtime_id=conversation.runtime_id,
                     )
-                    if llm_used:
-                        await self.append_audit(
-                            db,
-                            conversation,
-                            "llm.response",
-                            {
-                                "model": self.settings.llm_model,
-                                "content": content,
-                                "reasoning": reasoning,
-                                "durationMs": round((time.perf_counter() - llm_started) * 1000, 1),
-                            },
-                            request_id=principal.request_id,
-                            runtime_id=conversation.runtime_id,
-                        )
                     await self.append_event(
                         db,
                         conversation,

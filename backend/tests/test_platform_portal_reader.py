@@ -1418,7 +1418,6 @@ def test_gateway_allows_a_visible_record_cell_detail_without_button_permission()
 @pytest.mark.parametrize(
     ("action", "expected"),
     [
-        (cell_detail_action(path=None), "reader_detail_destination_required"),
         (cell_detail_action(path="/licensing/applications"), "reader_detail_destination_not_distinct"),
         (cell_detail_action(path="/licensing/applications/detail?taskId=opaque-uuid"), "reader_detail_destination_query_forbidden"),
         (cell_detail_action(name="OTHER-9"), "reader_detail_cell_identity_mismatch"),
@@ -1430,6 +1429,10 @@ def test_gateway_rejects_unbounded_or_forged_cell_detail_requests(action, expect
         gateway._validate_reader_request(read_request([action], startPath="/licensing/applications"))
 
     assert error_code(raised.value) == expected
+
+
+def test_gateway_accepts_observation_bound_cell_detail_without_a_model_destination() -> None:
+    gateway._validate_reader_request(read_request([cell_detail_action(path=None)]))
 
 
 def test_runtime_cell_detail_requires_visible_native_cell_and_row_with_exact_identity() -> None:
@@ -1458,6 +1461,12 @@ def test_runtime_cell_detail_rechecks_destination_and_identity_after_click() -> 
     asyncio.run(gateway._validate_cell_detail_navigation(
         FakeDetailNavigationPage("https://admin.example.test/licensing/applications/detail?taskId=opaque-uuid"),
         action,
+        before_url,
+    ))
+    observation_bound_action = gateway.PortalReadAction.model_validate(cell_detail_action(path=None))
+    asyncio.run(gateway._validate_cell_detail_navigation(
+        FakeDetailNavigationPage("https://admin.example.test/licensing/applications/detail?taskId=opaque-uuid"),
+        observation_bound_action,
         before_url,
     ))
     for page, expected in (
@@ -1740,13 +1749,14 @@ def test_tab_scope_rejects_multiple_visible_scope_candidates(multiple):
 
 
 @pytest.mark.parametrize("headings", [[], [FakeTabHeading()], [FakeTabHeading(FakeTabPage(visible=False))]])
-def test_tab_scope_does_not_fall_back_to_global_tabs_when_heading_scope_missing(headings):
+def test_tab_scope_falls_back_to_one_global_tab_when_planner_section_is_not_a_dom_scope(headings):
     global_tab = FakeBadgedTab("Blocked 4", parts=["Blocked", "4"], aria_selected="true")
     page = FakeTabPage([global_tab], headings={"Needs Review": headings})
-    with pytest.raises(RuntimeError, match="reader_selector_not_found"):
-        asyncio.run(gateway._safe_click(page, gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked", section="Needs Review")))
-    assert not global_tab.clicked
-    assert not any(role == "tab" for role, _, _ in page.lookups)
+    asyncio.run(gateway._safe_click(
+        page,
+        gateway.PortalReadAction(type="switch_tab", role="tab", name="Blocked", section="Needs Review"),
+    ))
+    assert global_tab.clicked
 
 
 def test_heading_scope_fallback_does_not_apply_to_non_tab_actions():

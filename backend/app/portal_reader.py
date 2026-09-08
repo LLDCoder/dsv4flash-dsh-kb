@@ -434,6 +434,65 @@ def _question_requests_support_api(question: str, conversation_context: Any) -> 
     ))
 
 
+def _api_response_leaf_field_tokens(value: Any) -> frozenset[str]:
+    tokens: set[str] = set()
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if child is None or isinstance(child, (str, int, float, bool)):
+                    tokens.update(_api_field_tokens(key))
+                elif isinstance(child, (dict, list, tuple)):
+                    visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child)
+
+    visit(value)
+    return frozenset(tokens)
+
+
+def _prefer_semantic_response_candidates(
+    observation: Any,
+    candidates: tuple[dict[str, Any], ...],
+    question: str,
+    conversation_context: Any,
+) -> tuple[dict[str, Any], ...]:
+    """Prefer candidates that match the requested answer shape and business terms."""
+
+    semantic_text = " ".join((question, *_resolved_intent_values(conversation_context).values()))
+    query_tokens = _api_query_tokens(semantic_text)
+    answer_shape = (
+        _resolved_intent_values(conversation_context).get("answerShape")
+        or reader_answer_shape(question, conversation_context)
+    )
+    shape_tokens = _API_SHAPE_TERMS.get(answer_shape, frozenset())
+    if len(candidates) <= 1:
+        return candidates
+    scored: list[tuple[dict[str, Any], tuple[int, int, int, int]]] = []
+    for candidate in candidates:
+        evidence = _api_response_evidence_for_operation(
+            observation, str(candidate.get("operationKey") or ""),
+        )
+        field_tokens = _api_response_leaf_field_tokens(evidence.get("data")) if evidence else frozenset()
+        metadata_tokens = frozenset(_api_field_tokens(" ".join((
+            str(candidate.get("operationKey") or ""),
+            str(candidate.get("path") or candidate.get("pathTemplate") or ""),
+            json.dumps(candidate.get("swagger") or {}, ensure_ascii=False, default=str),
+        ))))
+        scored.append((candidate, (
+            len(metadata_tokens.intersection(shape_tokens)),
+            len(field_tokens.intersection(query_tokens)),
+            len(metadata_tokens.intersection(query_tokens)),
+            len(field_tokens.intersection(shape_tokens)),
+        )))
+    best_score = max((score for _candidate, score in scored), default=(0, 0, 0, 0))
+    if not any(best_score):
+        return candidates
+    return tuple(candidate for candidate, score in scored if score == best_score)
+
+
 def _relevant_selectable_api_candidates(
     observation: Any,
     question: str,
@@ -446,7 +505,12 @@ def _relevant_selectable_api_candidates(
     )
     if _question_requests_support_api(question, conversation_context):
         return candidates
-    return tuple(candidate for candidate in candidates if candidate.get("candidateKind") != "support")
+    business_candidates = tuple(
+        candidate for candidate in candidates if candidate.get("candidateKind") != "support"
+    )
+    return _prefer_semantic_response_candidates(
+        observation, business_candidates, question, conversation_context,
+    )
 
 
 def _api_response_evidence_for_operation(observation: Any, operation_key: str) -> dict[str, Any] | None:
@@ -468,9 +532,9 @@ def _api_response_evidence_for_operation(observation: Any, operation_key: str) -
                 "operationKey": operation_key,
                 "trigger": _sanitize_untrusted_text(candidate.get("trigger") or "", max_length=160),
                 "truncated": candidate.get("responseEvidenceTruncated") is True,
-                "data": bounded_json(
+                "data": _bounded_api_json(
                     candidate.get("responseEvidence"),
-                    max_depth=10,
+                    max_depth=32,
                     max_items=60,
                     max_string=1_000,
                 ),
@@ -602,6 +666,177 @@ def _observed_api_drill_controls(observation: Any) -> tuple[dict[str, Any], ...]
                 if len(result) >= 30:
                     return tuple(result)
     return tuple(result)
+
+
+def _state_control_label_matches(observed: object, requested: object) -> bool:
+    observed_text = re.sub(r"\s+", " ", str(observed or "")).strip().casefold()
+    requested_text = re.sub(r"\s+", " ", str(requested or "")).strip().casefold()
+    if not observed_text or not requested_text:
+        return False
+    if observed_text == requested_text:
+        return True
+    if re.search(r"\d$", requested_text):
+        return False
+    return bool(re.fullmatch(re.escape(requested_text) + r"\s+\d+", observed_text))
+
+
+def _observed_switch_tab_action(action: dict[str, Any], observation: Any) -> dict[str, Any] | None:
+    """Bind a requested state label to one currently observed tab control."""
+
+    requested = action.get("name") or action.get("label")
+    discovery = _api_discovery(observation)
+    raw_controls = discovery.get("safeControls") if discovery is not None else None
+    explicit_matches = []
+    for control in raw_controls if isinstance(raw_controls, list) else []:
+        observed_action = control.get("action") if isinstance(control, dict) else None
+        if (
+            isinstance(observed_action, dict)
+            and str(observed_action.get("type") or "").casefold().replace("-", "_") == "switch_tab"
+            and _state_control_label_matches(
+                control.get("label") or observed_action.get("name") or observed_action.get("label"),
+                requested,
+            )
+        ):
+            explicit_matches.append(observed_action)
+    if len(explicit_matches) == 1:
+        observed_name = explicit_matches[0].get("name") or explicit_matches[0].get("label")
+        return {"type": "switch_tab", "role": "tab", "name": str(observed_name)}
+    if len(explicit_matches) > 1:
+        return None
+
+    matches: list[str] = []
+    for node in _observation_semantic_nodes(observation):
+        for label in _bounded_observation_field(node, "controls", limit=20):
+            if (
+                _state_control_label_matches(label, requested)
+                and not ReadOnlyPortalPolicy._contains_mutation_command(label)
+            ):
+                matches.append(label)
+    if len(matches) > 1:
+        return None
+    if not matches and isinstance(observation, dict):
+        matches = [
+            label for label in _bounded_observation_field(observation, "controls", limit=30)
+            if (
+                _state_control_label_matches(label, requested)
+                and not ReadOnlyPortalPolicy._contains_mutation_command(label)
+            )
+        ]
+    if len(matches) != 1:
+        return None
+    # The model-provided selector and section are advisory only. A globally
+    # unique observed tab label is re-resolved against the fresh page by the
+    # gateway immediately before click.
+    return {"type": "switch_tab", "role": "tab", "name": matches[0]}
+
+
+def _row_contains_record_identity(row: object, identity: str) -> bool:
+    row_text = re.sub(r"\s+", " ", str(row or "")).strip()
+    if not row_text or not identity:
+        return False
+    return bool(re.search(
+        r"(?<![A-Za-z0-9])" + re.escape(identity) + r"(?![A-Za-z0-9])",
+        row_text,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _observed_cell_detail_action(observation: Any, record_identity: str) -> dict[str, Any] | None:
+    """Bind one stable identity to exactly one currently observed table row."""
+
+    identity = _detail_identity(record_identity)
+    matching_rows = []
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") not in {"table", "grid"}:
+            continue
+        for index, row in enumerate(_bounded_observation_field(node, "rowSummaries", limit=20)):
+            if _row_contains_record_identity(row, identity):
+                matching_rows.append((str(node.get("nodeId") or ""), index))
+    if len(matching_rows) > 1:
+        return None
+    if not matching_rows:
+        discovery = _api_discovery(observation)
+        candidates = [] if discovery is None else discovery.get("candidates") or []
+
+        def contains_identity(value: Any, depth: int = 0) -> bool:
+            if depth >= 10:
+                return False
+            if isinstance(value, dict):
+                return any(contains_identity(child, depth + 1) for child in value.values())
+            if isinstance(value, (list, tuple)):
+                return any(contains_identity(child, depth + 1) for child in value)
+            return isinstance(value, (str, int, float)) and not isinstance(value, bool) and _detail_identity(value).casefold() == identity.casefold()
+
+        if not any(
+            isinstance(candidate, dict)
+            and contains_identity(candidate.get("responseEvidence"))
+            for candidate in candidates[:32]
+        ):
+            return None
+    return {"type": "show_detail", "role": "cell", "name": identity, "value": identity}
+
+
+def _detail_action_can_use_observed_identity(action: dict[str, Any], record_identity: str) -> bool:
+    """Allow only harmless missing detail-binding fields to be normalized."""
+
+    identity = _detail_identity(record_identity)
+    if not identity or str(action.get("type") or "").casefold().replace("-", "_") != "show_detail":
+        return False
+    if str(action.get("method") or "GET").upper() != "GET":
+        return False
+    if str(action.get("role") or "cell").casefold() != "cell":
+        return False
+    if action.get("permissionCode") or action.get("permission_code") or action.get("selector"):
+        return False
+    if any(action.get(name) not in (None, "", {}, []) for name in ("path", "url", "parameters", "filters", "values", "direction")):
+        return False
+    supplied_value = _detail_identity(action.get("value"))
+    if supplied_value and supplied_value != identity:
+        return False
+    supplied_name = _detail_identity(action.get("name"))
+    if supplied_name and any(char.isdigit() for char in supplied_name) and supplied_name != identity:
+        return False
+    return not any(
+        ReadOnlyPortalPolicy._contains_mutation_command(action.get(name))
+        for name in ("name", "label", "field", "section")
+        if action.get(name)
+    )
+
+
+def _bind_observed_actions(
+    request: PortalReadRequest,
+    observation: Any,
+    *,
+    record_identity: str,
+    allow_valid_detail_metadata: bool = False,
+) -> tuple[PortalReadRequest | None, str]:
+    """Replace model locators with unique controls from the current observation."""
+
+    bound_actions: list[dict[str, Any]] = []
+    for action in request.actions:
+        action_type = str(action.get("type") or "").casefold().replace("-", "_")
+        if action_type == "switch_tab":
+            bound = _observed_switch_tab_action(action, observation)
+            if bound is None:
+                return None, "state_control_not_unique"
+            bound_actions.append(bound)
+            continue
+        if action_type == "show_detail" and str(action.get("role") or "cell").casefold() == "cell":
+            identity = record_identity or _detail_identity(action.get("value"))
+            supplied_identity = _detail_identity(action.get("value"))
+            if (
+                supplied_identity and supplied_identity != identity
+                or not allow_valid_detail_metadata
+                and not _detail_action_can_use_observed_identity(action, identity)
+            ):
+                return None, "detail_identity_conflict"
+            bound = _observed_cell_detail_action(observation, identity)
+            if bound is None:
+                return None, "detail_target_not_unique"
+            bound_actions.append(bound)
+            continue
+        bound_actions.append(dict(action))
+    return replace(request, actions=tuple(bound_actions)), ""
 
 
 def api_drill_request_from_plan(
@@ -881,7 +1116,12 @@ def reader_answer_shape(
         return "overview"
     patterns = (
         ("attention", r"\battention\b|pay attention|需要.{0,8}(?:关注|留意)|(?:关注|留意).{0,8}(?:什么|哪些)"),
-        ("due", r"\bdue\b|due soon|expir|overdue|到期|逾期"),
+        (
+            "due",
+            r"\bdue\b|\bdue soon\b|\bdeadlines?\b|"
+            r"\b(?:approaching|near(?:ing)?)\b.{0,32}\b(?:deadlines?|due|expiry|expiration)\b|"
+            r"expir|overdue|到期|逾期",
+        ),
         ("detail", r"\bdetails?\b|详情|明细"),
         ("count", r"\bhow many\b|\bcount\b|\bnumber of\b|多少|几个|几项"),
         ("overview", r"\boverview\b|\bsummary\b|\bwhat (?:is shown|can i see)\b|概览|概况|总览"),
@@ -1008,6 +1248,25 @@ def _detail_identity(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
 
 
+def _stable_detail_identity_from_query(question: str, actions: tuple[dict[str, Any], ...]) -> str:
+    """Recover one exact record-like query value without guessing an identity."""
+
+    candidates: set[str] = set()
+    question_text = question.casefold()
+    for action in actions:
+        if str(action.get("type") or "").casefold().replace("-", "_") != "query":
+            continue
+        value = _detail_identity(action.get("value"))
+        if (
+            3 <= len(value) <= 200
+            and any(char.isdigit() for char in value)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value)
+            and value.casefold() in question_text
+        ):
+            candidates.add(value)
+    return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
 def _cell_detail_destination(action: dict[str, Any]) -> str | None:
     destinations = [str(action[name]).strip() for name in ("path", "url") if action.get(name)]
     return destinations[0] if len(destinations) == 1 else None
@@ -1039,6 +1298,57 @@ def bounded_json(value: Any, *, max_depth: int = 5, max_items: int = 100, max_st
     return str(value)[:max_string]
 
 
+_API_TRUNCATION_MARKERS = frozenset({
+    "[truncated]", "<truncated>", "[max-depth]", "[depth]",
+})
+
+
+def _bounded_api_json(
+    value: Any,
+    *,
+    max_depth: int = 32,
+    max_items: int = 60,
+    max_string: int = 1_000,
+) -> Any:
+    """Project already-bounded API JSON without turning omissions into facts."""
+
+    omitted = object()
+
+    def visit(item: Any, depth: int) -> Any:
+        if depth >= max_depth:
+            return omitted
+        if isinstance(item, dict):
+            result: dict[str, Any] = {}
+            for name, child in list(item.items())[:max_items]:
+                normalized = _key(name)
+                if (
+                    normalized in {_key(key) for key in SENSITIVE_KEYS}
+                    or any(fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS)
+                ):
+                    continue
+                projected = visit(child, depth + 1)
+                if projected is not omitted:
+                    result[str(name)[:120]] = projected
+            return result
+        if isinstance(item, (list, tuple)):
+            result = []
+            for child in list(item)[:max_items]:
+                projected = visit(child, depth + 1)
+                if projected is not omitted:
+                    result.append(projected)
+            return result
+        if isinstance(item, str):
+            if item.strip().casefold() in _API_TRUNCATION_MARKERS:
+                return omitted
+            return _sanitize_untrusted_text(item, max_length=max_string)
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        return _sanitize_untrusted_text(str(item), max_length=max_string)
+
+    projected = visit(value, 0)
+    return {} if projected is omitted else projected
+
+
 def bounded_portal_observation(value: Any) -> Any:
     """Bound page semantics while giving each captured API response its own depth budget."""
 
@@ -1063,9 +1373,9 @@ def bounded_portal_observation(value: Any) -> Any:
             raw_candidate = raw_by_operation.get(str(candidate.get("operationKey") or ""))
             if not isinstance(raw_candidate, dict) or "responseEvidence" not in raw_candidate:
                 continue
-            candidate["responseEvidence"] = bounded_json(
+            candidate["responseEvidence"] = _bounded_api_json(
                 raw_candidate.get("responseEvidence"),
-                max_depth=10,
+                max_depth=32,
                 max_items=60,
                 max_string=1_000,
             )
@@ -1297,11 +1607,9 @@ class ReadOnlyPortalPolicy:
                 if not str(action.get("name") or "").strip() or _detail_identity(action.get("name")) != identity:
                     return "detail_cell_identity_mismatch"
                 destination = _cell_detail_destination(action)
-                if destination is None:
-                    return "detail_destination_required"
-                if urlsplit(destination).query or urlsplit(destination).fragment:
+                if destination is not None and (urlsplit(destination).query or urlsplit(destination).fragment):
                     return "detail_destination_query_forbidden"
-                if _same_route(request.start_path, destination):
+                if destination is not None and _same_route(request.start_path, destination):
                     return "detail_destination_not_distinct"
             parameters = action.get("parameters") or action.get("filters") or {}
             if not isinstance(parameters, dict):
@@ -1491,6 +1799,76 @@ def _observation_plan_result_from_plan(plan: Any) -> ReaderResult | None:
     """Validate the planner's closed post-observe result shape."""
 
     return _closed_result_from_plan(plan, expected_mode="observation_result")
+
+
+def _selected_api_answer_plan(
+    plan: Any,
+    *,
+    answer_shape: str,
+) -> dict[str, Any] | None:
+    """Normalize arbitrary JSON produced while processing selected API evidence."""
+
+    if _observation_plan_result_from_plan(plan) is not None:
+        return plan
+    if not isinstance(plan, dict) or plan.get("mode") in {"portal_read", "api_selection", "knowledge_only"}:
+        return None
+
+    preferred_collections = ("facts", "items", "records", "rows", "tasks", "results")
+    preferred_wrappers = ("answer", "output", "response", "data", "result")
+
+    def extract(value: Any, depth: int = 0) -> list[Any]:
+        if depth >= 8 or value in (None, ""):
+            return []
+        if isinstance(value, list):
+            return list(value[:20])
+        if not isinstance(value, dict):
+            return [value]
+        for key in preferred_collections:
+            if key in value and value[key] not in (None, "", []):
+                scalar_context = {
+                    str(name): child
+                    for name, child in value.items()
+                    if name != key and child not in (None, "", [], {})
+                    and isinstance(child, (str, int, float, bool))
+                    and str(name).casefold() not in {"mode", "status", "result", "answershape", "completeness"}
+                }
+                return ([scalar_context] if scalar_context else []) + extract(value[key], depth + 1)
+        for key in preferred_wrappers:
+            child = value.get(key)
+            if child not in (None, "", [], {}) and not (
+                key == "result" and isinstance(child, str)
+                and child.casefold() in {"success", "ok", "no_data", "not_confirmed"}
+            ):
+                return extract(child, depth + 1)
+        content = {
+            str(name): child for name, child in value.items()
+            if str(name).casefold() not in {
+                "mode", "status", "result", "answershape", "answer_shape", "completeness",
+                "missing", "page", "section", "sourcesection", "selectedstate", "scope", "workflowstate",
+            }
+            and child not in (None, "", [], {})
+        }
+        return [content] if content else []
+
+    facts = extract(plan)
+    raw_status = plan.get("status")
+    if not isinstance(raw_status, str):
+        raw_status = plan.get("result") if isinstance(plan.get("result"), str) else ""
+    normalized_status = str(raw_status or "").casefold().replace("-", "_").replace(" ", "_")
+    no_data = normalized_status in {"no_data", "empty", "not_found"} and not facts
+    if not facts and not no_data:
+        return None
+    normalized_shape = answer_shape if answer_shape in {
+        "overview", "count", "list", "attention", "due", "detail",
+    } else "unspecified"
+    return {
+        "mode": "observation_result",
+        "result": "no_data" if no_data else "success",
+        "answerShape": normalized_shape,
+        "completeness": "bounded",
+        "facts": facts[:20],
+        "missing": [],
+    }
 
 
 _DOCUMENTATION_QUESTION_MARKERS = ("manual", "documented", "documentation", "user guide", "手册", "文档", "说明", "دليل")
@@ -1790,6 +2168,509 @@ def _observation_scalar_strings(value: Any, *, limit: int = 300) -> tuple[str, .
     return tuple(values)
 
 
+_API_ENVELOPE_FIELDS = frozenset({
+    "actioncode", "actionlabel", "actionurl", "code", "detailtarget", "error", "errors",
+    "httpcode", "httpstatus", "issuccess", "message", "msg", "openmode", "operationkey",
+    "rawresponse", "requestid", "statuscode", "success", "timestamp", "traceid",
+})
+_API_COUNT_FIELDS = frozenset({
+    "count", "itemcount", "recordcount", "resultcount", "total", "totalcount", "totalelements",
+})
+_API_SHAPE_TERMS = {
+    "attention": frozenset({"attention", "blocked", "escalated", "overdue", "priority", "risk", "urgent", "waiting"}),
+    "count": frozenset({"count", "statistics", "stats", "summary", "total"}),
+    "detail": frozenset({"detail", "details"}),
+    "due": frozenset({"deadline", "due", "expired", "late", "overdue", "remaining", "sla", "waiting"}),
+    "list": frozenset({"items", "list", "page", "records", "results"}),
+    "overview": frozenset({"overview", "statistics", "stats", "summary", "total"}),
+}
+_API_QUERY_STOPWORDS = frozenset({
+    "a", "an", "any", "are", "current", "do", "for", "have", "i", "in", "is", "me", "my",
+    "of", "on", "show", "the", "there", "to", "what", "which", "with",
+})
+
+
+def _api_field_tokens(value: object) -> list[str]:
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(value or ""))
+    text = re.sub(r"[-_]+", " ", text)
+    return re.findall(r"[a-z][a-z0-9]*|\d+(?:\.\d+)?", text.casefold())
+
+
+def _api_query_tokens(value: str) -> frozenset[str]:
+    tokens = {
+        token for token in _api_field_tokens(value)
+        if len(token) >= 2 and token not in _API_QUERY_STOPWORDS
+    }
+    # Preserve the original token while adding a conservative singular form.
+    # API fields commonly use `task` while natural-language questions use
+    # `tasks`; treating those as unrelated destabilizes semantic selection.
+    for token in tuple(tokens):
+        if len(token) > 4 and token.endswith("ies"):
+            tokens.add(token[:-3] + "y")
+        elif len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us", "is")):
+            tokens.add(token[:-1])
+    return frozenset(tokens)
+
+
+def _due_query_mode(value: str) -> Literal["upcoming", "overdue", "any"]:
+    normalized = re.sub(r"\s+", " ", str(value or "").casefold()).strip()
+    upcoming = bool(re.search(
+        r"\bdue soon\b|\bupcoming\b|\bexpir(?:es?|ing)\b|"
+        r"\b(?:approaching|near(?:ing)?)\b.{0,32}\b(?:deadlines?|due|expiry|expiration)\b|"
+        r"即将|临近|قريب",
+        normalized,
+    ))
+    overdue = bool(re.search(r"\boverdue\b|\bpast due\b|\blate\b|逾期|متأخر", normalized))
+    if upcoming and not overdue:
+        return "upcoming"
+    if overdue and not upcoming:
+        return "overdue"
+    return "any"
+
+
+def _query_requests_record_identities(value: str) -> bool:
+    return bool(re.search(
+        r"\b(?:which|list|show|display|what are)\b|哪些|列出|显示|اعرض|أي",
+        str(value or "").casefold(),
+    ))
+
+
+def _api_unit_relevance(unit: str, *, answer_shape: str, semantic_query: str) -> int:
+    unit_tokens = frozenset(_api_field_tokens(unit))
+    shape_tokens = _API_SHAPE_TERMS.get(answer_shape, frozenset())
+    query_tokens = _api_query_tokens(semantic_query)
+    return 4 * len(unit_tokens.intersection(shape_tokens)) + len(unit_tokens.intersection(query_tokens))
+
+
+def _serialize_api_mapping(
+    mapping: dict[str, Any],
+    *,
+    semantic_query: str,
+    answer_shape: str,
+    context_path: tuple[str, ...] = (),
+) -> str:
+    """Serialize complete scalar fields without cutting a JSON fact mid-value."""
+
+    query_tokens = _api_query_tokens(semantic_query)
+    shape_tokens = _API_SHAPE_TERMS.get(answer_shape, frozenset())
+
+    def field_priority(item: tuple[str, Any]) -> tuple[int, int]:
+        key, value = item
+        tokens = frozenset((*_api_field_tokens(key), *_api_field_tokens(value)))
+        return (
+            4 * len(tokens.intersection(shape_tokens)) + len(tokens.intersection(query_tokens)),
+            1 if re.search(r"(?:id|number|no|name|title|status)$", _key(key)) else 0,
+        )
+
+    selected: dict[str, Any] = {}
+    visible_context = tuple(
+        part for part in context_path
+        if _key(part) not in {"data", "payload", "response", "result"}
+    )
+    for key, value in sorted(mapping.items(), key=field_priority, reverse=True):
+        if _key(key) in _API_ENVELOPE_FIELDS:
+            continue
+        if isinstance(value, str) and value.strip().casefold() in _API_TRUNCATION_MARKERS:
+            continue
+        qualified_key = ".".join((*visible_context[-2:], key)) if visible_context else key
+        candidate = {**selected, qualified_key: value}
+        try:
+            encoded = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError):
+            continue
+        if len(encoded) <= _OBSERVATION_FALLBACK_MAX_FACT_CHARS:
+            selected = candidate
+    if not selected:
+        return ""
+    return json.dumps(selected, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _api_evidence_units(
+    value: Any, *, limit: int = 120,
+) -> tuple[tuple[dict[str, Any] | None, str, tuple[str, ...]], ...]:
+    """Return record-local API units so facts cannot join unrelated rows."""
+
+    units: list[tuple[dict[str, Any] | None, str, tuple[str, ...]]] = []
+
+    def record_scalars(item: dict[str, Any], *, max_depth: int = 4) -> dict[str, Any]:
+        """Flatten scalar descendants from one list record without crossing records."""
+
+        flattened: dict[str, Any] = {}
+        conflicts: set[str] = set()
+
+        def collect(value: Any, depth: int) -> None:
+            if depth > max_depth or len(flattened) >= 40:
+                return
+            if not isinstance(value, dict):
+                return
+            for key, child in value.items():
+                name = str(key)
+                if isinstance(child, dict):
+                    collect(child, depth + 1)
+                    continue
+                if isinstance(child, (list, tuple)):
+                    continue
+                if not (child is None or isinstance(child, (str, int, float, bool))):
+                    continue
+                if _key(name) in _API_ENVELOPE_FIELDS or (
+                    isinstance(child, str) and child.strip().casefold() in _API_TRUNCATION_MARKERS
+                ):
+                    continue
+                if name in flattened and flattened[name] != child:
+                    conflicts.add(name)
+                elif name not in conflicts:
+                    flattened[name] = child
+
+        collect(item, 0)
+        for name in conflicts:
+            flattened.pop(name, None)
+        return flattened
+
+    def visit(item: Any, path: tuple[str, ...] = ()) -> None:
+        if len(units) >= limit:
+            return
+        if isinstance(item, dict):
+            scalars = {
+                str(key): child
+                for key, child in item.items()
+                if (
+                    child is None
+                    or isinstance(child, (str, int, float, bool))
+                )
+                and not (
+                    isinstance(child, str)
+                    and child.strip().casefold() in _API_TRUNCATION_MARKERS
+                )
+            }
+            business_scalars = {
+                key: child for key, child in scalars.items()
+                if _key(key) not in _API_ENVELOPE_FIELDS
+            }
+            if business_scalars:
+                tokens = [
+                    token
+                    for key, child in business_scalars.items()
+                    for token in (*_api_field_tokens(key), *_api_field_tokens(child))
+                ]
+                path_tokens = [token for key in path for token in _api_field_tokens(key)]
+                units.append((business_scalars, " ".join((*path_tokens, *tokens)), path))
+            for key, child in item.items():
+                if isinstance(child, (dict, list, tuple)):
+                    visit(child, (*path, str(key)))
+        elif isinstance(item, (list, tuple)):
+            scalar_items = [
+                child for child in item
+                if (child is None or isinstance(child, (str, int, float, bool)))
+                and not (
+                    isinstance(child, str)
+                    and child.strip().casefold() in _API_TRUNCATION_MARKERS
+                )
+            ]
+            if scalar_items:
+                path_tokens = [token for key in path for token in _api_field_tokens(key)]
+                value_tokens = [token for child in scalar_items for token in _api_field_tokens(child)]
+                units.append((None, " ".join((*path_tokens, *value_tokens)), path))
+            for child in item:
+                if isinstance(child, (dict, list, tuple)):
+                    if isinstance(child, dict):
+                        flattened = record_scalars(child)
+                        if flattened:
+                            path_tokens = [token for key in path for token in _api_field_tokens(key)]
+                            record_tokens = [
+                                token
+                                for key, value in flattened.items()
+                                for token in (*_api_field_tokens(key), *_api_field_tokens(value))
+                            ]
+                            units.append((flattened, " ".join((*path_tokens, *record_tokens)), path))
+                    visit(child, path)
+
+    visit(value)
+    return tuple(units)
+
+
+def _api_mapping_fact_supported(fields: dict[str, Any], evidence: Any) -> bool:
+    if not fields or not all(
+        isinstance(key, str) and (value is None or isinstance(value, (str, int, float, bool)))
+        for key, value in fields.items()
+    ):
+        return False
+    def unit_supports(
+        mapping: dict[str, Any] | None,
+        path: tuple[str, ...],
+    ) -> bool:
+        if mapping is None:
+            return False
+        normalized_path = tuple(_key(part) for part in path)
+        for qualified_key, value in fields.items():
+            parts = tuple(part for part in qualified_key.split(".") if part)
+            leaf_key = parts[-1] if parts else qualified_key
+            if leaf_key not in mapping or mapping[leaf_key] != value:
+                return False
+            qualifiers = tuple(_key(part) for part in parts[:-1])
+            if qualifiers and normalized_path[-len(qualifiers):] != qualifiers:
+                return False
+        return True
+
+    return any(
+        unit_supports(mapping, path)
+        for mapping, _unit, path in _api_evidence_units(evidence)
+    )
+
+
+def _api_evidence_supports_fact(fact: str, evidence: Any) -> bool:
+    """Ground one answer fact in a single selected response record or summary."""
+
+    try:
+        fields = json.loads(fact)
+    except (TypeError, ValueError):
+        fields = None
+    if isinstance(fields, dict):
+        return _api_mapping_fact_supported(fields, evidence)
+
+    fact_tokens = _api_field_tokens(fact)
+    concrete = [
+        token for token in fact_tokens
+        if token[0].isdigit() or (len(token) >= 2 and token not in _OBSERVATION_PROSE_TERMS)
+    ]
+    if not concrete:
+        return False
+    for _mapping, unit, _path in _api_evidence_units(evidence):
+        unit_tokens = _api_field_tokens(unit)
+        if all(concrete.count(token) <= unit_tokens.count(token) for token in set(concrete)):
+            polarity_source = " ".join(str(value) for value in (_mapping or {}).values()) or unit
+            if _negative_polarity(fact) == _negative_polarity(polarity_source):
+                return True
+    return False
+
+
+def _api_evidence_fallback_plan(
+    api_evidence: Any,
+    *,
+    answer_shape: str,
+    semantic_query: str = "",
+) -> tuple[dict[str, Any] | None, str]:
+    """Build a closed result from relevant fields in one selected API response."""
+
+    if not isinstance(api_evidence, dict) or "data" not in api_evidence:
+        return None, "selected_response_missing"
+    data = api_evidence.get("data")
+    units = _api_evidence_units(data)
+    normalized_shape = answer_shape if answer_shape in {
+        "overview", "count", "list", "attention", "due", "detail",
+    } else "unspecified"
+
+    list_values: list[Any] = []
+    saw_empty_list = False
+
+    def collect_lists(value: Any) -> None:
+        nonlocal saw_empty_list
+        if isinstance(value, dict):
+            for child in value.values():
+                collect_lists(child)
+        elif isinstance(value, (list, tuple)):
+            saw_empty_list = saw_empty_list or not value
+            list_values.extend(value[:20])
+            for child in value[:20]:
+                if isinstance(child, (dict, list, tuple)):
+                    collect_lists(child)
+
+    collect_lists(data)
+    mapping_units = [(mapping, unit, path) for mapping, unit, path in units if mapping]
+    count_units = [
+        ({key: value for key, value in mapping.items() if _key(key) in _API_COUNT_FIELDS}, unit, path)
+        for mapping, unit, path in mapping_units
+    ]
+    count_units = [(mapping, unit, path) for mapping, unit, path in count_units if mapping]
+    count_mappings = [mapping for mapping, _unit, _path in count_units]
+
+    selected_mappings: list[tuple[dict[str, Any], tuple[str, ...]]]
+    if normalized_shape == "count":
+        if not count_units:
+            return None, "selected_response_count_not_confirmed"
+        ranked_counts = sorted(
+            count_units,
+            key=lambda item: _api_unit_relevance(
+                item[1], answer_shape=normalized_shape, semantic_query=semantic_query,
+            ),
+            reverse=True,
+        )
+        best_score = _api_unit_relevance(
+            ranked_counts[0][1], answer_shape=normalized_shape, semantic_query=semantic_query,
+        )
+        tied = [
+            (mapping, path) for mapping, unit, path in ranked_counts
+            if _api_unit_relevance(unit, answer_shape=normalized_shape, semantic_query=semantic_query) == best_score
+        ]
+        if len(tied) > 1 and len({json.dumps(item[0], sort_keys=True, default=str) for item in tied}) > 1:
+            return None, "selected_response_count_ambiguous"
+        selected_mappings = tied[:1]
+    elif normalized_shape == "list":
+        row_mappings = [
+            {
+                str(key): value for key, value in item.items()
+                if (value is None or isinstance(value, (str, int, float, bool)))
+                and _key(key) not in _API_ENVELOPE_FIELDS
+                and not (
+                    isinstance(value, str)
+                    and value.strip().casefold() in _API_TRUNCATION_MARKERS
+                )
+            }
+            for item in list_values if isinstance(item, dict)
+        ]
+        row_mappings = [mapping for mapping in row_mappings if mapping]
+        if row_mappings:
+            row_limit = 7 if count_mappings else 8
+            selected_mappings = [
+                *((mapping, ()) for mapping in row_mappings[:row_limit]),
+                *((mapping, path) for mapping, _unit, path in count_units[:1]),
+            ]
+        else:
+            selected_mappings = []
+            scalar_items = [item for item in list_values if item is None or isinstance(item, (str, int, float, bool))]
+            if scalar_items:
+                facts = _bounded_fact_candidates(tuple(str(item) for item in scalar_items))
+                return ({
+                    "mode": "observation_result", "result": "success", "answerShape": "list",
+                    "completeness": "bounded", "facts": list(facts), "missing": [],
+                }, "answerable") if facts else (None, "selected_response_list_not_confirmed")
+            zero_count = any(
+                isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
+                for mapping in count_mappings for value in mapping.values()
+            )
+            if (
+                saw_empty_list
+                and (zero_count or not count_mappings)
+                and api_evidence.get("truncated") is not True
+            ):
+                return ({
+                    "mode": "observation_result", "result": "no_data", "answerShape": "list",
+                    "completeness": "bounded", "facts": [], "missing": [],
+                }, "answerable_empty")
+            return None, "selected_response_list_not_confirmed"
+    elif normalized_shape == "detail":
+        ranked = sorted(
+            mapping_units,
+            key=lambda item: _api_unit_relevance(
+                item[1], answer_shape=normalized_shape, semantic_query=semantic_query,
+            ),
+            reverse=True,
+        )
+        selected_mappings = [(ranked[0][0], ranked[0][2])] if ranked else []
+        if not selected_mappings:
+            return None, "selected_response_detail_not_confirmed"
+    elif normalized_shape in {"attention", "due"}:
+        ranked = [
+            (mapping, unit, path, _api_unit_relevance(
+                unit, answer_shape=normalized_shape, semantic_query=semantic_query,
+            ))
+            for mapping, unit, path in mapping_units
+        ]
+        if normalized_shape == "due":
+            due_mode = _due_query_mode(semantic_query)
+
+            def due_mode_matches(item: tuple[dict[str, Any], str, tuple[str, ...], int]) -> bool:
+                mapping, unit, _path, _score = item
+                evidence_text = " ".join((
+                    unit,
+                    *(f"{key} {value}" for key, value in mapping.items()),
+                )).casefold()
+                if due_mode == "upcoming":
+                    return bool(re.search(
+                        r"\bdue in\b|\bdue soon\b|\bupcoming(?:due)?\b|"
+                        r"\bexpir(?:es?|ing)\b|即将|临近|قريب",
+                        evidence_text,
+                    )) and not bool(re.search(r"\boverdue\b|\bpast due\b|逾期|متأخر", evidence_text))
+                if due_mode == "overdue":
+                    return bool(re.search(r"\boverdue\b|\bpast due\b|\blate\b|逾期|متأخر", evidence_text))
+                return True
+
+            ranked = [item for item in ranked if due_mode_matches(item)]
+            if _query_requests_record_identities(semantic_query):
+                ranked = [
+                    item for item in ranked
+                    if any(
+                        re.search(r"(?:id|number|no|name|title|reference)$", _key(key))
+                        and value not in (None, "")
+                        for key, value in item[0].items()
+                    )
+                ]
+        query_tokens = _api_query_tokens(semantic_query)
+        exact_field_ranked = [item for item in ranked if _api_response_leaf_field_tokens(item[0]).intersection(query_tokens)]
+        if exact_field_ranked:
+            best_field_match = max(
+                len(_api_response_leaf_field_tokens(item[0]).intersection(query_tokens))
+                for item in exact_field_ranked
+            )
+            ranked = [
+                item for item in exact_field_ranked
+                if len(_api_response_leaf_field_tokens(item[0]).intersection(query_tokens)) == best_field_match
+            ]
+        ranked = sorted((item for item in ranked if item[3] > 0), key=lambda item: item[3], reverse=True)
+        selected_mappings = [(mapping, path) for mapping, _unit, path, _score in ranked[:8]]
+        if not selected_mappings:
+            return None, f"selected_response_{normalized_shape}_not_confirmed"
+    else:
+        ranked = sorted(
+            mapping_units,
+            key=lambda item: _api_unit_relevance(
+                item[1], answer_shape=normalized_shape, semantic_query=semantic_query,
+            ),
+            reverse=True,
+        )
+        selected_mappings = [(mapping, path) for mapping, _unit, path in ranked[:8]]
+        if not selected_mappings:
+            if saw_empty_list and api_evidence.get("truncated") is not True:
+                return ({
+                    "mode": "observation_result", "result": "no_data", "answerShape": normalized_shape,
+                    "completeness": "bounded", "facts": [], "missing": [],
+                }, "answerable_empty")
+            return None, "selected_response_content_not_confirmed"
+
+    serialized_mappings: list[str] = []
+    for mapping, context_path in selected_mappings:
+        try:
+            serialized = _serialize_api_mapping(
+                mapping,
+                semantic_query=semantic_query,
+                answer_shape=normalized_shape,
+                context_path=context_path,
+            )
+        except (TypeError, ValueError):
+            continue
+        if serialized:
+            serialized_mappings.append(serialized)
+    facts = _bounded_fact_candidates(tuple(serialized_mappings))
+    if not facts:
+        return None, "selected_response_content_not_confirmed"
+    return {
+        "mode": "observation_result",
+        "result": "success",
+        "answerShape": normalized_shape,
+        "completeness": "bounded",
+        "facts": list(facts),
+        "missing": [],
+    }, "answerable"
+
+
+def _api_answer_plan_is_grounded(plan: Any, api_evidence: Any) -> bool:
+    """Accept model wording only when every fact is supported by the selected response."""
+
+    result = _observation_plan_result_from_plan(plan)
+    if result is None or not isinstance(api_evidence, dict):
+        return False
+    if result.status == "no_data":
+        fallback, _reason = _api_evidence_fallback_plan(
+            api_evidence,
+            answer_shape=result.answer_shape,
+        )
+        return fallback is not None and fallback.get("result") == "no_data"
+    return bool(
+        result.status == "success"
+        and result.facts
+        and all(_api_evidence_supports_fact(fact, api_evidence.get("data")) for fact in result.facts)
+    )
+
+
 def _observation_fallback_intent(
     question: str,
     answer_shape: Literal["overview", "count", "list", "attention", "due", "detail", "unspecified"] | None = None,
@@ -2009,6 +2890,10 @@ def _structured_observation_sections(observation: Any) -> tuple[dict[str, Any], 
                 for value in section[field_name]:
                     if value not in values:
                         values.append(value)
+            target_rows = target.setdefault("rowFields", [])
+            for row in section.get("rowFields", []):
+                if row not in target_rows:
+                    target_rows.append(row)
             if not target["emptyState"]:
                 target["emptyState"] = section["emptyState"]
             if not target["selectedState"]:
@@ -2091,6 +2976,22 @@ def _observation_evidence_for_section(observation: Any, section_name: str) -> di
         and len({_semantic_node_evidence_signature(node, nodes_by_id) for node in matches}) == 1
     ):
         return with_parent_state(matches[0])
+    if matches and len({str(node.get("heading") or "").casefold() for node in matches}) == 1:
+        selected_states = {
+            re.sub(r"\s+", " ", str(node.get("selectedState") or "")).strip().casefold()
+            for node in matches
+            if str(node.get("selectedState") or "").strip()
+        }
+        if len(selected_states) <= 1:
+            merged_matches = [
+                section
+                for section in _structured_observation_sections(observation)
+                if expected == section["heading"].casefold()
+                or expected in section["heading"].casefold()
+                or section["heading"].casefold() in expected
+            ]
+            if len(merged_matches) == 1:
+                return merged_matches[0]
     if matches and all(not node.get("nodeId") and not node.get("parentRef") for node in matches):
         legacy_matches = [
             section
@@ -2211,8 +3112,9 @@ def _knowledge_route_recovery_request(
     question: str,
     knowledge_context: Any,
     permission_context: UserPermissionContext,
+    conversation_context: dict[str, Any] | None = None,
 ) -> PortalReadRequest | None:
-    """Recover one uniquely best documented permitted page after planner refusal."""
+    """Recover one uniquely best documented permitted data surface after planner refusal."""
 
     if not isinstance(knowledge_context, dict):
         return None
@@ -2220,27 +3122,120 @@ def _knowledge_route_recovery_request(
     if not question_tokens:
         return None
     permitted = (*permission_context.pages, *permission_context.subpages)
-    personal_request = bool(re.search(
+    bounded_context = _bounded_conversation_context(conversation_context)
+    resolved_values = _resolved_intent_values(bounded_context)
+    previous = bounded_context.get("previousIntent")
+    scope_hint = str(
+        resolved_values.get("scope")
+        or resolved_values.get("requestedScope")
+        or (previous.get("scope") if isinstance(previous, dict) else "")
+        or ""
+    ).casefold()
+    personal_request = "personal" in scope_hint or bool(re.search(
         r"\b(?:my|mine|for me|i have)\b|我的|我有|خاصتي|لدي",
         question.casefold(),
     ))
+    team_request = any(word in scope_hint for word in ("team", "department")) or bool(re.search(
+        r"\b(?:team|department|staff|assignees?)\b|团队|部门|员工|الفريق|القسم",
+        question.casefold(),
+    ))
+    permission_scope = _permission_result_scope(permission_context)
+    answer_shape = reader_answer_shape(question, bounded_context)
+
+    def semantic_fields(content: str) -> dict[str, str]:
+        markers = list(re.finditer(
+            r"(?:^|\s+-\s+)\*\*([a-z][a-z0-9_ -]*):\*\*\s*",
+            content,
+            flags=re.IGNORECASE,
+        ))
+        fields: dict[str, str] = {}
+        for index, marker in enumerate(markers):
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(content)
+            name = re.sub(r"[ -]+", "_", marker.group(1).casefold())
+            fields[name] = content[marker.end():end].strip()
+        return fields
+
+    positive_weights = {
+        "section": 5,
+        "type": 4,
+        "meaning": 3,
+        "use_when": 4,
+        "content": 2,
+        "time_semantics": 2,
+        "scope": 1,
+    }
+    shape_terms = {
+        "overview": frozenset({"overview", "summary", "workload", "dashboard"}),
+        "count": frozenset({"count", "total", "metric", "summary", "statistics"}),
+        "list": frozenset({"list", "table", "queue", "records", "tasks", "items"}),
+        "attention": frozenset({"attention", "urgent", "priority", "blocked", "overdue"}),
+        "due": frozenset({
+            "due", "deadline", "deadlines", "expiry", "expiration", "overdue", "urgent",
+            "urgency", "sla", "remaining",
+        }),
+        "detail": frozenset({"detail", "details", "record", "relationship"}),
+    }
     scores: dict[str, int] = {}
     for chunk in (knowledge_context.get("chunks") or [])[:8]:
         if not isinstance(chunk, dict):
             continue
         content = str(chunk.get("content") or "")
-        overlap = len(question_tokens & _section_match_tokens(content))
-        if not overlap:
+        fields = semantic_fields(content)
+        page_value = fields.get("page", "")
+        raw_paths = re.findall(r"`([^`]+)`", page_value)
+        if not raw_paths:
             continue
-        scope_bonus = 4 if personal_request and re.search(
-            r"(?i)\*\*scope:\*\*.{0,160}\bpersonal\b",
-            content,
-        ) else 0
-        for raw_path in re.findall(r"(?i)\*\*page:\*\*\s*`([^`]+)`", content):
+        field_tokens = {
+            name: _section_match_tokens(fields.get(name, ""))
+            for name in positive_weights
+        }
+        overlap_score = sum(
+            len(question_tokens & field_tokens[name]) * weight
+            for name, weight in positive_weights.items()
+        )
+        if not overlap_score:
+            continue
+        semantic_tokens = frozenset().union(*field_tokens.values())
+        type_text = fields.get("type", "").casefold()
+        scope_text = fields.get("scope", "").casefold()
+        score = overlap_score
+        if shape_terms.get(answer_shape, frozenset()) & semantic_tokens:
+            score += 6
+        if answer_shape in {"list", "attention", "due"} and re.search(
+            r"\b(?:list|table|queue|task|workload)\b", type_text,
+        ):
+            score += 4
+        elif answer_shape in {"overview", "count"} and re.search(
+            r"\b(?:overview|summary|metric|workload)\b", type_text,
+        ):
+            score += 4
+        elif answer_shape == "detail" and "detail" in type_text:
+            score += 6
+        if "navigation" in type_text:
+            score -= 12
+        if answer_shape in {"overview", "count", "list", "attention", "due"} and "detail" in type_text:
+            score -= 8
+        team_surface = bool(re.search(r"\b(?:team|department)\b", type_text + " " + scope_text))
+        personal_surface = "personal" in type_text or "personal" in scope_text
+        if team_surface and not team_request:
+            score -= 12
+        if personal_request and team_surface:
+            score -= 12
+        if team_request and personal_surface:
+            score -= 12
+        if permission_scope == "personal" and team_surface:
+            score -= 12
+        if personal_request and personal_surface:
+            score += 4
+        elif team_request and team_surface:
+            score += 4
+        if score <= 0:
+            continue
+        for raw_path in raw_paths:
             path = urlsplit(raw_path.strip()).path.rstrip("/") or "/"
             if not any(permission_path_matches(path, allowed) for allowed in permitted):
                 continue
-            scores[path] = max(scores.get(path, 0), overlap * 10 + scope_bonus)
+            scores[path] = max(scores.get(path, 0), score)
     if not scores:
         return None
     best_score = max(scores.values())
@@ -2461,7 +3456,18 @@ def _infer_observation_section(
                     limit=80,
                 )
             ).casefold()
-            if re.search(r"\bdue in\b|\boverdue\b|即将|到期|逾期|قريب|متأخر", evidence_text):
+            due_mode = _due_query_mode(question_context)
+            matching_due_evidence = (
+                bool(re.search(r"\bdue in\b|\bdue soon\b|\bupcoming\b|即将|临近|قريب", evidence_text))
+                if due_mode == "upcoming"
+                else bool(re.search(r"\boverdue\b|\bpast due\b|\blate\b|逾期|متأخر", evidence_text))
+                if due_mode == "overdue"
+                else bool(re.search(
+                    r"\bdue\b|\boverdue\b|\bupcoming\b|即将|临近|到期|逾期|قريب|متأخر",
+                    evidence_text,
+                ))
+            )
+            if matching_due_evidence:
                 due_evidence_score = 80
         evidence_only_allowed = answer_shape in {"overview", "count", "attention", "due"}
         if (
@@ -2479,11 +3485,21 @@ def _infer_observation_section(
                 heading,
             ))
     ranked.sort(reverse=True)
-    if not ranked or ranked[0][0] <= 0:
+    if not ranked:
         return ""
-    if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
+    # Multiple structural summaries can represent the same semantic section.
+    # Collapse them by heading before deciding whether the destination is truly
+    # ambiguous; duplicate DOM wrappers are not competing business sources.
+    ranked_by_heading: dict[str, tuple[int, int, str]] = {}
+    for candidate in ranked:
+        heading_key = re.sub(r"\s+", " ", candidate[2]).strip().casefold()
+        ranked_by_heading[heading_key] = max(ranked_by_heading.get(heading_key, candidate), candidate)
+    distinct_ranked = sorted(ranked_by_heading.values(), reverse=True)
+    if distinct_ranked[0][0] <= 0:
         return ""
-    return ranked[0][2]
+    if len(distinct_ranked) > 1 and distinct_ranked[0][0] == distinct_ranked[1][0]:
+        return ""
+    return distinct_ranked[0][2]
 
 
 def _result_from_structured_observation(
@@ -2523,15 +3539,16 @@ def _result_from_structured_observation(
             if re.search(r"(?:^|\s)\d+(?:[.,]\d+)?\s*$", value)
         )
     elif answer_shape == "due":
-        normalized_question = question.casefold()
-        due_soon_only = bool(re.search(r"due soon|expir|即将|到期|قريب", normalized_question)) and not bool(
-            re.search(r"overdue|逾期|متأخر", normalized_question)
-        )
+        due_mode = _due_query_mode(question)
         candidates = tuple(
             value for value in (*card_summaries, *controls, *rows)
             if (
-                (re.search(r"\bdue in\b|即将|到期|قريب", value.casefold()) if due_soon_only else
-                 re.search(r"\bdue\b|\boverdue\b|即将|到期|逾期|قريب|متأخر", value.casefold()))
+                (re.search(r"\bdue in\b|\bdue soon\b|\bupcoming\b|即将|临近|قريب", value.casefold())
+                 and not re.search(r"\boverdue\b|\bpast due\b|逾期|متأخر", value.casefold()))
+                if due_mode == "upcoming"
+                else re.search(r"\boverdue\b|\bpast due\b|\blate\b|逾期|متأخر", value.casefold())
+                if due_mode == "overdue"
+                else re.search(r"\bdue\b|\boverdue\b|\bupcoming\b|即将|临近|到期|逾期|قريب|متأخر", value.casefold())
             )
         )
     elif answer_shape in {"list", "attention"}:
@@ -2631,7 +3648,20 @@ def _bounded_fact_candidates(candidates: tuple[str, ...]) -> tuple[str, ...]:
     facts: list[str] = []
     fact_bytes = 0
     for candidate in candidates:
-        fact = re.sub(r"\s+", " ", str(candidate)).strip()[:_OBSERVATION_FALLBACK_MAX_FACT_CHARS]
+        raw_fact = re.sub(r"\s+", " ", str(candidate)).strip()
+        if any(marker in raw_fact.casefold() for marker in _API_TRUNCATION_MARKERS):
+            continue
+        fact = raw_fact
+        if len(fact) > _OBSERVATION_FALLBACK_MAX_FACT_CHARS:
+            try:
+                structured = json.loads(fact)
+            except (TypeError, ValueError):
+                structured = None
+            fact = (
+                _serialize_api_mapping(structured, semantic_query="", answer_shape="unspecified")
+                if isinstance(structured, dict)
+                else fact[:_OBSERVATION_FALLBACK_MAX_FACT_CHARS]
+            )
         if not fact or fact in facts:
             continue
         encoded_size = len(fact.encode("utf-8"))
@@ -2992,21 +4022,55 @@ def observation_result_from_plan(
         return None
     api_evidence = observation.get("apiEvidence") if isinstance(observation, dict) else None
     if isinstance(api_evidence, dict) and "data" in api_evidence:
-        completeness = "bounded" if api_evidence.get("truncated") is True else result.completeness
+        operation_key = str(api_evidence.get("operationKey") or "")
+        public_source = result.source_section or result.section
+        if (operation_key and operation_key in public_source) or public_source.casefold().startswith("api:"):
+            public_source = result.section
+        if result.status == "no_data":
+            fallback, _reason = _api_evidence_fallback_plan(
+                api_evidence,
+                answer_shape=result.answer_shape,
+            )
+            if fallback is None or fallback.get("result") != "no_data":
+                return None
+            supported_facts: tuple[str, ...] = ()
+            unsupported_facts: tuple[str, ...] = ()
+        else:
+            supported_facts = tuple(
+                fact for fact in result.facts
+                if _api_evidence_supports_fact(fact, api_evidence.get("data"))
+            )
+            unsupported_facts = tuple(fact for fact in result.facts if fact not in supported_facts)
+            if not supported_facts:
+                return ReaderResult(
+                    status="not_confirmed",
+                    summary="The selected portal response did not support the proposed answer.",
+                    page=observed_page or result.page,
+                    section=result.section,
+                    source_section=public_source,
+                    answer_shape=result.answer_shape,
+                    completeness="bounded",
+                    selected_state=result.selected_state,
+                    scope=verified_scope,
+                    missing=("unsupported_api_answer_facts",),
+                )
         return ReaderResult(
-            status=result.status,
+            status="not_confirmed" if unsupported_facts else result.status,
             summary="The selected portal API response answered the request."
-            if result.status == "success" else result.summary,
+            if result.status == "success" and not unsupported_facts else result.summary,
             page=observed_page or result.page,
             section=result.section,
-            source_section=("api:" + str(api_evidence.get("operationKey") or ""))[:300],
+            source_section=public_source,
             answer_shape=result.answer_shape,
-            completeness=completeness,
+            completeness="bounded" if api_evidence.get("truncated") is True or result.answer_shape == "list" else result.completeness,
             selected_state=result.selected_state,
             scope=verified_scope,
-            facts=result.facts,
+            facts=supported_facts,
             workflow_state=result.workflow_state,
-            missing=result.missing,
+            missing=tuple(dict.fromkeys((
+                *result.missing,
+                *(("unsupported_api_answer_facts",) if unsupported_facts else ()),
+            )))[:10],
         )
     source_ref = result.source_section or result.section
     scoped_observation = _observation_evidence_for_result(observation, result)
@@ -3377,6 +4441,7 @@ class AdminPortalReader:
         filter_completion_reviewed = False
         observation_schema_reviewed = False
         action_contract_reviewed = False
+        api_selection_recovery_reviewed = False
         api_drill_depth = 0
         api_selected_observations: set[str] = set()
 
@@ -3428,13 +4493,28 @@ class AdminPortalReader:
             timeout_stage: str,
             reason: str,
         ) -> dict[str, Any]:
-            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed, api_drill_depth
+            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed, api_selection_recovery_reviewed, api_drill_depth
             started_at = time.perf_counter()
             observation = knowledge_or_observation.get("portalObservation")
             discovery = _api_discovery(observation)
             include_support_api = _question_requests_support_api(question, bounded_conversation_context)
+            prior_read = knowledge_or_observation.get("priorPortalRead") or {}
+            prior_actions = prior_read.get("actions") if isinstance(prior_read, dict) else []
+            action_generated_delta = bool(
+                discovery is not None
+                and isinstance(discovery.get("deltaCandidates"), list)
+                and discovery.get("deltaCandidates")
+                and isinstance(prior_actions, list)
+                and any(
+                    isinstance(action, dict)
+                    and str(action.get("type") or "").casefold().replace("-", "_")
+                    not in {"observe", "query"}
+                    for action in prior_actions
+                )
+            )
+            delta_only = bool(api_drill_depth) or action_generated_delta
             api_candidates = _relevant_selectable_api_candidates(
-                observation, question, bounded_conversation_context, delta_only=bool(api_drill_depth),
+                observation, question, bounded_conversation_context, delta_only=delta_only,
             )
             policy_state_counts = {
                 state: sum(1 for candidate in api_candidates if candidate.get("policyState") == state)
@@ -3458,17 +4538,18 @@ class AdminPortalReader:
                 truncated = _api_discovery_is_truncated(
                     discovery,
                     include_support=include_support_api,
-                    delta_only=bool(api_drill_depth),
+                    delta_only=delta_only,
                 )
                 discovery_decision = (
                     "not_confirmed" if not api_candidates
-                    else "drill" if len(api_candidates) > self.max_candidates_before_drill or truncated
+                    else "drill" if truncated
                     else "select"
                 )
                 discoveries = api_audit.setdefault("discoveries", [])
                 if isinstance(discoveries, list) and len(discoveries) < 2:
                     discoveries.append({
                         "drillDepth": api_drill_depth,
+                        "deltaOnly": delta_only,
                         "reportedCandidateCount": discovery.get("candidateCount")
                         if isinstance(discovery.get("candidateCount"), int) else 0,
                         "relevantSelectableCount": len(api_candidates),
@@ -3502,11 +4583,10 @@ class AdminPortalReader:
                         "reason": "no_selectable_api_candidates",
                         "drillDepth": api_drill_depth,
                     })
-                    return {
-                        "mode": "observation_result", "result": "not_confirmed", "facts": [],
-                        "missing": ["no_selectable_api_candidates"],
-                    }
-                needs_drill = len(api_candidates) > self.max_candidates_before_drill or truncated
+                # Candidate count is an audit and prompt-budget signal, not a
+                # business-state decision. An intact bounded candidate set can
+                # still be semantically unique even when it is numerically large.
+                needs_drill = bool(api_candidates) and truncated
                 if needs_drill and api_drill_depth >= MAX_API_DRILL_DEPTH:
                     api_audit.update({
                         "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
@@ -3522,12 +4602,11 @@ class AdminPortalReader:
                         output_summary={"decision": "not_confirmed", "drillDepth": api_drill_depth},
                         failure_code="api_candidates_still_ambiguous",
                     )
-                    return {
-                        "mode": "observation_result", "result": "not_confirmed", "facts": [],
-                        "missing": ["api_candidates_still_ambiguous"],
-                    }
-                api_decision = "drill" if needs_drill else "select"
-                if needs_drill:
+                    api_decision = "unavailable"
+                    api_candidates = ()
+                else:
+                    api_decision = "drill" if needs_drill else "select" if api_candidates else "unavailable"
+                if needs_drill and api_decision == "drill":
                     api_controls = _observed_api_drill_controls(observation)
                     if not api_controls:
                         api_audit.update({
@@ -3544,10 +4623,12 @@ class AdminPortalReader:
                             output_summary={"decision": "not_confirmed", "safeControlCount": 0},
                             failure_code="no_safe_api_drill_control",
                         )
-                        return {
-                            "mode": "observation_result", "result": "not_confirmed", "facts": [],
-                            "missing": ["no_safe_api_drill_control"],
-                        }
+                        # Discovery is one evidence channel. If the same bounded
+                        # observation independently proves the answer, let normal
+                        # DOM planning and grounding decide it instead of making
+                        # the unavailable drill a global failure.
+                        api_decision = "unavailable"
+                        api_candidates = ()
                 directive = dict(knowledge_or_observation.get("planningDirective") or {})
                 directive.update({
                     "apiCandidateDecision": api_decision,
@@ -3569,40 +4650,127 @@ class AdminPortalReader:
                     and knowledge_or_observation.get("portalObservation") is not None
                 ),
             }
-            try:
-                plan = await _await_reader_stage(
-                    plan_reader(knowledge_or_observation),
-                    stage=timeout_stage,
-                    cap_seconds=budget.planner_seconds,
-                    deadline=deadline,
-                )
-            except ReaderStageTimeout as exc:
-                trace.record(
-                    "planning",
-                    "failed",
-                    started_at=started_at,
-                    input_summary=input_summary,
-                    output_summary={"timeoutKind": "total" if exc.total_budget else "stage"},
-                    failure_code="reader_total_timeout" if exc.total_budget else "planner_timeout",
-                )
-                raise
-            except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
-                trace.record(
-                    "planning",
-                    "failed",
-                    started_at=started_at,
-                    input_summary=input_summary,
-                    output_summary={"exceptionType": type(exc).__name__},
-                    failure_code="planner_error",
-                )
-                raise
-            trace.record(
-                "planning",
-                "passed",
-                started_at=started_at,
-                input_summary=input_summary,
-                output_summary=plan_summary(plan),
+            deterministic_unique_selection = bool(
+                api_decision == "select"
+                and len(api_candidates) == 1
+                and _api_response_evidence_for_operation(
+                    observation, api_candidates[0]["operationKey"],
+                ) is not None
             )
+            if deterministic_unique_selection:
+                plan = {
+                    "mode": "api_selection",
+                    "operationKey": api_candidates[0]["operationKey"],
+                    "reasonCodes": ["only_safe_candidate", "trigger_matches_intent"],
+                }
+                trace.record(
+                    "planning",
+                    "passed",
+                    started_at=started_at,
+                    input_summary=input_summary,
+                    output_summary={
+                        "mode": "api_selection",
+                        "selection": "unique_current_page_response",
+                    },
+                )
+            else:
+                try:
+                    plan = await _await_reader_stage(
+                        plan_reader(knowledge_or_observation),
+                        stage=timeout_stage,
+                        cap_seconds=budget.planner_seconds,
+                        deadline=deadline,
+                    )
+                except ReaderStageTimeout as exc:
+                    trace.record(
+                        "planning",
+                        "failed",
+                        started_at=started_at,
+                        input_summary=input_summary,
+                        output_summary={"timeoutKind": "total" if exc.total_budget else "stage"},
+                        failure_code="reader_total_timeout" if exc.total_budget else "planner_timeout",
+                    )
+                    raise
+                except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
+                    trace.record(
+                        "planning",
+                        "failed",
+                        started_at=started_at,
+                        input_summary=input_summary,
+                        output_summary={"exceptionType": type(exc).__name__},
+                        failure_code="planner_error",
+                    )
+                    raise
+                trace.record(
+                    "planning",
+                    "passed",
+                    started_at=started_at,
+                    input_summary=input_summary,
+                    output_summary=plan_summary(plan),
+                )
+            if (
+                using_selected_candidate
+                and isinstance(observation, dict)
+                and observation.get("apiEvidence") is not None
+            ):
+                selected_answer_shape = (
+                    _resolved_intent_values(bounded_conversation_context).get("answerShape")
+                    or reader_answer_shape(question, bounded_conversation_context)
+                )
+                normalized_api_plan = _selected_api_answer_plan(
+                    plan,
+                    answer_shape=selected_answer_shape,
+                )
+                fallback_api_plan, evidence_reason = _api_evidence_fallback_plan(
+                    observation["apiEvidence"],
+                    answer_shape=selected_answer_shape,
+                    semantic_query=" ".join((question, *_resolved_intent_values(bounded_conversation_context).values())),
+                )
+                if fallback_api_plan is not None:
+                    plan = fallback_api_plan
+                    api_audit["evidenceDelivery"] = {
+                        "state": "answerable",
+                        "strategy": "deterministic_response_projection",
+                    }
+                    trace.record(
+                        "evidence_delivery",
+                        "passed",
+                        input_summary={"answerShape": selected_answer_shape},
+                        output_summary={
+                            "state": "answerable",
+                            "strategy": "deterministic_response_projection",
+                        },
+                        failure_code="",
+                    )
+                elif (
+                    normalized_api_plan is not None
+                    and _api_answer_plan_is_grounded(normalized_api_plan, observation["apiEvidence"])
+                ):
+                    plan = normalized_api_plan
+                    api_audit["evidenceDelivery"] = {
+                        "state": "answerable",
+                        "strategy": "grounded_model_format",
+                    }
+                else:
+                    plan = {
+                        "mode": "observation_result",
+                        "result": "not_confirmed",
+                        "answerShape": selected_answer_shape,
+                        "completeness": "bounded",
+                        "facts": [],
+                        "missing": [evidence_reason],
+                    }
+                    api_audit["evidenceDelivery"] = {
+                        "state": "eligible_not_sufficient",
+                        "reason": evidence_reason,
+                    }
+                    trace.record(
+                        "evidence_delivery",
+                        "failed",
+                        input_summary={"answerShape": selected_answer_shape},
+                        output_summary={"state": "eligible_not_sufficient"},
+                        failure_code=evidence_reason,
+                    )
             if api_decision == "select":
                 selected = api_selection_from_plan(plan, api_candidates)
                 if selected is None:
@@ -3619,6 +4787,31 @@ class AdminPortalReader:
                         output_summary={"decision": "rejected"},
                         failure_code="invalid_api_selection",
                     )
+                    if not api_selection_recovery_reviewed:
+                        api_selection_recovery_reviewed = True
+                        api_selected_observations.add(api_signature)
+                        prior_directive = knowledge_or_observation.get("planningDirective")
+                        recovery_directive = {
+                            key: value
+                            for key, value in (prior_directive.items() if isinstance(prior_directive, dict) else ())
+                            if key not in {
+                                "selectableApiCandidates", "selectableCandidateCount", "selectedApiCandidate",
+                                "selectionReasonCodes", "observedSafeControls",
+                            }
+                        }
+                        recovery_directive.update({
+                            "apiCandidateDecision": "unavailable",
+                            "apiFailureReason": "invalid_api_selection",
+                            "reason": "Use only independently sufficient bounded page observation evidence.",
+                        })
+                        return await plan_stage(
+                            {
+                                **knowledge_or_observation,
+                                "planningDirective": recovery_directive,
+                            },
+                            timeout_stage=timeout_stage,
+                            reason="recover_from_invalid_api_selection",
+                        )
                     return {
                         "mode": "observation_result", "result": "not_confirmed", "facts": [],
                         "missing": ["invalid_api_selection"],
@@ -4016,8 +5209,6 @@ class AdminPortalReader:
             scope: Literal["personal", "team", "global", "unknown"],
             selection: ReaderResult | None = None,
         ) -> tuple[ReaderResult | None, str]:
-            if api_audit.get("decision") == "not_confirmed":
-                return None, "api_candidate_guard"
             if selection is not None:
                 binding = observation_result_from_plan(
                     {**selection.public_json(), "mode": "observation_result", "result": "not_confirmed",
@@ -4432,7 +5623,7 @@ class AdminPortalReader:
                 isinstance(plan, dict) and plan.get("mode") == "portal_read"
             ):
                 recovered_request = _knowledge_route_recovery_request(
-                    question, knowledge_context, permission_context,
+                    question, knowledge_context, permission_context, bounded_conversation_context,
                 )
                 if recovered_request is None:
                     result = ReaderResult(status="not_confirmed", summary="The requested current portal state could not be confirmed.", missing=("portal_read_required",))
@@ -4452,6 +5643,9 @@ class AdminPortalReader:
                     },
                 }
         invalid_plan_error: str | None = None
+        deferred_detail_identity = ""
+        deferred_detail_prerequisite_actions: tuple[dict[str, Any], ...] = ()
+        deferred_state_action: dict[str, Any] | None = None
         request = portal_read_request_from_plan(plan)
         if request is None and isinstance(plan, dict) and plan.get("mode") == "portal_read":
             invalid_plan_error = "invalid_closed_plan"
@@ -4461,7 +5655,95 @@ class AdminPortalReader:
         if request is not None:
             # Validate the original plan before discarding observe metadata.
             # This prevents normalization from concealing unsafe fields.
-            policy_error = validate_policy(request, reason="initial")
+            raw_policy_error = self.policy.validate(request, permission_context)
+            cell_detail_actions = [
+                action for action in request.actions
+                if str(action.get("type") or "").casefold().replace("-", "_") == "show_detail"
+                and str(action.get("role") or "cell").casefold() == "cell"
+            ]
+            resolved_record_identity = _detail_identity(resolved_values.get("recordIdentity"))
+            planned_record_identity = (
+                _detail_identity(cell_detail_actions[0].get("value"))
+                if len(cell_detail_actions) == 1 else ""
+            )
+            if not planned_record_identity and len(cell_detail_actions) == 1:
+                planned_record_identity = _stable_detail_identity_from_query(
+                    question, request.actions,
+                )
+            detail_identity = resolved_record_identity or planned_record_identity
+            detail_identity_conflict = bool(
+                resolved_record_identity and planned_record_identity
+                and resolved_record_identity != planned_record_identity
+            )
+            binding_only_error = raw_policy_error in {
+                "button_not_permitted", "detail_identity_required", "detail_cell_identity_mismatch",
+                "detail_destination_required",
+            }
+            other_actions = tuple(action for action in request.actions if action not in cell_detail_actions)
+            other_request = PortalReadRequest(
+                start_path=request.start_path,
+                actions=other_actions or ({"type": "observe"},),
+                expected_fields=request.expected_fields,
+            )
+            other_policy_error = self.policy.validate(other_request, permission_context)
+            can_defer_detail = bool(
+                len(cell_detail_actions) == 1
+                and detail_identity
+                and not detail_identity_conflict
+                and other_policy_error is None
+                and (
+                    raw_policy_error is None
+                    or binding_only_error
+                    and _detail_action_can_use_observed_identity(cell_detail_actions[0], detail_identity)
+                )
+            )
+            if can_defer_detail:
+                # Resolve the model's semantic request against the page's fresh,
+                # bounded observation before allowing any record click.
+                deferred_detail_identity = detail_identity
+                deferred_detail_prerequisite_actions = tuple(
+                    action for action in other_actions
+                    if str(action.get("type") or "").casefold().replace("-", "_") != "observe"
+                )
+                if not resolved_record_identity:
+                    resolved_values["recordIdentity"] = detail_identity
+                request = PortalReadRequest(
+                    start_path=request.start_path,
+                    actions=({"type": "observe"},),
+                    expected_fields=request.expected_fields,
+                )
+            state_actions = [
+                action for action in request.actions
+                if str(action.get("type") or "").casefold().replace("-", "_") == "switch_tab"
+            ]
+            can_defer_state = bool(
+                not can_defer_detail
+                and raw_policy_error is None
+                and len(state_actions) == 1
+                and all(
+                    str(action.get("type") or "").casefold().replace("-", "_")
+                    in {"switch_tab", "query", "observe"}
+                    for action in request.actions
+                )
+            )
+            if can_defer_state:
+                # State controls are page state, not planner-provided locators.
+                # Observe first, then resolve the semantic label against exactly
+                # one safe control in that fresh observation.
+                deferred_state_action = dict(state_actions[0])
+                request = PortalReadRequest(
+                    start_path=request.start_path,
+                    actions=({"type": "observe"},),
+                    expected_fields=request.expected_fields,
+                )
+            policy_error = validate_policy(
+                request,
+                reason=(
+                    "initial_observed_detail_binding" if can_defer_detail
+                    else "initial_observed_state_binding" if can_defer_state
+                    else "initial"
+                ),
+            )
             if policy_error:
                 status = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
                 result = ReaderResult(status=status, summary="The requested portal operation is not permitted by the read-only reader.", missing=(policy_error,))  # type: ignore[arg-type]
@@ -4596,12 +5878,148 @@ class AdminPortalReader:
                 requested_answer_shape,
                 bounded_conversation_context,
             )
-            try:
-                next_plan = await plan_stage(
+            deferred_plan: dict[str, Any] | None = None
+            if deferred_state_action is not None:
+                state_request = PortalReadRequest(
+                    start_path=request.start_path,
+                    actions=(deferred_state_action,),
+                    expected_fields=request.expected_fields,
+                )
+                bound_state_request, binding_error = _bind_observed_actions(
+                    state_request,
+                    observed_context["portalObservation"],
+                    record_identity="",
+                )
+                if binding_error or bound_state_request is None:
+                    result = ReaderResult(
+                        status="not_confirmed",
+                        summary="The requested state did not have one uniquely observed safe control.",
+                        page=request.start_path,
+                        scope=verified_scope,
+                        missing=(binding_error or "state_control_not_unique",),
+                    )
+                    return ReaderOutcome(result, {
+                        "stage": "state_control_binding",
+                        "permission": permission_audit,
+                        "observation": observed_context["portalObservation"],
+                    })
+                bound_policy_error = validate_policy(
+                    bound_state_request,
+                    reason="initial_after_observed_state_binding",
+                )
+                if bound_policy_error:
+                    status: ReaderStatus = "no_permission" if bound_policy_error in {
+                        "page_not_permitted", "permission_context_incomplete", "button_not_permitted",
+                    } else "not_confirmed"
+                    result = ReaderResult(
+                        status=status,
+                        summary="The bound state transition is not permitted.",
+                        missing=(bound_policy_error,),
+                    )
+                    return ReaderOutcome(result, {
+                        "stage": "policy_after_observed_state_binding",
+                        "permission": permission_audit,
+                        "policyError": bound_policy_error,
+                    })
+                deferred_plan = {
+                    "mode": "portal_read",
+                    "portalRequest": {
+                        "startPath": bound_state_request.start_path,
+                        "actions": [dict(action) for action in bound_state_request.actions],
+                        "expectedFields": list(bound_state_request.expected_fields),
+                    },
+                }
+            elif deferred_detail_identity:
+                bound_detail = _observed_cell_detail_action(
+                    observed_context["portalObservation"], deferred_detail_identity,
+                )
+                if bound_detail is None and deferred_detail_prerequisite_actions:
+                    deferred_plan = {
+                        "mode": "portal_read",
+                        "portalRequest": {
+                            "startPath": request.start_path,
+                            "actions": [dict(action) for action in deferred_detail_prerequisite_actions],
+                            "expectedFields": list(request.expected_fields),
+                        },
+                    }
+                elif bound_detail is None:
+                    result = ReaderResult(
+                        status="not_confirmed",
+                        summary="The requested record did not have one uniquely observed detail target.",
+                        page=request.start_path,
+                        answer_shape="detail",
+                        scope=verified_scope,
+                        missing=("detail_target_not_unique",),
+                    )
+                    return ReaderOutcome(result, {
+                        "stage": "detail_target_binding",
+                        "permission": permission_audit,
+                        "observation": observed_context["portalObservation"],
+                    })
+                else:
+                    deferred_plan = {
+                        "mode": "portal_read",
+                        "portalRequest": {
+                            "startPath": request.start_path,
+                            "actions": [bound_detail],
+                            "expectedFields": [],
+                        },
+                    }
+            elif (
+                requested_answer_shape == "detail"
+                and _detail_identity(resolved_values.get("recordIdentity"))
+            ):
+                resolved_detail_identity = _detail_identity(resolved_values.get("recordIdentity"))
+                bound_detail = _observed_cell_detail_action(
+                    observed_context["portalObservation"], resolved_detail_identity,
+                )
+                if bound_detail is not None:
+                    # A unique current record target is a deterministic business
+                    # transition. It must run before API candidate selection,
+                    # which answers from responses but does not choose row clicks.
+                    detail_request = PortalReadRequest(
+                        start_path=request.start_path,
+                        actions=(bound_detail,),
+                        expected_fields=(),
+                    )
+                    bound_policy_error = validate_policy(
+                        detail_request,
+                        reason="current_observation_record_binding",
+                    )
+                    if bound_policy_error:
+                        status: ReaderStatus = "no_permission" if bound_policy_error in {
+                            "page_not_permitted", "permission_context_incomplete", "button_not_permitted",
+                        } else "not_confirmed"
+                        result = ReaderResult(
+                            status=status,
+                            summary="The bound record detail transition is not permitted.",
+                            missing=(bound_policy_error,),
+                        )
+                        return ReaderOutcome(result, {
+                            "stage": "policy_after_observed_detail_binding",
+                            "permission": permission_audit,
+                            "policyError": bound_policy_error,
+                        })
+                    deferred_plan = {
+                        "mode": "portal_read",
+                        "portalRequest": {
+                            "startPath": detail_request.start_path,
+                            "actions": [dict(bound_detail)],
+                            "expectedFields": [],
+                        },
+                    }
+
+            async def plan_after_current_observation() -> dict[str, Any]:
+                if deferred_plan is not None:
+                    return deferred_plan
+                return await plan_stage(
                     observed_context,
                     timeout_stage="planning_after_observe",
                     reason="after_observe",
                 )
+
+            try:
+                next_plan = await plan_after_current_observation()
             except ReaderStageTimeout as exc:
                 missing = "reader_total_timeout" if exc.total_budget else "planner_timeout"
                 if category_requirement:
@@ -4704,7 +6122,12 @@ class AdminPortalReader:
                             "errorType": type(exc).__name__,
                         },
                     )
-                result = ReaderResult(status="not_confirmed", summary="The observed portal structure could not be turned into a bounded read plan.")
+                api_failure = str(api_audit.get("reason") or "") if api_audit.get("decision") == "not_confirmed" else ""
+                result = ReaderResult(
+                    status="not_confirmed",
+                    summary="The observed portal structure could not be turned into a bounded read plan.",
+                    missing=(api_failure or "planner_error",),
+                )
                 return ReaderOutcome(result, {"stage": "planning_after_observe", "permission": permission_audit, "observation": observed_context["portalObservation"], "semanticResolution": semantic_resolution, "errorType": type(exc).__name__})
             planned_result = _observation_plan_result_from_plan(next_plan)
             category_requirement = category_requirement or _category_control_requiring_children(
@@ -4995,16 +6418,58 @@ class AdminPortalReader:
                     result = ReaderResult(status="not_confirmed", summary="The follow-up portal plan exceeded the cumulative read budget.", missing=("invalid_follow_up_plan",))
                     return None, ReaderOutcome(result, {"stage": "planning_after_observe", "permission": permission_audit,
                                                         "plan": bounded_json(candidate.as_payload()), "observation": observed_context["portalObservation"]})
-                policy_error = validate_policy(candidate, reason="after_observe_before_normalization")
-                if policy_error:
+                policy_error = self.policy.validate(candidate, permission_context)
+                binding_error_is_repairable = bool(
+                    policy_error in {
+                        "button_not_permitted", "detail_identity_required", "detail_cell_identity_mismatch",
+                        "detail_destination_required",
+                    }
+                    and len(candidate.actions) == 1
+                    and _detail_action_can_use_observed_identity(
+                        candidate.actions[0], _detail_identity(resolved_values.get("recordIdentity")),
+                    )
+                )
+                if policy_error and not binding_error_is_repairable:
+                    validate_policy(candidate, reason="after_observe_before_normalization")
                     status: ReaderStatus = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
                     result = ReaderResult(status=status, summary="The follow-up portal operation is not permitted.", missing=(policy_error,))
                     return None, ReaderOutcome(result, {"stage": "policy_after_observe", "permission": permission_audit,
                                                         "policyError": policy_error, "plan": bounded_json(candidate.as_payload())})
                 action_types = {str(action.get("type") or "").strip().casefold().replace("-", "_") for action in candidate.actions}
                 if "observe" in action_types and action_types != {"observe"}:
-                    return _normalize_initial_observation_request(candidate), None
-                return candidate, None
+                    candidate = _normalize_initial_observation_request(candidate)
+                    if candidate is None:
+                        return None, None
+                bound_candidate, binding_error = _bind_observed_actions(
+                    candidate,
+                    observed_context["portalObservation"],
+                    record_identity=_detail_identity(resolved_values.get("recordIdentity")),
+                    allow_valid_detail_metadata=policy_error is None,
+                )
+                if binding_error:
+                    result = ReaderResult(
+                        status="not_confirmed",
+                        summary="The requested read-only control did not have one uniquely observed target.",
+                        page=request.start_path,
+                        scope=verified_scope,
+                        missing=(binding_error,),
+                    )
+                    return None, ReaderOutcome(result, {
+                        "stage": "observed_action_binding",
+                        "permission": permission_audit,
+                        "plan": bounded_json(candidate.as_payload()),
+                        "observation": observed_context["portalObservation"],
+                    })
+                if bound_candidate is not None:
+                    bound_policy_error = validate_policy(bound_candidate, reason="after_observed_binding")
+                    if bound_policy_error:
+                        status: ReaderStatus = "no_permission" if bound_policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
+                        result = ReaderResult(status=status, summary="The bound portal operation is not permitted.", missing=(bound_policy_error,))
+                        return None, ReaderOutcome(result, {
+                            "stage": "policy_after_observed_binding", "permission": permission_audit,
+                            "policyError": bound_policy_error, "plan": bounded_json(bound_candidate.as_payload()),
+                        })
+                return bound_candidate, None
 
             next_request, follow_up_rejection = normalize_follow_up(next_request)
             if follow_up_rejection is not None:
@@ -5189,16 +6654,40 @@ class AdminPortalReader:
                 }
                 post_action_plan: Any = None
                 post_action_error = ""
-                try:
-                    post_action_plan = await plan_stage(
-                        post_action_context,
-                        timeout_stage="planning_after_read_state_change",
-                        reason="after_read_state_change",
+                resolved_detail_identity = _detail_identity(resolved_values.get("recordIdentity"))
+                bound_post_action_detail = (
+                    _observed_cell_detail_action(
+                        bounded_follow_up_observation, resolved_detail_identity,
                     )
-                except ReaderStageTimeout as exc:
-                    post_action_error = "reader_total_timeout" if exc.total_budget else "planner_timeout"
-                except (httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError):
-                    post_action_error = "planner_error"
+                    if follow_up_shape == "detail" and resolved_detail_identity
+                    else None
+                )
+                if bound_post_action_detail is not None:
+                    post_action_plan = {
+                        "mode": "portal_read",
+                        "portalRequest": {
+                            "startPath": next_request.start_path,
+                            "actions": [bound_post_action_detail],
+                            "expectedFields": [],
+                        },
+                    }
+                    trace.record(
+                        "planning",
+                        "passed",
+                        input_summary={"reason": "after_read_state_change", "hasPortalObservation": True},
+                        output_summary={"mode": "portal_read", "selection": "unique_record_identity"},
+                    )
+                else:
+                    try:
+                        post_action_plan = await plan_stage(
+                            post_action_context,
+                            timeout_stage="planning_after_read_state_change",
+                            reason="after_read_state_change",
+                        )
+                    except ReaderStageTimeout as exc:
+                        post_action_error = "reader_total_timeout" if exc.total_budget else "planner_timeout"
+                    except (httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError):
+                        post_action_error = "planner_error"
 
                 post_action_request = portal_read_request_from_plan(post_action_plan)
                 follow_up_result = observation_result_from_plan(
@@ -5508,6 +6997,19 @@ class AdminPortalReader:
             question,
             bounded_conversation_context,
         )
+        api_failure = str(api_audit.get("reason") or "") if api_audit.get("decision") == "not_confirmed" else ""
+        if api_failure and result.status in {"success", "no_data"}:
+            # A raw Tool status is not independently grounded DOM evidence. All
+            # validated DOM/API successes return before this terminal fallback.
+            result = ReaderResult(
+                status="not_confirmed",
+                summary="The requested portal evidence could not be confirmed.",
+                page=result.page,
+                answer_shape=result.answer_shape,
+                completeness="bounded",
+                scope=result.scope,
+                missing=(api_failure,),
+            )
         retryable_control_failures = {
             "reader_selector_not_found",
             "reader_click_descriptor_mismatch",

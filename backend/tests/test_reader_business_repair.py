@@ -96,9 +96,10 @@ def test_early_observation_failure_retains_bounded_source_versions_without_chunk
 
 
 @pytest.mark.parametrize("trailing_observe", [False, True])
-def test_initial_state_change_reduces_returned_observation_without_an_extra_read(trailing_observe) -> None:
+def test_initial_state_change_observes_then_binds_the_unique_current_control(trailing_observe) -> None:
     observation = _observation(rows=("APP-200 Completed",))
     observation["sectionSummaries"][0]["selectedState"] = "Completed"
+    observation["controls"] = ["To Do", "Completed"]
     planner = Planner(
         portal_plan_for("/licensing/applications", [
             {"type": "switch_tab", "role": "tab", "name": "Completed"},
@@ -121,10 +122,34 @@ def test_initial_state_change_reduces_returned_observation_without_an_extra_read
     assert outcome.result.status == "success"
     assert outcome.result.facts == ("APP-200 Completed",)
     assert outcome.result.selected_state == "Completed"
-    assert gateway.events.count("admin.portal.read") == 1
+    assert gateway.events.count("admin.portal.read") == 2
+    assert gateway.calls[-2][1]["actions"] == [{"type": "observe"}]
     assert gateway.calls[-1][1]["actions"] == [{"type": "switch_tab", "role": "tab", "name": "Completed"}]
     assert planner.calls[1][2]["priorPortalRead"]["actions"][0]["name"] == "Completed"
     assert outcome.audit_evidence["observation"]
+
+
+def test_initial_state_change_is_not_executed_when_current_control_is_not_unique() -> None:
+    observation = _observation(rows=("APP-100 Pending",))
+    observation["sectionSummaries"] = [
+        {"nodeId": "one", "kind": "table", "heading": "My Tasks", "selectedState": "To Do", "controls": ["Completed"]},
+        {"nodeId": "two", "kind": "table", "heading": "Team Tasks", "selectedState": "To Do", "controls": ["Completed"]},
+    ]
+    planner = Planner(portal_plan_for("/licensing/applications", [
+        {"type": "switch_tab", "role": "tab", "name": "Completed", "section": "Invented"},
+        {"type": "query", "section": "Invented / Completed"},
+    ]))
+    gateway = Gateway(
+        info={"ok": True, "result": user_info_for_paths("/licensing/applications")},
+        portal_result={"ok": True, "result": {"result": "not_confirmed", "observation": observation}},
+    )
+
+    outcome = run_reader(gateway, planner, question="Show the completed applications")
+
+    assert outcome.result.status == "not_confirmed"
+    assert outcome.result.missing == ("state_control_not_unique",)
+    assert gateway.events.count("admin.portal.read") == 1
+    assert gateway.calls[-1][1]["actions"] == [{"type": "observe"}]
 
 
 def test_headingless_table_keeps_its_node_identity_and_native_row_facts() -> None:
@@ -343,10 +368,21 @@ def _follow_up_tab_case(actions, *, repair_actions=None, initial_actions=None):
     })
     rows = _observation(rows=("APP-200 Blocked",))
     rows["sectionSummaries"][0]["selectedState"] = "Blocked"
-    gateway = SequencedGateway([
-        {"result": "not_confirmed", "observation": _observation()},
+    initial_observation = _observation()
+    initial_observation["regionSummaries"] = [{
+        "nodeId": "observation-region-001", "kind": "region", "heading": "Applications",
+        "controls": ["Blocked", "Urgent"], "selectedState": "To Do",
+    }]
+    observations = [
+        {"result": "not_confirmed", "observation": initial_observation},
         {"result": "not_confirmed", "observation": rows},
-    ], info={"ok": True, "result": user_info_for_paths("/work")})
+    ]
+    if any(action.get("type") == "switch_tab" for action in initial_actions or []):
+        observations[1] = {"result": "not_confirmed", "observation": initial_observation}
+    gateway = SequencedGateway(
+        observations,
+        info={"ok": True, "result": user_info_for_paths("/work")},
+    )
     planner = Planner(*plans)
     return gateway, planner
 
@@ -361,6 +397,21 @@ def test_follow_up_switch_and_pure_observe_preserves_action_without_llm_schema_r
     assert gateway.calls[-1][1]["actions"] == [switch]
     assert len(planner.calls) == 3
     assert all(not call[2].get("planningDirective", {}).get("repairInvalidPortalReadPlan") for call in planner.calls)
+
+
+def test_follow_up_switch_uses_unique_observed_control_instead_of_planner_locator_hints():
+    requested = {
+        "type": "switch_tab", "role": "tab", "name": "Blocked",
+        "section": "Invented Section", "selector": "[data-state='blocked']",
+    }
+    gateway, planner = _follow_up_tab_case([requested])
+
+    outcome = run_reader(gateway, planner, question="show me the blocked task list")
+
+    assert outcome.result.status == "success"
+    assert gateway.calls[-1][1]["actions"] == [
+        {"type": "switch_tab", "role": "tab", "name": "Blocked"},
+    ]
 
 
 def test_follow_up_trailing_observe_unsafe_metadata_is_rejected_before_normalization_or_repair():
@@ -384,8 +435,12 @@ def test_follow_up_original_action_budget_is_checked_before_dropping_observe(ini
     ], initial_actions=initial_actions)
     outcome = run_reader(gateway, planner, question="show me the blocked task list")
     assert outcome.result.status == "not_confirmed"
-    assert outcome.result.missing == ("invalid_follow_up_plan",)
-    assert gateway.events.count("admin.portal.read") == 1
+    initial_state_change = any(action.get("type") == "switch_tab" for action in initial_actions)
+    assert outcome.result.missing == (
+        ("additional_portal_read_required",) if initial_state_change else ("invalid_follow_up_plan",)
+    )
+    expected_reads = 2 if initial_state_change else 1
+    assert gateway.events.count("admin.portal.read") == expected_reads
     assert len(planner.calls) == 2
 
 
@@ -411,6 +466,142 @@ def test_corrected_follow_up_switch_with_pure_observe_uses_same_safe_normalizati
     assert outcome.result.facts == ("APP-200 Blocked",)
     assert gateway.calls[-1][1]["actions"] == [switch]
     assert len(planner.calls) == 4
+
+
+def test_record_detail_missing_model_binding_fields_is_resolved_from_current_observation():
+    initial = portal_plan_for("/records", [
+        {"type": "query", "role": "row", "name": "Application No."},
+        {"type": "show_detail", "role": "cell", "name": "APP-123"},
+    ])
+    detail_result = {
+        "mode": "observation_result", "result": "success", "sourceSection": "detail-region",
+        "answerShape": "detail", "facts": ["APP-123 Status Completed"], "missing": [],
+    }
+    planner = Planner(initial, detail_result)
+    list_observation = _observation(rows=("APP-123 Completed", "APP-456 Pending"))
+    detail_observation = {
+        "readHealth": {"healthy": True, "blocked": [], "failed": [], "pending": []},
+        "regionSummaries": [{
+            "nodeId": "detail-region", "kind": "region", "heading": "Application Details",
+            "cardSummaries": ["APP-123 Status Completed"],
+        }],
+    }
+    gateway = SequencedGateway(
+        [
+            {"result": "not_confirmed", "observation": list_observation},
+            {"result": "not_confirmed", "observation": detail_observation},
+        ],
+        info={"ok": True, "result": user_info_for_paths("/records", "/records/detail")},
+    )
+    context = {"resolvedIntent": {"relation": "continue", "slots": {
+        "recordIdentity": {"source": "current", "value": "APP-123", "evidence": "APP-123"},
+        "answerShape": {"source": "current", "value": "detail", "evidence": "detail"},
+    }}}
+
+    outcome = run_reader(
+        gateway,
+        planner,
+        question="show APP-123 detail",
+        conversation_context=context,
+    )
+
+    assert outcome.result.status == "success"
+    assert gateway.events.count("admin.portal.read") == 2
+    assert gateway.calls[-1][1]["actions"] == [
+        {"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},
+    ]
+
+
+def test_query_then_detail_recovers_identity_from_exact_question_value():
+    initial = portal_plan_for("/records", [
+        {"type": "query", "role": "textbox", "name": "Application No.", "value": "APP-123"},
+        {"type": "show_detail", "role": "cell", "name": "Application No."},
+    ])
+    detail_result = {
+        "mode": "observation_result", "result": "success", "sourceSection": "detail-region",
+        "answerShape": "detail", "facts": ["APP-123 Status Completed"], "missing": [],
+    }
+    planner = Planner(initial, detail_result)
+    unfiltered_observation = _observation(rows=("APP-456 Pending",))
+    filtered_observation = _observation(rows=("APP-123 Completed",))
+    detail_observation = {
+        "readHealth": {"healthy": True, "blocked": [], "failed": [], "pending": []},
+        "regionSummaries": [{
+            "nodeId": "detail-region", "kind": "region", "heading": "Application Details",
+            "cardSummaries": ["APP-123 Status Completed"],
+        }],
+    }
+    gateway = SequencedGateway(
+        [
+            {"result": "not_confirmed", "observation": unfiltered_observation},
+            {"result": "not_confirmed", "observation": filtered_observation},
+            {"result": "not_confirmed", "observation": detail_observation},
+        ],
+        info={"ok": True, "result": user_info_for_paths("/records", "/records/detail")},
+    )
+
+    outcome = run_reader(gateway, planner, question="show details for APP-123")
+
+    assert outcome.result.status == "success"
+    assert gateway.events.count("admin.portal.read") == 3
+    portal_calls = [arguments for tool_name, arguments, _allowed in gateway.calls if tool_name == "admin.portal.read"]
+    assert portal_calls[0]["actions"] == [{"type": "observe"}]
+    assert portal_calls[1]["actions"] == [
+        {"type": "query", "role": "textbox", "name": "Application No.", "value": "APP-123"},
+    ]
+    assert portal_calls[2]["actions"] == [
+        {"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},
+    ]
+
+
+def test_unique_current_record_detail_is_bound_before_api_candidate_selection():
+    initial = portal_plan_for("/records", [{"type": "observe"}])
+    detail_result = {
+        "mode": "observation_result", "result": "success", "sourceSection": "detail-region",
+        "answerShape": "detail", "facts": ["APP-123 Status Completed"], "missing": [],
+    }
+    planner = Planner(initial, detail_result)
+    list_observation = _observation(rows=("APP-123 Completed", "APP-456 Pending"))
+    list_observation["apiDiscovery"] = {
+        "candidateCount": 2,
+        "truncated": False,
+        "candidates": [
+            {"operationKey": "GET /api/records", "candidateKind": "business", "method": "GET", "pathTemplate": "/api/records", "status": 200, "policyState": "allowed", "trigger": "initial", "swagger": {}},
+            {"operationKey": "GET /api/profile", "candidateKind": "business", "method": "GET", "pathTemplate": "/api/profile", "status": 200, "policyState": "allowed", "trigger": "initial", "swagger": {}},
+        ],
+        "deltaCandidates": [],
+    }
+    detail_observation = {
+        "readHealth": {"healthy": True, "blocked": [], "failed": [], "pending": []},
+        "regionSummaries": [{
+            "nodeId": "detail-region", "kind": "region", "heading": "Application Details",
+            "cardSummaries": ["APP-123 Status Completed"],
+        }],
+    }
+    gateway = SequencedGateway(
+        [
+            {"result": "not_confirmed", "observation": list_observation},
+            {"result": "not_confirmed", "observation": detail_observation},
+        ],
+        info={"ok": True, "result": user_info_for_paths("/records", "/records/detail")},
+    )
+    context = {"resolvedIntent": {"relation": "continue", "slots": {
+        "recordIdentity": {"source": "current", "value": "APP-123", "evidence": "APP-123"},
+        "answerShape": {"source": "current", "value": "detail", "evidence": "detail"},
+    }}}
+
+    outcome = run_reader(
+        gateway,
+        planner,
+        question="show APP-123 detail",
+        conversation_context=context,
+    )
+
+    assert outcome.result.status == "success"
+    assert gateway.calls[-1][1]["actions"] == [
+        {"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},
+    ]
+    assert len(planner.calls) == 2
 
 
 @pytest.mark.parametrize("corrected_actions,stage", [

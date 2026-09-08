@@ -65,10 +65,12 @@ def test_failed_reader_result_with_verified_facts_returns_only_those_facts() -> 
         "missing": ["workflow_not_confirmed"],
     }
     assert reader_evidence_only_response(evidence, "en") == (
-        "Confirmed details:\nThe selected list includes Cancelled records.\n\n"
+        "**Confirmed details:**\n\n- The selected list includes Cancelled records.\n\n"
         "The remaining requested details could not be confirmed."
     )
-    assert reader_evidence_only_response({"result": "success", "facts": ["Verified record detail"]}, "en") is None
+    assert reader_evidence_only_response(
+        {"result": "success", "facts": ["Verified record detail"]}, "en",
+    ) == "**Confirmed details:**\n\n- Verified record detail"
 
 
 def test_failed_list_follow_up_does_not_implicitly_select_first_historical_record() -> None:

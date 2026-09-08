@@ -799,14 +799,18 @@ def test_cell_detail_allows_only_a_distinct_permitted_destination_with_its_visib
 
     assert ReadOnlyPortalPolicy("https://admin.example.test").validate(request, permissions_without_read_button) is None
 
+    observation_bound = PortalReadRequest(
+        "/licensing/applications",
+        ({"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},),
+    )
+    assert ReadOnlyPortalPolicy("https://admin.example.test").validate(
+        observation_bound, permissions_without_read_button,
+    ) is None
+
 
 @pytest.mark.parametrize(
     ("action", "expected"),
     [
-        (
-            {"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},
-            "detail_destination_required",
-        ),
         (
             {
                 "type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123",

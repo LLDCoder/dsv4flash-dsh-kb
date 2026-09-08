@@ -7,6 +7,7 @@ from app.portal_reader import (
     _api_discovery_is_truncated,
     _knowledge_route_recovery_request,
     _relevant_selectable_api_candidates,
+    _selected_api_answer_plan,
     api_drill_request_from_plan,
     api_selection_from_plan,
     bounded_portal_observation,
@@ -410,39 +411,110 @@ def test_selected_api_response_is_primary_evidence_without_duplicate_dom_rows() 
     outcome = _run(planner, gateway, question="what tasks should I pay attention?")
 
     assert outcome.result.status == "success"
-    assert outcome.result.facts == (
-        "ML-1-8007 is waiting on External Authority in External Approval for 6 days.",
-    )
-    assert outcome.result.source_section == "api:GET /api/tasks/1"
-    selected_call = planner.calls[2]
+    assert len(outcome.result.facts) == 1
+    assert '"records.taskNo":"ML-1-8007"' in outcome.result.facts[0]
+    assert '"records.waitingOn":"External Authority"' in outcome.result.facts[0]
+    assert candidate["operationKey"] not in str(outcome.result.public_json())
+    assert outcome.audit_evidence["apiSelection"]["selectedOperationKey"] == candidate["operationKey"]
+    selected_call = planner.calls[1]
     assert selected_call["portalObservation"]["apiEvidence"]["data"] == candidate["responseEvidence"]
     assert "sectionSummaries" not in selected_call["portalObservation"]
     assert "responseEvidence" not in selected_call["planningDirective"]["selectedApiCandidate"]
 
 
-def test_reader_rejects_discovery_with_no_healthy_selectable_business_candidate() -> None:
+def test_unique_response_triggered_by_a_normal_state_action_skips_redundant_api_selection() -> None:
+    completed = _candidate(9, trigger="action:1:switch_tab")
+    completed["responseEvidence"] = {
+        "data": {"page": {"items": [{"taskNo": "TASK-9", "status": "Completed"}], "total": 1}},
+    }
+    completed["responseEvidenceTruncated"] = False
+    observation = _observation(
+        [_candidate(1), _candidate(2), completed],
+        selected_state="Completed",
+        delta_candidates=[completed],
+    )
+    initial_observation = _observation(
+        [_candidate(1), _candidate(2)],
+        controls=[{
+            "controlId": "tab-completed",
+            "label": "Completed",
+            "action": {"type": "switch_tab", "role": "tab", "name": "Completed"},
+        }],
+        delta_candidates=[],
+    )
+    planner = _Planner([
+        {
+            "mode": "portal_read",
+            "portalRequest": {
+                "startPath": "/dashboard",
+                "actions": [{"type": "switch_tab", "role": "tab", "name": "Completed"}],
+                "expectedFields": [],
+            },
+        },
+        {
+            "status": "ok",
+            "completedTasks": [{"taskNo": "TASK-9", "status": "Completed"}],
+            "display": {"columns": ["taskNo", "status"]},
+        },
+    ])
+    gateway = _Gateway([initial_observation, observation])
+
+    outcome = _run(planner, gateway, question="Show my completed current tasks")
+
+    assert outcome.result.status == "success"
+    assert "TASK-9" in outcome.result.facts[0]
+    assert outcome.audit_evidence["apiSelection"]["selectedOperationKey"] == completed["operationKey"]
+    assert len(planner.calls) == 2
+    assert planner.calls[1]["portalObservation"]["apiEvidence"]["data"] == completed["responseEvidence"]
+    assert planner.calls[1]["planningDirective"]["apiCandidateDecision"] == "use_selected"
+    assert gateway.portal_payloads[0]["actions"] == [{"type": "observe"}]
+    assert gateway.portal_payloads[1]["actions"] == [
+        {"type": "switch_tab", "role": "tab", "name": "Completed"},
+    ]
+
+
+def test_selected_api_answer_normalization_does_not_accept_a_new_read_plan() -> None:
+    plan = {
+        "mode": "portal_read",
+        "portalRequest": {
+            "startPath": "/dashboard",
+            "actions": [{"type": "switch_tab", "name": "Invented"}],
+        },
+    }
+
+    assert _selected_api_answer_plan(plan, answer_shape="list") is None
+
+
+def test_no_selectable_api_candidate_does_not_suppress_sufficient_unique_dom_evidence() -> None:
     observation = _observation([
         _candidate(1, policy="blocked"),
         {**_candidate(2), "status": 500},
         _candidate(3, kind="support"),
     ])
-    planner = _Planner([_observe_plan()])
+    planner = _Planner([_observe_plan(), _result_plan()])
     gateway = _Gateway([observation])
 
     outcome = _run(planner, gateway)
 
-    assert outcome.result.status == "not_confirmed"
-    assert outcome.result.missing == ("no_selectable_api_candidates",)
+    assert outcome.result.status == "success"
+    assert outcome.result.facts == ("TASK-1 Pending",)
     assert outcome.audit_evidence["apiSelection"]["decision"] == "not_confirmed"
-    assert len(planner.calls) == 1
+    assert outcome.audit_evidence["apiSelection"]["reason"] == "no_selectable_api_candidates"
+    assert len(planner.calls) == 2
 
 
 def test_reader_rejects_selection_outside_current_candidate_set() -> None:
     planner = _Planner([
         _observe_plan(),
         {"mode": "api_selection", "operationKey": "GET /api/invented", "reasonCodes": ["trigger_matches_intent"]},
+        {
+            "mode": "observation_result", "result": "not_confirmed", "facts": [],
+            "missing": ["invalid_api_selection"],
+        },
     ])
-    gateway = _Gateway([_observation([_candidate(1)])])
+    observation = _observation([_candidate(1)])
+    observation["sectionSummaries"] = []
+    gateway = _Gateway([observation])
 
     outcome = _run(planner, gateway)
 
@@ -458,6 +530,7 @@ def test_reader_drills_once_then_selects_from_reduced_candidates() -> None:
         "action": {"type": "switch_tab", "role": "tab", "name": "Completed"},
     }]
     initial = _observation([_candidate(index) for index in range(11)], controls=controls)
+    initial["apiDiscovery"].update({"truncated": True, "selectableBusinessTruncated": True})
     narrowed = _observation([
         _candidate(7, trigger="action:1:switch_tab"),
         _candidate(8, trigger="action:1:switch_tab"),
@@ -489,12 +562,22 @@ def test_reader_rejects_candidate_set_still_over_limit_after_one_drill() -> None
         "action": {"type": "switch_tab", "role": "tab", "name": "Completed"},
     }]
     crowded = _observation([_candidate(index) for index in range(11)], controls=controls)
+    crowded["apiDiscovery"].update({"truncated": True, "selectableBusinessTruncated": True})
     crowded_delta = _observation([
         _candidate(index + 20, trigger="action:1:switch_tab") for index in range(11)
     ], controls=controls)
+    crowded_delta["apiDiscovery"].update({
+        "deltaTruncated": True,
+        "deltaSelectableBusinessTruncated": True,
+    })
+    crowded_delta["sectionSummaries"] = []
     planner = _Planner([
         _observe_plan(),
         {"mode": "api_drill", "controlId": "tab-completed", "reasonCodes": ["reduce_candidate_set"]},
+        {
+            "mode": "observation_result", "result": "not_confirmed", "facts": [],
+            "missing": ["api_candidates_still_ambiguous"],
+        },
     ])
     gateway = _Gateway([crowded, crowded_delta])
 
@@ -514,6 +597,11 @@ def test_reader_uses_only_post_action_delta_candidates_after_drill() -> None:
         "action": {"type": "switch_tab", "role": "tab", "name": "Completed"},
     }]
     initial_candidates = [_candidate(index) for index in range(11)]
+    initial_observation = _observation(initial_candidates, controls=controls)
+    initial_observation["apiDiscovery"].update({
+        "truncated": True,
+        "selectableBusinessTruncated": True,
+    })
     mixed_follow_up = _observation([
         *initial_candidates,
         _candidate(99, trigger="action:1:switch_tab"),
@@ -524,7 +612,7 @@ def test_reader_uses_only_post_action_delta_candidates_after_drill() -> None:
         {"mode": "api_selection", "operationKey": "GET /api/tasks/99", "reasonCodes": ["trigger_matches_intent"]},
         _result_plan(selected_state="Completed"),
     ])
-    gateway = _Gateway([_observation(initial_candidates, controls=controls), mixed_follow_up])
+    gateway = _Gateway([initial_observation, mixed_follow_up])
 
     outcome = _run(planner, gateway, question="Show my completed current tasks")
 

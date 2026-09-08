@@ -51,9 +51,10 @@ READER_TIMEOUT_SECONDS = 45
 READER_MAX_OUTPUT_ITEMS = 20
 READER_MAX_API_CANDIDATES = 32
 READER_MAX_REQUEST_VARIANTS_PER_OPERATION = 32
-READER_MAX_API_EVIDENCE_BYTES = 256_000
+READER_MAX_API_EVIDENCE_BYTES = 2_000_000
 READER_MAX_API_EVIDENCE_NODES = 600
 READER_MAX_API_EVIDENCE_CHARS = 48_000
+READER_MAX_API_EVIDENCE_DEPTH = 32
 READER_LOCK = asyncio.Lock()
 
 
@@ -681,6 +682,7 @@ def _reader_bounded_api_evidence(value: Any) -> tuple[Any, bool]:
     remaining_nodes = READER_MAX_API_EVIDENCE_NODES
     remaining_chars = READER_MAX_API_EVIDENCE_CHARS
     truncated = False
+    omitted = object()
 
     def sensitive_key(key: object) -> bool:
         compact = re.sub(r"[^a-z0-9]", "", str(key).casefold())
@@ -691,26 +693,44 @@ def _reader_bounded_api_evidence(value: Any) -> tuple[Any, bool]:
 
     def visit(item: Any, depth: int = 0) -> Any:
         nonlocal remaining_nodes, remaining_chars, truncated
-        if remaining_nodes <= 0 or remaining_chars <= 0 or depth >= 10:
+        if (
+            remaining_nodes <= 0
+            or remaining_chars <= 0
+            or depth >= READER_MAX_API_EVIDENCE_DEPTH
+        ):
             truncated = True
-            return "[truncated]"
+            return omitted
         remaining_nodes -= 1
         if isinstance(item, dict):
             result: dict[str, Any] = {}
-            for key, child in item.items():
-                if len(result) >= 60:
-                    truncated = True
-                    break
+            safe_items = [
+                (key, child)
+                for key, child in item.items()
+                if not sensitive_key(key)
+            ]
+            if len(safe_items) > 60:
+                truncated = True
+            # Large record arrays must not consume the whole response budget
+            # before sibling summary objects such as totals or dashboard cards.
+            safe_items.sort(key=lambda pair: 2 if isinstance(pair[1], (list, tuple)) else 1 if isinstance(pair[1], dict) else 0)
+            for key, child in safe_items[:60]:
                 if sensitive_key(key):
                     continue
                 safe_key = _sanitize_reader_text(key, max_chars=120)
                 if safe_key:
-                    result[safe_key] = visit(child, depth + 1)
+                    bounded_child = visit(child, depth + 1)
+                    if bounded_child is not omitted:
+                        result[safe_key] = bounded_child
             return result
         if isinstance(item, (list, tuple)):
             if len(item) > READER_MAX_OUTPUT_ITEMS:
                 truncated = True
-            return [visit(child, depth + 1) for child in list(item)[:READER_MAX_OUTPUT_ITEMS]]
+            result = []
+            for child in list(item)[:READER_MAX_OUTPUT_ITEMS]:
+                bounded_child = visit(child, depth + 1)
+                if bounded_child is not omitted:
+                    result.append(bounded_child)
+            return result
         if item is None or isinstance(item, (bool, int, float)):
             return item
         original = str(item)
@@ -720,7 +740,8 @@ def _reader_bounded_api_evidence(value: Any) -> tuple[Any, bool]:
             truncated = True
         return text
 
-    return visit(value), truncated
+    evidence = visit(value)
+    return ({} if evidence is omitted else evidence), truncated
 
 
 def _reader_api_discovery_state(reader_health: dict[str, Any]) -> dict[str, Any]:
@@ -1008,11 +1029,9 @@ def _validate_cell_detail_request(action: PortalReadAction, start_path: str) -> 
     if not str(action.name or "").strip() or _reader_detail_identity(action.name) != identity:
         raise HTTPException(status_code=422, detail={"code": "reader_detail_cell_identity_mismatch"})
     destination = _reader_cell_detail_destination(action)
-    if destination is None:
-        raise HTTPException(status_code=422, detail={"code": "reader_detail_destination_required"})
-    if urlsplit(destination).query or urlsplit(destination).fragment:
+    if destination is not None and (urlsplit(destination).query or urlsplit(destination).fragment):
         raise HTTPException(status_code=422, detail={"code": "reader_detail_destination_query_forbidden"})
-    if _reader_same_route(start_path, destination):
+    if destination is not None and _reader_same_route(start_path, destination):
         raise HTTPException(status_code=422, detail={"code": "reader_detail_destination_not_distinct"})
 
 
@@ -1256,7 +1275,14 @@ async def _reader_tab_fallback_targets(page: Page, action: PortalReadAction) -> 
     label = " ".join(str(action.name or action.label or "").split())
     if not label:
         return []
-    root = await _reader_tab_scope(page, action)
+    try:
+        root = await _reader_tab_scope(page, action)
+    except RuntimeError as exc:
+        if str(exc) != "reader_selector_not_found" or not action.section:
+            raise
+        # A section emitted by the planner is only a hint. If it does not map
+        # to a semantic DOM scope, a unique page-level tab remains safe to use.
+        root = page
     exact = root.get_by_role("tab", name=action.name or action.label, exact=True)
     visible_exact = [exact.nth(index) for index in range(await exact.count()) if await exact.nth(index).is_visible()]
     if visible_exact:
@@ -1577,9 +1603,8 @@ async def _validate_cell_detail_navigation(page: Page, action: PortalReadAction,
     destination = _reader_cell_detail_destination(action)
     identity = _reader_detail_identity(action.value)
     if (
-        destination is None
-        or page.url == before_url
-        or not _reader_same_route(page.url, destination)
+        page.url == before_url
+        or (destination is not None and not _reader_same_route(page.url, destination))
     ):
         raise RuntimeError("reader_detail_destination_mismatch")
     if not await _detail_identity_is_visible(page, identity, overlay_open=False):
@@ -2061,6 +2086,7 @@ async def _execute_reader_actions(
     page: Page,
     request: AdminPortalReadRequest,
     portal_origin: str,
+    permitted_navigation_paths: tuple[str, ...] = (),
 ) -> tuple[list[str], list[str], list[str], bool, dict[str, Any] | None]:
     facts: list[str] = []
     visited: list[str] = []
@@ -2076,6 +2102,12 @@ async def _execute_reader_actions(
         for path in (action.path, action.url)
         if path
     )
+    if any(
+        _reader_is_cell_detail_without_button(action)
+        and _reader_cell_detail_destination(action) is None
+        for action in request.actions
+    ):
+        declared_paths.update(permitted_navigation_paths)
 
     async def record_page() -> None:
         parsed = urlsplit(page.url)
@@ -2237,10 +2269,17 @@ async def admin_portal_read(
                 }
 
                 async def route_handler(route: Route) -> None:
-                    declared_paths = frozenset(
+                    declared_path_values = (
                         {request.start_path}
                         | {path for action in request.actions for path in (action.path, action.url) if path}
                     )
+                    if any(
+                        _reader_is_cell_detail_without_button(action)
+                        and _reader_cell_detail_destination(action) is None
+                        for action in request.actions
+                    ):
+                        declared_path_values.update((*permission_context["pages"], *permission_context["subpages"]))
+                    declared_paths = frozenset(declared_path_values)
                     await _guard_reader_request(route, portal_origin, declared_paths, reader_health=reader_health)
 
                 await context.route("**/*", route_handler)
@@ -2288,7 +2327,12 @@ async def admin_portal_read(
                 await _settle_page(page)
                 if urlsplit(page.url).path.casefold().rstrip("/").endswith("/login"):
                     raise PermissionError("portal_login_required")
-                return await _execute_reader_actions(page, request, portal_origin)
+                return await _execute_reader_actions(
+                    page,
+                    request,
+                    portal_origin,
+                    (*permission_context["pages"], *permission_context["subpages"]),
+                )
             finally:
                 await browser.close()
 
@@ -2303,7 +2347,20 @@ async def admin_portal_read(
         return _sanitize_reader_output({"status": "load_failed", "summary": "The Admin Portal read timed out.", "limitations": ["reader_timeout"]})
     except Exception as exc:
         code = str(exc)
-        status = "no_permission" if code in {"action_not_read_only", "page_not_permitted"} else "load_failed"
+        target_not_confirmed = {
+            "reader_selector_not_found", "reader_switch_tab_ambiguous",
+            "reader_detail_cell_not_unique", "reader_detail_cell_not_visible",
+            "reader_detail_cell_not_native", "reader_detail_cell_identity_mismatch",
+            "reader_detail_row_not_visible", "reader_detail_row_unverifiable",
+            "reader_detail_destination_mismatch", "reader_detail_identity_mismatch",
+        }
+        status = (
+            "no_permission"
+            if code in {"action_not_read_only", "page_not_permitted"}
+            else "not_confirmed"
+            if code in target_not_confirmed
+            else "load_failed"
+        )
         logger.info(
             "admin_portal_reader_result request_id=%s token_ref=%s status=%s error=%s",
             _trace_id(x_request_id),

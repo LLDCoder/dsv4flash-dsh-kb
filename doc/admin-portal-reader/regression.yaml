@@ -291,19 +291,24 @@ cases:
       support_only_truncation_forces_business_question_drill: false
       terminal_status_type_category_priority_or_options_resource_classified_as_support: true
 
-  - id: reader-api-candidate-threshold-ten
+  - id: reader-api-candidate-volume-is-not-a-business-gate
     variants:
       - relevant_selectable_candidate_count: 10
+        candidate_set_truncated: false
         expect_threshold_drill: false
       - relevant_selectable_candidate_count: 11
-        expect_threshold_drill: true
+        candidate_set_truncated: false
+        expect_threshold_drill: false
     expect:
       maxCandidatesBeforeDrill: 10
+      max_candidates_role: bounded_capture_and_model_context_only
+      intact_candidate_set_may_proceed_to_semantic_selection: true
+      candidate_count_alone_returns_not_confirmed: false
       dropdown_enum_volume_changes_threshold: false
       fixed_page_route_or_tab_required: false
 
   - id: reader-api-discovery-one-safe-drill
-    observed: [more_than_ten_relevant_selectable_candidates, unique_named_readonly_control, verified_post_action_state, operation_delta]
+    observed: [business_candidate_truncation_or_unresolved_semantic_ambiguity, no_answerable_evidence_yet, unique_named_readonly_control, verified_post_action_state, operation_delta]
     expect:
       maxDrillDepth: 1
       allowed_action_subset: [switch_tab, show_filter, filter, expand_details]
@@ -317,6 +322,8 @@ cases:
       request_variant_digest_or_source_values_exposed: false
       second_drill: forbidden
       fixed_business_path_or_tab_assertion: false
+      candidate_volume_alone_forces_drill: false
+      already_answerable_evidence_forces_drill: false
 
   - id: reader-operation-selection-with-sparse-swagger
     observed: [missing_summary, missing_description, missing_operation_id, bounded_tag_path_request_schema_response_schema_and_page_trigger]
@@ -334,6 +341,15 @@ cases:
       operation_candidate_policy_state: blocked
       operation_executed: false
       result: [no_permission, not_confirmed]
+
+  - id: reader-swagger-is-descriptive-not-request-construction
+    observed: [matching_swagger_operation, current_authorized_page, no_page_generated_matching_request]
+    expect:
+      swagger_used_for_semantic_description: true
+      model_fills_route_identifier_filter_query_or_body: false
+      direct_api_call_or_replay: forbidden
+      operation_treated_as_response_evidence: false
+      result: not_confirmed
 
   - id: reader-api-selection-insufficient-or-ambiguous
     variants:
@@ -814,6 +830,132 @@ cases:
       unrelated_candidate_responses_visible_to_answer_model: false
       result: [success, no_data]
 
+  - id: reader-evidence-state-progression
+    observed: [current_authorized_page, verified_readonly_action, bounded_redacted_page_generated_response, matching_business_object_scope_state_filters_identity_and_answer_shape, sufficient_facts]
+    expect:
+      ordered_states: [captured, eligible, matched, answerable, delivered]
+      captured_implies_relevant: false
+      eligible_implies_sufficient: false
+      answerable_implies_delivered: true
+      delivered_boundary: assistant.message
+      later_model_protocol_may_invalidate_answerable_evidence: false
+
+  - id: reader-independent-api-evidence-channel
+    observed: [current_page_generated_healthy_response, verified_page_state_and_action_causality, bounded_redacted_matching_records, no_duplicate_dom_rows]
+    expect:
+      api_evidence_answerable: true
+      duplicate_dom_business_values_required: false
+      operation_specific_answer_schema_required: false
+      result: success
+
+  - id: reader-independent-dom-evidence-channel
+    observed: [current_authorized_stable_observation, uniquely_bound_matching_region_and_state, bounded_visible_facts, api_discovery_failure]
+    expect:
+      dom_evidence_answerable: true
+      selected_api_response_required: false
+      api_orchestration_failure_erases_dom_facts: false
+      result: success
+
+  - id: reader-real-but-wrong-response-is-not-answerable
+    question: Show my completed tasks.
+    observed: [healthy_current_page_response_for_todo_tasks]
+    expect:
+      evidence_state: eligible
+      matched: false
+      success_from_unrelated_real_data: false
+      unsupported_business_answer: forbidden
+      result: not_confirmed
+
+  - id: reader-answerable-formatter-failure-fallback
+    variants:
+      - formatter_failure: timeout
+      - formatter_failure: exception
+      - formatter_failure: invalid_schema
+      - formatter_failure: empty_text
+    observed: [frozen_answer_bundle_with_verified_facts]
+    expect:
+      reader_result_facts_preserved: true
+      deterministic_bundle_renderer_used: true
+      assistant_message_emitted: true
+      downgraded_to_not_confirmed: false
+      unsupported_claim_rate: 0
+
+  - id: reader-formatter-unsupported-claim-rejection
+    observed: [frozen_answer_bundle, formatter_text_with_changed_total_or_added_status]
+    expect:
+      formatter_text_accepted: false
+      deterministic_bundle_renderer_used: true
+      required_bundle_conclusion_preserved: true
+      unsupported_claim_rate: 0
+      assistant_message_emitted: true
+
+  - id: reader-truncated-evidence-completeness
+    variants:
+      - request_shape: bounded_list
+        evidence: truncated_records
+        expect_result: success
+        expect_completeness: bounded
+      - request_shape: complete_count
+        evidence: truncated_records_without_explicit_total
+        expect_result: not_confirmed
+        expect_completeness: unknown
+      - request_shape: complete_count
+        evidence: truncated_records_with_explicit_trustworthy_total
+        expect_result: success
+        expect_completeness: complete
+    expect:
+      retained_collection_length_used_as_total_when_truncated: false
+      bounded_list_described_as_complete: false
+      confirmed_partial_facts_preserved: true
+
+  - id: reader-truncation-marker-is-not-a-fact
+    observed: [page_generated_response_with_omitted_nested_branches, explicit_response_truncation_state]
+    expect:
+      truncation_marker_in_facts: false
+      truncation_marker_in_assistant_message: false
+
+  - id: reader-question-field-match-precedes-value-text-match
+    observed: [multiple_current_page_api_responses, query_terms, response_leaf_field_names, response_value_text]
+    expected:
+      candidate_ranking: [answer_shape_to_operation_semantics, query_to_leaf_field_match, query_to_operation_semantics, value_text_match]
+      descriptive_value_text_cannot_outrank_an_exact_field_match: true
+      assistant_answer_is_bounded_and_grounded: true
+
+  - id: reader-unique-count-response-skips-model-selection
+    observed: [multiple_page_responses, query_field_ranking_leaves_one_healthy_count_response, retained_response_evidence]
+    expected:
+      model_api_selection_required: false
+      deterministic_count_delivery: true
+
+  - id: reader-query-detail-is-staged-and-bound
+    observed: [question_contains_stable_record_identity, planner_combines_query_and_show_detail]
+    expected:
+      action_sequence: [observe, query, unique_record_identity_binding, show_detail]
+      planner_cell_label_used_as_record_identity: false
+      mutation_allowed: false
+      completeness: bounded
+      retained_supported_sibling_facts_preserved: true
+
+  - id: reader-api-budget-preserves-summary-siblings
+    question: Do I have any overdue tasks?
+    observed: [large_priority_card_array_before_summary_cards, service_application_card_with_overdue_total, bounded_response]
+    expect:
+      summary_card_starved_by_earlier_array: false
+      transport_wrapper_fields_in_answer: false
+      navigation_action_fields_in_answer: false
+      unrelated_response_prefix_dumped: false
+      overdue_evidence_preserved: true
+      result: success
+
+  - id: reader-orchestration-failure-is-not-evidence-absence
+    variants: [invalid_api_selection, invalid_observation_schema, grounding_repair_failure, completion_review_failure, answer_render_failed]
+    expect:
+      failure_class: orchestration_failure
+      classified_as_no_data: false
+      classified_as_evidence_absence: false
+      answerable_bundle_still_delivered: true
+      non_answerable_result_uses_specific_evidence_gap: true
+
   - id: reader-audit-redaction
     input_contains: [password, authorization, access_token, cookie, session]
     expect:
@@ -901,7 +1043,7 @@ cases:
   - id: reader-licensing-cell-detail-page-permission
     question: Read the detail for this visible application number.
     requires: [fresh_list_permission, fresh_detail_page_permission, visible_unique_record_number_cell]
-    observed: [no_dedicated_read_button_permission, query_free_known_detail_route]
+    observed: [no_dedicated_read_button_permission, bounded_source_row_or_api_evidence]
     expect:
       selected_cell_identity_equals_requested_identity: true
       actual_detail_identity_matches_selected_cell: true
@@ -910,6 +1052,18 @@ cases:
       approve_permission_used_as_read_permission: false
       unauthorized_destination_rejected_before_click: true
       result: [success, not_confirmed]
+
+  - id: reader-generic-observed-action-binding
+    question: Switch to the requested state or open the referenced record detail.
+    requires: [fresh_permissions, current_bounded_observation]
+    expect:
+      planner_selector_or_section_used_as_authority: false
+      unique_observed_state_control_bound_by_code: true
+      resolved_record_identity_bound_to_same_observed_record: true
+      model_supplied_detail_destination_required: false
+      ambiguous_or_missing_target: not_confirmed
+      page_generated_api_response_evidence_preserved: true
+      unique_action_delta_requires_second_model_selection: false
 
   - id: reader-licensing-five-outcomes
     coverage: [Applications, Profile Verification, Licenses, Reports & Analytics, Team Management]
@@ -934,8 +1088,9 @@ acceptance:
   - Dashboard and Licensing page discovery reuses the existing complete scans; this improve-page change does not require a new full scan unless an affected local boundary is unresolved.
   - Every page read starts with current-session GetUserInfo.
   - Relevant healthy operations are deduplicated by method and Swagger path template, and background, lookup, failed, mutation, export, and download requests do not inflate the candidate threshold.
-  - The Reader drills through at most one verified safe read-only control only when more than ten relevant currently selectable operations remain, then selects an exact page-generated operationKey internally or returns not_confirmed; the operationKey is never sent to the network executor.
+  - Candidate count is a bounded capture and model-context signal, not a business-flow gate; an intact candidate set may proceed to semantic selection at any count, and only truncation or unresolved ambiguity without answerable evidence may trigger at most one verified safe read-only drill.
   - After operation selection, its already received bounded JSON response is valid business evidence regardless of operation-specific shape and does not require duplicate DOM rows or cards.
+  - API response evidence and DOM observation evidence are independent channels; either may establish answerable facts without duplicate proof, while incompatible channels remain unresolved rather than being merged.
   - Only the selected response is exposed to the answer model; credentials, unrestricted payloads, binary content, and unselected responses remain excluded.
   - Swagger metadata supports semantic selection but never grants permission; missing prose falls back to bounded tag, path, schema, and observed-trigger evidence.
   - The main Agent receives only the bounded result contract, never the discovered API catalog, selected operationKey, raw requests or responses, or sensitive response fields.
@@ -948,3 +1103,6 @@ acceptance:
   - Licensing list, count, overview, and mixed list-overview questions return the requested answer shape.
   - Named filter dialogs or drawers and read-only detail surfaces remain bounded, identity-verified, and mutation-free; action dialogs and unknown controls are refused before dispatch.
   - Successful user answers lead with the business conclusion and do not narrate page visibility, reads, snapshots, extraction, Tool execution, or audit evidence.
+  - ANSWERABLE always reaches a mechanically validated assistant.message; free-form formatter failure or unsupported output falls back to deterministic rendering of the frozen AnswerBundle.
+  - Every material claim in assistant.message is supported by the AnswerBundle, with an unsupported-claim rate of zero.
+  - Audit failure classification distinguishes evidence absence, mismatch, ambiguity, and incompleteness from planner, selector, schema, grounding, completion-review, formatter, and delivery failures.

@@ -238,6 +238,39 @@ def test_api_discovery_captures_arbitrary_bounded_json_response_as_candidate_evi
     assert "never-return-this" not in str(candidate)
 
 
+def test_api_evidence_budget_preserves_summary_siblings_after_large_record_list():
+    payload = {
+        "isSuccess": True,
+        "data": {
+            "priorityCards": [
+                {
+                    "applicationNumber": f"APP-{index}",
+                    "title": "Application requiring review",
+                    "sla": {
+                        "displayText": "6d Overdue",
+                        "remainingMinutes": 9150,
+                        "history": [{"state": f"step-{step}"} for step in range(20)],
+                    },
+                }
+                for index in range(20)
+            ],
+            "serviceApplicationCard": {
+                "totalTasks": 24,
+                "doneToday": 2,
+                "overdueTasks": 3,
+            },
+            "refundCard": {"totalCount": 1, "overdueTasks": 0},
+        },
+    }
+
+    evidence, truncated = gateway._reader_bounded_api_evidence(payload)
+
+    assert truncated is True
+    assert evidence["data"]["serviceApplicationCard"]["overdueTasks"] == 3
+    assert evidence["data"]["refundCard"]["totalCount"] == 1
+    assert "[truncated]" not in json.dumps(evidence)
+
+
 def test_api_discovery_records_blocked_without_executing_or_exposing_request_data():
     health = {"blocked": [], "pending": {}}
     route = FakeRoute(

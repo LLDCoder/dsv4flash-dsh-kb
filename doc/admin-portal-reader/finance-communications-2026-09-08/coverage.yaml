@@ -1,0 +1,82 @@
+stage: manual_preparation
+date: 2026-09-08
+permission_representative:
+  role: Super Administrator
+  source: current_session_get_user_info
+  finance_pages:
+    - /financial-payment/transactions
+    - /financial-payment/refunds
+    - /financial-payment/reports-analytics
+  communications_pages:
+    - /communications/message-templates
+    - /communications/broadcast
+    - /communications/message-log
+permission_variants:
+  status: unverified
+  note: Historical Finance Officer and Communications role fingerprints were not switched to during this serialized scan.
+network_discovery:
+  status: not_confirmed
+  note: The browser performance surface reported no same-origin XHR or fetch candidates for the current page loads. No endpoint was constructed, replayed, or retained.
+surfaces:
+  - page: /financial-payment/transactions
+    regions_verified: [Payments list, Transactions filter surface]
+    fields: [Transaction No., Type, Apply For, Payment Method, Amount, Status, Transaction Time]
+    controls:
+      - {control: Search by Transaction No., classification: documented_readonly, action: search, verify: historical Finance Officer narrowing plus current Reset field clear}
+      - {control: Reset, classification: documented_readonly, action: reset, verify: Search field cleared}
+      - {control: Filter, classification: documented_readonly, action: show_filter, verify: Payment Method and Transaction Time visible}
+      - {control: Filter Cancel, classification: documented_readonly, action: dismiss_filter, verify: filter no longer visible}
+      - {control: Type and Status selectors, classification: out_of_scope_with_reason, reason: values and selection effects not exercised}
+      - {control: Service Application, Fines, Refunds summaries, classification: out_of_scope_with_reason, reason: count-bearing effects not exercised}
+      - {control: Transaction Time sort and pagination, classification: out_of_scope_with_reason, reason: not required for scoped question families}
+      - {control: Export, classification: documented_forbidden, reason: exports business data}
+  - page: /financial-payment/refunds
+    regions_verified: [Finance Refunds list]
+    fields: [Application No., Transaction No., Type, Apply For, Payment Method, Amount, Status, Last Updated, Actions]
+    controls:
+      - {control: Search, status, and date criteria, classification: out_of_scope_with_reason, reason: values and filter effects not exercised}
+      - {control: Wallet and Card Refund summaries, classification: out_of_scope_with_reason, reason: summary effects not exercised}
+      - {control: Refund row action, classification: documented_forbidden, reason: initiates refund processing}
+      - {control: sort, pagination, and refund detail, classification: out_of_scope_with_reason, reason: deferred deeper or secondary read surfaces}
+  - page: /financial-payment/reports-analytics
+    regions_verified: [Finance aggregate report, Emirate table, User Type table]
+    controls:
+      - {control: period selector, classification: out_of_scope_with_reason, reason: no selectable values or time semantics confirmed}
+      - {control: chart interactions and table sorting, classification: out_of_scope_with_reason, reason: effects not exercised}
+      - {control: Export, classification: documented_forbidden, reason: exports business data}
+  - page: /communications/message-templates
+    regions_verified: [Message Templates list, Message Templates filter surface]
+    fields: [Template No., Template Name, Modified By, Portal, Channels, Last Updated Time, Action]
+    controls:
+      - {control: Filter, classification: documented_readonly, action: show_filter, verify: filter surface visible}
+      - {control: Reset, classification: documented_readonly, action: reset, verify: Search field cleared}
+      - {control: Filter Cancel, classification: documented_readonly, action: dismiss_filter, verify: filter no longer visible}
+      - {control: Search, portal, channel, time, and pagination criteria, classification: out_of_scope_with_reason, reason: execution or semantics not confirmed}
+      - {control: template detail, classification: out_of_scope_with_reason, reason: child surface includes send and update permissions}
+  - page: /communications/broadcast
+    regions_verified: [Broadcast list, Broadcast filter surface]
+    fields: [Broadcast No., Broadcast Title, Portal, Recipients, Status, Published By, Publish Time, Channel, Actions]
+    controls:
+      - {control: Filter, classification: documented_readonly, action: show_filter, verify: filter surface visible}
+      - {control: Reset, classification: documented_readonly, action: reset, verify: Search field cleared}
+      - {control: Filter Cancel, classification: documented_readonly, action: dismiss_filter, verify: filter no longer visible}
+      - {control: Add New, classification: documented_forbidden, reason: begins broadcast creation}
+      - {control: Search, recipient, status, time, pagination, and broadcast detail, classification: out_of_scope_with_reason, reason: execution or safe read-only behavior not confirmed}
+  - page: /communications/message-log
+    regions_verified: [Message Log list, Message Log filter surface]
+    fields: [No., Type, Recipient, Subject, Portal, Channels, Status, Sent Time, Sent By]
+    controls:
+      - {control: Filter, classification: documented_readonly, action: show_filter, verify: filter surface visible}
+      - {control: Reset, classification: documented_readonly, action: reset, verify: Search field cleared}
+      - {control: Filter Cancel, classification: documented_readonly, action: dismiss_filter, verify: filter no longer visible}
+      - {control: Search, type, date, pagination, and Message Detail, classification: out_of_scope_with_reason, reason: execution, date semantics, or detail safety not confirmed}
+outcomes_not_independently_observed: [no_data, no_permission, load_failed, not_confirmed]
+manuals:
+  finance:
+    source: /Users/thron/Downloads/admin-portal-reader-kb/Finance-Admin-User-Manual-v1.md
+    replacement: /Users/thron/Downloads/admin-portal-reader-kb/Finance-Admin-User-Manual-v2.md
+    preserved_semantic_nodes: [Transactions Payments list, Transactions Payments filter surface, Finance Refunds list]
+    added_semantic_nodes: [Finance Reports and Analytics]
+  communications:
+    replacement: /Users/thron/Downloads/admin-portal-reader-kb/Communications-Admin-User-Manual-v1.md
+    added_semantic_nodes: [Message Templates list, Message Templates filter surface, Broadcast list, Broadcast filter surface, Message Log list, Message Log filter surface]

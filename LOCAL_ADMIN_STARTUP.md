@@ -35,13 +35,16 @@ Start the services in this order.
 
 ### 1. Admin DSH backend and audit frontend
 
-Use the authorized, untracked Admin DSH environment file. It must target the
-Admin database and include the required remote database settings. Do not use a
-Customer DSH environment file.
+Keep the protected `.env.lite` unchanged and layer the authorized, untracked
+`.env.admin.postgres18.local` after it. Before starting backend, verify the
+resolved database is the local Admin `postgres:5432/dsh` and `UMC_PORTAL=admin`;
+backend startup initializes database configuration. Do not use a remote Admin
+or Customer database as the normal development target. See the credential-safe
+configuration check in `doc/team-handoff.zh-CN.md`.
 
 ```bash
 cd /Users/thron/Documents/odt/admin-dsv4flash-dsh-kb
-docker compose --env-file /absolute/path/to/admin-dsh.env \
+docker compose --env-file .env.lite --env-file .env.admin.postgres18.local \
   -f docker-compose.lite.yml \
   -f docker-compose.admin.local.yml \
   up --build -d
@@ -115,10 +118,10 @@ through the `18086` proxy as CSS and JavaScript, not as an HTML fallback.
 ## Shutdown
 
 Stop Vite with `Ctrl+C` in its terminal. To stop the Admin DSH containers, use
-the same compose files and environment file used to start them:
+the same compose files and layered environment files used to start them:
 
 ```bash
-docker compose --env-file /absolute/path/to/admin-dsh.env \
+docker compose --env-file .env.lite --env-file .env.admin.postgres18.local \
   -f docker-compose.lite.yml \
   -f docker-compose.admin.local.yml \
   down

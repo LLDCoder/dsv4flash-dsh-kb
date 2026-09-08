@@ -1,5 +1,11 @@
 # Admin Portal Reader Handoff
 
+For the current team onboarding guide, Skill locations, and troubleshooting,
+start with [the Chinese team handoff](team-handoff.zh-CN.md), checked against
+commit `97b8062` on 7 September 2026. This older narrative contains historical
+uncommitted-change statements and test counts; use Git and the latest dated
+repair records to establish current status.
+
 This document is the starting context for the next engineering conversation
 about `/Users/thron/Documents/odt/admin-dsv4flash-dsh-kb`.
 
