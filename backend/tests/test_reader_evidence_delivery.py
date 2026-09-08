@@ -713,9 +713,9 @@ def test_question_field_tokens_prefer_the_matching_response() -> None:
     assert '"serviceApplicationCard.overdueTasks":11' in rendered
     assert "waitingMinutes" not in rendered
     assert outcome.audit_evidence["apiSelection"]["selectedOperationKey"] == summary["operationKey"]
-    assert len(planner.calls) == 2
+    assert len(planner.calls) == 3
     response = reader_evidence_only_response(outcome.result.public_json(), "en")
-    assert "Service Application Card Overdue Tasks: 11" in response
+    assert "Service Application: 11 overdue tasks" in response
 
 
 def test_unique_count_response_does_not_require_model_api_selection() -> None:
@@ -731,7 +731,12 @@ def test_unique_count_response_does_not_require_model_api_selection() -> None:
     })
     planner = _Planner(
         _read_plan({"type": "observe"}),
-        {"mode": "api_selection", "operationKey": "GET /api/not-observed", "reasonCodes": []},
+        {
+            "mode": "api_selection",
+            "operationKey": count["operationKey"],
+            "reasonCodes": ["response_fields_match_answer"],
+        },
+        {"status": "ok", "answer": "not closed result JSON"},
     )
 
     outcome = _run(
@@ -743,7 +748,7 @@ def test_unique_count_response_does_not_require_model_api_selection() -> None:
     assert outcome.result.status == "success"
     assert outcome.result.facts == ('{"total":35}',)
     assert outcome.audit_evidence["apiSelection"]["selectedOperationKey"] == count["operationKey"]
-    assert len(planner.calls) == 2
+    assert len(planner.calls) == 3
 
 
 def test_service_never_delivers_legacy_truncation_or_transport_facts() -> None:
@@ -780,7 +785,36 @@ def test_service_humanizes_structured_api_field_names() -> None:
         "en",
     )
 
-    assert "Overdue Tasks: 11" in response
-    assert "Total Tasks: 109" in response
-    assert response.startswith("**Confirmed details:**\n\n")
-    assert "\n   - Total Tasks: 109" in response
+    assert "11 overdue tasks" in response
+    assert "Total Tasks" not in response
+    assert response.startswith("**Deadline status:**\n\n")
+    assert "null" not in response
+def test_service_renders_dashboard_overview_as_category_counts() -> None:
+    response = reader_evidence_only_response(
+        {
+            "result": "success",
+            "page": "/dashboard",
+            "answerShape": "overview",
+            "facts": [
+                json.dumps({
+                    "serviceApplicationCard.totalCount": 24,
+                    "serviceApplicationCard.totalTasks": 107,
+                    "serviceApplicationCard.departmentStats": None,
+                }),
+                json.dumps({
+                    "taskTabCounts.ServiceApplication": 24,
+                    "taskTabCounts.ProfileVerification": 0,
+                    "taskTabCounts.Enquiries": 1,
+                    "taskTabCounts.Refunds": 1,
+                    "taskTabCounts.Appeals": 0,
+                }),
+            ],
+            "missing": [],
+        },
+        "en",
+    )
+    assert response.startswith("**Overview:**\n\n")
+    assert "Task Tab Counts Service Application: 24" in response
+    assert "Profile Verification: 0" in response
+    assert "Total Tasks" not in response
+    assert "Department Stats" not in response

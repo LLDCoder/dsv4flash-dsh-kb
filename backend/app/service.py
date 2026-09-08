@@ -111,13 +111,38 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str) 
             "no_data": "No matching information is available for the requested scope.",
         },
     }
-    fact_prefix = {
+    answer_shape = str(reader_result.get("answerShape") or "")
+    prefixes = {
+        "overview": {
+            "ar": "نظرة عامة:",
+            "zh": "概览：",
+            "en": "Overview:",
+        },
+        "due": {
+            "ar": "حالة المواعيد:",
+            "zh": "期限状态：",
+            "en": "Deadline status:",
+        },
+        "count": {
+            "ar": "العدد المؤكد:",
+            "zh": "已确认数量：",
+            "en": "Confirmed count:",
+        },
+    }
+    fact_prefix = prefixes.get(answer_shape, {
         "ar": "التفاصيل المؤكدة:",
         "zh": "已确认的信息：",
         "en": "Confirmed details:",
-    }
+    })
 
-    def display_fact_fields(fact: str) -> list[tuple[str, str]]:
+    def display_name(key: str) -> str:
+        display_segments: list[str] = []
+        for segment in re.split(r"[_\-.]+", key):
+            words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", segment)
+            words = re.sub(r"\s+", " ", words).strip()
+            display_segments.append(words[:1].upper() + words[1:] if words else segment)
+        return " ".join(segment for segment in display_segments if segment) or key
+    def display_fact_fields(fact: str) -> list[tuple[str, str, str]]:
         try:
             fields = json.loads(fact)
         except (TypeError, ValueError):
@@ -127,14 +152,10 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str) 
             for key, value in fields.items()
         ):
             return []
-        display_fields: list[tuple[str, str]] = []
+        display_fields: list[tuple[str, str, str]] = []
         for key, value in fields.items():
-            display_segments: list[str] = []
-            for segment in re.split(r"[_\-.]+", key):
-                words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", segment)
-                words = re.sub(r"\s+", " ", words).strip()
-                display_segments.append(words[:1].upper() + words[1:] if words else segment)
-            display_key = " ".join(segment for segment in display_segments if segment) or key
+            if value is None:
+                continue
             if isinstance(value, str):
                 rendered = value
             else:
@@ -142,24 +163,97 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str) 
                     rendered = json.dumps(value, ensure_ascii=False, allow_nan=False)
                 except (TypeError, ValueError):
                     return []
-            display_fields.append((display_key, rendered))
+            display_fields.append((key, display_name(key), rendered))
         return display_fields
+    def due_fields(fields: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+        due_markers = (
+            "deadline", "due", "expiry", "expiration", "expired", "late",
+            "overdue", "remaining", "sla", "timealert",
+        )
+        identity_leaves = {
+            "applicationid", "applicationno", "applicationnumber",
+            "licenseid", "licenseno", "licensenumber",
+            "name", "recordid", "recordno", "recordnumber",
+            "reference", "referenceno", "referencenumber",
+            "service", "servicename", "taskid", "taskno", "tasknumber", "title",
+        }
+        matching = [
+            field for field in fields
+            if any(marker in re.sub(r"[^a-z0-9]", "", field[0].casefold()) for marker in due_markers)
+        ]
+        if not matching:
+            return fields
+        identities = [
+            field for field in fields
+            if (
+                not isinstance(field[2], str) or not field[2].strip().isdigit()
+            )
+            and re.sub(r"[^a-z0-9]", "", field[0].split(".")[-1].casefold()) in identity_leaves
+            and field not in matching
+        ]
+        return identities + matching
+    def overview_category_fields(
+        structured: list[list[tuple[str, str, str]]],
+    ) -> list[tuple[str, str, str]]:
+        metric_markers = (
+            "amount", "average", "count", "distribution", "done", "overdue",
+            "pending", "rate", "stat", "status", "task", "time", "total",
+        )
+        candidates: list[list[tuple[str, str, str]]] = []
+        for fields in structured:
+            if len(fields) < 2:
+                continue
+            parents = {field[0].rsplit(".", 1)[0] for field in fields if "." in field[0]}
+            leaves = [
+                re.sub(r"[^a-z0-9]", "", field[0].rsplit(".", 1)[-1].casefold())
+                for field in fields
+            ]
+            if (
+                len(parents) == 1
+                and len(leaves) == len(fields)
+                and all(not any(marker in leaf for marker in metric_markers) for leaf in leaves)
+            ):
+                candidates.append(fields)
+        return max(candidates, key=len, default=[])
     def render_facts() -> str:
         blocks: list[str] = []
         structured = [display_fact_fields(fact) for fact in facts]
-        numbered = len(facts) > 1 and any(len(fields) > 1 for fields in structured)
+        if answer_shape == "due":
+            structured = [due_fields(fields) for fields in structured]
+        elif answer_shape == "overview":
+            category_fields = overview_category_fields(structured)
+            if category_fields:
+                structured = [category_fields]
+        numbered = len(structured) > 1 and any(len(fields) > 1 for fields in structured)
         for index, (fact, fields) in enumerate(zip(facts, structured), start=1):
             if not fields:
-                blocks.append(f"- {fact}")
+                try:
+                    parsed = json.loads(fact)
+                except (TypeError, ValueError):
+                    parsed = None
+                if not isinstance(parsed, dict):
+                    blocks.append(f"- {fact}")
+                continue
+            if answer_shape == "due":
+                for raw_key, _key, value in fields:
+                    path = raw_key.split(".")
+                    leaf = display_name(path[-1])
+                    parent = re.sub(r"\s+Card$", "", display_name(" ".join(path[:-1])))
+                    subject = f"{parent}: " if parent else ""
+                    blocks.append(f"- {subject}{value} {leaf.casefold()}")
                 continue
             if len(fields) == 1:
-                key, value = fields[0]
+                raw_key, key, value = fields[0]
+                path = raw_key.split(".")
+                leaf = display_name(path[-1])
+                parent = display_name(" ".join(path[:-1]))
+                parent = re.sub(r"\s+Card$", "", parent)
                 blocks.append(f"- {key}: {value}")
                 continue
             prefix = f"{index}." if numbered else "-"
-            first_key, first_value = fields[0]
+            _first_raw_key, first_key, first_value = fields[0]
             lines = [f"{prefix} {first_key}: {first_value}"]
-            lines.extend(f"   - {key}: {value}" for key, value in fields[1:])
+            lines.extend(f"   - {key}: {value}" for _raw_key, key, value in fields[1:])
             blocks.append("\n".join(lines))
         return "\n".join(blocks)
 

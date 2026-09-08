@@ -487,10 +487,19 @@ def _prefer_semantic_response_candidates(
             len(metadata_tokens.intersection(query_tokens)),
             len(field_tokens.intersection(shape_tokens)),
         )))
-    best_score = max((score for _candidate, score in scored), default=(0, 0, 0, 0))
-    if not any(best_score):
-        return candidates
-    return tuple(candidate for candidate, score in scored if score == best_score)
+    # These lexical scores are a coarse relevance signal, not the semantic
+    # decision itself. Keep every safe business candidate available to the
+    # planner and use the score only to put the strongest evidence first.
+    # Otherwise one field-name overlap can collapse a multi-operation page to
+    # a single endpoint and silently bypass question-to-response reasoning.
+    return tuple(
+        candidate
+        for candidate, _score in sorted(
+            scored,
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    )
 
 
 def _relevant_selectable_api_candidates(
@@ -4650,9 +4659,20 @@ class AdminPortalReader:
                     and knowledge_or_observation.get("portalObservation") is not None
                 ),
             }
+            raw_selectable_candidates = _selectable_api_candidates(
+                observation,
+                candidate_field="deltaCandidates" if delta_only else "candidates",
+            )
+            if not _question_requests_support_api(question, bounded_conversation_context):
+                raw_selectable_candidates = tuple(
+                    candidate
+                    for candidate in raw_selectable_candidates
+                    if candidate.get("candidateKind") != "support"
+                )
             deterministic_unique_selection = bool(
                 api_decision == "select"
                 and len(api_candidates) == 1
+                and len(raw_selectable_candidates) == 1
                 and _api_response_evidence_for_operation(
                     observation, api_candidates[0]["operationKey"],
                 ) is not None
