@@ -123,7 +123,7 @@ READER_OVERLAY_ACTIONS = frozenset({"apply_filter", "reset_filter", "dismiss_ove
 
 class PortalReadAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: str
+    type: str = Field(description="Read-only UI action. query reads existing values; filter sets or clears a criterion. query must not carry value, values, nonempty parameters or filters. reset_filter, apply_filter and dismiss_overlay target a filter overlay only; clearing a page search uses filter with an empty value.")
     path: str | None = None
     url: str | None = None
     selector: str | None = Field(default=None, max_length=500)
@@ -131,11 +131,11 @@ class PortalReadAction(BaseModel):
     role: str | None = Field(default=None, max_length=80)
     name: str | None = Field(default=None, max_length=200)
     field: str | None = Field(default=None, max_length=200)
-    section: str | None = Field(default=None, max_length=200)
+    section: str | None = Field(default=None, max_length=200, description="Optional exact observed semantic-region scope. A manual node title is not a region locator. A globally unique observed control may omit this field, but a user-required region must remain verified; a missing or ambiguous scope must never silently broaden the action.")
     empty_state: str | None = Field(default=None, alias="emptyState", max_length=300)
     permission_code: str | None = Field(default=None, alias="permissionCode", max_length=200)
-    value: str | None = Field(default=None, max_length=1_000)
-    values: list[str] = Field(default_factory=list, max_length=20)
+    value: str | None = Field(default=None, max_length=1_000, description="A filter input value, including an empty string to clear, or the stable identity for a detail action. Not permitted on query.")
+    values: list[str] = Field(default_factory=list, max_length=20, description="Bounded filter option values. Nonempty values are not permitted on query.")
     direction: str | None = Field(default=None, max_length=20)
     method: str = "GET"
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -607,6 +607,8 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
                 raise HTTPException(status_code=422, detail={"code": "reader_semantic_locator_required"})
         if action_type == "query" and not action.selector and not action.field and action.role not in READER_QUERY_ROLES:
             raise HTTPException(status_code=422, detail={"code": "reader_query_locator_too_broad"})
+        if action_type == "query" and (action.value is not None or action.values or action.parameters or action.filters):
+            raise HTTPException(status_code=422, detail={"code": "reader_query_cannot_apply_filters"})
         if action_type == "query" and any(
             _reader_contains_sensitive_locator(candidate)
             for candidate in (action.selector, action.label, action.name, action.field, action.section)
@@ -919,16 +921,36 @@ def _semantic_locator(page: Page, action: PortalReadAction, *, prefer_overlay: b
 
 
 async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
-    locator = _semantic_locator(page, action, prefer_overlay=await _visible_overlay_count(page) > 0)
-    if await locator.count() == 0:
+    overlay_open = await _visible_overlay_count(page) > 0
+    async def visible_targets(candidate: Any) -> list[Any]:
+        return [candidate.nth(index) for index in range(await candidate.count())
+                if await candidate.nth(index).is_visible()]
+    root = _visible_overlay(page) if overlay_open else page
+    if action.field and action.section and not action.selector:
+        regions = await visible_targets(root.get_by_role("region", name=action.section, exact=True))
+        if len(regions) != 1:
+            raise RuntimeError("reader_filter_scope_not_unique")
+        root = regions[0]
+        target = root.get_by_label(action.field, exact=True)
+    else:
+        target = _semantic_locator(page, action, prefer_overlay=overlay_open)
+    matches = await visible_targets(target)
+    if not matches and action.field and not action.selector:
+        matches = await visible_targets(root.get_by_role("textbox", name=action.field, exact=True))
+        if not matches:
+            matches = await visible_targets(root.get_by_placeholder(action.field, exact=True))
+    if not matches:
         raise RuntimeError("reader_selector_not_found")
-    if await locator.count() != 1 or not await locator.is_visible():
+    if len(matches) != 1:
         raise RuntimeError("reader_filter_control_not_unique")
+    locator = matches[0]
     tag_name = str(await locator.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
     role = str(await locator.get_attribute("role") or "").casefold()
     input_type = str(await locator.get_attribute("type") or "").casefold()
     if input_type == "password":
         raise RuntimeError("reader_sensitive_locator_forbidden")
+    if input_type in {"file", "checkbox", "radio", "submit", "reset", "button", "hidden"}:
+        raise RuntimeError("reader_filter_control_unsupported")
     values = action.values or ([action.value] if action.value is not None else [])
     value = str(values[0]) if values else ""
     if tag_name == "select":
@@ -1072,6 +1094,27 @@ async def _validate_cell_detail_navigation(page: Page, action: PortalReadAction,
         raise RuntimeError("reader_detail_identity_mismatch")
 
 
+async def _settle_reader_requests(page: Page, timeout_seconds: float = 8.0) -> None:
+    """Wait through delayed SPA requests and a short stable response window."""
+    if not hasattr(page, "_reader_health"):
+        return
+    clock = asyncio.get_running_loop().time
+    deadline = clock() + timeout_seconds
+    quiet_since = clock()
+    while True:
+        health = getattr(page, "_reader_health", {}) or {}
+        pending = health.get("pending", {})
+        paths = pending.values() if isinstance(pending, dict) else pending
+        if any(path not in READER_BLOCKED_EXACT_PATHS for path in paths):
+            quiet_since = clock()
+        elif clock() - quiet_since >= 0.5:
+            return
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(0.1, remaining))
+
+
 async def _settle_page(page: Page) -> None:
     await page.wait_for_function("document.readyState === 'interactive' || document.readyState === 'complete'", timeout=5_000)
     try:
@@ -1095,6 +1138,93 @@ async def _settle_page(page: Page) -> None:
         )
     except Exception:
         pass
+    await _settle_reader_requests(page)
+
+
+READER_TABLE_PAGINATION_SCRIPT = """element => {
+    const visible = node => !!(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+    const root = element.closest('.ant-table-wrapper') || element.closest('section,[role="region"]');
+    if (!root || root.closest('[aria-busy="true"]') || root.querySelector('.ant-spin-spinning')) return [];
+    const tables = Array.from(root.querySelectorAll('table,[role="grid"]')).filter(visible);
+    if (tables.length !== 1 || tables[0] !== element) return [];
+    const totals = Array.from(root.querySelectorAll('.ant-pagination-total-text')).filter(visible);
+    if (totals.length !== 1) return [];
+    return totals[0].innerText.split(/\\r?\\n/).map(text => text.trim())
+        .filter(text => text && !/^[\\d\\s/.,-]+$/.test(text)).slice(0, 4);
+}"""
+
+
+READER_CARD_COLLECTION_SCRIPT = """() => {
+    const visible = node => !!(node && node.getClientRects().length) &&
+        !node.closest('[hidden],[aria-hidden="true"],[aria-busy="true"]') &&
+        getComputedStyle(node).visibility !== 'hidden';
+    const cardLike = node => Array.from(node.classList).some(name => /(?:^|-)card$/.test(name));
+    const ignored = 'button,input,select,textarea,svg,img,script,style,nav,[role="button"],[role="tab"],' +
+        '[hidden],[aria-hidden="true"],a[href^="mailto:"],a[href^="tel:"],' +
+        '[class*="contact"],[class*="email"],[class*="phone"],[class*="mobile"],[class*="secret"],[class*="token"],[class*="password"]';
+    const cards = Array.from(document.querySelectorAll('[class]')).filter(node =>
+        cardLike(node) && visible(node) && !node.matches('.stat-card,[class*="skeleton"]') &&
+        !node.querySelector('table,[role="grid"],[class*="skeleton"],.ant-spin-spinning') &&
+        Array.from(node.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')).some(visible)
+    );
+    const leafCards = cards.filter(node => !cards.some(other => other !== node && node.contains(other)));
+    const groups = new Map();
+    for (const card of leafCards.slice(0, 40)) {
+        const parent = card.parentElement;
+        if (!groups.has(parent)) groups.set(parent, []);
+        const values = groups.get(parent);
+        if (values.length >= 4) continue;
+        const fragments = [];
+        const walk = node => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                const text = node.textContent.trim().replace(/\\s+/g, ' ');
+                if (text && !/[^\\s@]+@[^\\s@]+\\.[^\\s@]+/.test(text)) fragments.push(text);
+                return;
+            }
+            if (node.nodeType !== Node.ELEMENT_NODE || !visible(node) || node.matches(ignored)) return;
+            for (const child of node.childNodes) walk(child);
+        };
+        walk(card);
+        const text = fragments.join(' | ').slice(0, 300);
+        if (text && !values.includes(text)) values.push(text);
+    }
+    return Array.from(groups).filter(([, values]) => values.length).slice(0, 2).map(([parent, values]) => {
+        const region = parent.closest('section,[role="region"],[role="tabpanel"]');
+        const label = region && region.getAttribute('aria-label');
+        return {heading: label || '', cardSummaries: values};
+    });
+}"""
+
+
+READER_LABELED_METRICS_SCRIPT = """() => {
+    const visible = node => !!(node && node.getClientRects().length) &&
+        !node.closest('[hidden],[aria-hidden="true"],[aria-busy="true"]') &&
+        getComputedStyle(node).visibility !== 'hidden';
+    const metrics = Array.from(document.querySelectorAll('[class$="-statistics-item"],[class$="-statistic-item"],[class$="__stat"],[data-stat]'));
+    const groups = new Map();
+    for (const metric of metrics.slice(0, 100)) {
+        if (!visible(metric) || metric.closest('table,[role="grid"]') ||
+            metric.querySelector('[class*="skeleton"],.ant-spin-spinning,button,input,select,textarea')) continue;
+        const leaves = Array.from(metric.querySelectorAll('*')).filter(node =>
+            !node.children.length && visible(node) && !node.matches('svg,svg *,img,script,style'));
+        const parts = leaves.map(node => node.innerText?.trim()).filter(Boolean);
+        if (parts.length !== 2) continue;
+        const numeric = parts.map(value => /^[+-]?\\d[\\d,.]*(?:%|[kmbKMB])?$/.test(value));
+        if (numeric.filter(Boolean).length !== 1) continue;
+        const value = parts[numeric.indexOf(true)], label = parts[numeric.indexOf(false)];
+        if (label.length > 100 || /@|password|token|secret/i.test(label)) continue;
+        const parent = metric.parentElement;
+        if (!visible(parent) || parent.querySelector('.ant-spin-spinning,[class*="skeleton"]')) continue;
+        if (!groups.has(parent)) groups.set(parent, []);
+        const summaries = groups.get(parent);
+        const text = label + ' ' + value;
+        if (summaries.length < 12 && !summaries.includes(text)) summaries.push(text);
+    }
+    return Array.from(groups).slice(0, 2).map(([parent, summaries]) => {
+        const region = parent.closest('section,[role="region"],[role="tabpanel"]');
+        return {heading: region?.getAttribute('aria-label') || '', summaries};
+    });
+}"""
 
 
 async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
@@ -1194,16 +1324,17 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
                 continue
             header_key = header_text.casefold()
             if (
-                not header_text
-                or header_key in seen_headers
+                (header_text and header_key in seen_headers)
                 or await has_complex_span(header)
             ):
                 structured_headers_safe = False
-            seen_headers.add(header_key)
+            if header_text:
+                seen_headers.add(header_key)
             structured_headers.append(header_text)
             compact_header = re.sub(r"[^a-z]", "", header_text.casefold())
             if (
-                compact_header in {"action", "actions", "operation", "operations"}
+                not header_text
+                or compact_header in {"action", "actions", "operation", "operations"}
                 or _reader_contains_sensitive_locator(header_text)
                 or "secret" in _reader_words(header_text)
             ):
@@ -1279,6 +1410,10 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
             max_each=2,
             max_chars=200,
         )
+        if not empty_values:
+            empty_values = await visible_texts(
+                container.locator(".ant-table-placeholder"), max_each=2, max_chars=200,
+            )
         empty_state = next(
             (
                 value for value in empty_values
@@ -1361,6 +1496,13 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
             "rowFields": row_fields[:4],
             "emptyState": empty_state,
         }
+        # A pagination total belongs only to its unique, settled table wrapper.
+        pagination_texts = await container.evaluate(READER_TABLE_PAGINATION_SCRIPT)
+        if isinstance(pagination_texts, list):
+            section_summary["summaries"] = [
+                _sanitize_reader_text(value, max_chars=200)
+                for value in pagination_texts[:4] if isinstance(value, str) and value.strip()
+            ]
         if isinstance(parent_index, int) and parent_index >= 0:
             section_summary["parentRef"] = f"observation-region-{parent_index + 1:03d}"
         section_summaries.append(section_summary)
@@ -1368,8 +1510,56 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
             break
 
     active_tab_texts = await _reader_selected_tab_texts(page)
+    tab_controls = []
+    visible_tabs = page.locator("[role='tab']")
+    for tab_index in range(await visible_tabs.count()):
+        tab = visible_tabs.nth(tab_index)
+        if not await tab.is_visible():
+            continue
+        name = _sanitize_reader_text(await tab.inner_text(), max_chars=200)
+        if name:
+            tab_controls.append({"name": name, "selected": bool((await _reader_tab_selection(tab)).get("selected"))})
+        if len(tab_controls) >= 20:
+            break
     visible_active_tab_count = len(active_tab_texts)
     active_tab_text = active_tab_texts[0] if active_tab_texts else ""
+    metric_collections = await page.evaluate(READER_LABELED_METRICS_SCRIPT)
+    for metric_index, collection in enumerate(metric_collections if isinstance(metric_collections, list) else []):
+        if not isinstance(collection, dict) or not isinstance(collection.get("summaries"), list):
+            continue
+        summaries = [_sanitize_reader_text(value, max_chars=200) for value in collection["summaries"][:min(limit, 12)]
+                     if isinstance(value, str) and value.strip()]
+        if not summaries:
+            continue
+        heading = _sanitize_reader_text(collection.get("heading"), max_chars=200)
+        if heading.casefold() in {"scrollable content", "content", "main"}:
+            heading = ""
+        if not heading and visible_active_tab_count == 1:
+            heading = active_tab_text
+        section_summaries.append({
+            "nodeId": f"observation-metrics-{metric_index + 1:03d}", "kind": "metrics",
+            "heading": heading, "sourceSection": heading, "summaries": summaries,
+            "selectedState": active_tab_text if visible_active_tab_count == 1 else "",
+        })
+    card_collections = await page.evaluate(READER_CARD_COLLECTION_SCRIPT)
+    for card_index, collection in enumerate(card_collections if isinstance(card_collections, list) else []):
+        if not isinstance(collection, dict) or not isinstance(collection.get("cardSummaries"), list):
+            continue
+        cards = [_sanitize_reader_text(value, max_chars=300) for value in collection["cardSummaries"][:min(limit, 4)]
+                 if isinstance(value, str) and value.strip()]
+        if not cards:
+            continue
+        heading = _sanitize_reader_text(collection.get("heading"), max_chars=200)
+        if heading.casefold() in {"scrollable content", "content", "main"}:
+            heading = ""
+        if not heading and visible_active_tab_count == 1:
+            heading = active_tab_text
+        section_summaries.append({
+            "nodeId": f"observation-cards-{card_index + 1:03d}",
+            "kind": "cards", "heading": heading, "sourceSection": heading,
+            "cardSummaries": cards,
+            "selectedState": active_tab_text if visible_active_tab_count == 1 else "",
+        })
     if len(visible_containers) == 1 and visible_active_tab_count == 1 and active_tab_text:
         visible_table_node_id = f"observation-table-{visible_containers[0][0] + 1:03d}"
         for section_summary in section_summaries:
@@ -1483,6 +1673,7 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
         "rowSummaries": first_rows,
         "sectionSummaries": section_summaries,
         "regionSummaries": region_summaries,
+        "tabControls": tab_controls,
         "dialogs": await texts(READER_OVERLAY_SELECTOR, max_each=min(limit, 4), max_chars=800),
         "readHealth": {
             **_reader_surface_health(page),

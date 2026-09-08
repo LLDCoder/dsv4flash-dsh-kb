@@ -94,6 +94,9 @@ def _previous_slots(context: Any) -> dict[str, str]:
     )
     if focus:
         values.setdefault("businessFocus", focus)
+    selected_view = _human_section(previous.get("selectedState"))
+    if selected_view:
+        values.setdefault("view", selected_view)
     prior_intent = previous.get("intentContext")
     slots = prior_intent.get("slots") if isinstance(prior_intent, dict) else None
     if isinstance(slots, dict):
@@ -241,7 +244,7 @@ def parse_intent_resolution(
                 raise ValueError("invalid intent slot enum")
             evidence_sources = [current_source] if source == "current" else previous_sources
             if not any(_normalized(evidence) in candidate for candidate in evidence_sources):
-                raise ValueError("intent slot evidence is absent from its declared source")
+                raise ValueError(f"intent slot evidence is absent from its declared source (slot={name}, source={source})")
             if name == "recordIdentity":
                 identity = _normalized(value)
                 if source == "current" and not _literal_identity_in(identity, current_source):
@@ -260,7 +263,23 @@ def parse_intent_resolution(
     if not isinstance(options, list) or len(options) != (2 if relation == "clarify" else 0):
         raise ValueError("clarification requires exactly two options and other relations none")
     safe_options = _clarification_labels(options) if options else ()
+    if safe_options and _splits_requested_conjunction(question, safe_options):
+        raise ValueError("clarification splits explicitly requested conjuncts; preserve both requested criteria")
     return IntentResolution(relation, tuple(resolved_slots), tuple(safe_options))
+
+
+def _splits_requested_conjunction(question: str, options: tuple[str, str]) -> bool:
+    """Reject a literal X-and-Y request being restated as an X-or-Y choice."""
+    words = [set(re.findall(r"\w+", _normalized(option))) for option in options]
+    distinct = [words[0] - words[1], words[1] - words[0]]
+    if not all(distinct):
+        return False
+    for conjunction in re.finditer(r"\band\b", _normalized(question)):
+        before = set(re.findall(r"\w+", _normalized(question)[:conjunction.start()]))
+        after = set(re.findall(r"\w+", _normalized(question)[conjunction.end():]))
+        if any(left <= before and right <= after for left, right in (distinct, distinct[::-1])):
+            return True
+    return False
 
 
 def _clarification_labels(options: Any) -> tuple[str, str]:

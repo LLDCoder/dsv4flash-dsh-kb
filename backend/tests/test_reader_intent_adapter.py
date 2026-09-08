@@ -83,6 +83,7 @@ def test_intent_resolver_preserves_original_question_and_bounded_semantic_contex
     assert "exactly two distinct concise plain-string alternatives" in prompt
     assert "do not ask the same clarification repeatedly" in prompt
     assert "Never cite a page route, technical section ID" in prompt
+    assert "An enum value is not its evidence" in prompt
 
 
 def test_intent_resolver_does_not_truncate_original_question(monkeypatch):
@@ -114,6 +115,47 @@ def test_intent_syntax_retry_does_not_replay_invalid_model_output(monkeypatch):
     assert marker not in json.dumps(requests[1])
     assert [item["role"] for item in requests[1]["messages"][-2:]] == ["system", "user"]
     assert "Retry the same intent-resolution request" in requests[1]["messages"][-1]["content"]
+    assert '"question": "attention"' in requests[1]["messages"][-1]["content"]
+
+
+def test_list_synonym_uses_actual_current_word_as_evidence(monkeypatch):
+    expected = _intent_result()
+    expected["relation"] = "refine"
+    expected["slots"]["answerShape"] = {"source": "current", "value": "list", "evidence": "Show"}
+    adapter, requests = _adapter(monkeypatch, [_response(json.dumps(expected))])
+    result = asyncio.run(adapter.resolve_admin_portal_intent("Show me up to five of those cases.", {}))
+    assert result["slots"]["answerShape"]["evidence"] == "Show"
+    examples = [json.loads(message["content"]) for message in requests[0]["messages"] if message["role"] == "assistant"]
+    assert any(example["slots"]["answerShape"] == expected["slots"]["answerShape"] for example in examples)
+
+
+@pytest.mark.parametrize("question,options", [
+    ("Which member and date criteria are present?", ["member criteria", "date criteria"]),
+    ("Show account and profile fields", ["profile fields", "account fields"]),
+])
+def test_intent_retries_clarification_that_splits_explicit_conjunction(monkeypatch, question, options):
+    expected = {"relation": "refine", "slots": {
+        name: {"source": "unspecified", "value": "", "evidence": ""} for name in SLOT_NAMES
+    }, "clarificationOptions": []}
+    invalid = {**expected, "relation": "clarify", "clarificationOptions": options}
+    adapter, requests = _adapter(monkeypatch, [_response(json.dumps(invalid)), _response(json.dumps(expected))])
+    assert asyncio.run(adapter.resolve_admin_portal_intent(question, {})) == expected
+    assert len(requests) == 2
+    assert "preserve both requested criteria" in requests[1]["messages"][-2]["content"]
+
+
+@pytest.mark.parametrize("question,options", [
+    ("Show account and profile fields for my team or everyone", ["my team", "everyone"]),
+    ("Which member or date criteria should I use?", ["member criteria", "date criteria"]),
+    ("Compare fields and then show my work", ["all work", "previous work"]),
+])
+def test_other_scope_clarifications_remain_valid(question, options):
+    from app.reader_intent import parse_intent_resolution
+
+    payload = {"relation": "clarify", "slots": {
+        name: {"source": "unspecified", "value": "", "evidence": ""} for name in SLOT_NAMES
+    }, "clarificationOptions": options}
+    assert parse_intent_resolution(payload, question, {}).relation == "clarify"
 
 
 @pytest.mark.parametrize("content,error", [
@@ -147,6 +189,7 @@ def test_intent_resolver_retries_closed_schema_errors_not_only_json_syntax(monke
     ])
     assert asyncio.run(adapter.resolve_admin_portal_intent("attention", {})) == expected
     assert len(requests) == 2
+    assert "intent resolution has unexpected or missing keys" in requests[1]["messages"][-2]["content"]
 
 
 def test_intent_examples_demonstrate_valid_clarification_and_state_replacement(monkeypatch):
@@ -155,14 +198,16 @@ def test_intent_examples_demonstrate_valid_clarification_and_state_replacement(m
     adapter, requests = _adapter(monkeypatch, [_response(json.dumps(_intent_result()))])
     asyncio.run(adapter.resolve_admin_portal_intent("attention", {}))
     messages = requests[0]["messages"]
-    for index in (1, 3, 5, 7, 9, 11, 13):
+    examples = {}
+    for index in range(1, len(messages) - 1, 2):
         sample = json.loads(messages[index]["content"])
         answer = json.loads(messages[index + 1]["content"])
         parse_intent_resolution(answer, sample["question"], sample["conversationContext"])
-    assert json.loads(messages[2]["content"])["relation"] == "clarify"
-    assert json.loads(messages[4]["content"])["slots"]["view"]["value"] == "Completed"
-    assert json.loads(messages[12]["content"])["slots"]["businessFocus"]["value"] == "Needs Review"
-    assert json.loads(messages[14]["content"])["slots"]["filter"]["value"] == "Blocked"
+        examples[sample["question"]] = answer
+    assert examples["What work needs attention?"]["relation"] == "clarify"
+    assert examples["How about the completed ones?"]["slots"]["view"]["value"] == "Completed"
+    assert examples["show me the list"]["slots"]["businessFocus"]["value"] == "Needs Review"
+    assert examples["show me the blocked task list"]["slots"]["filter"]["value"] == "Blocked"
 
 
 def test_adapter_returns_normalized_omissions_not_raw_model_clears(monkeypatch):
@@ -184,6 +229,31 @@ def test_unconfigured_intent_resolver_fails_without_network():
 
     with pytest.raises(RuntimeError, match="intent resolver is not configured"):
         asyncio.run(adapter.resolve_admin_portal_intent("attention", {}))
+
+
+@pytest.mark.parametrize("reference", ["", "Manual list title", "observation-region-999"])
+def test_page_planner_repairs_missing_or_invented_evidence_reference(monkeypatch, reference):
+    candidate = {"mode": "observation_result", "result": "success", "sourceSection": reference,
+                 "facts": ["REF-1 Open"], "answerShape": "list"}
+    corrected = {**candidate, "sourceSection": "observation-table-001"}
+    adapter, requests = _adapter(monkeypatch, [_response(json.dumps(candidate)), _response(json.dumps(corrected))])
+    knowledge = {"portalObservation": {"sectionSummaries": [{
+        "nodeId": "observation-table-001", "rowSummaries": ["REF-1 Open"],
+    }]}}
+    assert asyncio.run(adapter.plan_admin_portal_read("Show records", {}, knowledge)) == corrected
+    assert len(requests) == 2
+    assert "EXISTING nodeId" in requests[1]["messages"][-2]["content"]
+    assert "REF-1 Open" not in requests[1]["messages"][-2]["content"]
+
+
+def test_reference_repair_does_not_invent_a_node_on_second_failure(monkeypatch):
+    candidate = {"mode": "observation_result", "result": "success", "sourceSection": "missing"}
+    adapter, requests = _adapter(monkeypatch, [_response(json.dumps(candidate))] * 2)
+    with pytest.raises(ValueError, match="sourceSection"):
+        asyncio.run(adapter.plan_admin_portal_read("Show records", {}, {
+            "portalObservation": {"sectionSummaries": [{"nodeId": "observation-table-001"}]},
+        }))
+    assert len(requests) == 2
 
 
 def test_page_planner_obeys_resolved_intent_instead_of_historical_page(monkeypatch):

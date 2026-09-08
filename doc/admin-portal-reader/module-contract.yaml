@@ -122,11 +122,14 @@ conversation_context_contract:
     - Switch and broaden do not inherit omitted conditions or old narrow business focus. A compatible source hint is a candidate entry only, never a required route or permission grant.
     - Human-readable verified section names may establish focus; technical observation IDs, assistant prose, and prior rows may not.
     - Planning uses a canonical resolved task while retaining originalQuestion for literal constraints; it must not reinterpret a resolved ordinal as missing history.
+    - Explicitly cleared conditions and their current-question evidence remain in currentClears and the compact planning question; inherited answer shape cannot erase the clear/reset operation.
+    - The compact planning question also retains the verbatim current request; resolved slots identify conditions and referents, not a replacement speech act. Asking whether evidence can prove a conclusion is not a request to identify a record or execute the mentioned business operation.
     - Page and section come from a prior verified Reader result, never from an assistant claim alone.
     - Context contains no full transcript, page payload, record table, identity credential, cookie, token, or hidden field.
     - Answer-shape continuity is generic and must not introduce module-specific runtime routing.
     - At most three recent user-turn boundaries may contribute intent metadata; event count is not a turn boundary.
     - A bounded record identifier from an observed list or detail is a reference for a fresh lookup, not proof that prior status or ownership remains current.
+    - A verified bounded-list presentation explanation is formatted directly in the requested language; it describes only the immediately preceding list and never retracts a separately verified earlier total.
     - A failed page read retains resolved noncleared intent; explicitly cleared slots and resolver-failure boundaries must not resurrect older anchors.
     - A successful single-fact detail or explicitly requested one-record list may establish a newly observed identity; a broad list never selects its first record implicitly.
     - Elliptical requests for live lists or records still require a fresh read; a manual definition is not a substitute.
@@ -164,6 +167,9 @@ business_answer_quality:
       - Retain headingless table nodes by their explicit node ID and kind; a missing visible heading must not discard identified row evidence.
       - Native rowFields mappings are bounded to four rows, twelve fields per row, and 300 characters per value; ambiguous cell alignment is not inferred.
       - List facts using native cell maps must be JSON-object strings whose field/value pairs belong to one observed row; duplicate keys and cross-row or cross-column joins are rejected.
+      - Incomplete filter locators and unsupported native row facts receive at most one schema correction in the existing two-attempt planner budget; correction never weakens downstream permission, scope, or evidence enforcement.
+      - An action section in a follow-up must match one current observed semantic region; document node names, prior source hints, table headings, and duplicate regions do not establish a scoped locator. Initial scoped plans pass original-plan policy validation and the existing observe-first flow before replanning; adapter schema checks must not preempt that flow.
+      - query reads existing values only; supplied filter values, parameter maps or filter maps are rejected in both backend and gateway. Setting or clearing a criterion requires filter and a verified input locator.
       - A structured list fact must uniquely match one bounded native row, not collapse multiple records into a shared status value.
       - A partial native row selection under an observed view receives at most one semantic review within the existing turn deadline; code never automatically fills omitted rows or infers field predicates from view names.
       - Explicit user predicates and limits remain authoritative; semantic review is model-based and does not itself establish business acceptance.
@@ -440,3 +446,48 @@ session_isolation:
     - Revalidate GetUserInfo after every login or account switch.
     - Reject a read when the observed identity does not match the expected session.
     - Do not reuse permission context across identities.
+
+table_pagination_evidence:
+  source: A single visible pagination-total element belonging to one settled visible table in its own table wrapper or semantic region.
+  bounds: At most four sanitized summary lines of 200 characters each; bare page fractions are excluded.
+  reject: [ambiguous_table_ownership, duplicate_totals, hidden_total, loading_wrapper, sibling_total, row_identifier_as_count, sample_size_as_total]
+  count_validation: Table count facts must be supported by that table's summary evidence, never by its record rows or pagination buttons.
+
+tab_and_followup_evidence:
+  inactive_named_tab: A requested inactive tab must be opened and observed; default-tab rows or totals cannot satisfy its count, list, or detail request.
+  tab_controls: Bounded actual tab names and selected states are observation evidence, not manual node titles or inferred destinations.
+  selected_state_provenance: A previous verified human-readable selected state may anchor an inherited view; an explicit prior requested view takes precedence.
+  count_intent: Explicit quantity questions retain count shape even when the object mentions attention, overdue, or due state.
+  result_scope: Prior result scope describes evidence and must not be promoted to a new user-requested ownership scope.
+  conceptual_comparison: Mentioning tab labels in a field-meaning comparison does not itself require reading each tab's rows.
+  available_criteria: Questions about documented available criteria or fields are conceptual; selected values and current-account access still require fresh evidence.
+  identifier_lookup: Searching by a known record identifier does not itself request opening a detail page. Prefer the matched native row when it supplies the requested fields.
+  native_row_objects: A bounded flat native field/value object may be normalized to JSON, never Python repr; every field binding must still match one observed row.
+  utility_columns: Unlabelled native columns are excluded by position, preserving named field bindings without leaking selection controls or unknown cell contents. Spanning, hidden, duplicate or misaligned structures remain rejected.
+  explicit_table_empty: A visible recognized empty message in the table placeholder may establish empty-state text; loading and error messages cannot. Healthy request evidence remains mandatory for no_data.
+  filter_field_fallback: If a documented field lacks a visible label, an exact unique visible textbox name or placeholder within the same current overlay and declared region may identify it. Ambiguous matches, password, file, checkbox, radio and hidden inputs remain forbidden.
+  intent_enum_provenance: Evidence quotes must use the user's actual words, which can differ from the normalized enum value.
+  read_only_view_state: Searching, resetting a search, filtering, tab selection and pagination are permitted reads; successful evidence must not be replaced by an unsupported capability refusal.
+  explicit_mutation_commands: After current identity verification, explicit business mutation, payment, export or download commands are refused before planning or page work. Query nouns and read-only view changes are not commands.
+  refusal_output: Explain the read-only capability boundary and that no business operation occurred; do not mislabel a capability refusal as missing read permission.
+  answer_coverage_metadata: Prior delivered answer shape and completeness may explain whether the previous answer was a sample. They never establish a current count, row, permission, or business rule.
+  planner_enum_validation: Retry an invalid result enum inside the bounded planner retry; partial is not a permitted completeness value and must not be silently promoted to complete.
+  reference_repair: Within the existing two-attempt planner budget, a successful observation result must cite an existing semantic node ID; repair may not invent evidence or bypass downstream validation.
+  phase_validation: Before a portal observation, only knowledge_only or portal_read is valid. After observation, only observation_result or a permitted portal_read continuation is valid; wrong-phase outputs use the existing bounded retry.
+  conjunctive_criteria: A literal request for X and Y must not be restated as an X-or-Y clarification. Other genuinely ambiguous ownership or scope choices remain valid.
+  native_sample_values: Exact field-value occurrence summaries may be derived from at most four native rows of one table for bounded detail or overview answers. They never establish complete enums, record lists, individual identity, or collection totals; native row identity checks remain unchanged.
+  overview_fallback: An overview fallback must not use the default tab when the requested named tab is unselected, nor report success from an explicitly unhealthy read. A summary request does not relax selected-view or dependency-health verification.
+  filter_overlay_precondition: Reset, apply and dismiss actions require an observed overlay or a preceding show_filter in the same stateless plan. Clearing a page search uses its verified filter field with an empty value, never a guessed reset button.
+  initial_scoped_actions: Validate the full original plan, observe the chosen permitted page before using an unobserved section, then preserve user-requested business scope while replanning. An invented section in the untrusted initial plan is not a user scope constraint; a globally unique observed control may fulfill that scope without an invented section. A genuinely user-required region must still be verified, never silently broadened or substituted.
+
+bounded_card_evidence:
+  source: Visible leaf cards with semantic headings, grouped by their immediate collection container; no business-module mapping.
+  bounds: At most two collections, each with at most four sanitized card summaries of 300 characters. Cards remain separate from table rows and totals.
+  exclude: [hidden_content, busy_collections, skeletons, loading_spinners, table_wrappers, buttons, form_controls, contact_fields, credential_fields, email_addresses]
+  scope: Only a unique active tab or an explicit containing semantic label may provide a collection heading. Card samples do not establish collection-wide counts.
+
+labeled_metric_evidence:
+  source: A visible, settled metric item with exactly one numeric leaf and one label leaf, grouped by its own collection container.
+  bounds: At most two collections with twelve label/value pairs each; exclude tables, ambiguous values, controls, skeletons, and hidden or busy content.
+  scope: Metric collections remain distinct from table pagination evidence. Category statistics must not be substituted for a filtered-table total without established matching scope.
+  pending_reads: After DOM readiness, wait up to eight additional seconds for permitted data responses and a 500ms quiet window within the outer execution deadline. The quiet window catches delayed SPA reads and restarts while a permitted request is pending. Preserve pending or failed health if that wait expires; never reinterpret it as no_data.

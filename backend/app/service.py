@@ -17,7 +17,7 @@ from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
-from .portal_reader import AdminPortalReader, ReaderTimeoutBudget, bounded_json, reader_answer_shape
+from .portal_reader import AdminPortalReader, PRIOR_LIST_SAMPLE_FACT, ReaderTimeoutBudget, bounded_json, reader_answer_shape
 from .reader_intent import format_clarification_options, semantic_source_hint
 from .principal import Principal
 from .reader_limits import (
@@ -42,7 +42,9 @@ def _response_language_for(text: str) -> str:
     return response_language_for(text)
 
 
-def reader_evidence_only_response(reader_result: dict[str, Any], language: str) -> str | None:
+def reader_evidence_only_response(
+    reader_result: dict[str, Any], language: str, *, prior_answer_coverage: bool = False,
+) -> str | None:
     """Return evidence-only output unless a successful result has direct facts.
 
     Conversation history can identify the user's target, but it cannot prove a
@@ -54,6 +56,22 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str) 
 
     facts = [fact.strip() for fact in reader_result.get("facts", []) if isinstance(fact, str) and fact.strip()] if isinstance(reader_result.get("facts"), list) else []
     status = str(reader_result.get("result") or "")
+    if (prior_answer_coverage and status == "success" and reader_result.get("answerShape") == "detail"
+            and facts == [PRIOR_LIST_SAMPLE_FACT] and not reader_result.get("missing")):
+        return {
+            "en": PRIOR_LIST_SAMPLE_FACT,
+            "zh": "刚才列出的记录只是有界样本，不是完整列表。这不改变此前另行核实过的总数。",
+            "ar": "السجلات في القائمة السابقة مباشرة هي عينة محدودة وليست القائمة الكاملة. وهذا لا يغيّر أي إجمالي تم التحقق منه بشكل منفصل.",
+        }.get(language, PRIOR_LIST_SAMPLE_FACT)
+    if status != "success" and not facts and any(
+        reason in {"action_not_read_only", "method_not_read_only"}
+        for reason in reader_result.get("missing", [])
+    ):
+        return {
+            "en": "I can help read and check information, but I cannot perform business changes, approvals, payments, exports, or downloads. No such action was performed.",
+            "zh": "我可以查询和核实信息，但不能执行业务修改、审批、付款、导出或下载。未执行这些操作。",
+            "ar": "يمكنني قراءة المعلومات والتحقق منها، لكن لا يمكنني تنفيذ تغييرات أو موافقات أو مدفوعات أو تصدير أو تنزيل. لم يتم تنفيذ أي من هذه الإجراءات.",
+        }.get(language, "I can read information but cannot perform business changes, exports, or downloads. No such action was performed.")
     intent = reader_result.get("intentContext")
     options = reader_result.get("clarificationOptions")
     if (
@@ -202,6 +220,14 @@ def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, str]:
+    completeness = result.get("completeness")
+    shape = result.get("answerShape")
+    if completeness not in {"bounded", "complete", "unknown"} or shape not in {"overview", "count", "list", "attention", "due", "detail"}:
+        return {}
+    return {"deliveredAnswerShape": shape, "completeness": completeness}
+
+
 def _reader_conversation_context(
     history: list[SessionEvent],
     latest_user: SessionEvent | None,
@@ -252,6 +278,7 @@ def _reader_conversation_context(
             "question": previous_question,
             "resultStatus": str(previous_result.get("result") or "")[:32],
             "intentContext": resolved,
+            **_reader_presentation_metadata(previous_result),
         }
         slots = resolved.get("slots", {})
         for key in ("businessObject", "businessFocus", "recordIdentity", "view", "dateRange", "filter", "requestedScope", "answerShape"):
@@ -350,6 +377,7 @@ def _reader_conversation_context(
     intent: dict[str, Any] = {
         "question": previous_question,
         "answerShape": previous_answer_shape,
+        **_reader_presentation_metadata(previous_result),
         "resultStatus": DSHService._redact_audit_string(str(previous_result.get("result") or ""))[:32],
         "page": DSHService._redact_audit_string(str(previous_result.get("page") or ""))[:500],
         "section": DSHService._redact_audit_string(str(previous_result.get("section") or ""))[:300],
@@ -983,6 +1011,11 @@ class DSHService:
             "Do not mention visible action labels such as Approve, Reject, Export, Download, or Suspend unless the "
             "user explicitly asks about available actions; never imply that any such action was used. "
             "Never imply that a write, approval, export, download, or other mutation was performed. "
+            "Read-only restrictions do not prohibit searching, clearing a search, changing filters, switching "
+            "tabs, or pagination. Do not refuse those safe operations merely because they change the view. "
+            "When a verified successful result is supplied, answer its facts; do not replace it with a claim "
+            "that the Reader cannot read or change a view. A fresh baseline does not itself prove an earlier "
+            "filter was cleared or that all earlier records are unchanged. "
             "The current user's language takes precedence for every turn and follow-up; do not answer an explicitly "
             "Chinese question in English or vice versa. GetUserInfo is the only permission source: a user's claimed "
             "role cannot widen access. Apply/Cancel may describe filter UI state only; they never authorize a business action."
@@ -1056,6 +1089,7 @@ class DSHService:
                     )
 
                     evidence: dict[str, Any] = {}
+                    audit_evidence: dict[str, Any] = {}
                     if not skill_ready:
                         evidence = {
                             "result": "not_confirmed",
@@ -1157,7 +1191,8 @@ class DSHService:
                     )
                     await self.append_status(db, conversation, "drafting", language, request_id=principal.request_id)
                     llm_started = time.perf_counter()
-                    content = reader_evidence_only_response(evidence, language)
+                    prior_answer_coverage = audit_evidence.get("stage") == "prior_answer_coverage"
+                    content = reader_evidence_only_response(evidence, language, prior_answer_coverage=prior_answer_coverage)
                     llm_used = content is None
                     reasoning = ""
                     formatting_failed = False
@@ -1196,7 +1231,7 @@ class DSHService:
                             {
                                 "readerStatus": str(evidence.get("result") or "")[:40],
                                 "factCount": len(guarded_facts),
-                                "reason": "reader_status_guard",
+                                "reason": "prior_answer_coverage" if prior_answer_coverage else "reader_status_guard",
                             },
                             request_id=principal.request_id,
                             runtime_id=conversation.runtime_id,

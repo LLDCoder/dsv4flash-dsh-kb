@@ -74,6 +74,8 @@ def test_audit_overview_falls_back_to_legacy_roles_and_marks_missing_account() -
 
 def test_reader_response_prompt_forbids_claiming_bounded_rows_are_complete() -> None:
     prompt = DSHService._runtime_system_prompt("admin_portal_reader", "en", "", "")
+    assert "Read-only restrictions do not prohibit searching" in prompt
+    assert "A fresh baseline does not itself prove" in prompt
 
     assert "bounded extract" in prompt
     assert "Never say records are all current records" in prompt

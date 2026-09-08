@@ -290,13 +290,23 @@ export async function getCurrentGetUserInfo({ token, endpoint = DEFAULT_USER_INF
 async function pollConversation(baseUrl, conversationId, afterSeq, options) {
   const deadline = Date.now() + options.timeoutMs;
   let lastEvents = [];
+  let transientFailures = 0;
   while (Date.now() < deadline) {
-    const data = await requestJson(baseUrl, `/api/v1/conversations/${encodeURIComponent(conversationId)}/history`, options);
+    let data;
+    try {
+      data = await requestJson(baseUrl, `/api/v1/conversations/${encodeURIComponent(conversationId)}/history`, options);
+    } catch (error) {
+      const transient = error instanceof TypeError && error.message === "fetch failed";
+      if (!transient || ++transientFailures > 3) throw error;
+      // Retry only the idempotent history read, never resubmit a user message.
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 500));
+      continue;
+    }
     lastEvents = (Array.isArray(data.events) ? data.events : []).filter((event) => Number(event.seq || 0) > afterSeq);
-    if (lastEvents.some((event) => event.eventType === "runtime.error" || event.eventType === "turn.cancelled" || event.eventType === "turn.completed")) return { events: lastEvents, timedOut: false };
+    if (lastEvents.some((event) => event.eventType === "runtime.error" || event.eventType === "turn.cancelled" || event.eventType === "turn.completed")) return { events: lastEvents, timedOut: false, transientFailures };
     await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(500, Math.max(50, deadline - Date.now()))));
   }
-  return { events: lastEvents, timedOut: true };
+  return { events: lastEvents, timedOut: true, transientFailures };
 }
 
 async function runQuestion(baseUrl, group, step, conversationId, afterSeq, options) {
@@ -331,6 +341,7 @@ async function runQuestion(baseUrl, group, step, conversationId, afterSeq, optio
     accepted: Boolean(accepted.accepted),
     duplicate: Boolean(accepted.duplicate),
     timedOut: polled.timedOut,
+    historyReadRetries: polled.transientFailures,
     maxSeq: polled.events.reduce((max, event) => Math.max(max, Number(event.seq || 0)), afterSeq),
     durationMs: Date.now() - started,
     ...eventSnapshot(polled.events),
