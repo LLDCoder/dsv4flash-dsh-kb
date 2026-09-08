@@ -6,7 +6,12 @@ import httpx
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
-from .portal_reader import PortalReadRequest, ReadOnlyPortalPolicy, UserPermissionContext, bounded_json
+from .portal_reader import (
+    PortalReadRequest,
+    ReadOnlyPortalPolicy,
+    UserPermissionContext,
+    bounded_portal_read_result,
+)
 
 SYSTEM_DEFAULT_TOOL_NAMES = frozenset({"knowledge.search", "admin.portal.read"})
 
@@ -83,7 +88,7 @@ class ToolGateway:
                     "ok": True,
                     "code": "ok",
                     "toolName": tool_name,
-                    "result": bounded_json(result, max_depth=7, max_items=100, max_string=1_000),
+                    "result": bounded_portal_read_result(result),
                 }
             except httpx.HTTPStatusError as exc:
                 code = "permission_denied" if exc.response.status_code in {401, 403} else "tool_error"

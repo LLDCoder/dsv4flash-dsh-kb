@@ -103,6 +103,48 @@ def test_observed_phase_repeats_closed_modes_and_unhealthy_empty_guard(monkeypat
     assert "uncertain data dependencies cannot support no_data" in prompt
 
 
+def test_api_selection_phase_requires_closed_internal_selection_without_network_replay(monkeypatch) -> None:
+    context = {
+        "portalObservation": {"apiDiscovery": {"candidates": []}},
+        "planningDirective": {
+            "apiCandidateDecision": "select",
+            "selectableApiCandidates": [{"operationKey": "GET /api/tasks", "policyState": "bypassed"}],
+        },
+    }
+    result, requests = _run_planner(
+        monkeypatch,
+        ['{"mode":"api_selection","operationKey":"GET /api/tasks","reasonCodes":["trigger_matches_intent"]}'],
+        knowledge_context=context,
+    )
+
+    prompt = requests[0]["messages"][0]["content"]
+    assert result["mode"] == "api_selection"
+    assert "{mode:'api_selection',operationKey:string,reasonCodes:[strings]}" in prompt
+    assert "Return only observation_result or a permitted portal_read continuation" not in prompt
+    assert "Never construct an operationKey, path, method, request body, or network call" in prompt
+    assert "not permission to invoke the API directly" in prompt
+
+
+def test_api_drill_phase_allows_only_observed_control_id(monkeypatch) -> None:
+    context = {
+        "portalObservation": {"apiDiscovery": {"candidates": []}},
+        "planningDirective": {
+            "apiCandidateDecision": "drill",
+            "observedSafeControls": [{"controlId": "tab-completed", "label": "Completed"}],
+        },
+    }
+    result, requests = _run_planner(
+        monkeypatch,
+        ['{"mode":"api_drill","controlId":"tab-completed","reasonCodes":["reduce_candidate_set"]}'],
+        knowledge_context=context,
+    )
+
+    prompt = requests[0]["messages"][0]["content"]
+    assert result["mode"] == "api_drill"
+    assert "{mode:'api_drill',controlId:string,reasonCodes:[strings]}" in prompt
+    assert "Do not supply, alter, or invent a selector, route, action, label, option, or API request" in prompt
+
+
 @pytest.mark.parametrize("observed", [False, True])
 def test_required_read_distinguishes_missing_live_evidence_from_missing_access(monkeypatch, observed):
     context = {"planningDirective": {"requirePortalRead": True}}

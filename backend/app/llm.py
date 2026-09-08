@@ -431,7 +431,8 @@ class LLMAdapter:
             "Do not use target or expectedFields inside an action; expectedFields belongs only beside startPath and "
             "actions in portalRequest. "
             "Do not add keys outside the three closed schemas: pre-observe knowledge_only, portal_read, and "
-            "post-observe observation_result. "
+            "post-observe observation_result. The only exception is an explicit apiCandidateDecision directive, "
+            "which temporarily enables exactly one of the two internal schemas described below. "
             "navigate must include a relative path. To select a visible category tab, use switch_tab with role 'tab' "
             "and its exact observed name; do not use navigate for a section or tab. "
             "A region heading is NOT a tab or an action. Do not invent a switch_tab for a heading before "
@@ -460,14 +461,50 @@ class LLMAdapter:
             "scope. Omit action.section when that scope has not been observed; never invent a region or "
             "treat its heading as a clickable control."
         )
-        if knowledge_context.get("portalObservation") is not None:
+        directive = knowledge_context.get("planningDirective")
+        phase_decision = directive.get("apiCandidateDecision") if isinstance(directive, dict) else None
+        if knowledge_context.get("portalObservation") is not None and phase_decision not in {"select", "drill"}:
             system += (
                 " Current phase: a portalObservation is present. Return only observation_result or a permitted "
                 "portal_read continuation, never knowledge_only. An empty table with blocked, failed, pending, "
                 "or uncertain data dependencies cannot support no_data. Use not_confirmed when evidence remains "
                 "unavailable; do not invent rows or repeat a control that has no verified locator."
             )
-        directive = knowledge_context.get("planningDirective")
+        if isinstance(directive, dict) and directive.get("apiCandidateDecision") == "select":
+            system += (
+                " API candidate selection phase: return exactly "
+                "{mode:'api_selection',operationKey:string,reasonCodes:[strings]} and no other keys. "
+                "operationKey must be copied exactly from one entry in selectableApiCandidates. Select the API whose "
+                "observed page trigger and Swagger operationId, summary, description, tag, request fields, and response schema best match currentTask "
+                "and the requested answer shape. Never construct an operationKey, path, method, request body, or "
+                "network call. reasonCodes must contain one to five unique values chosen only from "
+                "trigger_matches_intent, swagger_schema_matches_answer, swagger_tag_matches_business_object, "
+                "request_fields_match_filters, response_fields_match_answer, only_safe_candidate. This is an "
+                "auditable evidence-selection decision, not permission to invoke the API directly."
+            )
+        if isinstance(directive, dict) and directive.get("apiCandidateDecision") == "drill":
+            system += (
+                " API candidate drill phase: return exactly "
+                "{mode:'api_drill',controlId:string,reasonCodes:[strings]} and no other keys. Copy controlId exactly "
+                "from one observedSafeControls entry that best narrows the current task. Do not supply, alter, or "
+                "invent a selector, route, action, label, option, or API request. reasonCodes must contain one or "
+                "two unique values chosen only from control_matches_intent and reduce_candidate_set. The Reader "
+                "will resolve the id to the already observed read-only UI action and apply its normal permission "
+                "and safety policy. If no listed control is relevant, return api_drill with an empty controlId; it "
+                "will be rejected as not_confirmed instead of guessing."
+            )
+        if isinstance(directive, dict) and directive.get("apiCandidateDecision") == "use_selected":
+            system += (
+                " API candidate reduction is complete. selectedApiCandidate is the only policy-allowed operation "
+                "selected for interpreting this observation. When portalObservation.apiEvidence is present, its "
+                "data is the bounded JSON response already produced by that page request and is primary business "
+                "evidence for the answer. Interpret its existing shape directly; do not require its values to be "
+                "duplicated in DOM rows, cards, or controls. Return an observation_result with concise facts derived "
+                "from that response. The result parser tolerates omitted optional fields and harmless extra output, "
+                "so prioritize a useful answer over reproducing every optional schema field. If apiEvidence is absent, "
+                "use the visible observation or plan one documented observed read-only UI action. Do not call, replay, "
+                "or reconstruct the selected API."
+            )
         if isinstance(directive, dict) and directive.get("filterActionContractReview") is True:
             system += (
                 " Correct the filter action contract: selecting an option is type filter with value equal to "

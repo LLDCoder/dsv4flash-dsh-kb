@@ -114,6 +114,7 @@ def test_reader_timeout_defaults_cover_two_stage_planning_and_portal_executor() 
     platform = PlatformGatewayClient(settings)
 
     assert settings.reader_total_timeout_seconds == READER_TOTAL_TIMEOUT_SECONDS == 90
+    assert settings.reader_max_candidates_before_drill == 10
     assert platform.timeout > PORTAL_EXECUTION_TIMEOUT_SECONDS == 45
 
 
@@ -123,6 +124,8 @@ def test_reader_timeout_defaults_cover_two_stage_planning_and_portal_executor() 
         ("reader_total_timeout_seconds", float("nan")),
         ("reader_total_timeout_seconds", float("inf")),
         ("reader_total_timeout_seconds", 181),
+        ("reader_max_candidates_before_drill", 0),
+        ("reader_max_candidates_before_drill", 33),
         ("platform_timeout_seconds", float("nan")),
         ("platform_timeout_seconds", float("inf")),
         ("platform_timeout_seconds", 181),

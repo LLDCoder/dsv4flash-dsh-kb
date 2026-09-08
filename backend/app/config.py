@@ -30,6 +30,7 @@ class Settings(BaseSettings):
         le=MAX_READER_TOTAL_TIMEOUT_SECONDS,
         allow_inf_nan=False,
     )
+    reader_max_candidates_before_drill: int = Field(default=10, ge=1, le=32)
     # Operator-editable instructions are added to each generated system
     # prompt. Built-in language, safety, and evidence rules remain enforced.
     system_prompt: str = ""
@@ -105,6 +106,7 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "llm_model", "label": "模型名称", "env": "LLM_MODEL", "secret": False, "restartRequired": False, "group": "模型"},
     {"key": "llm_timeout_seconds", "label": "LLM 超时（秒）", "env": "LLM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "模型"},
     {"key": "reader_total_timeout_seconds", "label": "Portal Reader 总超时（秒）", "env": "READER_TOTAL_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "description": "包含权限、知识检索、规划和页面读取的单轮总预算。", "group": "外部 Tool"},
+    {"key": "reader_max_candidates_before_drill", "label": "Reader 下钻前候选接口数", "env": "READER_MAX_CANDIDATES_BEFORE_DRILL", "secret": False, "restartRequired": False, "description": "相关且在当前网络模式下可选择的去重接口超过此数量时，最多执行一轮安全页面下钻。", "group": "外部 Tool"},
     {"key": "system_prompt", "label": "系统提示词（可编辑）", "env": "SYSTEM_PROMPT", "secret": False, "restartRequired": False, "multiline": True, "description": "作为全局追加指令注入每轮系统提示词；内置语言、安全和证据规则仍然优先。", "group": "DSH 行为"},
     {"key": "database_url", "label": "Database URL", "env": "DATABASE_URL", "secret": True, "restartRequired": True, "group": "基础设施"},
     {"key": "redis_url", "label": "Redis URL", "env": "REDIS_URL", "secret": True, "restartRequired": True, "group": "基础设施"},

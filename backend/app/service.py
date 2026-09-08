@@ -1087,6 +1087,7 @@ class DSHService:
                                 knowledge_timeout_seconds=self.settings.knowledge_timeout_seconds,
                                 platform_timeout_seconds=effective_platform_timeout(self.settings.platform_timeout_seconds),
                             ),
+                            max_candidates_before_drill=self.settings.reader_max_candidates_before_drill,
                         )
                         try:
                             total_timeout = bounded_reader_total_timeout(self.settings.reader_total_timeout_seconds)

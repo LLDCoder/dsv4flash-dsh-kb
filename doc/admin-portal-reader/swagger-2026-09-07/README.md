@@ -24,9 +24,18 @@ Static metadata inventory only. No business operation was invoked. Candidate cla
 ```sh
 node scripts/scan_reader_swagger.mjs --policy platform-gateway/config/reader-network-policy.json --out-dir doc/admin-portal-reader/swagger-2026-09-07
 node --test scripts/test_scan_reader_swagger.mjs
+node scripts/build_reader_operation_catalog.mjs
+node --test scripts/test_build_reader_operation_catalog.mjs
 ```
 
 The command fetches only the local Swagger document using GET and refuses redirects. It does not invoke any operation listed in that document. `--input <local-openapi.json>` supports an offline rerun; `--policy` is optional. No runtime policy is generated or overwritten.
+
+`build_reader_operation_catalog.mjs` derives the bounded runtime selection metadata in
+`platform-gateway/config/reader-operation-catalog.json`. It retains every Swagger
+operation but only bounded operationId, summary, description, tags, classification,
+schema names, and top-level field names. The current gateway network mode decides whether a page-observed operation is
+selectable; the catalog never grants execution permission or changes
+`reader-network-policy.json`.
 
 ## Unmapped Allowlist Entries
 

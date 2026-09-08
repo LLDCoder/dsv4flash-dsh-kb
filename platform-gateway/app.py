@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import parse_qsl, unquote, urljoin, urlsplit
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
@@ -49,6 +49,11 @@ READER_MAX_ACTIONS = 12
 READER_MAX_PAGES = 3
 READER_TIMEOUT_SECONDS = 45
 READER_MAX_OUTPUT_ITEMS = 20
+READER_MAX_API_CANDIDATES = 32
+READER_MAX_REQUEST_VARIANTS_PER_OPERATION = 32
+READER_MAX_API_EVIDENCE_BYTES = 256_000
+READER_MAX_API_EVIDENCE_NODES = 600
+READER_MAX_API_EVIDENCE_CHARS = 48_000
 READER_LOCK = asyncio.Lock()
 
 
@@ -100,6 +105,67 @@ READER_STATIC_FETCH_PATHS = frozenset(READER_NETWORK_POLICY["staticFetchPaths"])
 READER_BLOCKED_EXACT_PATHS = frozenset(READER_NETWORK_POLICY["blockedExactPaths"])
 if not READER_WHITELIST_ENABLED:
     logger.warning("Reader API whitelist is DISABLED for business validation; network-level read-only enforcement is inactive")
+
+
+def _bounded_catalog_strings(value: Any, *, limit: int, max_chars: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip()[:max_chars] for item in value[:limit] if isinstance(item, str) and item.strip()]
+
+
+def _load_reader_operation_catalog(path: Path) -> tuple[dict[str, Any], ...]:
+    """Load optional, compact Swagger metadata without making discovery depend on it."""
+
+    if not path.is_file():
+        return ()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    operations = payload.get("operations") if isinstance(payload, dict) else payload
+    if not isinstance(operations, list):
+        raise ValueError("Reader operation catalog must contain an operations list")
+    bounded: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in operations[:2_000]:
+        if not isinstance(value, dict):
+            continue
+        method = str(value.get("method") or "").strip().upper()
+        operation_path = str(value.get("path") or "").strip()
+        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"} or not operation_path.startswith("/api/"):
+            continue
+        parsed = urlsplit(operation_path)
+        if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or "\\" in operation_path:
+            continue
+        key = (method, parsed.path.rstrip("/") or "/")
+        if key in seen:
+            continue
+        seen.add(key)
+        entry: dict[str, Any] = {
+            "method": method,
+            "path": key[1],
+            "tags": _bounded_catalog_strings(value.get("tags"), limit=8, max_chars=80),
+            "requestSchemas": _bounded_catalog_strings(value.get("requestSchemas"), limit=6, max_chars=120),
+            "requestFields": _bounded_catalog_strings(value.get("requestFields"), limit=12, max_chars=120),
+            "responseSchemas": _bounded_catalog_strings(value.get("responseSchemas"), limit=6, max_chars=120),
+            "responseFields": _bounded_catalog_strings(value.get("responseFields"), limit=12, max_chars=120),
+        }
+        for field, limit in (("operationId", 120), ("summary", 300), ("description", 600)):
+            field_value = value.get(field)
+            if isinstance(field_value, str) and field_value.strip():
+                entry[field] = field_value.strip()[:limit]
+        classification = value.get("classification")
+        if isinstance(classification, str) and classification.strip():
+            entry["classification"] = classification.strip()[:80]
+        bounded.append(entry)
+    return tuple(bounded)
+
+
+READER_OPERATION_CATALOG_FILE = Path(os.getenv(
+    "PORTAL_READER_OPERATION_CATALOG", "/app/config/reader-operation-catalog.json",
+))
+try:
+    READER_OPERATION_CATALOG = _load_reader_operation_catalog(READER_OPERATION_CATALOG_FILE)
+except (OSError, ValueError, json.JSONDecodeError) as exc:
+    logger.warning("Reader operation catalog is unavailable: %s", type(exc).__name__)
+    READER_OPERATION_CATALOG = ()
 READER_BROAD_SELECTORS = frozenset({"html", "body", "main", "table", "*", "#root", "#app"})
 READER_QUERY_ROLES = frozenset({"row", "cell", "columnheader", "heading", "status", "listitem", "term", "definition"})
 READER_SENSITIVE_LOCATOR_TERMS = frozenset(
@@ -225,6 +291,8 @@ async def healthz() -> dict[str, Any]:
         "readerWhitelistEnabled": READER_WHITELIST_ENABLED,
         "readerWhitelistFile": str(READER_NETWORK_POLICY_FILE),
         "readerNetworkMode": "allowlist" if READER_WHITELIST_ENABLED else "same-origin-unrestricted",
+        "readerOperationCatalogFile": str(READER_OPERATION_CATALOG_FILE),
+        "readerOperationCatalogCount": len(READER_OPERATION_CATALOG),
         "readOnlyGetPathCount": len(READER_READ_ONLY_GET_PATHS),
         "readOnlyPostPathCount": len(READER_READ_ONLY_POST_PATHS),
         "supportedOperations": ["admin.portal.read", "AdminUser.GetUserInfo"],
@@ -490,6 +558,424 @@ def _path_is_permitted(path: str, allowed_pages: tuple[str, ...]) -> bool:
     return False
 
 
+def _reader_discovery_template(method: str, path: str) -> tuple[str, dict[str, Any] | None]:
+    normalized = path.rstrip("/") or "/"
+    for operation in READER_OPERATION_CATALOG:
+        if operation["method"] == method and operation["path"] == normalized:
+            return operation["path"], operation
+    for operation in READER_OPERATION_CATALOG:
+        if operation["method"] != method:
+            continue
+        expected = operation["path"].strip("/").split("/")
+        actual = normalized.strip("/").split("/")
+        if len(expected) == len(actual) and all(
+            left == right or left.startswith(":") or (left.startswith("{") and left.endswith("}"))
+            for left, right in zip(expected, actual, strict=True)
+        ):
+            return operation["path"], operation
+    if method == "GET":
+        for allowed in READER_READ_ONLY_GET_PATHS:
+            if ":" in allowed and _path_is_permitted(normalized, (allowed,)):
+                return allowed, None
+    if (
+        (method == "GET" and normalized in READER_READ_ONLY_GET_PATHS)
+        or (method == "POST" and normalized in READER_READ_ONLY_POST_PATHS)
+        or normalized in READER_BLOCKED_EXACT_PATHS
+    ):
+        return normalized, None
+    parts = normalized.split("/")
+    for index, segment in enumerate(parts):
+        follows_sensitive_name = index > 0 and _reader_words(parts[index - 1]).intersection({
+            "authorization", "credential", "key", "secret", "token",
+        })
+        if (
+            follows_sensitive_name
+            or (any(char.isdigit() for char in segment) and not re.fullmatch(r"v\d+", segment, re.IGNORECASE))
+            or re.fullmatch(r"\d+", segment)
+            or re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}", segment)
+            or re.fullmatch(r"[0-9a-fA-F]{16,}", segment)
+            or re.fullmatch(r"[A-Za-z]+[-_]\d+[A-Za-z0-9_-]*", segment)
+            or re.fullmatch(r"[^/@\s]+@[^/@\s]+", segment)
+            or (len(segment) >= 20 and segment.isalnum() and any(char.isdigit() for char in segment))
+        ):
+            parts[index] = ":id"
+    return "/".join(parts) or "/", None
+
+
+def _reader_discovery_is_background(path: str, method: str) -> bool:
+    lowered = path.casefold().rstrip("/")
+    return (
+        method == "OPTIONS"
+        or lowered == "/api/adminuser/getuserinfo"
+        or lowered.startswith("/api/clientlog/")
+        or lowered.startswith("/api/signalr/getnotificationinfolist")
+    )
+
+
+def _reader_discovery_candidate_kind(path: str, catalog_entry: dict[str, Any] | None) -> str:
+    tags = catalog_entry.get("tags", []) if catalog_entry else []
+    semantic_words = _reader_words(" ".join([path, *(str(tag) for tag in tags)]))
+    leaf_words = _reader_words(path.rstrip("/").rsplit("/", 1)[-1])
+    support_words = {
+        "lookup", "lookups", "dictionary", "dictionaries", "enum", "enums", "enumeration",
+        "option", "options", "status", "statuses", "type", "types", "category", "categories",
+        "priority", "priorities",
+    }
+    return "support" if semantic_words.intersection({"lookup", "lookups", "dictionary", "dictionaries"}) or leaf_words.intersection(support_words) else "business"
+
+
+def _reader_request_variant(request_obj: Any) -> str:
+    """Hash bounded business filters without retaining or exposing request values."""
+
+    ignored_keys = {
+        "_", "cachebuster", "continuationtoken", "current", "currentpage", "cursor", "limit",
+        "nonce", "offset", "order", "orderby", "page", "pageindex", "pageno", "pagenumber",
+        "pagesize", "perpage", "size", "skip", "sort", "sortby", "t", "take", "timestamp",
+    }
+
+    def ignored(key: object) -> bool:
+        compact = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+        return compact in ignored_keys or any(
+            marker in compact for marker in ("authorization", "credential", "password", "secret", "signature", "token")
+        )
+
+    def bounded(value: Any, depth: int = 0) -> Any:
+        if depth >= 4:
+            return "[depth]"
+        if isinstance(value, dict):
+            return {
+                str(key)[:80]: bounded(item, depth + 1)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))[:40]
+                if not ignored(key)
+            }
+        if isinstance(value, list):
+            return [bounded(item, depth + 1) for item in value[:40]]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value)[:300]
+
+    parsed = urlsplit(str(getattr(request_obj, "url", "") or ""))
+    query = sorted(
+        (key[:80], value[:300])
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)[:80]
+        if not ignored(key)
+    )
+    body: Any = None
+    raw_body = getattr(request_obj, "post_data", None)
+    if isinstance(raw_body, str) and raw_body and len(raw_body) <= 16_384:
+        try:
+            body = bounded(json.loads(raw_body))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            body = hashlib.sha256(raw_body.encode("utf-8", errors="replace")).hexdigest()
+    canonical = {"query": query, "body": body}
+    if not query and body in (None, {}, []):
+        return ""
+    return hashlib.sha256(
+        json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _reader_bounded_api_evidence(value: Any) -> tuple[Any, bool]:
+    """Keep arbitrary JSON response shapes while bounding and redacting them."""
+
+    remaining_nodes = READER_MAX_API_EVIDENCE_NODES
+    remaining_chars = READER_MAX_API_EVIDENCE_CHARS
+    truncated = False
+
+    def sensitive_key(key: object) -> bool:
+        compact = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+        return any(marker in compact for marker in (
+            "authorization", "cookie", "credential", "password", "secret", "token",
+            "base64", "binary", "filecontent", "documentcontent", "pagehtml", "fullhtml",
+        ))
+
+    def visit(item: Any, depth: int = 0) -> Any:
+        nonlocal remaining_nodes, remaining_chars, truncated
+        if remaining_nodes <= 0 or remaining_chars <= 0 or depth >= 10:
+            truncated = True
+            return "[truncated]"
+        remaining_nodes -= 1
+        if isinstance(item, dict):
+            result: dict[str, Any] = {}
+            for key, child in item.items():
+                if len(result) >= 60:
+                    truncated = True
+                    break
+                if sensitive_key(key):
+                    continue
+                safe_key = _sanitize_reader_text(key, max_chars=120)
+                if safe_key:
+                    result[safe_key] = visit(child, depth + 1)
+            return result
+        if isinstance(item, (list, tuple)):
+            if len(item) > READER_MAX_OUTPUT_ITEMS:
+                truncated = True
+            return [visit(child, depth + 1) for child in list(item)[:READER_MAX_OUTPUT_ITEMS]]
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        original = str(item)
+        text = _sanitize_reader_text(original, max_chars=min(1_000, remaining_chars))
+        remaining_chars -= len(text)
+        if len(original) > len(text):
+            truncated = True
+        return text
+
+    return visit(value), truncated
+
+
+def _reader_api_discovery_state(reader_health: dict[str, Any]) -> dict[str, Any]:
+    state = reader_health.setdefault("apiDiscovery", {
+        "trigger": "initial",
+        "candidates": {},
+        "requestKeys": {},
+        "truncated": False,
+        "selectableBusinessTruncated": False,
+        "selectableSupportTruncated": False,
+        "actionBaselineKeys": set(),
+        "requestVariants": {},
+        "variantTruncatedKeys": set(),
+        "deltaCandidateKeys": [],
+        "deltaTruncated": False,
+        "deltaSelectableBusinessTruncated": False,
+        "deltaSelectableSupportTruncated": False,
+    })
+    defaults = {
+        "trigger": "initial", "candidates": {}, "requestKeys": {}, "truncated": False,
+        "selectableBusinessTruncated": False, "selectableSupportTruncated": False,
+        "actionBaselineKeys": set(), "actionBaselineStatusClasses": {},
+        "actionBaselineRequestVariants": {}, "actionBaselineVariantTruncatedKeys": set(),
+        "requestVariants": {}, "variantTruncatedKeys": set(), "deltaCandidateKeys": [],
+        "deltaTruncated": False, "deltaSelectableBusinessTruncated": False,
+        "deltaSelectableSupportTruncated": False,
+    }
+    for key, value in defaults.items():
+        state.setdefault(key, value)
+    return state
+
+
+def _reader_discovery_priority(candidate: dict[str, Any]) -> tuple[int, int]:
+    policy_priority = {"blocked": 0, "bypassed": 2, "allowed": 2}.get(
+        str(candidate.get("policyState") or "").casefold(), 0,
+    )
+    kind_priority = 1 if candidate.get("candidateKind") == "business" else 0
+    return policy_priority, kind_priority
+
+
+def _reader_mark_discovery_truncated(
+    state: dict[str, Any], candidate: dict[str, Any], *, delta: bool,
+) -> None:
+    state["truncated"] = True
+    if delta:
+        state["deltaTruncated"] = True
+    if candidate.get("policyState") not in {"allowed", "bypassed"}:
+        return
+    suffix = "BusinessTruncated" if candidate.get("candidateKind") == "business" else "SupportTruncated"
+    state[f"selectable{suffix}"] = True
+    if delta:
+        state[f"deltaSelectable{suffix}"] = True
+
+
+def _reader_record_api_candidate(
+    reader_health: dict[str, Any],
+    request_obj: Any,
+    portal_origin: str,
+    *,
+    allowed: bool,
+    policy_state: str,
+) -> None:
+    parsed = urlsplit(str(getattr(request_obj, "url", "") or ""))
+    if f"{parsed.scheme}://{parsed.netloc}" != portal_origin or not parsed.path.startswith("/api/"):
+        return
+    method = str(getattr(request_obj, "method", "") or "").upper()
+    if _reader_discovery_is_background(parsed.path, method):
+        return
+    path_template, catalog_entry = _reader_discovery_template(method, parsed.path)
+    operation_key = f"{method} {path_template}"
+    state = _reader_api_discovery_state(reader_health)
+    candidates = state["candidates"]
+    trigger = str(state.get("trigger") or "initial")[:120]
+    request_variant = _reader_request_variant(request_obj)
+    candidate = candidates.get(operation_key)
+    if candidate is None:
+        candidate = {
+            "operationKey": operation_key,
+            "method": method,
+            "path": path_template,
+            "pathTemplate": path_template,
+            "status": None,
+            "policyState": policy_state,
+            "candidateKind": _reader_discovery_candidate_kind(path_template, catalog_entry),
+            "trigger": trigger,
+            "triggers": [trigger],
+        }
+        baseline_keys = state.get("actionBaselineKeys")
+        is_delta = trigger.casefold().startswith("action:") and operation_key not in (
+            baseline_keys if isinstance(baseline_keys, set) else set()
+        )
+        if len(candidates) >= READER_MAX_API_CANDIDATES:
+            lowest_key, lowest = min(candidates.items(), key=lambda item: _reader_discovery_priority(item[1]))
+            if _reader_discovery_priority(candidate) <= _reader_discovery_priority(lowest):
+                _reader_mark_discovery_truncated(state, candidate, delta=is_delta)
+                return
+            evicted_was_delta = lowest_key in state["deltaCandidateKeys"]
+            _reader_mark_discovery_truncated(state, lowest, delta=evicted_was_delta)
+            candidates.pop(lowest_key, None)
+            if evicted_was_delta:
+                state["deltaCandidateKeys"].remove(lowest_key)
+            state["requestKeys"] = {
+                request_id: key for request_id, key in state["requestKeys"].items() if key != lowest_key
+            }
+        if catalog_entry is not None:
+            swagger = {
+                key: catalog_entry[key]
+                for key in (
+                    "operationId", "summary", "description", "tags", "requestSchemas", "requestFields",
+                    "responseSchemas", "responseFields", "classification",
+                )
+                if catalog_entry.get(key) not in (None, [], "")
+            }
+            if swagger:
+                candidate["swagger"] = swagger
+        candidates[operation_key] = candidate
+        if is_delta:
+            state["deltaCandidateKeys"].append(operation_key)
+    else:
+        candidate["trigger"] = trigger
+        if trigger not in candidate["triggers"] and len(candidate["triggers"]) < READER_MAX_ACTIONS + 1:
+            candidate["triggers"].append(trigger)
+        baseline_variants = state.get("actionBaselineRequestVariants")
+        baseline_truncated = state.get("actionBaselineVariantTruncatedKeys")
+        if (
+            trigger.casefold().startswith("action:")
+            and request_variant
+            and isinstance(baseline_variants, dict)
+            and request_variant not in baseline_variants.get(operation_key, set())
+        ):
+            if isinstance(baseline_truncated, set) and operation_key in baseline_truncated:
+                _reader_mark_discovery_truncated(state, candidate, delta=True)
+            elif operation_key not in state["deltaCandidateKeys"]:
+                state["deltaCandidateKeys"].append(operation_key)
+    if candidate is not None and request_variant:
+        variants = state["requestVariants"].setdefault(operation_key, set())
+        if len(variants) < READER_MAX_REQUEST_VARIANTS_PER_OPERATION:
+            variants.add(request_variant)
+        elif request_variant not in variants:
+            state["variantTruncatedKeys"].add(operation_key)
+            _reader_mark_discovery_truncated(
+                state, candidate, delta=trigger.casefold().startswith("action:"),
+            )
+    if allowed:
+        state["requestKeys"][id(request_obj)] = operation_key
+
+
+def _reader_api_discovery_response_seen(reader_health: dict[str, Any], request_obj: Any, status: int) -> str:
+    state = _reader_api_discovery_state(reader_health)
+    operation_key = state["requestKeys"].get(id(request_obj))
+    candidate = state["candidates"].get(operation_key)
+    if candidate is not None:
+        bounded_status = max(0, min(int(status), 999))
+        candidate["status"] = bounded_status
+        baseline_statuses = state.get("actionBaselineStatusClasses")
+        if (
+            str(state.get("trigger") or "").casefold().startswith("action:")
+            and isinstance(baseline_statuses, dict)
+            and operation_key in baseline_statuses
+            and baseline_statuses[operation_key] != ("healthy" if 200 <= bounded_status < 400 else "failed")
+            and operation_key not in state["deltaCandidateKeys"]
+        ):
+            state["deltaCandidateKeys"].append(operation_key)
+    return str(operation_key or "")
+
+
+async def _reader_capture_api_response_evidence(
+    reader_health: dict[str, Any], response: Any, operation_key: str,
+) -> None:
+    """Attach the already received JSON response to its observed operation."""
+
+    try:
+        headers = getattr(response, "headers", {}) or {}
+        content_type = str(headers.get("content-type") or "").casefold()
+        content_length = str(headers.get("content-length") or "").strip()
+        if "json" not in content_type:
+            return
+        if content_length.isdigit() and int(content_length) > READER_MAX_API_EVIDENCE_BYTES:
+            return
+        body = await response.body()
+        if len(body) > READER_MAX_API_EVIDENCE_BYTES:
+            return
+        payload = json.loads(body)
+        evidence, truncated = _reader_bounded_api_evidence(payload)
+    except Exception:
+        return
+    state = _reader_api_discovery_state(reader_health)
+    candidate = state["candidates"].get(operation_key)
+    if candidate is None or candidate.get("policyState") not in {"allowed", "bypassed"}:
+        return
+    candidate["responseEvidence"] = evidence
+    candidate["responseEvidenceTruncated"] = truncated
+
+
+async def _reader_wait_for_api_response_evidence(page: Page) -> None:
+    health = getattr(page, "_reader_health", None)
+    if not isinstance(health, dict):
+        return
+    tasks = tuple(health.get("responseCaptureTasks") or ())
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _reader_set_api_discovery_trigger(page: Page, trigger: str) -> None:
+    health = getattr(page, "_reader_health", None)
+    if isinstance(health, dict):
+        state = _reader_api_discovery_state(health)
+        bounded_trigger = trigger[:120]
+        state["trigger"] = bounded_trigger
+        if bounded_trigger.casefold().startswith("action:"):
+            state["actionBaselineKeys"] = set(state["candidates"])
+            state["actionBaselineStatusClasses"] = {
+                key: "healthy" if isinstance(candidate.get("status"), int) and 200 <= candidate["status"] < 400 else "failed"
+                for key, candidate in state["candidates"].items()
+            }
+            state["actionBaselineRequestVariants"] = {
+                key: set(variants) for key, variants in state["requestVariants"].items()
+            }
+            state["actionBaselineVariantTruncatedKeys"] = set(state["variantTruncatedKeys"])
+            state["deltaCandidateKeys"] = []
+            state["deltaTruncated"] = False
+            state["deltaSelectableBusinessTruncated"] = False
+            state["deltaSelectableSupportTruncated"] = False
+
+
+def _reader_api_discovery_snapshot(page: Page) -> dict[str, Any]:
+    health = getattr(page, "_reader_health", None)
+    if not isinstance(health, dict):
+        return {
+            "candidates": [], "candidateCount": 0, "truncated": False,
+            "selectableBusinessTruncated": False, "selectableSupportTruncated": False,
+            "deltaCandidates": [], "deltaCandidateCount": 0, "deltaTruncated": False,
+            "deltaSelectableBusinessTruncated": False, "deltaSelectableSupportTruncated": False,
+        }
+    state = _reader_api_discovery_state(health)
+    candidates = list(state["candidates"].values())
+    delta_candidates = [
+        state["candidates"][key]
+        for key in state["deltaCandidateKeys"]
+        if key in state["candidates"]
+    ]
+    return {
+        "candidates": candidates,
+        "candidateCount": len(candidates),
+        "truncated": bool(state["truncated"]),
+        "selectableBusinessTruncated": bool(state["selectableBusinessTruncated"]),
+        "selectableSupportTruncated": bool(state["selectableSupportTruncated"]),
+        "deltaCandidates": delta_candidates,
+        "deltaCandidateCount": len(delta_candidates),
+        "deltaTruncated": bool(state["deltaTruncated"]),
+        "deltaSelectableBusinessTruncated": bool(state["deltaSelectableBusinessTruncated"]),
+        "deltaSelectableSupportTruncated": bool(state["deltaSelectableSupportTruncated"]),
+    }
+
+
 def _gateway_button_permitted(action: PortalReadAction, allowed_buttons: tuple[str, ...]) -> bool:
     candidates = {_reader_compact(action.permission_code)} - {""}
     allowed = {_reader_compact(button) for button in allowed_buttons} - {""}
@@ -676,6 +1162,9 @@ def _reader_network_request_allowed(
     api_request = parsed.path.startswith("/api/")
     if parsed.path in READER_BLOCKED_EXACT_PATHS:
         return False
+    exact_get_path_allowed = method == "GET" and parsed.path in READER_READ_ONLY_GET_PATHS
+    if api_request and _reader_is_mutation_route(parsed.path) and not exact_get_path_allowed:
+        return False
     get_path_allowed = _path_is_permitted(parsed.path, tuple(READER_READ_ONLY_GET_PATHS))
     api_allowed = (
         (method == "GET" and get_path_allowed)
@@ -694,6 +1183,26 @@ def _reader_network_request_allowed(
     return True
 
 
+def _reader_api_configured_policy_allows(request: Any, portal_origin: str) -> bool:
+    parsed = urlsplit(request.url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    method = request.method.upper()
+    exact_get_path_allowed = method == "GET" and parsed.path in READER_READ_ONLY_GET_PATHS
+    if (
+        origin != portal_origin
+        or not parsed.path.startswith("/api/")
+        or parsed.path in READER_BLOCKED_EXACT_PATHS
+        or (_reader_is_mutation_route(parsed.path) and not exact_get_path_allowed)
+    ):
+        return False
+    get_path_allowed = _path_is_permitted(parsed.path, tuple(READER_READ_ONLY_GET_PATHS))
+    return (
+        (method == "GET" and get_path_allowed)
+        or (method == "POST" and parsed.path in READER_READ_ONLY_POST_PATHS)
+        or (method == "OPTIONS" and (get_path_allowed or parsed.path in READER_READ_ONLY_POST_PATHS))
+    )
+
+
 async def _guard_reader_request(
     route: Route,
     portal_origin: str,
@@ -704,6 +1213,11 @@ async def _guard_reader_request(
     allowed = _reader_network_request_allowed(route.request, portal_origin, allowed_navigation_paths)
     request_path = urlsplit(route.request.url).path
     if reader_health is not None and request_path.startswith("/api/"):
+        configured_allowed = _reader_api_configured_policy_allows(route.request, portal_origin)
+        policy_state = "blocked" if not allowed else "allowed" if configured_allowed else "bypassed"
+        _reader_record_api_candidate(
+            reader_health, route.request, portal_origin, allowed=allowed, policy_state=policy_state,
+        )
         if allowed:
             reader_health["pending"][id(route.request)] = request_path
         else:
@@ -1577,8 +2091,9 @@ async def _execute_reader_actions(
 
     await record_page()
     await _settle_page(page)
-    for action in request.actions:
+    for action_index, action in enumerate(request.actions, start=1):
         action_type = action.type.strip().casefold().replace("-", "_")
+        _reader_set_api_discovery_trigger(page, f"action:{action_index}:{action_type}")
         if action_type == "observe":
             observation = await _observe_semantics(page, request.max_output_items)
             if observation.get("readHealth", {}).get("healthy") is not True:
@@ -1652,8 +2167,11 @@ async def _execute_reader_actions(
         # Capture the bounded semantic state after a verified read-only
         # interaction so callers can validate the resulting tab, page, or view.
         observation = await _observe_semantics(page, request.max_output_items)
-    if observation is not None:
-        observation["appliedFilters"] = [_sanitize_reader_text(value, max_chars=120) for value in applied_filters[:12]]
+    if observation is None:
+        observation = {}
+    await _reader_wait_for_api_response_evidence(page)
+    observation["appliedFilters"] = [_sanitize_reader_text(value, max_chars=120) for value in applied_filters[:12]]
+    observation["apiDiscovery"] = _reader_api_discovery_snapshot(page)
     return facts[: request.max_output_items], visited[: request.max_pages], observed_fields, confirmed_empty, observation
 
 
@@ -1715,6 +2233,7 @@ async def admin_portal_read(
                 await context.add_init_script(_auth_init_script(raw_token))
                 reader_health: dict[str, Any] = {
                     "blocked": [], "failed": {}, "pending": {}, "responses": {},
+                    "responseCaptureTasks": set(),
                 }
 
                 async def route_handler(route: Route) -> None:
@@ -1732,9 +2251,11 @@ async def admin_portal_read(
                     request_path = reader_health["pending"].pop(request_id, "")
                     if request_path and int(reader_health["responses"].pop(request_id, 200)) < 400:
                         reader_health["failed"].pop(request_path, None)
+                    _reader_api_discovery_state(reader_health)["requestKeys"].pop(request_id, None)
                 def request_failed(request_obj: Any) -> None:
                     request_id = id(request_obj)
                     request_path = reader_health["pending"].pop(request_id, "")
+                    _reader_api_discovery_state(reader_health)["requestKeys"].pop(request_id, None)
                     if request_path:
                         reader_health["failed"][request_path] = reader_health["failed"].get(request_path, 0) + 1
                 def response_seen(response: Any) -> None:
@@ -1743,6 +2264,15 @@ async def admin_portal_read(
                     request_path = urlsplit(getattr(response, "url", "")).path
                     if request_id is not None:
                         reader_health["responses"][request_id] = int(getattr(response, "status", 200))
+                        operation_key = _reader_api_discovery_response_seen(
+                            reader_health, request_obj, int(getattr(response, "status", 200)),
+                        )
+                        if operation_key and 200 <= int(getattr(response, "status", 200)) < 400:
+                            task = asyncio.create_task(_reader_capture_api_response_evidence(
+                                reader_health, response, operation_key,
+                            ))
+                            reader_health["responseCaptureTasks"].add(task)
+                            task.add_done_callback(reader_health["responseCaptureTasks"].discard)
                     if request_path.startswith("/api/") and int(getattr(response, "status", 200)) >= 400:
                         reader_health["failed"][request_path] = reader_health["failed"].get(request_path, 0) + 1
                 page.on("requestfinished", request_finished)

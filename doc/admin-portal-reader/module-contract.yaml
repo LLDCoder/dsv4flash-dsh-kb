@@ -36,7 +36,11 @@ admin_portal_reader:
     - resolve_conditional_follow_up_intent_before_retrieval
     - retrieve_relevant_manual
     - plan_bounded_page_read
-    - read_authorized_pages
+    - select_and_open_authorized_candidate_page
+    - discover_relevant_page_operations
+    - conditionally_drill_once
+    - select_currently_selectable_operation_key
+    - bind_selected_operation_to_page_generated_evidence
     - reduce_to_relevant_facts
   first_release_coverage:
     - dashboard
@@ -50,6 +54,10 @@ admin_portal_reader:
     licensing_inventory: [Applications, Profile Verification, Licenses, Reports & Analytics, Team Management]
     licensing_scan_evidence: doc/admin-portal-reader/licensing-coverage.yaml
     basic_module_evidence: doc/admin-portal-reader/business-pilot-2026-09-06/results.md
+    improvement_scan_policy:
+      dashboard_and_licensing: reuse_existing_complete_scan_evidence
+      full_rescan: not_required
+      targeted_rescan: only_when_the_affected_page_or_control_boundary_cannot_be_confirmed_from_existing_evidence
     manual_publication_and_live_reader_acceptance: user_reports_basic_v1_uploaded_representative_retrieval_checked_business_pilots_in_progress
     reports_export_results: outside_readonly_boundary
     future_business_modules: out_of_scope
@@ -62,6 +70,8 @@ admin_portal_reader:
     max_fact_characters: 500
     max_missing_items: 10
     max_result_characters: 12000
+    maxCandidatesBeforeDrill: 10
+    maxDrillDepth: 1
 
 manual_semantic_contract:
   purpose: Define the minimum business semantics that a retrievable page-region manual node must provide; the manual remains in the knowledge base.
@@ -132,6 +142,101 @@ conversation_context_contract:
     - Elliptical requests for live lists or records still require a fresh read; a manual definition is not a substitute.
     - Current answer shape must be satisfied, not copied onto an ordinary result; deterministic attention fallback requires an observed attention or action-review section.
     - Clarification returns not_confirmed with intent_ambiguous and guarded localized alternatives; it performs no knowledge or page query.
+
+page_api_discovery_contract:
+  purpose: Discover the read operations causally associated with one selected authorized page, then let the Reader select an operation without creating a business-specific Tool.
+  page_selection:
+    inputs: [current_question, resolved_intent, bounded_recent_intents, retrieved_manual, current_get_user_info]
+    current_question_priority: authoritative
+    historical_context: At most three resolved recent user turns may fill omitted intent slots; full conversation text is never forwarded.
+    permission_gate: Candidate pages absent from current GetUserInfo permissions are removed before navigation.
+    route_rule: Open only the highest-ranked permitted page first; another page consumes the existing page budget and requires an evidence gap that the first page cannot resolve.
+    scan_reuse: Dashboard and Licensing reuse their complete existing scan evidence for this improve-page change; do not repeat a full scan unless a locally affected boundary cannot be established.
+  discovery:
+    observed_requests: [xhr, fetch]
+    scope: Requests caused by loading the selected page or by the one permitted drill action in the current Reader invocation.
+    candidate_fields:
+      - operationKey
+      - method
+      - path
+      - pathTemplate
+      - trigger
+      - triggers
+      - status
+      - policyState
+      - candidateKind
+      - bounded_swagger_metadata
+    bounded_discovery_fields:
+      - candidates_and_candidateCount
+      - selectableBusinessTruncated_and_selectableSupportTruncated
+      - deltaCandidates_and_deltaCandidateCount
+      - deltaSelectableBusinessTruncated_and_deltaSelectableSupportTruncated
+    operation_key: Exact normalized method plus Swagger path template; it identifies an operation inside admin.portal.read and never names a separately registered business Tool.
+    normalization:
+      - Match observed URLs to a Swagger path template before counting candidates.
+      - Deduplicate by normalized method plus path template; query values, pagination values, retries, and repeated requests do not create new candidates.
+      - Keep only a bounded in-memory digest of business-relevant query or JSON-body filters to detect a material post-action variant of the same operation; exclude pagination, cursor, sort, cache, and authentication fields, and never expose the digest or source values.
+      - Retain only healthy operations that can directly support the resolved business object, scope, filters, time conditions, and answer shape as selectable candidates.
+    background_filter:
+      exclude_from_candidate_count:
+        - identity_and_session_bootstrap
+        - static_and_runtime_configuration
+        - telemetry_client_logs_and_analytics
+        - notifications_and_health_checks
+        - dropdown_enum_dictionary_and_lookup_loading
+        - duplicate_retry_or_prefetch_requests
+        - failed_blocked_pending_or_cancelled_requests
+        - export_download_upload_or_business_mutation_operations
+      rule: A support request identified by lookup/dictionary/enum semantics or a terminal status/type/category/priority/options resource may remain as bounded causal context for a filter control, but it is not an answer operation and does not contribute to maxCandidatesBeforeDrill.
+      bounded_priority: Healthy business operations selectable in the current network mode take storage priority over support and blocked observations, so lower-priority traffic cannot consume every discovery slot or hide the answer operation.
+  swagger_semantics:
+    authority: Static Swagger metadata for all documented operations aids description but never grants page, button, data-scope, or network execution permission.
+    compact_catalog: platform-gateway/config/reader-operation-catalog.json
+    generation: node scripts/build_reader_operation_catalog.mjs
+    sparse_metadata_fallback: When summary, description, or operationId is absent, selection may use only the bounded combination of tag, normalized path, request schema, response schema, and observed page trigger.
+    forbidden_inference: A suggestive tag, path, field name, or successful historical call cannot cause direct API execution or bypass the current gateway network mode.
+  drill:
+    threshold: Perform no threshold-driven drill while the relevant currently selectable candidate count is at most maxCandidatesBeforeDrill; perform one safe drill when it is greater, or return not_confirmed when no unique safe drill control exists.
+    maximum_depth: maxDrillDepth
+    allowed_actions: [switch_tab, show_filter, filter, expand_details]
+    action_source: One unique named read-only control already documented by retrieved knowledge or confirmed by bounded semantic observation.
+    selection: Prefer the control most directly matching the unresolved intent; the model must not invent a selector, route, method, request body, or control label.
+    delta_only: The Gateway emits an explicit deltaCandidates set by comparing added, health-materially-changed, or business-filter-changed normalized operations to the pre-action candidate set; repeated polling, retries, pagination, and trigger history alone never make an old operation part of the delta.
+    verification: Verify the resulting selected state or expanded surface before using the operation delta.
+    refusal: Ambiguous, unknown, disabled, write-capable, export, download, or unverifiable controls are never used for discovery.
+  operation_selection:
+    decision_values: [select, not_confirmed]
+    selected_value: operationKey
+    ranking_evidence:
+      - direct_trigger_by_the_requested_page_state_or_safe_drill
+      - matching_business_object_scope_filters_time_conditions_and_answer_shape
+      - compatible_request_and_response_schema
+      - compatible_swagger_tag_path_summary_or_description
+      - current_permission_and_active_gateway_network_mode_confirmed
+    execution_guard:
+      - The selected operationKey must exactly match one current healthy page-observed candidate whose policyState is allowed, or bypassed only while the whitelist is disabled.
+      - admin.portal.read remains the only Portal Tool; no module or operation-specific business Tool is registered or selected.
+      - Only page-generated requests are observed; the model never supplies credentials, headers, opaque identifiers, arbitrary URLs, methods, free-form request bodies, or an operationKey to the network executor.
+      - The selected operation constrains evidence interpretation and audit only; it is never replayed or directly invoked by the model.
+      - Every operation remains subject to current GetUserInfo, navigation permission, the active gateway network mode, read-only action policy, and response reduction.
+    insufficient_evidence: Zero relevant safe candidates, no uniquely supportable selection, an unsafe required interaction, exhausted drill depth, or unresolved ambiguity returns not_confirmed without guessing.
+  selected_response_evidence:
+    authority: A successful JSON response already produced by an operation on the current GetUserInfo-permitted page is valid business evidence after that exact operation is selected.
+    shape: Preserve the response's existing JSON structure; do not require operation-specific schemas, DOM row classes, card classes, or duplicate visible text.
+    binding: Attach evidence only after selection and only to the exact observed operation and current page state; selection does not replay or reconstruct the request.
+    reduction:
+      - Limit response bytes, nesting, collection length, scalar length, and total retained values.
+      - Remove credentials, authentication material, binary or encoded payloads, and full file or document contents.
+      - Mark truncation explicitly so a bounded list is not presented as complete.
+    answer_grounding: When selected response evidence is present, the answer model may interpret and summarize that JSON directly; DOM evidence remains optional UI context and is not required to repeat API values.
+    result_normalization: Harmless extra result fields, omitted optional fields, scalar answer aliases, and status aliases are normalized by code; only an unusable result, missing selected response, unsafe operation, or real evidence gap returns not_confirmed.
+  visibility_and_redaction:
+    selector_model_allow: [operationKey, trigger, triggers, status, policyState, candidateKind, bounded_swagger_semantics]
+    selector_model_forbid: [request_headers, credentials, cookies, tokens, raw_request_body, unselected_responses, sensitive_business_values, full_api_catalog]
+    answer_model_allow_after_selection: [selected_operation_metadata, bounded_selected_json_response, response_truncation_state, portal_observation]
+    main_agent_allow: result_contract_only
+    main_agent_forbid: [api_candidates, operationKey, raw_urls, request_parameters, request_headers, request_bodies, raw_responses, sensitive_response_fields]
+    audit: Retain only bounded selected response evidence plus the normalized operation decision, aggregate candidate policy-state counts, selected policy state, trigger, and redacted failure classification needed for diagnosis; never retain secrets or unrestricted responses.
 
 business_answer_quality:
   knowledge_projection:
@@ -306,6 +411,7 @@ tools:
     side_effect: read
     auth: current_umc_session
     user_info_source: /api/AdminUser/GetUserInfo
+    operation_discovery: The Tool returns bounded page-generated candidates governed by page_api_discovery_contract; operationKey selection remains internal to the Reader and is never accepted as a network-call parameter.
     allowed_actions:
       - navigate
       - query
@@ -344,6 +450,7 @@ tools:
         browser_downloads: cancelled
         network_level_read_only_guarantee: unavailable
         health_mode: same-origin-unrestricted
+        operation_selection: Healthy page-observed allowed and bypassed operations are selectable; blocked or failed operations are not.
       conditionally_allowed_methods: [GET, POST, OPTIONS]
       condition: When enabled, use the method/path rules from config_file; API requests are default-deny and static reads remain same-origin only.
       blocked_methods_when_enabled: [PUT, PATCH, DELETE]
@@ -367,7 +474,7 @@ result_contract:
     missing: string_array
   model_visibility:
     allow: [result, page, section, sourceSection, answerShape, completeness, selectedState, scope, facts, workflowState, missing]
-    forbid: [html, fullPage, fullTable, credentials, cookies, tokens, internalErrors, rawAuditEvidence]
+    forbid: [html, fullPage, fullTable, credentials, cookies, tokens, internalErrors, rawAuditEvidence, apiCandidates, operationKey, rawRequests, rawResponses, sensitiveResponseFields]
 
 answer_contract:
   principles:
@@ -408,6 +515,7 @@ audit:
     - applied_filters
     - observation_time
     - bounded_raw_extraction
+    - bounded_operation_discovery_decision
     - error_classification
     - action_trace
   redact:
@@ -425,6 +533,8 @@ audit:
       - identity_permissions
       - knowledge_retrieval
       - planning
+      - operation_discovery
+      - operation_selection
       - read_policy
       - portal_execution
       - result_classification

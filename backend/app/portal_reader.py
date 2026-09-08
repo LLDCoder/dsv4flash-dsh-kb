@@ -29,6 +29,18 @@ from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOU
 
 ReaderStatus = Literal["success", "no_data", "no_permission", "load_failed", "not_confirmed"]
 READER_STATUSES = frozenset({"success", "no_data", "no_permission", "load_failed", "not_confirmed"})
+MAX_API_CANDIDATES_BEFORE_DRILL = 10
+MAX_API_DRILL_DEPTH = 1
+API_SELECTION_REASON_CODES = frozenset({
+    "trigger_matches_intent",
+    "swagger_schema_matches_answer",
+    "swagger_tag_matches_business_object",
+    "request_fields_match_filters",
+    "response_fields_match_answer",
+    "only_safe_candidate",
+})
+API_DRILL_REASON_CODES = frozenset({"control_matches_intent", "reduce_candidate_set"})
+API_DRILL_ACTIONS = frozenset({"switch_tab", "filter", "show_filter", "apply_filter"})
 ALLOWED_READER_ACTIONS = frozenset({
     "observe", "navigate", "query", "filter", "paginate", "switch_tab", "expand_details",
     "show_filter", "apply_filter", "reset_filter", "show_detail", "dismiss_overlay", "sort",
@@ -337,6 +349,282 @@ class ReaderPlanner(Protocol):
         knowledge_context: dict[str, Any],
         conversation_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
+
+
+def _api_discovery(observation: Any) -> dict[str, Any] | None:
+    if not isinstance(observation, dict):
+        return None
+    discovery = observation.get("apiDiscovery")
+    return discovery if isinstance(discovery, dict) else None
+
+
+def _selectable_api_candidates(
+    observation: Any, *, candidate_field: str = "candidates",
+) -> tuple[dict[str, Any], ...]:
+    """Return healthy candidates selectable in the gateway's current network mode."""
+
+    discovery = _api_discovery(observation)
+    raw_candidates = discovery.get(candidate_field) if discovery is not None else None
+    if not isinstance(raw_candidates, list):
+        return ()
+    candidates: list[dict[str, Any]] = []
+    candidate_indexes: dict[str, int] = {}
+    for raw in raw_candidates[:100]:
+        if not isinstance(raw, dict):
+            continue
+        policy_state = str(raw.get("policyState") or "").casefold()
+        if policy_state not in {"allowed", "bypassed"}:
+            continue
+        status = raw.get("status")
+        if not isinstance(status, int) or isinstance(status, bool) or not 200 <= status < 400:
+            continue
+        response_health = raw.get("responseHealth")
+        if response_health is not None:
+            health_value = (
+                response_health.get("status") or response_health.get("state")
+                if isinstance(response_health, dict)
+                else response_health
+            )
+            if str(health_value or "").casefold() != "healthy":
+                continue
+        operation_key = _sanitize_untrusted_text(raw.get("operationKey") or "", max_length=500)
+        if not operation_key:
+            continue
+        raw_trigger = _sanitize_untrusted_text(raw.get("trigger") or "", max_length=160)
+        raw_triggers = bounded_json(raw.get("triggers") or [], max_depth=3, max_items=10, max_string=160)
+        if operation_key in candidate_indexes:
+            existing = candidates[candidate_indexes[operation_key]]
+            merged_triggers = list(existing.get("triggers") or [])
+            for trigger in ([raw_trigger] if raw_trigger else []) + (raw_triggers if isinstance(raw_triggers, list) else []):
+                if trigger not in merged_triggers and len(merged_triggers) < 10:
+                    merged_triggers.append(trigger)
+            existing["triggers"] = merged_triggers
+            if raw_trigger:
+                existing["trigger"] = raw_trigger
+            if "swagger" not in existing and isinstance(raw.get("swagger"), dict):
+                existing["swagger"] = bounded_json(raw["swagger"], max_depth=4, max_items=30, max_string=300)
+            continue
+        candidate = {
+            "operationKey": operation_key,
+            "candidateKind": "support" if str(raw.get("candidateKind") or "").casefold() == "support" else "business",
+            "method": _sanitize_untrusted_text(raw.get("method") or "", max_length=20),
+            "path": _sanitize_untrusted_text(raw.get("path") or raw.get("pathTemplate") or "", max_length=500),
+            "pathTemplate": _sanitize_untrusted_text(raw.get("pathTemplate") or raw.get("path") or "", max_length=500),
+            "status": status,
+            "policyState": policy_state,
+            "trigger": raw_trigger,
+            "triggers": raw_triggers,
+        }
+        if isinstance(raw.get("swagger"), dict):
+            candidate["swagger"] = bounded_json(raw["swagger"], max_depth=4, max_items=30, max_string=300)
+        candidate_indexes[operation_key] = len(candidates)
+        candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _question_requests_support_api(question: str, conversation_context: Any) -> bool:
+    resolved = _resolved_intent_values(conversation_context)
+    semantic_text = " ".join((question, *resolved.values())).casefold()
+    return bool(re.search(
+        r"\b(?:enum|enumeration|lookup|dropdown)\b"
+        r"|\b(?:what|which)\b.{0,80}\b(?:statuses|status values|types|categories|options)\b"
+        r"|\b(?:statuses|status values|types|categories|options)\b.{0,80}\b(?:available|allowed|mean|meaning)\b"
+        r"|(?:状态|类型|类别|下拉|枚举).{0,20}(?:有哪些|选项|含义|可用值)",
+        semantic_text,
+    ))
+
+
+def _relevant_selectable_api_candidates(
+    observation: Any,
+    question: str,
+    conversation_context: Any,
+    *,
+    delta_only: bool = False,
+) -> tuple[dict[str, Any], ...]:
+    candidates = _selectable_api_candidates(
+        observation, candidate_field="deltaCandidates" if delta_only else "candidates",
+    )
+    if _question_requests_support_api(question, conversation_context):
+        return candidates
+    return tuple(candidate for candidate in candidates if candidate.get("candidateKind") != "support")
+
+
+def _api_response_evidence_for_operation(observation: Any, operation_key: str) -> dict[str, Any] | None:
+    """Return the bounded response captured for one exact page-generated operation."""
+
+    discovery = _api_discovery(observation)
+    if discovery is None:
+        return None
+    for field_name in ("deltaCandidates", "candidates"):
+        raw_candidates = discovery.get(field_name)
+        if not isinstance(raw_candidates, list):
+            continue
+        for candidate in raw_candidates:
+            if not isinstance(candidate, dict) or candidate.get("operationKey") != operation_key:
+                continue
+            if "responseEvidence" not in candidate:
+                continue
+            return {
+                "operationKey": operation_key,
+                "trigger": _sanitize_untrusted_text(candidate.get("trigger") or "", max_length=160),
+                "truncated": candidate.get("responseEvidenceTruncated") is True,
+                "data": bounded_json(
+                    candidate.get("responseEvidence"),
+                    max_depth=10,
+                    max_items=60,
+                    max_string=1_000,
+                ),
+            }
+    return None
+
+
+def _api_discovery_is_truncated(
+    discovery: dict[str, Any], *, include_support: bool, delta_only: bool,
+) -> bool:
+    prefix = "deltaSelectable" if delta_only else "selectable"
+    business_key = f"{prefix}BusinessTruncated"
+    support_key = f"{prefix}SupportTruncated"
+    if business_key in discovery or support_key in discovery:
+        return discovery.get(business_key) is True or (
+            include_support and discovery.get(support_key) is True
+        )
+    legacy_prefix = "deltaAllowed" if delta_only else "allowed"
+    legacy_business_key = f"{legacy_prefix}BusinessTruncated"
+    legacy_support_key = f"{legacy_prefix}SupportTruncated"
+    if legacy_business_key in discovery or legacy_support_key in discovery:
+        return discovery.get(legacy_business_key) is True or (
+            include_support and discovery.get(legacy_support_key) is True
+        )
+    return discovery.get("deltaTruncated" if delta_only else "truncated") is True
+
+
+def _api_reason_codes(plan: Any, allowed: frozenset[str]) -> tuple[str, ...] | None:
+    if not isinstance(plan, dict) or not isinstance(plan.get("reasonCodes"), list):
+        return None
+    codes = tuple(str(value) for value in plan["reasonCodes"])
+    if not 1 <= len(codes) <= 5 or len(set(codes)) != len(codes) or any(code not in allowed for code in codes):
+        return None
+    return codes
+
+
+def api_selection_from_plan(
+    plan: Any,
+    candidates: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], tuple[str, ...]] | None:
+    """Resolve an exact observed operation while tolerating harmless plan shape differences."""
+
+    if not isinstance(plan, dict):
+        return None
+    operation_key = str(plan.get("operationKey") or plan.get("selectedOperationKey") or "")
+    matches = [candidate for candidate in candidates if candidate["operationKey"] == operation_key]
+    if len(matches) != 1:
+        return None
+    raw_codes = plan.get("reasonCodes") if isinstance(plan.get("reasonCodes"), list) else []
+    reason_codes = tuple(dict.fromkeys(
+        str(code) for code in raw_codes if str(code) in API_SELECTION_REASON_CODES
+    ))[:5] or ("trigger_matches_intent",)
+    return matches[0], reason_codes
+
+
+def _observed_api_drill_controls(observation: Any) -> tuple[dict[str, Any], ...]:
+    discovery = _api_discovery(observation)
+    if discovery is None:
+        return ()
+    raw_controls = discovery.get("safeControls") or discovery.get("drillControls")
+    if not isinstance(raw_controls, list):
+        raw_controls = []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    allowed_action_keys = {
+        "type", "selector", "label", "role", "name", "field", "section", "emptyState",
+        "permissionCode", "value", "values", "method", "parameters", "filters",
+    }
+    for raw in raw_controls[:30]:
+        if not isinstance(raw, dict):
+            continue
+        control_id = _sanitize_untrusted_text(raw.get("controlId") or "", max_length=160)
+        if not control_id or control_id in seen:
+            continue
+        action = raw.get("action")
+        if not isinstance(action, dict):
+            continue
+        action_type = str(action.get("type") or "").casefold().replace("-", "_")
+        if action_type not in API_DRILL_ACTIONS or not set(action).issubset(allowed_action_keys):
+            continue
+        seen.add(control_id)
+        result.append({
+            "controlId": control_id,
+            "label": _sanitize_untrusted_text(raw.get("label") or action.get("name") or action.get("field") or "", max_length=160),
+            "action": bounded_json(action, max_depth=3, max_items=20, max_string=300),
+        })
+
+    # Compatibility for the current observation schema. A semantic node with a
+    # selectedState is a verified tab group; the executor still requires one
+    # exact visible role=tab match before clicking. Structured filterControls
+    # already contain the narrow selector and enumerated values observed by the
+    # gateway, so the model only chooses a generated id and never supplies them.
+    if isinstance(observation, dict):
+        for node in _observation_semantic_nodes(observation):
+            if not str(node.get("selectedState") or "").strip():
+                continue
+            section = str(node.get("heading") or "").strip()
+            for label in _bounded_observation_field(node, "controls", limit=20):
+                if ReadOnlyPortalPolicy._contains_mutation_command(label):
+                    continue
+                identity = f"tab:{node.get('nodeId') or section}:{label}"
+                control_id = "observed-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+                if control_id in seen:
+                    continue
+                seen.add(control_id)
+                action: dict[str, Any] = {"type": "switch_tab", "role": "tab", "name": label}
+                if section:
+                    action["section"] = section
+                result.append({"controlId": control_id, "label": label, "action": action})
+                if len(result) >= 30:
+                    return tuple(result)
+        for index, control in enumerate(observation.get("filterControls") or []):
+            if not isinstance(control, dict) or not control.get("selector"):
+                continue
+            selected = {str(value) for value in control.get("selected") or []}
+            for option_index, option in enumerate(control.get("options") or []):
+                value = str(option).strip()
+                if not value or value in selected or ReadOnlyPortalPolicy._contains_mutation_command(value):
+                    continue
+                control_id = f"filter-{index}-{option_index}"
+                if control_id in seen:
+                    continue
+                seen.add(control_id)
+                result.append({
+                    "controlId": control_id,
+                    "label": f"{control.get('label') or 'filter'}: {value}"[:160],
+                    "action": {"type": "filter", "selector": control["selector"], "value": value},
+                })
+                if len(result) >= 30:
+                    return tuple(result)
+    return tuple(result)
+
+
+def api_drill_request_from_plan(
+    plan: Any,
+    observation: Any,
+    *,
+    start_path: str,
+) -> tuple[PortalReadRequest, str, tuple[str, ...]] | None:
+    """Resolve one model-selected observed control without accepting locators from it."""
+
+    if not isinstance(plan, dict) or set(plan) != {"mode", "controlId", "reasonCodes"}:
+        return None
+    if plan.get("mode") != "api_drill":
+        return None
+    reason_codes = _api_reason_codes(plan, API_DRILL_REASON_CODES)
+    control_id = str(plan.get("controlId") or "")
+    controls = [control for control in _observed_api_drill_controls(observation) if control["controlId"] == control_id]
+    if reason_codes is None or len(controls) != 1:
+        return None
+    action = controls[0]["action"]
+    if not isinstance(action, dict):
+        return None
+    return PortalReadRequest(start_path=start_path, actions=(dict(action),)), control_id, reason_codes
 
 
 class ReaderToolGateway(Protocol):
@@ -751,6 +1039,49 @@ def bounded_json(value: Any, *, max_depth: int = 5, max_items: int = 100, max_st
     return str(value)[:max_string]
 
 
+def bounded_portal_observation(value: Any) -> Any:
+    """Bound page semantics while giving each captured API response its own depth budget."""
+
+    projected = bounded_json(value, max_depth=10, max_items=60, max_string=1_000)
+    raw_discovery = _api_discovery(value)
+    projected_discovery = _api_discovery(projected)
+    if raw_discovery is None or projected_discovery is None:
+        return projected
+    for field_name in ("candidates", "deltaCandidates"):
+        raw_candidates = raw_discovery.get(field_name)
+        projected_candidates = projected_discovery.get(field_name)
+        if not isinstance(raw_candidates, list) or not isinstance(projected_candidates, list):
+            continue
+        raw_by_operation = {
+            str(candidate.get("operationKey") or ""): candidate
+            for candidate in raw_candidates
+            if isinstance(candidate, dict) and candidate.get("operationKey")
+        }
+        for candidate in projected_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            raw_candidate = raw_by_operation.get(str(candidate.get("operationKey") or ""))
+            if not isinstance(raw_candidate, dict) or "responseEvidence" not in raw_candidate:
+                continue
+            candidate["responseEvidence"] = bounded_json(
+                raw_candidate.get("responseEvidence"),
+                max_depth=10,
+                max_items=60,
+                max_string=1_000,
+            )
+            candidate["responseEvidenceTruncated"] = raw_candidate.get("responseEvidenceTruncated") is True
+    return projected
+
+
+def bounded_portal_read_result(value: Any) -> Any:
+    """Project a portal Tool result without spending API evidence depth on envelopes."""
+
+    projected = bounded_json(value, max_depth=7, max_items=100, max_string=1_000)
+    if isinstance(value, dict) and isinstance(projected, dict) and value.get("observation") is not None:
+        projected["observation"] = bounded_portal_observation(value.get("observation"))
+    return projected
+
+
 def _sanitize_knowledge_text(value: str, *, max_length: int) -> str:
     return _sanitize_untrusted_text(value, max_length=max_length)
 
@@ -1083,19 +1414,33 @@ def _closed_result_from_plan(
         "mode", "result", "page", "section", "sourceSection", "answerShape", "completeness",
         "selectedState", "scope", "facts", "workflowState", "missing",
     }
-    if not set(plan).issubset(allowed):
+    if expected_mode == "knowledge_only" and not set(plan).issubset(allowed):
         return None
-    status = str(plan.get("result") or "not_confirmed")
+    raw_facts = plan.get("facts")
+    if expected_mode == "observation_result" and raw_facts is None:
+        raw_facts = plan.get("items") or plan.get("data") or plan.get("answer")
+    if isinstance(raw_facts, list):
+        facts = raw_facts
+    elif raw_facts in (None, "", {}):
+        facts = []
+    else:
+        facts = [raw_facts]
+    raw_missing = plan.get("missing")
+    if isinstance(raw_missing, list):
+        missing = raw_missing
+    elif raw_missing in (None, ""):
+        missing = []
+    else:
+        missing = [raw_missing]
+    status = str(plan.get("result") or plan.get("status") or ("success" if facts else "not_confirmed"))
     if status not in {"success", "no_data", "not_confirmed"}:
-        return None
-    facts = plan.get("facts") or []
-    missing = plan.get("missing") or []
-    if not isinstance(facts, list) or not isinstance(missing, list):
         return None
     if status == "success" and not facts:
         return None
     if status == "no_data" and facts:
         return None
+    if status == "not_confirmed" and not missing and expected_mode == "observation_result":
+        missing = ["evidence_not_confirmed"]
     if status == "not_confirmed" and not missing:
         return None
     scope = str(plan.get("scope") or "unknown")
@@ -1123,7 +1468,14 @@ def _closed_result_from_plan(
         completeness=completeness,  # type: ignore[arg-type]
         selected_state=str(plan.get("selectedState") or "")[:300],
         scope=scope,  # type: ignore[arg-type]
-        facts=tuple(str(item)[:500] for item in facts[:20]),
+        facts=tuple(
+            (
+                str(item)[:500]
+                if isinstance(item, str)
+                else json.dumps(bounded_json(item, max_depth=4, max_items=30, max_string=500), ensure_ascii=False)[:500]
+            )
+            for item in facts[:20]
+        ),
         workflow_state=str(plan.get("workflowState") or "")[:500],
         missing=tuple(str(item)[:500] for item in missing[:10]),
     )
@@ -1852,6 +2204,53 @@ def _section_match_tokens(value: Any) -> frozenset[str]:
         token
         for token in normalized.split()
         if len(token) > 1 and token not in _SECTION_INFERENCE_STOP_WORDS
+    )
+
+
+def _knowledge_route_recovery_request(
+    question: str,
+    knowledge_context: Any,
+    permission_context: UserPermissionContext,
+) -> PortalReadRequest | None:
+    """Recover one uniquely best documented permitted page after planner refusal."""
+
+    if not isinstance(knowledge_context, dict):
+        return None
+    question_tokens = _section_match_tokens(question)
+    if not question_tokens:
+        return None
+    permitted = (*permission_context.pages, *permission_context.subpages)
+    personal_request = bool(re.search(
+        r"\b(?:my|mine|for me|i have)\b|我的|我有|خاصتي|لدي",
+        question.casefold(),
+    ))
+    scores: dict[str, int] = {}
+    for chunk in (knowledge_context.get("chunks") or [])[:8]:
+        if not isinstance(chunk, dict):
+            continue
+        content = str(chunk.get("content") or "")
+        overlap = len(question_tokens & _section_match_tokens(content))
+        if not overlap:
+            continue
+        scope_bonus = 4 if personal_request and re.search(
+            r"(?i)\*\*scope:\*\*.{0,160}\bpersonal\b",
+            content,
+        ) else 0
+        for raw_path in re.findall(r"(?i)\*\*page:\*\*\s*`([^`]+)`", content):
+            path = urlsplit(raw_path.strip()).path.rstrip("/") or "/"
+            if not any(permission_path_matches(path, allowed) for allowed in permitted):
+                continue
+            scores[path] = max(scores.get(path, 0), overlap * 10 + scope_bonus)
+    if not scores:
+        return None
+    best_score = max(scores.values())
+    matches = [path for path, score in scores.items() if score == best_score]
+    if len(matches) != 1:
+        return None
+    return PortalReadRequest(
+        start_path=matches[0],
+        actions=({"type": "observe"},),
+        expected_fields=(),
     )
 
 
@@ -2591,6 +2990,24 @@ def observation_result_from_plan(
         permission_path_matches(result_page, allowed) for allowed in permitted_paths
     ):
         return None
+    api_evidence = observation.get("apiEvidence") if isinstance(observation, dict) else None
+    if isinstance(api_evidence, dict) and "data" in api_evidence:
+        completeness = "bounded" if api_evidence.get("truncated") is True else result.completeness
+        return ReaderResult(
+            status=result.status,
+            summary="The selected portal API response answered the request."
+            if result.status == "success" else result.summary,
+            page=observed_page or result.page,
+            section=result.section,
+            source_section=("api:" + str(api_evidence.get("operationKey") or ""))[:300],
+            answer_shape=result.answer_shape,
+            completeness=completeness,
+            selected_state=result.selected_state,
+            scope=verified_scope,
+            facts=result.facts,
+            workflow_state=result.workflow_state,
+            missing=result.missing,
+        )
     source_ref = result.source_section or result.section
     scoped_observation = _observation_evidence_for_result(observation, result)
     if scoped_observation is not None and _observation_has_error_state(scoped_observation):
@@ -2859,6 +3276,7 @@ class AdminPortalReader:
         knowledge_top_k: int = 12,
         allowed_tools: tuple[str, ...] = ("knowledge.search", "admin.portal.read"),
         timeout_budget: ReaderTimeoutBudget | None = None,
+        max_candidates_before_drill: int = MAX_API_CANDIDATES_BEFORE_DRILL,
     ) -> None:
         self.gateway = gateway
         self.planner = planner
@@ -2867,6 +3285,7 @@ class AdminPortalReader:
         self.knowledge_top_k = max(1, min(int(knowledge_top_k), 32))
         self.allowed_tools = list(allowed_tools)
         self.timeout_budget = timeout_budget or ReaderTimeoutBudget()
+        self.max_candidates_before_drill = max(1, min(int(max_candidates_before_drill), 32))
 
     async def run(
         self,
@@ -2878,6 +3297,7 @@ class AdminPortalReader:
         trace = _ReaderQualityTrace()
         bounded_context = _bounded_conversation_context(conversation_context)
         intent_state: dict[str, Any] = {}
+        api_audit: dict[str, Any] = {}
         trace.record(
             "question_context",
             "passed",
@@ -2897,6 +3317,7 @@ class AdminPortalReader:
                 conversation_context=bounded_context,
                 trace=trace,
                 intent_state=intent_state,
+                api_audit=api_audit,
             )
         except Exception as exc:
             trace.record(
@@ -2934,6 +3355,8 @@ class AdminPortalReader:
             "qualityTrace": trace.entries,
             "rootCause": root_cause,
         }
+        if api_audit:
+            evidence["apiSelection"] = bounded_json(api_audit, max_depth=5, max_items=30, max_string=300)
         return ReaderOutcome(outcome.result, evidence)
 
     async def _run(
@@ -2944,6 +3367,7 @@ class AdminPortalReader:
         conversation_context: dict[str, Any] | None = None,
         trace: _ReaderQualityTrace,
         intent_state: dict[str, Any],
+        api_audit: dict[str, Any],
     ) -> ReaderOutcome:
         budget = self.timeout_budget
         bounded_conversation_context = _bounded_conversation_context(conversation_context)
@@ -2953,6 +3377,8 @@ class AdminPortalReader:
         filter_completion_reviewed = False
         observation_schema_reviewed = False
         action_contract_reviewed = False
+        api_drill_depth = 0
+        api_selected_observations: set[str] = set()
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
             if bounded_conversation_context:
@@ -3002,8 +3428,138 @@ class AdminPortalReader:
             timeout_stage: str,
             reason: str,
         ) -> dict[str, Any]:
-            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed
+            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed, api_drill_depth
             started_at = time.perf_counter()
+            observation = knowledge_or_observation.get("portalObservation")
+            discovery = _api_discovery(observation)
+            include_support_api = _question_requests_support_api(question, bounded_conversation_context)
+            api_candidates = _relevant_selectable_api_candidates(
+                observation, question, bounded_conversation_context, delta_only=bool(api_drill_depth),
+            )
+            policy_state_counts = {
+                state: sum(1 for candidate in api_candidates if candidate.get("policyState") == state)
+                for state in ("allowed", "bypassed")
+            }
+            api_signature = hashlib.sha256(
+                json.dumps(
+                    [candidate["operationKey"] for candidate in api_candidates],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest() if discovery is not None else ""
+            api_decision = ""
+            api_controls: tuple[dict[str, Any], ...] = ()
+            incoming_directive = knowledge_or_observation.get("planningDirective")
+            using_selected_candidate = (
+                isinstance(incoming_directive, dict)
+                and incoming_directive.get("apiCandidateDecision") == "use_selected"
+            )
+            if discovery is not None and not using_selected_candidate and api_signature not in api_selected_observations:
+                truncated = _api_discovery_is_truncated(
+                    discovery,
+                    include_support=include_support_api,
+                    delta_only=bool(api_drill_depth),
+                )
+                discovery_decision = (
+                    "not_confirmed" if not api_candidates
+                    else "drill" if len(api_candidates) > self.max_candidates_before_drill or truncated
+                    else "select"
+                )
+                discoveries = api_audit.setdefault("discoveries", [])
+                if isinstance(discoveries, list) and len(discoveries) < 2:
+                    discoveries.append({
+                        "drillDepth": api_drill_depth,
+                        "reportedCandidateCount": discovery.get("candidateCount")
+                        if isinstance(discovery.get("candidateCount"), int) else 0,
+                        "relevantSelectableCount": len(api_candidates),
+                        "policyStateCounts": policy_state_counts,
+                        "truncated": truncated,
+                        "decision": discovery_decision,
+                    })
+                trace.record(
+                    "operation_discovery",
+                    "passed" if api_candidates else "failed",
+                    input_summary={
+                        "reportedCandidateCount": discovery.get("candidateCount")
+                        if isinstance(discovery.get("candidateCount"), int) else 0,
+                        "drillDepth": api_drill_depth,
+                    },
+                    output_summary={
+                        "relevantSelectableCount": len(api_candidates),
+                        "policyStateCounts": policy_state_counts,
+                        "truncated": truncated,
+                        "decision": discovery_decision,
+                    },
+                    failure_code="" if api_candidates else "no_selectable_api_candidates",
+                )
+                if not api_candidates:
+                    api_audit.update({
+                        "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
+                        "selectableCandidateCount": 0,
+                        "candidateCount": discovery.get("candidateCount") if isinstance(discovery.get("candidateCount"), int) else 0,
+                        "truncated": truncated,
+                        "decision": "not_confirmed",
+                        "reason": "no_selectable_api_candidates",
+                        "drillDepth": api_drill_depth,
+                    })
+                    return {
+                        "mode": "observation_result", "result": "not_confirmed", "facts": [],
+                        "missing": ["no_selectable_api_candidates"],
+                    }
+                needs_drill = len(api_candidates) > self.max_candidates_before_drill or truncated
+                if needs_drill and api_drill_depth >= MAX_API_DRILL_DEPTH:
+                    api_audit.update({
+                        "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
+                        "selectableCandidateCount": len(api_candidates),
+                        "truncated": truncated,
+                        "decision": "not_confirmed",
+                        "reason": "api_candidates_still_ambiguous",
+                        "drillDepth": api_drill_depth,
+                    })
+                    trace.record(
+                        "operation_selection", "failed",
+                        input_summary={"selectableCandidateCount": len(api_candidates), "truncated": truncated},
+                        output_summary={"decision": "not_confirmed", "drillDepth": api_drill_depth},
+                        failure_code="api_candidates_still_ambiguous",
+                    )
+                    return {
+                        "mode": "observation_result", "result": "not_confirmed", "facts": [],
+                        "missing": ["api_candidates_still_ambiguous"],
+                    }
+                api_decision = "drill" if needs_drill else "select"
+                if needs_drill:
+                    api_controls = _observed_api_drill_controls(observation)
+                    if not api_controls:
+                        api_audit.update({
+                            "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
+                            "selectableCandidateCount": len(api_candidates),
+                            "truncated": truncated,
+                            "decision": "not_confirmed",
+                            "reason": "no_safe_api_drill_control",
+                            "drillDepth": api_drill_depth,
+                        })
+                        trace.record(
+                            "operation_drill", "failed",
+                            input_summary={"selectableCandidateCount": len(api_candidates), "truncated": truncated},
+                            output_summary={"decision": "not_confirmed", "safeControlCount": 0},
+                            failure_code="no_safe_api_drill_control",
+                        )
+                        return {
+                            "mode": "observation_result", "result": "not_confirmed", "facts": [],
+                            "missing": ["no_safe_api_drill_control"],
+                        }
+                directive = dict(knowledge_or_observation.get("planningDirective") or {})
+                directive.update({
+                    "apiCandidateDecision": api_decision,
+                    "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
+                    "selectableApiCandidates": list(api_candidates),
+                    "selectableCandidateCount": len(api_candidates),
+                    "apiDiscoveryTruncated": truncated,
+                    "apiDrillDepth": api_drill_depth,
+                })
+                if api_controls:
+                    directive["observedSafeControls"] = list(api_controls)
+                knowledge_or_observation = {**knowledge_or_observation, "planningDirective": directive}
             input_summary = {
                 "reason": reason,
                 "knowledgeChunks": len(knowledge_or_observation.get("chunks") or [])
@@ -3047,7 +3603,135 @@ class AdminPortalReader:
                 input_summary=input_summary,
                 output_summary=plan_summary(plan),
             )
-            observation = knowledge_or_observation.get("portalObservation")
+            if api_decision == "select":
+                selected = api_selection_from_plan(plan, api_candidates)
+                if selected is None:
+                    api_audit.update({
+                        "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
+                        "selectableCandidateCount": len(api_candidates),
+                        "decision": "not_confirmed",
+                        "reason": "invalid_api_selection",
+                        "drillDepth": api_drill_depth,
+                    })
+                    trace.record(
+                        "operation_selection", "failed",
+                        input_summary={"selectableCandidateCount": len(api_candidates)},
+                        output_summary={"decision": "rejected"},
+                        failure_code="invalid_api_selection",
+                    )
+                    return {
+                        "mode": "observation_result", "result": "not_confirmed", "facts": [],
+                        "missing": ["invalid_api_selection"],
+                    }
+                selected_candidate, reason_codes = selected
+                api_selected_observations.add(api_signature)
+                api_audit.update({
+                    "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
+                    "selectableCandidateCount": len(api_candidates),
+                    "decision": "selected",
+                    "selectedOperationKey": selected_candidate["operationKey"],
+                    "selectedPolicyState": selected_candidate["policyState"],
+                    "reasonCodes": list(reason_codes),
+                    "drillDepth": api_drill_depth,
+                })
+                api_audit["selection"] = {
+                    "operationKey": selected_candidate["operationKey"],
+                    "policyState": selected_candidate["policyState"],
+                    "reasonCodes": list(reason_codes),
+                }
+                trace.record(
+                    "operation_selection", "passed",
+                    input_summary={"selectableCandidateCount": len(api_candidates)},
+                    output_summary={
+                        "decision": "selected",
+                        "operationKey": selected_candidate["operationKey"],
+                        "reasonCodes": list(reason_codes),
+                    },
+                )
+                selected_api_evidence = _api_response_evidence_for_operation(
+                    observation, selected_candidate["operationKey"],
+                )
+                if selected_api_evidence is not None:
+                    observation["apiEvidence"] = selected_api_evidence
+                    # Once a page-generated response has been selected, keep the
+                    # answer pass focused on that response. Unrelated DOM regions
+                    # from the same dashboard can otherwise pull the model back to
+                    # a visually prominent but semantically different section.
+                    reduced_observation = {
+                        "apiEvidence": selected_api_evidence,
+                        "apiDiscovery": {
+                            "candidates": [selected_candidate],
+                            "candidateCount": 1,
+                            "truncated": False,
+                        },
+                    }
+                else:
+                    reduced_observation = dict(observation)
+                    reduced_observation["apiDiscovery"] = {
+                        "candidates": [selected_candidate], "candidateCount": 1, "truncated": False,
+                    }
+                return await plan_stage(
+                    {
+                        **knowledge_or_observation,
+                        "portalObservation": reduced_observation,
+                        "planningDirective": {
+                            **knowledge_or_observation.get("planningDirective", {}),
+                            "apiCandidateDecision": "use_selected",
+                            "selectedApiCandidate": selected_candidate,
+                            "selectionReasonCodes": list(reason_codes),
+                            "selectableApiCandidates": [selected_candidate],
+                            "selectableCandidateCount": 1,
+                        },
+                    },
+                    timeout_stage=timeout_stage,
+                    reason="use_selected_api_candidate",
+                )
+            if api_decision == "drill":
+                prior_read = knowledge_or_observation.get("priorPortalRead") or {}
+                current_page = str(prior_read.get("startPath") or "")
+                drill = api_drill_request_from_plan(plan, observation, start_path=current_page)
+                if drill is None or not current_page:
+                    api_audit.update({
+                        "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
+                        "selectableCandidateCount": len(api_candidates),
+                        "decision": "not_confirmed",
+                        "reason": "invalid_api_drill_selection",
+                        "drillDepth": api_drill_depth,
+                    })
+                    trace.record(
+                        "operation_drill", "failed",
+                        input_summary={"selectableCandidateCount": len(api_candidates)},
+                        output_summary={"decision": "rejected"},
+                        failure_code="invalid_api_drill_selection",
+                    )
+                    return {
+                        "mode": "observation_result", "result": "not_confirmed", "facts": [],
+                        "missing": ["invalid_api_drill_selection"],
+                    }
+                drill_request, control_id, reason_codes = drill
+                api_drill_depth += 1
+                api_audit.update({
+                    "maxCandidatesBeforeDrill": self.max_candidates_before_drill,
+                    "selectableCandidateCount": len(api_candidates),
+                    "decision": "drill",
+                    "controlId": control_id,
+                    "reasonCodes": list(reason_codes),
+                    "drillDepth": api_drill_depth,
+                })
+                api_audit["drill"] = {"controlId": control_id, "reasonCodes": list(reason_codes)}
+                trace.record(
+                    "operation_drill", "passed",
+                    input_summary={"selectableCandidateCount": len(api_candidates)},
+                    output_summary={"decision": "drill", "controlId": control_id, "drillDepth": api_drill_depth},
+                )
+                return {
+                    "mode": "portal_read",
+                    "portalRequest": {
+                        "startPath": drill_request.start_path,
+                        "actions": [dict(action) for action in drill_request.actions],
+                        "expectedFields": [],
+                    },
+                }
             requested_filter = _explicit_observed_filter(question, observation)
             filter_controls = observation.get("filterControls", []) if isinstance(observation, dict) else []
             observed_filter_actions = [
@@ -3332,6 +4016,8 @@ class AdminPortalReader:
             scope: Literal["personal", "team", "global", "unknown"],
             selection: ReaderResult | None = None,
         ) -> tuple[ReaderResult | None, str]:
+            if api_audit.get("decision") == "not_confirmed":
+                return None, "api_candidate_guard"
             if selection is not None:
                 binding = observation_result_from_plan(
                     {**selection.public_json(), "mode": "observation_result", "result": "not_confirmed",
@@ -3745,8 +4431,26 @@ class AdminPortalReader:
             if portal_read_request_from_plan(plan) is None and not (
                 isinstance(plan, dict) and plan.get("mode") == "portal_read"
             ):
-                result = ReaderResult(status="not_confirmed", summary="The requested current portal state could not be confirmed.", missing=("portal_read_required",))
-                return ReaderOutcome(result, {"stage": "planning_required_portal", "permission": permission_audit, "knowledge": knowledge_context, "forceReason": force_reason, "plan": bounded_json(plan)})
+                recovered_request = _knowledge_route_recovery_request(
+                    question, knowledge_context, permission_context,
+                )
+                if recovered_request is None:
+                    result = ReaderResult(status="not_confirmed", summary="The requested current portal state could not be confirmed.", missing=("portal_read_required",))
+                    return ReaderOutcome(result, {"stage": "planning_required_portal", "permission": permission_audit, "knowledge": knowledge_context, "forceReason": force_reason, "plan": bounded_json(plan)})
+                trace.record(
+                    "route_recovery",
+                    "passed",
+                    input_summary={"reason": "required_portal_read_planner_refusal"},
+                    output_summary={"startPath": recovered_request.start_path},
+                )
+                plan = {
+                    "mode": "portal_read",
+                    "portalRequest": {
+                        "startPath": recovered_request.start_path,
+                        "actions": [{"type": "observe"}],
+                        "expectedFields": [],
+                    },
+                }
         invalid_plan_error: str | None = None
         request = portal_read_request_from_plan(plan)
         if request is None and isinstance(plan, dict) and plan.get("mode") == "portal_read":
@@ -3838,7 +4542,7 @@ class AdminPortalReader:
         ):
             observed_context = {
                 **knowledge_context,
-                "portalObservation": bounded_json(observation, max_depth=6, max_items=50, max_string=300),
+                "portalObservation": bounded_portal_observation(observation),
                 "priorPortalRead": bounded_json(request.as_payload(), max_depth=4, max_items=30, max_string=200),
             }
             observation_status = str(
@@ -4463,12 +5167,7 @@ class AdminPortalReader:
                 follow_up_payload.get("observation") if isinstance(follow_up_payload, dict) else None
             )
             if follow_up_observation is not None:
-                bounded_follow_up_observation = bounded_json(
-                    follow_up_observation,
-                    max_depth=6,
-                    max_items=50,
-                    max_string=300,
-                )
+                bounded_follow_up_observation = bounded_portal_observation(follow_up_observation)
                 follow_up_shape = reader_answer_shape(question, bounded_conversation_context)
                 follow_up_section = next(
                     (
@@ -4734,9 +5433,7 @@ class AdminPortalReader:
                                 replay_observation = replay_payload.get("observation") if isinstance(replay_payload, dict) else None
                                 replay_reader_result: ReaderResult | None = None
                                 if replay_observation is not None:
-                                    bounded_replay_observation = bounded_json(
-                                        replay_observation, max_depth=6, max_items=50, max_string=300
-                                    )
+                                    bounded_replay_observation = bounded_portal_observation(replay_observation)
                                     try:
                                         replay_plan = await plan_stage(
                                             {
@@ -4780,7 +5477,7 @@ class AdminPortalReader:
                                             "knowledge": knowledge_context,
                                             "plan": bounded_json(post_action_plan),
                                             "portalReadPlan": bounded_json(post_action_request.as_payload()),
-                                            "observation": bounded_json(replay_observation) if replay_observation is not None else {},
+                                            "observation": bounded_portal_observation(replay_observation) if replay_observation is not None else {},
                                             "result": replay_reader_result.public_json(),
                                             "semanticResolution": semantic_resolution,
                                         },
@@ -4855,12 +5552,7 @@ class AdminPortalReader:
                     else None
                 )
                 if retry_observation is not None:
-                    bounded_retry_observation = bounded_json(
-                        retry_observation,
-                        max_depth=6,
-                        max_items=50,
-                        max_string=300,
-                    )
+                    bounded_retry_observation = bounded_portal_observation(retry_observation)
                     retry_shape = reader_answer_shape(question, bounded_conversation_context)
                     retry_section = _infer_observation_section(
                         bounded_retry_observation,

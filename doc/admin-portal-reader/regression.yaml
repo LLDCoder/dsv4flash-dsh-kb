@@ -181,6 +181,9 @@ cases:
       invalid_env_or_policy_file: startup_failure
       enabled: configured_get_and_post_paths_only
       disabled: same_origin_http_methods_and_paths_unrestricted
+      disabled_selectable_policy_states: [allowed, bypassed]
+      enabled_selectable_policy_states: [allowed]
+      blocked_or_failed_selectable: false
       disabled_mode_health: same-origin-unrestricted
       stale_blocked_health_for_bypassed_request: forbidden
       cross_origin_and_out_of_scope_navigation: blocked_in_both_modes
@@ -260,11 +263,104 @@ cases:
       unlisted_suffixes_and_exports: blocked
       api_prefix_or_module_router: forbidden
 
+  - id: reader-page-api-discovery-reuses-existing-scan
+    change_mode: improve-page
+    existing_evidence: [complete_dashboard_scan, complete_licensing_scan]
+    expect:
+      full_rescan_before_implementation: false
+      existing_semantic_and_control_evidence_reused: true
+      targeted_rescan_only_for_unresolved_affected_boundary: true
+      module_specific_runtime_skill_or_tool_created: false
+
+  - id: reader-api-candidate-normalization-and-background-filter
+    observed:
+      - repeated_business_query_with_different_pagination_values
+      - session_and_runtime_bootstrap
+      - telemetry_and_notification_requests
+      - dropdown_enum_and_dictionary_requests
+      - one_healthy_relevant_business_response
+      - failed_or_blocked_request
+    expect:
+      dedupe_key: normalized_method_plus_swagger_path_template
+      pagination_retries_counted_as_distinct_candidates: false
+      bootstrap_telemetry_notification_and_lookup_counted_as_answer_candidates: false
+      failed_blocked_pending_or_cancelled_counted_as_candidates: false
+      relevant_selectable_candidate_count: 1
+      supporting_lookup_may_remain_as_bounded_trigger_context: true
+      selectable_business_candidate_retained_when_support_or_blocked_observations_fill_bound: true
+      support_only_truncation_forces_business_question_drill: false
+      terminal_status_type_category_priority_or_options_resource_classified_as_support: true
+
+  - id: reader-api-candidate-threshold-ten
+    variants:
+      - relevant_selectable_candidate_count: 10
+        expect_threshold_drill: false
+      - relevant_selectable_candidate_count: 11
+        expect_threshold_drill: true
+    expect:
+      maxCandidatesBeforeDrill: 10
+      dropdown_enum_volume_changes_threshold: false
+      fixed_page_route_or_tab_required: false
+
+  - id: reader-api-discovery-one-safe-drill
+    observed: [more_than_ten_relevant_selectable_candidates, unique_named_readonly_control, verified_post_action_state, operation_delta]
+    expect:
+      maxDrillDepth: 1
+      allowed_action_subset: [switch_tab, show_filter, filter, expand_details]
+      invented_selector_route_method_body_or_label: forbidden
+      operation_delta_bound_to_trigger: true
+      explicit_gateway_delta_required: true
+      repeated_pre_action_operation_after_click_counted_as_delta: false
+      failed_pre_action_operation_becoming_healthy_may_count_as_material_delta: true
+      same_operation_with_changed_business_filter_counted_as_material_delta: true
+      same_operation_with_only_pagination_cursor_sort_cache_or_auth_change_counted_as_delta: false
+      request_variant_digest_or_source_values_exposed: false
+      second_drill: forbidden
+      fixed_business_path_or_tab_assertion: false
+
+  - id: reader-operation-selection-with-sparse-swagger
+    observed: [missing_summary, missing_description, missing_operation_id, bounded_tag_path_request_schema_response_schema_and_page_trigger]
+    expect:
+      sparse_swagger_rejected_solely_for_missing_prose: false
+      allowed_selection_evidence: [tag, normalized_path, request_schema, response_schema, observed_page_trigger]
+      selected_value: operationKey
+      separately_registered_business_tool: forbidden
+      arbitrary_url_method_or_request_body_generated_by_model: false
+
+  - id: reader-swagger-static-metadata-is-not-authorization
+    observed: [semantically_matching_swagger_operation, missing_current_permission_or_runtime_policy_allow]
+    expect:
+      swagger_grants_permission: false
+      operation_candidate_policy_state: blocked
+      operation_executed: false
+      result: [no_permission, not_confirmed]
+
+  - id: reader-api-selection-insufficient-or-ambiguous
+    variants:
+      - relevant_safe_candidates: 0
+      - relevant_safe_candidates: multiple_without_unique_support
+      - required_control: unsafe_or_ambiguous
+      - ambiguity_after_first_drill: true
+    expect:
+      operation_guessed: false
+      additional_drill_after_limit: false
+      result: not_confirmed
+
+  - id: reader-api-discovery-main-agent-boundary
+    selector_input_contains: [operationKey, trigger, triggers, status, policyState, candidateKind, bounded_swagger_semantics]
+    raw_material_contains: [request_headers, credentials, cookies, tokens, raw_request_body, raw_response, sensitive_business_values, full_api_catalog]
+    expect:
+      selector_receives_raw_material: false
+      main_agent_receives: result_contract_only
+      main_agent_receives_api_candidates_or_operation_key: false
+      main_agent_receives_raw_or_sensitive_response: false
+      audit_contains_redacted_normalized_decision_only: true
+
   - id: reader-quality-trace-current-tasks
     question: How about my current tasks?
     expect:
       skill: admin_portal_reader
-      stages: [question_context, identity_permissions, knowledge_retrieval, planning, read_policy, portal_execution, result_classification, answer_assembly]
+      stages: [question_context, identity_permissions, knowledge_retrieval, planning, operation_discovery, operation_selection, read_policy, portal_execution, result_classification, answer_assembly]
       trace_contains_no: [question_text, full_page, full_table, chunk_content, facts, credentials, cookies, tokens]
 
   - id: reader-admin-default-route
@@ -694,7 +790,29 @@ cases:
   - id: reader-model-evidence-boundary
     expect:
       model_fields: [result, page, section, sourceSection, answerShape, completeness, selectedState, scope, facts, workflowState, missing]
-      forbidden_model_fields: [html, fullPage, fullTable, rawAuditEvidence, internalErrors]
+      forbidden_model_fields: [html, fullPage, fullTable, rawAuditEvidence, internalErrors, apiCandidates, operationKey, rawRequests, rawResponses, sensitiveResponseFields]
+
+  - id: reader-selected-response-performance
+    question: how about my recently performance?
+    requires: [fresh_get_user_info, permitted_page, page_generated_successful_json_response]
+    observed: [selected_performance_operation, bounded_selected_response]
+    expect:
+      operation_specific_response_schema_required: false
+      dom_duplicate_required: false
+      harmless_result_shape_differences_normalized: true
+      selected_response_used_as_business_evidence: true
+      result: [success, no_data]
+
+  - id: reader-selected-response-attention-tasks
+    question: what tasks should I pay attention?
+    requires: [fresh_get_user_info, permitted_page, page_generated_successful_json_response]
+    observed: [selected_attention_operation, bounded_selected_response, dom_attention_counts_without_rows]
+    expect:
+      dom_rows_required: false
+      selected_response_used_as_business_evidence: true
+      response_records_may_supply_task_details: true
+      unrelated_candidate_responses_visible_to_answer_model: false
+      result: [success, no_data]
 
   - id: reader-audit-redaction
     input_contains: [password, authorization, access_token, cookie, session]
@@ -813,7 +931,14 @@ acceptance:
   - Grounding accepts exact multi-clause source quotations while retaining polarity and cross-chunk relationship checks; a repair must not expand the source with assumptions.
   - Every text question in the Admin runtime selects admin_portal_reader; the Reader may terminate as knowledge_only when no live page read is needed.
   - No module-level Skill or legacy business Tool is selected.
+  - Dashboard and Licensing page discovery reuses the existing complete scans; this improve-page change does not require a new full scan unless an affected local boundary is unresolved.
   - Every page read starts with current-session GetUserInfo.
+  - Relevant healthy operations are deduplicated by method and Swagger path template, and background, lookup, failed, mutation, export, and download requests do not inflate the candidate threshold.
+  - The Reader drills through at most one verified safe read-only control only when more than ten relevant currently selectable operations remain, then selects an exact page-generated operationKey internally or returns not_confirmed; the operationKey is never sent to the network executor.
+  - After operation selection, its already received bounded JSON response is valid business evidence regardless of operation-specific shape and does not require duplicate DOM rows or cards.
+  - Only the selected response is exposed to the answer model; credentials, unrestricted payloads, binary content, and unselected responses remain excluded.
+  - Swagger metadata supports semantic selection but never grants permission; missing prose falls back to bounded tag, path, schema, and observed-trigger evidence.
+  - The main Agent receives only the bounded result contract, never the discovered API catalog, selected operationKey, raw requests or responses, or sensitive response fields.
   - All browser and network mutations are blocked before dispatch.
   - Result states distinguish no data, no permission, load failure, and insufficient evidence.
   - Model-visible evidence is bounded and contains no complete page or table.

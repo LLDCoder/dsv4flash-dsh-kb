@@ -152,3 +152,413 @@ def test_health_exposes_active_mode_and_config(monkeypatch, enabled):
     assert health["readerWhitelistEnabled"] is enabled
     assert health["readerNetworkMode"] == ("allowlist" if enabled else "same-origin-unrestricted")
     assert Path(health["readerWhitelistFile"]).name == "reader-network-policy.json"
+    assert Path(health["readerOperationCatalogFile"]).name == "reader-operation-catalog.json"
+    assert health["readerOperationCatalogCount"] == len(gateway.READER_OPERATION_CATALOG)
+
+
+def test_api_discovery_deduplicates_normalized_operations_and_preserves_triggers():
+    health = {"blocked": [], "pending": {}}
+    first = FakeRoute(
+        "GET",
+        "https://admin.example.test/api/LicenseManagement/123?access_token=never-return-this",
+    )
+    asyncio.run(gateway._guard_reader_request(first, "https://admin.example.test", reader_health=health))
+    gateway._reader_api_discovery_response_seen(health, first.request, 200)
+
+    page = type("Page", (), {"_reader_health": health})()
+    gateway._reader_set_api_discovery_trigger(page, "action:1:switch_tab")
+    second = FakeRoute(
+        "GET",
+        "https://admin.example.test/api/LicenseManagement/456?page=2&token=also-secret",
+    )
+    asyncio.run(gateway._guard_reader_request(second, "https://admin.example.test", reader_health=health))
+    gateway._reader_api_discovery_response_seen(health, second.request, 204)
+
+    discovery = gateway._reader_api_discovery_snapshot(page)
+    assert discovery == {
+        "candidates": [{
+            "operationKey": "GET /api/LicenseManagement/:id",
+            "method": "GET",
+            "path": "/api/LicenseManagement/:id",
+            "pathTemplate": "/api/LicenseManagement/:id",
+            "status": 204,
+            "policyState": "allowed",
+            "candidateKind": "business",
+            "trigger": "action:1:switch_tab",
+            "triggers": ["initial", "action:1:switch_tab"],
+        }],
+        "candidateCount": 1,
+        "truncated": False,
+        "selectableBusinessTruncated": False,
+        "selectableSupportTruncated": False,
+        "deltaCandidates": [],
+        "deltaCandidateCount": 0,
+        "deltaTruncated": False,
+        "deltaSelectableBusinessTruncated": False,
+        "deltaSelectableSupportTruncated": False,
+    }
+    assert "never-return-this" not in str(discovery)
+    assert "also-secret" not in str(discovery)
+
+
+def test_api_discovery_captures_arbitrary_bounded_json_response_as_candidate_evidence():
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute("GET", "https://admin.example.test/api/tasks/current")
+    gateway._reader_record_api_candidate(
+        health, route.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    operation_key = gateway._reader_api_discovery_response_seen(health, route.request, 200)
+
+    class FakeResponse:
+        headers = {"content-type": "application/json"}
+
+        async def body(self):
+            return json.dumps({
+                "payload": {
+                    "records": [{"taskNo": "TASK-7", "waitingOn": "Customer"}],
+                    "performance": {"recent": 92.5},
+                },
+                "accessToken": "never-return-this",
+            }).encode()
+
+    asyncio.run(gateway._reader_capture_api_response_evidence(
+        health, FakeResponse(), operation_key,
+    ))
+
+    candidate = gateway._reader_api_discovery_snapshot(
+        type("Page", (), {"_reader_health": health})()
+    )["candidates"][0]
+    assert candidate["responseEvidence"] == {
+        "payload": {
+            "records": [{"taskNo": "TASK-7", "waitingOn": "Customer"}],
+            "performance": {"recent": 92.5},
+        },
+    }
+    assert candidate["responseEvidenceTruncated"] is False
+    assert "never-return-this" not in str(candidate)
+
+
+def test_api_discovery_records_blocked_without_executing_or_exposing_request_data():
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute(
+        "POST",
+        "https://admin.example.test/api/example/99?authorization=Bearer+query-secret",
+    )
+    route.request.headers = {"Authorization": "Bearer header-secret"}
+    route.request.post_data = '{"token":"body-secret"}'
+
+    asyncio.run(gateway._guard_reader_request(route, "https://admin.example.test", reader_health=health))
+
+    discovery = gateway._reader_api_discovery_snapshot(type("Page", (), {"_reader_health": health})())
+    assert route.result == ("abort", "blockedbyclient")
+    assert discovery["candidates"] == [{
+        "operationKey": "POST /api/example/:id",
+        "method": "POST",
+        "path": "/api/example/:id",
+        "pathTemplate": "/api/example/:id",
+        "status": None,
+        "policyState": "blocked",
+        "candidateKind": "business",
+        "trigger": "initial",
+        "triggers": ["initial"],
+    }]
+    encoded = str(discovery)
+    assert all(secret not in encoded for secret in ("query-secret", "header-secret", "body-secret"))
+
+
+def test_api_discovery_redacts_short_record_ids_but_keeps_api_versions():
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute(
+        "GET",
+        "https://admin.example.test/api/v2/example/APP123/details",
+    )
+
+    asyncio.run(gateway._guard_reader_request(route, "https://admin.example.test", reader_health=health))
+
+    discovery = gateway._reader_api_discovery_snapshot(type("Page", (), {"_reader_health": health})())
+    assert discovery["candidates"][0]["operationKey"] == "GET /api/v2/example/:id/details"
+    assert "APP123" not in str(discovery)
+
+
+def test_api_template_does_not_authorize_export_shaped_as_record_id(monkeypatch):
+    monkeypatch.setattr(gateway, "READER_WHITELIST_ENABLED", True)
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute(
+        "GET",
+        "https://admin.example.test/api/LicenseManagement/export",
+    )
+
+    asyncio.run(gateway._guard_reader_request(route, "https://admin.example.test", reader_health=health))
+
+    assert route.result == ("abort", "blockedbyclient")
+    candidate = gateway._reader_api_discovery_snapshot(type("Page", (), {"_reader_health": health})())["candidates"][0]
+    assert candidate["policyState"] == "blocked"
+
+
+def test_api_discovery_filters_get_user_info_and_explicit_background_logs():
+    health = {"blocked": [], "pending": {}}
+    for method, path in (
+        ("POST", "/api/AdminUser/GetUserInfo"),
+        ("POST", "/api/clientlog/report"),
+        ("GET", "/api/SignalR/GetNotificationInfoList"),
+    ):
+        route = FakeRoute(method, "https://admin.example.test" + path)
+        asyncio.run(gateway._guard_reader_request(route, "https://admin.example.test", reader_health=health))
+
+    assert gateway._reader_api_discovery_snapshot(
+        type("Page", (), {"_reader_health": health})()
+    ) == {
+        "candidates": [], "candidateCount": 0, "truncated": False,
+        "selectableBusinessTruncated": False, "selectableSupportTruncated": False,
+        "deltaCandidates": [], "deltaCandidateCount": 0, "deltaTruncated": False,
+        "deltaSelectableBusinessTruncated": False, "deltaSelectableSupportTruncated": False,
+    }
+
+
+def test_optional_operation_catalog_adds_bounded_swagger_metadata(monkeypatch, tmp_path):
+    catalog_path = tmp_path / "operations.json"
+    catalog_path.write_text(json.dumps({"operations": [{
+        "method": "GET",
+        "path": "/api/example/{itemId}",
+        "tags": ["Example"],
+        "requestFields": ["itemId", "includeDetails"],
+        "responseFields": ["id", "status"],
+        "classification": "read_only",
+        "requestSchemas": ["ExampleRequest"],
+        "responseSchemas": ["ExampleResponse"],
+    }]}))
+    monkeypatch.setattr(
+        gateway, "READER_OPERATION_CATALOG", gateway._load_reader_operation_catalog(catalog_path),
+    )
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute("GET", "https://admin.example.test/api/example/alpha")
+
+    asyncio.run(gateway._guard_reader_request(route, "https://admin.example.test", reader_health=health))
+    candidate = gateway._reader_api_discovery_snapshot(
+        type("Page", (), {"_reader_health": health})()
+    )["candidates"][0]
+
+    assert candidate["operationKey"] == "GET /api/example/{itemId}"
+    assert candidate["policyState"] == "blocked"
+    assert candidate["candidateKind"] == "business"
+    assert candidate["swagger"] == {
+        "tags": ["Example"],
+        "requestSchemas": ["ExampleRequest"],
+        "requestFields": ["itemId", "includeDetails"],
+        "responseSchemas": ["ExampleResponse"],
+        "responseFields": ["id", "status"],
+        "classification": "read_only",
+    }
+
+
+@pytest.mark.parametrize("path", [
+    "/api/Lookup/GetLookupData",
+    "/api/TypeDictionary/GetTypeDictionaries/CertificateStatus",
+    "/api/admin/finance/lookups/payment-methods",
+])
+def test_api_discovery_marks_lookup_and_dictionary_candidates_as_support(path):
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute("GET", "https://admin.example.test" + path)
+
+    asyncio.run(gateway._guard_reader_request(route, "https://admin.example.test", reader_health=health))
+
+    candidate = gateway._reader_api_discovery_snapshot(
+        type("Page", (), {"_reader_health": health})()
+    )["candidates"][0]
+    assert candidate["candidateKind"] == "support"
+
+
+def test_api_discovery_is_bounded_to_32_unique_candidates(monkeypatch):
+    monkeypatch.setattr(gateway, "READER_WHITELIST_ENABLED", False)
+    health = {"blocked": [], "pending": {}}
+    for index in range(gateway.READER_MAX_API_CANDIDATES + 1):
+        suffix = chr(97 + index // 26) + chr(97 + index % 26)
+        route = FakeRoute("GET", f"https://admin.example.test/api/example/operation-{suffix}")
+        asyncio.run(gateway._guard_reader_request(route, "https://admin.example.test", reader_health=health))
+
+    discovery = gateway._reader_api_discovery_snapshot(
+        type("Page", (), {"_reader_health": health})()
+    )
+    assert discovery["candidateCount"] == gateway.READER_MAX_API_CANDIDATES
+    assert len(discovery["candidates"]) == gateway.READER_MAX_API_CANDIDATES
+    assert discovery["truncated"] is True
+
+
+def test_support_candidates_cannot_displace_allowed_business_candidates():
+    health = {"blocked": [], "pending": {}}
+    for index in range(gateway.READER_MAX_API_CANDIDATES):
+        suffix = chr(97 + index // 26) + chr(97 + index % 26)
+        route = FakeRoute("GET", f"https://admin.example.test/api/lookup/option-{suffix}")
+        gateway._reader_record_api_candidate(
+            health, route.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+        )
+        gateway._reader_api_discovery_response_seen(health, route.request, 200)
+
+    business = FakeRoute("GET", "https://admin.example.test/api/orders/current")
+    gateway._reader_record_api_candidate(
+        health, business.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    gateway._reader_api_discovery_response_seen(health, business.request, 200)
+
+    discovery = gateway._reader_api_discovery_snapshot(type("Page", (), {"_reader_health": health})())
+    assert discovery["candidateCount"] == gateway.READER_MAX_API_CANDIDATES
+    assert "GET /api/orders/current" in {item["operationKey"] for item in discovery["candidates"]}
+    assert discovery["selectableBusinessTruncated"] is False
+    assert discovery["selectableSupportTruncated"] is True
+
+
+def test_disabled_mode_bypassed_business_has_same_storage_priority_as_allowlisted_business(monkeypatch):
+    monkeypatch.setattr(gateway, "READER_WHITELIST_ENABLED", False)
+    health = {"blocked": [], "pending": {}}
+    for index in range(gateway.READER_MAX_API_CANDIDATES):
+        suffix = chr(97 + index // 26) + chr(97 + index % 26)
+        route = FakeRoute("GET", f"https://admin.example.test/api/lookup/option-{suffix}")
+        gateway._reader_record_api_candidate(
+            health, route.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+        )
+    business = FakeRoute("GET", "https://admin.example.test/api/unlisted-business/current")
+    gateway._reader_record_api_candidate(
+        health, business.request, "https://admin.example.test", allowed=True, policy_state="bypassed",
+    )
+    gateway._reader_api_discovery_response_seen(health, business.request, 200)
+
+    discovery = gateway._reader_api_discovery_snapshot(type("Page", (), {"_reader_health": health})())
+    selected = next(item for item in discovery["candidates"] if item["operationKey"].endswith("/current"))
+    assert selected["policyState"] == "bypassed"
+    assert discovery["selectableBusinessTruncated"] is False
+
+
+def test_blocked_candidates_cannot_displace_allowed_business_candidates():
+    health = {"blocked": [], "pending": {}}
+    for index in range(gateway.READER_MAX_API_CANDIDATES):
+        suffix = chr(97 + index // 26) + chr(97 + index % 26)
+        route = FakeRoute("POST", f"https://admin.example.test/api/blocked/operation-{suffix}")
+        gateway._reader_record_api_candidate(
+            health, route.request, "https://admin.example.test", allowed=False, policy_state="blocked",
+        )
+
+    business = FakeRoute("GET", "https://admin.example.test/api/orders/current")
+    gateway._reader_record_api_candidate(
+        health, business.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    gateway._reader_api_discovery_response_seen(health, business.request, 200)
+
+    discovery = gateway._reader_api_discovery_snapshot(type("Page", (), {"_reader_health": health})())
+    assert "GET /api/orders/current" in {item["operationKey"] for item in discovery["candidates"]}
+    assert discovery["selectableBusinessTruncated"] is False
+
+
+def test_action_delta_excludes_preexisting_operation_even_when_it_polls_again():
+    health = {"blocked": [], "pending": {}}
+    initial = FakeRoute("GET", "https://admin.example.test/api/tasks/current")
+    gateway._reader_record_api_candidate(
+        health, initial.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    gateway._reader_api_discovery_response_seen(health, initial.request, 200)
+    page = type("Page", (), {"_reader_health": health})()
+    gateway._reader_set_api_discovery_trigger(page, "action:1:switch_tab")
+
+    repeated = FakeRoute("GET", "https://admin.example.test/api/tasks/current?page=2")
+    added = FakeRoute("GET", "https://admin.example.test/api/tasks/completed")
+    for route in (repeated, added):
+        gateway._reader_record_api_candidate(
+            health, route.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+        )
+        gateway._reader_api_discovery_response_seen(health, route.request, 200)
+
+    discovery = gateway._reader_api_discovery_snapshot(page)
+    assert discovery["deltaCandidateCount"] == 1
+    assert [item["operationKey"] for item in discovery["deltaCandidates"]] == [
+        "GET /api/tasks/completed"
+    ]
+
+
+def test_action_delta_includes_preexisting_operation_only_when_health_materially_changes():
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute("GET", "https://admin.example.test/api/tasks/current")
+    gateway._reader_record_api_candidate(
+        health, route.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    gateway._reader_api_discovery_response_seen(health, route.request, 500)
+    page = type("Page", (), {"_reader_health": health})()
+    gateway._reader_set_api_discovery_trigger(page, "action:1:switch_tab")
+
+    retried = FakeRoute("GET", "https://admin.example.test/api/tasks/current")
+    gateway._reader_record_api_candidate(
+        health, retried.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    gateway._reader_api_discovery_response_seen(health, retried.request, 200)
+
+    discovery = gateway._reader_api_discovery_snapshot(page)
+    assert [item["operationKey"] for item in discovery["deltaCandidates"]] == [
+        "GET /api/tasks/current"
+    ]
+
+
+def test_action_delta_detects_business_filter_change_but_ignores_pagination_and_secrets():
+    health = {"blocked": [], "pending": {}}
+    initial = FakeRoute(
+        "GET", "https://admin.example.test/api/tasks?status=todo&page=1&access_token=secret-one",
+    )
+    gateway._reader_record_api_candidate(
+        health, initial.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    gateway._reader_api_discovery_response_seen(health, initial.request, 200)
+    page = type("Page", (), {"_reader_health": health})()
+    gateway._reader_set_api_discovery_trigger(page, "action:1:switch_tab")
+
+    pagination_only = FakeRoute(
+        "GET", "https://admin.example.test/api/tasks?status=todo&page=2&access_token=secret-two",
+    )
+    gateway._reader_record_api_candidate(
+        health, pagination_only.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    gateway._reader_api_discovery_response_seen(health, pagination_only.request, 200)
+    assert gateway._reader_api_discovery_snapshot(page)["deltaCandidates"] == []
+
+    changed_filter = FakeRoute(
+        "GET", "https://admin.example.test/api/tasks?status=completed&page=1&access_token=secret-three",
+    )
+    gateway._reader_record_api_candidate(
+        health, changed_filter.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+    gateway._reader_api_discovery_response_seen(health, changed_filter.request, 200)
+
+    discovery = gateway._reader_api_discovery_snapshot(page)
+    assert [item["operationKey"] for item in discovery["deltaCandidates"]] == ["GET /api/tasks"]
+    assert "todo" not in str(discovery)
+    assert "completed" not in str(discovery)
+    assert "secret" not in str(discovery)
+
+
+@pytest.mark.parametrize("path", [
+    "/api/Enquiry/EnquiryTypes",
+    "/api/Enquiry/PriorityType",
+    "/api/UserManagement/UserProfile/Status",
+    "/api/UserManagement/UserProfile/UserTypes",
+])
+def test_api_discovery_marks_leaf_enum_resources_as_support(path):
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute("GET", "https://admin.example.test" + path)
+    gateway._reader_record_api_candidate(
+        health, route.request, "https://admin.example.test", allowed=True, policy_state="allowed",
+    )
+
+    candidate = gateway._reader_api_discovery_snapshot(
+        type("Page", (), {"_reader_health": health})()
+    )["candidates"][0]
+    assert candidate["candidateKind"] == "support"
+
+
+def test_disabled_whitelist_marks_unconfigured_candidate_as_bypassed(monkeypatch):
+    monkeypatch.setattr(gateway, "READER_WHITELIST_ENABLED", False)
+    health = {"blocked": [], "pending": {}}
+    route = FakeRoute("POST", "https://admin.example.test/api/unconfigured/search")
+
+    asyncio.run(gateway._guard_reader_request(route, "https://admin.example.test", reader_health=health))
+
+    candidate = gateway._reader_api_discovery_snapshot(
+        type("Page", (), {"_reader_health": health})()
+    )["candidates"][0]
+    assert route.result == ("continue", None)
+    assert candidate["policyState"] == "bypassed"
