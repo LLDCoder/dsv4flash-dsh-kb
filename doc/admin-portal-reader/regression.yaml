@@ -1141,6 +1141,10 @@ acceptance:
   - The main Agent receives only the bounded result contract, never the discovered API catalog, selected operationKey, raw requests or responses, or sensitive response fields.
   - All browser and network mutations are blocked before dispatch.
   - Result states distinguish no data, no permission, load failure, and insufficient evidence.
+  - A violation list containing Source Task cannot answer a task-list query; the related identity must not propagate as a verified task record.
+  - Generic related/parent reference columns cannot establish a different primary-record list, while primary lists may include requested related references.
+  - Questions about documented filter criteria or entries do not become forbidden live reads; selected values, current fields and opening a filter still require live evidence.
+  - Knowledge variants verified only for another role cannot establish current-role layout; missing manual coverage never implies permission denial.
   - Model-visible evidence is bounded and contains no complete page or table.
   - Audit evidence is sufficient for diagnosis and contains no credentials or session secrets.
   - Reader audit evidence identifies the GetUserInfo login account and current role without changing the permission fingerprint.

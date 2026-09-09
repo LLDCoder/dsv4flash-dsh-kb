@@ -2026,6 +2026,12 @@ _KNOWLEDGE_PROSE_TERMS = frozenset(
 )
 
 
+def _question_is_capability_catalogue(question: str) -> bool:
+    return bool(re.search(
+        r'\b(?:what|which)\b.*\b(?:criteria|filters?|fields?|columns?)\b.*\b(?:available|supported|present|can i use)\b'
+        r'|\bwhat is\b.*\b(?:entry|entry point)\b', question, re.I))
+
+
 def question_is_conceptual(question: str) -> bool:
     normalized = question.casefold()
     return bool(re.search(
@@ -2040,7 +2046,8 @@ def question_is_conceptual(question: str) -> bool:
         r"|\bcan\b.*\bconfirm\b.*\bjust because\b"
         r"|\b(?:does|do|can)\b.*\b(?:prove|guarantee|imply|establish|mean)\b"
         r"|\balone\b.*\bidentify\b|\bhow (?:do i|can i|to)\b"
-        r"|\b(?:what|which)\b.*\b(?:criteria|filters?|fields?|columns?)\b.*\b(?:available|supported)\b"
+        r"|\b(?:what|which)\b.*\b(?:criteria|filters?|fields?|columns?)\b.*\b(?:available|supported|present|can i use)\b"
+        r"|\bwhat is\b.*\b(?:entry|entry point)\b"
         r"|解释|含义|区别|手册|是什么意思|如何|怎么使用|شرح|معنى|الفرق|كيف",
         normalized,
     )) or any(marker in normalized for marker in _DOCUMENTATION_QUESTION_MARKERS)
@@ -2091,6 +2098,10 @@ def question_requires_live_portal(question: str) -> bool:
         or any(marker in normalized for marker in ("我的", "我有", "我能", "我可以", "对我", "لدي", "خاصتي", "هل لدي"))
     )
     current_or_visible = any(marker in normalized for marker in (*_LIVE_TIME_MARKERS, "visible", "selected", "active", "applied", "我能看到", "已选择", "当前", "الظاهرة"))
+    if (question_is_conceptual(question) and not current_or_visible
+            and re.search(r'\b(?:criteria|filters?|fields?|columns?|entry|entry point)\b', normalized)
+            and not re.search(r'\b(?:open|inspect|cancel|close|apply|change|show|read)\b', normalized)):
+        return False
     definition_intent = bool(
         re.search(r"\bwhat (?:does|do)\b.*\bmean\b", normalized)
         or any(marker in normalized for marker in ("是什么意思", "含义是什么", "ما معنى"))
@@ -2322,13 +2333,46 @@ def knowledge_fact_evidence(knowledge_context: Any, question: str = "") -> list[
         contents.sort(key=lambda item: len(words & _section_match_tokens(metadata(item[1]).get('section', ''))), reverse=True)
     for index, content in contents:
         for field, value in _knowledge_content_fields(content).items():
-            if field not in {"meaning", "content", "distinguish_from", "field_distinctions", "filters", "scope", "evidence_limits", "verification_limits"}:
+            if field not in {"meaning", "content", "distinguish_from", "field_distinctions", "filters", "available_fields", "scope", "evidence_limits", "verification_limits"}:
                 continue
             if value and len(value) <= 600:
                 evidence.append({"chunkIndex": index, **metadata(content), "field": field, "text": value})
             if len(evidence) >= 24:
                 return evidence
     return evidence
+
+
+def _knowledge_for_current_role(knowledge_context: dict[str, Any], permission: UserPermissionContext,
+                                question: str) -> dict[str, Any]:
+    """Keep verified role variants separate without treating a manual as access control."""
+    current = ' '.join(permission.current_role.casefold().split())
+    if not current:
+        return knowledge_context
+    retained, excluded = [], 0
+    for chunk in knowledge_context.get('chunks', []):
+        if not isinstance(chunk, dict):
+            continue
+        parts = re.split(r'(?=## Semantic node:)', str(chunk.get('content') or ''))
+        matching = []
+        for part in parts:
+            owners = re.findall(r'verified for (?:the )?([A-Za-z][A-Za-z &-]{1,80}?) representative', part, re.I)
+            normalized = [' '.join(owner.casefold().split()) for owner in owners]
+            # Explicit role comparisons may retain both sources, with their original scope.
+            explicit_other = bool(re.search(r'\b(?:compare|difference|distinction|between)\b', question, re.I)) and any(
+                re.search(r'(?<!\w)'+re.escape(owner)+r'(?!\w)', question, re.I) for owner in owners)
+            if owners and current not in normalized and not explicit_other:
+                excluded += 1
+                continue
+            matching.append(part)
+        content = ''.join(matching).strip()
+        if content:
+            retained.append({**chunk, 'content': content})
+    if not excluded:
+        return knowledge_context
+    return {**knowledge_context, 'chunks': retained, 'roleApplicability': {
+        'currentRole': permission.current_role, 'excludedOtherRoleSections': excluded,
+        'permissionSource': 'GetUserInfo', 'missingCoverageIsNotPermissionDenial': True,
+    }}
 
 
 def _qualify_knowledge_facts(result: ReaderResult, knowledge_context: Any) -> ReaderResult:
@@ -4951,6 +4995,59 @@ def _observed_tab_catalogue(outcome: ReaderOutcome, question: str) -> ReaderOutc
                                   'result': updated.public_json()})
 
 
+def _guard_related_record_substitution(outcome: ReaderOutcome, question: str,
+                                       intent_state: dict[str, Any]) -> ReaderOutcome:
+    """A related-record column is not evidence of a list of those related records."""
+    result, evidence = outcome.result, outcome.audit_evidence
+    if result.status not in {'success', 'no_data'} or question_is_conceptual(question):
+        return outcome
+    if str(evidence.get('stage') or '').startswith('knowledge_'):
+        return outcome
+    observation = evidence.get('observation')
+    if not isinstance(observation, dict):
+        observation = ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    source = _observation_evidence_for_result(observation, result)
+    if not isinstance(source, dict) or source.get('kind') not in {'table', 'grid'}:
+        return outcome
+    columns = source.get('columnHeaders')
+    if not isinstance(columns, list) or not columns or any(not isinstance(c, str) for c in columns):
+        return outcome
+    def tokens(value: str) -> set[str]:
+        value = re.sub(r'([a-z])([A-Z])', r'\1 \2', value)
+        return {t.rstrip('s') for t in re.findall(r'[a-z]+', value.casefold())}
+    values = _resolved_intent_values({'resolvedIntent': intent_state})
+    requested = tokens(values.get('businessObject') or question)
+    excluded = {'source', 'related', 'parent', 'linked', 'reference', 'no', 'number', 'id'}
+    primary = [c for c in columns if tokens(c) & {'no', 'number', 'id'}
+               and not tokens(c) & {'source', 'related', 'parent', 'linked'}]
+    for column in columns:
+        related = tokens(column)
+        if not related & {'source', 'related', 'parent', 'linked'}:
+            continue
+        target = related - excluded
+        if not target or not target <= requested or not primary:
+            continue
+        if any(target <= tokens(c) for c in primary):
+            continue
+        primary_target = tokens(primary[0]) - excluded
+        if primary_target and primary_target <= requested:
+            continue  # The user requests the primary records, including their references.
+        labels = [str(source.get('heading') or ''), *(source.get('selectedTabPath') or [])]
+        if any(target <= tokens(str(label)) for label in labels):
+            continue  # A native task view can contain application/record identifiers.
+        facts = (
+            f'The observed list uses {primary[0]} to identify its records. {column} is a related reference, not a verified list of the referenced records.',
+            'The requested records and their assignment to the current user have not been established.',
+        )
+        guarded = replace(result, status='not_confirmed', facts=facts,
+                          completeness='unknown', workflow_state='', source_hint={},
+                          missing=('related_record_is_not_requested_object',))
+        return ReaderOutcome(guarded, {**evidence, 'businessObjectGuard': {
+            'primaryIdentity': primary[0], 'relatedColumn': column,
+        }, 'result': guarded.public_json()})
+    return outcome
+
+
 def _guard_requested_queue_view(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     result = outcome.result
     if (result.status not in {"success", "no_data", "not_confirmed"} or not result.page
@@ -5087,6 +5184,7 @@ class AdminPortalReader:
             qualified = _qualify_knowledge_facts(outcome.result, outcome.audit_evidence['knowledge'])
             outcome = ReaderOutcome(qualified, {**outcome.audit_evidence, 'result': qualified.public_json()})
         outcome = _observed_tab_catalogue(outcome, question)
+        outcome = _guard_related_record_substitution(outcome, question, intent_state)
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
         executions = [entry for entry in trace.entries if entry.get("stage") == "portal_execution"]
@@ -6281,7 +6379,9 @@ class AdminPortalReader:
                     failure_code="knowledge_timeout",
                 )
                 knowledge_trace_recorded = True
-        knowledge_context = project_knowledge_result(knowledge_result, max_chunks=self.knowledge_top_k)
+        knowledge_context = _knowledge_for_current_role(
+            project_knowledge_result(knowledge_result, max_chunks=self.knowledge_top_k), permission_context, question,
+        )
         if question_is_conceptual(question):
             hint = bounded_conversation_context.get('sourceHint') or semantic_source_hint(bounded_conversation_context)
             relation = bounded_conversation_context.get('resolvedIntent', {}).get('relation')
@@ -6330,7 +6430,6 @@ class AdminPortalReader:
                     "errorType": type(exc).__name__,
                 },
             )
-        knowledge_result_from_planner = knowledge_result_from_plan(plan)
         resolved_values = _resolved_intent_values(bounded_conversation_context)
         conceptual_request = question_is_conceptual(question)
         explicit_identity = bool(resolved_values.get("recordIdentity") and re.search(
@@ -6347,6 +6446,25 @@ class AdminPortalReader:
                     or resolved_values.get("answerShape") in {"overview", "count", "list", "attention", "due", "detail"}
                 )
             )
+        if (_question_is_capability_catalogue(question) and not needs_live_read and isinstance(plan, dict)
+                and plan.get('mode') == 'portal_read' and _knowledge_evidence_strings(knowledge_context)):
+            # Permission to browse is not required to explain already retrieved documentation.
+            # One bounded replan precedes policy validation; no forbidden page is visited.
+            try:
+                explanation_plan = await plan_stage({**knowledge_context, 'planningDirective': {
+                    'knowledgeExplanationOnly': True, 'reason': 'documented_capability_question',
+                    'allowedFallback': 'knowledge_only:not_confirmed',
+                }}, timeout_stage='planning_capability_explanation', reason='capability_explanation')
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError):
+                explanation_plan = None
+            if isinstance(explanation_plan, dict) and explanation_plan.get('mode') == 'knowledge_only':
+                plan = explanation_plan
+            else:
+                result = ReaderResult(status='not_confirmed', summary='The requested documentation explanation was not established.',
+                                      missing=('knowledge_explanation_not_confirmed',))
+                return ReaderOutcome(result, {'stage': 'knowledge_explanation', 'permission': permission_audit,
+                                             'knowledge': knowledge_context, 'result': result.public_json()})
+        knowledge_result_from_planner = knowledge_result_from_plan(plan)
         if (
             knowledge_result_from_planner is not None
             and knowledge_result_from_planner.status == "success"

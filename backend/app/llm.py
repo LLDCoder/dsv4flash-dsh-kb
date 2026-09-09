@@ -636,6 +636,21 @@ class LLMAdapter:
             "treat its heading as a clickable control."
         )
         directive = knowledge_context.get("planningDirective")
+        if isinstance(directive, dict) and directive.get('knowledgeExplanationOnly') is True:
+            system += (
+                ' This is a documentation capability question, not a request to access live records. '
+                'Return knowledge_only using the applicable retrieved field or entry explanation. '
+                'Preserve its documented role and view limits. Missing live page permission does not '
+                'prohibit explaining those passages. Do not propose a page read or invent absent coverage. '
+                'If the applicable passage is missing, return not_confirmed with a specific knowledge gap.'
+            )
+        if knowledge_context.get('roleApplicability'):
+            system += (
+                ' roleApplicability describes manual coverage only, never permissions. Sections verified '
+                'only for another role have been excluded. Do not reconstruct their fields for the current '
+                'role from memory. Use matching retrieved coverage or a permitted native schema read; '
+                'otherwise state that this role layout is unconfirmed. GetUserInfo remains authoritative.'
+            )
         phase_decision = directive.get("apiCandidateDecision") if isinstance(directive, dict) else None
         if knowledge_context.get("portalObservation") is not None and phase_decision not in {"select", "drill"}:
             system += (

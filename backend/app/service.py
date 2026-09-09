@@ -44,6 +44,13 @@ def _response_language_for(text: str) -> str:
 
 def reader_evidence_only_response(reader_result: dict[str, Any], language: str, *, prior_answer_coverage: bool = False) -> str:
     """Render the bounded Reader result without another source of business facts."""
+    if (reader_result.get('result') == 'no_permission' and not reader_result.get('facts')
+            and reader_result.get('missing') == ['page_not_permitted']):
+        return {
+            'en': "This account's current permissions do not authorize the requested page read. The requested records have not been verified; this does not establish access to other pages.",
+            'zh': '当前账号的权限未授权本次请求的页面读取，因此尚未核实所请求的记录。这不代表其他页面也不可访问。',
+            'ar': 'صلاحيات هذا الحساب الحالية لا تسمح بقراءة الصفحة المطلوبة. لم يتم التحقق من السجلات المطلوبة، ولا يحدد ذلك صلاحية الوصول إلى صفحات أخرى.',
+        }.get(language, 'Current permissions do not authorize the requested page read. The requested records have not been verified.')
  
     raw_facts = reader_result.get("facts")
  

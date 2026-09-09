@@ -427,6 +427,11 @@ def make_router(service: DSHService) -> APIRouter:
         personal assignment. Knowledge answers require retrieved supporting text.
         Planner schema repair is bounded and does not relax access or evidence checks.
         Same-topic explanations retain their source module for knowledge retrieval.
+        Capability and entry explanations may use applicable retrieved documentation
+        without reading a restricted page. Documentation for another verified role
+        does not establish the current role's layout or permissions. A related-record
+        column cannot turn its containing rows into the requested related-record list;
+        this mismatch returns not_confirmed with an explicit evidence limitation.
         API row answers preserve a native view only when one healthy table has
         matching record identities. Explicit requested sample sizes bound returned
         rows while retaining independently verified totals. Blank assignee fields

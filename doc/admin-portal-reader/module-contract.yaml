@@ -2,6 +2,13 @@ capability: admin-portal-reader
 portal: admin
 mode: assistant-readonly
 
+role_and_object_evidence:
+  permission_source: GetUserInfo only; manual coverage is not an access grant or denial.
+  manual_variants: Preserve current-role and unscoped passages; keep other explicitly verified role variants for explicit role comparisons, never from a claimed role.
+  capability_questions: Explain retrieved criteria and entry documentation without reading restricted records; one bounded knowledge replan may correct a mistaken live-read proposal.
+  reference_columns: Source, related, parent and linked fields do not establish a list of the referenced object when the native table identifies a different primary record.
+  outcome: Reject related-record substitution as not_confirmed with an explicit limitation; preserve genuine primary-record reads and exact permission checks.
+
 filter_evidence_contract:
   viewport: A stable 1920x1080 desktop viewport avoids accidentally selecting a collapsed responsive filter surface.
   controls: Bounded visible labels, selected values, native options and narrow observed locators; inspect at most four Ant combobox option popups without selecting values, and close them with Escape; never sensitive fields.
