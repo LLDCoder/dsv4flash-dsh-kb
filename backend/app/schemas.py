@@ -20,6 +20,9 @@ class MessageCreate(APIModel):
         if not self.content.strip():
             raise ValueError("message content is required")
         return self
+class MessageFeedbackCreate(APIModel):
+    rating: Literal["up", "down"] | None
+    reason: str | None = Field(default=None, max_length=64)
 
 
 class ConfigPatch(APIModel):
