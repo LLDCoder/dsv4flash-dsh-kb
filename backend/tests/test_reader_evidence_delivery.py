@@ -542,6 +542,7 @@ def test_natural_reader_response_uses_model_for_concise_grounded_answer() -> Non
     class _AnswerLLM:
         async def stream(self, messages):
             assert "Do not use a 'Confirmed details' heading" in messages[0]["content"]
+            assert "Do not turn a routine capability question into a list of restrictions" in messages[0]["content"]
             assert "What should I prioritize?" in messages[1]["content"]
             yield "You have 7 tasks. None is marked urgent, so review the 5 awaiting External Approval first."
  

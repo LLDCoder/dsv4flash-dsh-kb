@@ -48,6 +48,10 @@ READER_READ_ONLY_OPEN_CONTEXT_TERMS = {"task", "tasks", "status", "statuses", "c
 READER_MAX_ACTIONS = 12
 READER_MAX_PAGES = 3
 READER_TIMEOUT_SECONDS = 45
+READER_ACTION_TIMEOUT_MS = max(
+    5_000,
+    min(15_000, int(float(os.getenv("READER_ACTION_TIMEOUT_MS", "10000")))),
+)
 READER_MAX_OUTPUT_ITEMS = 20
 READER_MAX_API_CANDIDATES = 32
 READER_MAX_REQUEST_VARIANTS_PER_OPERATION = 32
@@ -1417,7 +1421,7 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
     if action_type == "expand_details" and aria_expanded not in {"true", "false"}:
         raise RuntimeError("reader_click_target_not_expandable")
     before_tab = await _reader_tab_selection(locator) if action_type == "switch_tab" else {}
-    await locator.click(timeout=5_000)
+    await locator.click(timeout=READER_ACTION_TIMEOUT_MS)
     if action_type == "switch_tab":
         for attempt in range(11):
             after_tab = await _reader_tab_selection(locator)
@@ -1496,7 +1500,7 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
     values = action.values or ([action.value] if action.value is not None else [])
     value = str(values[0]) if values else ""
     if tag_name == "select":
-        await locator.select_option(label=[str(item) for item in values], timeout=5_000)
+        await locator.select_option(label=[str(item) for item in values], timeout=READER_ACTION_TIMEOUT_MS)
         return
     if role == "combobox":
         handle = await locator.element_handle()
@@ -1506,7 +1510,7 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
         ant_root = locator.locator("xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' ant-select ')][1]")
         is_ant = await ant_root.count() == 1
         for item in values:
-            await handle.click(timeout=5_000)
+            await handle.click(timeout=READER_ACTION_TIMEOUT_MS)
             # Ant's virtualized accessibility list may omit the desired option.
             # Restrict its rendered fallback to this control's own popup.
             root = page.locator(f'[id={json.dumps(popup_id)}]') if popup_id else page
@@ -1516,7 +1520,7 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
                 option = popup.locator(".ant-select-item-option").filter(has_text=re.compile(r"^" + re.escape(str(item)) + r"$"))
             if await option.count() != 1 or not await option.is_visible():
                 raise RuntimeError("reader_filter_option_not_found")
-            await option.click(timeout=5_000)
+            await option.click(timeout=READER_ACTION_TIMEOUT_MS)
             selected = await handle.evaluate("""element => {
                 const ant = element.closest('.ant-select');
                 return ant ? Array.from(ant.querySelectorAll('.ant-select-selection-item')).map(x => x.getAttribute('title') || x.textContent.trim())
@@ -1529,7 +1533,7 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
         raise RuntimeError("reader_filter_control_not_multiselect")
     if tag_name not in {"input", "textarea"}:
         raise RuntimeError("reader_filter_control_unsupported")
-    await locator.fill(value, timeout=5_000)
+    await locator.fill(value, timeout=READER_ACTION_TIMEOUT_MS)
 
 
 async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
@@ -1662,7 +1666,15 @@ async def _settle_reader_requests(page: Page, timeout_seconds: float = 8.0) -> N
 
 
 async def _settle_page(page: Page) -> None:
-    await page.wait_for_function("document.readyState === 'interactive' || document.readyState === 'complete'", timeout=5_000)
+    try:
+        await page.wait_for_function(
+            "document.readyState === 'interactive' || document.readyState === 'complete'",
+            timeout=READER_ACTION_TIMEOUT_MS,
+        )
+    except Exception:
+        # A SPA can briefly miss this readiness poll even though semantic DOM
+        # content is available. The later bounded checks determine usability.
+        pass
     try:
         await page.wait_for_load_state("networkidle", timeout=3_000)
     except Exception:
