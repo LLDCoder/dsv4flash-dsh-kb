@@ -428,6 +428,13 @@ def make_router(service: DSHService) -> APIRouter:
         Planner schema repair is bounded and does not relax access or evidence checks.
         Same-topic explanations retain their source module for knowledge retrieval.
         Capability and entry explanations may use applicable retrieved documentation
+        without treating a named page or tab as a record identifier. A uniquely
+        documented primary-identity source is permission-checked before considering
+        related-record pages. Knowledge source hints persist for compatible follow-ups.
+        Native filter field inventories come from the visible Filter overlay only;
+        cancellation is verified by an open/dismiss sequence in the reader's fresh
+        context, not claimed as a change to the user's browser. Partially grounded
+        knowledge retains independently supported facts with unresolved scope limits
         without reading a restricted page. Documentation for another verified role
         does not establish the current role's layout or permissions. A related-record
         column cannot turn its containing rows into the requested related-record list;

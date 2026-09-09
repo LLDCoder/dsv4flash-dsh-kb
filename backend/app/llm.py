@@ -130,6 +130,8 @@ class LLMAdapter:
             "Return exactly one strict JSON object with only relation, slots, clarificationOptions. "
             "relation must be continue, refine, switch, broaden, or clarify. slots must contain exactly these "
             "eight keys: businessObject, businessFocus, recordIdentity, view, dateRange, filter, requestedScope, answerShape. "
+            "recordIdentity is an individual record identifier, never a page title, tab name, field name or business object. "
+            "For example a named Team Members entry belongs to businessFocus, not recordIdentity. "
             "Every slot must be {source:'current|previous|clear|unspecified',value:string,evidence:string}. For source=current, "
             "evidence must be an exact nonempty substring of the original current question supporting the value. "
             "An enum value is not its evidence: value='list' may cite evidence='Show' when that is the actual "
@@ -809,6 +811,15 @@ class LLMAdapter:
                        'object or criteria, or claim collection-wide coverage to fill this limit.')
         planner_input["knowledgeFactEvidence"] = [item for item in knowledge_fact_evidence(knowledge_context, question)
                                                  if len(item['text']) <= 500]
+        if knowledge_context.get('documentedPrimarySource'):
+            system += (' documentedPrimarySource identifies the unambiguous primary-record page from retrieved schema. '
+                       'Start there for this record request. A related-record reference on a different page does not '
+                       'make that other page a source of these records. Normal current permissions still apply.')
+        system += (' A healthy current layout with no requested tab does not justify clicking an invented selector. '
+                   'If the applicable manual documents a different role layout and no visible parent can reveal '
+                   'the requested tab, return not_confirmed with the actual role, visible tabs and the precise view limitation. '
+                   'Do not return task counts for member-entry questions. A documented role-limited explanation may '
+                   'still contain supported facts when current-role applicability is not_confirmed; preserve its scope.')
         system += (
             " A permitted page for a DIFFERENT business object is never an alternative to a denied requested page. "
             "If the manual identifies the requested source page but GetUserInfo does not permit it, return a "

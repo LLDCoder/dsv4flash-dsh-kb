@@ -42,7 +42,8 @@ def test_explicit_filter_transition_requires_unique_observed_ui():
     assert _observed_filter_transition('Open the filter.',obs,'/work')['portalRequest']['actions'][0]['type']=='show_filter'
     assert _observed_filter_transition('Apply the filter.',obs,'/work') is None
     assert _observed_filter_transition('Open the filter.',{'controls':['Filter','Filter']},'/work') is None
-    assert _observed_filter_transition('Cancel the filter.',obs,'/work') is None
+    replay = _observed_filter_transition('Cancel the filter.',obs,'/work')['portalRequest']['actions']
+    assert [action['type'] for action in replay] == ['show_filter', 'dismiss_overlay']
     obs={'controls':['Cancel'],'dialogs':['Filter Search Cancel Apply']}
     assert _observed_filter_transition('Cancel the filter.',obs,'/work')['portalRequest']['actions'][0]['type']=='dismiss_overlay'
     assert _observed_filter_transition('Cancel the filter.',{'controls':['Cancel'],'dialogs':['Approve record Cancel']},'/work') is None

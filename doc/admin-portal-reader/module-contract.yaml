@@ -42,6 +42,8 @@ admin_portal_reader:
     - get_user_info
     - resolve_conditional_follow_up_intent_before_retrieval
     - retrieve_relevant_manual
+    - preserve_unique_documented_source_for_compatible_follow_ups
+    - check_unambiguous_primary_record_source_permission_before_related_pages
     - plan_bounded_page_read
     - select_and_open_authorized_candidate_page
     - discover_relevant_page_operations

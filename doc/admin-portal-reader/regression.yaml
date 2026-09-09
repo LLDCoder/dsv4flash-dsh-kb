@@ -1123,6 +1123,12 @@ cases:
       full_module_scan_interpreted_as_deployed_acceptance: false
 
 acceptance:
+  - A named page or tab in a mistaken recordIdentity slot does not force a conceptual entry explanation into a live read.
+  - An unambiguous documented primary-identity source is checked against current permissions before a related-record page is considered.
+  - Exact knowledge facts retain their unique source page as a navigation hint, never as permission or proof of live data.
+  - Independently grounded partial knowledge facts remain visible while unknown role applicability remains unresolved.
+  - Filter field inventory uses only labels inside one visible Filter overlay; inline controls and hidden dialogs are excluded.
+  - A fresh closed page alone never proves cancellation; the bounded open-and-dismiss flow must actually execute.
   - An initial tab switch that returns rows through a post-action observation is reduced without an unnecessary extra page read.
   - A list answer preserves verified field names and relationships instead of guessing headings or widening ownership semantics.
   - A non-success result without verified facts cannot produce business rules, inferred transitions, or empty-list claims from missing or history text.

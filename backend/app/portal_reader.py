@@ -1976,6 +1976,10 @@ PRIOR_EMPTY_LIST_FACT = (
     "That was an empty query result, not a sample count or a global collection total. "
     "It does not establish that no records exist elsewhere or that the result is still current."
 )
+PRIOR_UNVERIFIED_LIST_FACT = (
+    'The preceding request did not establish a verified list or sample. '
+    'Neither a sample count nor a collection total was verified for that request.'
+)
 
 
 ABSENCE_EVIDENCE_LIMIT = 'A search with no matching records does not establish that a record was deleted. Deletion or historical existence requires separate evidence; this Reader has not verified that history.'
@@ -1993,6 +1997,10 @@ def reader_absence_limit_explanation(question: str) -> str | None:
 def previous_sample_explanation(question: str, context: dict[str, Any]) -> str | None:
     """Explain prior answer coverage without reusing old records or totals."""
     previous = _bounded_conversation_context(context).get("previousIntent", {})
+    if previous.get('resultStatus') == 'no_permission' and previous.get('deliveredAnswerShape') != 'list' and re.search(
+        r'\b(?:total|all)\b.*\b(?:sample|listed|shown)\b', question, re.I,
+    ):
+        return PRIOR_UNVERIFIED_LIST_FACT
     if previous.get("deliveredAnswerShape") != "list":
         return None
     if re.search(
@@ -2074,6 +2082,13 @@ def _observed_filter_transition(question: str, observation: Any, page: str) -> d
         if not dialogs and controls.count('Filter') == 1:
             action = {'type': 'show_filter', 'role': 'button', 'name': 'Filter'}
     elif re.search(r'\b(?:cancel|close|dismiss)\b.{0,50}\bfilter\b|(?:关闭|取消).{0,15}筛选', question, re.I):
+        if not dialogs and controls.count('Filter') == 1:
+            # Each read starts fresh. Reconstruct and dismiss only the filter overlay,
+            # in one bounded call; an already closed fresh page proves no cancellation.
+            return {'mode': 'portal_read', 'portalRequest': {'startPath': page, 'actions': [
+                {'type': 'show_filter', 'role': 'button', 'name': 'Filter'},
+                {'type': 'dismiss_overlay', 'role': 'button', 'name': 'Cancel'},
+            ], 'expectedFields': []}}
         if len(dialogs) == 1 and re.search(r'\bfilter\b|筛选', str(dialogs[0]), re.I) and controls.count('Cancel') == 1:
             action = {'type': 'dismiss_overlay', 'role': 'button', 'name': 'Cancel'}
     return {'mode': 'portal_read', 'portalRequest': {'startPath': page, 'actions': [action], 'expectedFields': []}} if action else None
@@ -2333,7 +2348,7 @@ def knowledge_fact_evidence(knowledge_context: Any, question: str = "") -> list[
         contents.sort(key=lambda item: len(words & _section_match_tokens(metadata(item[1]).get('section', ''))), reverse=True)
     for index, content in contents:
         for field, value in _knowledge_content_fields(content).items():
-            if field not in {"meaning", "content", "distinguish_from", "field_distinctions", "filters", "available_fields", "scope", "evidence_limits", "verification_limits"}:
+            if field not in {"meaning", "content", "distinguish_from", "field_distinctions", "filters", "available_fields", "scope", "evidence_limits", "verification_limits", "criteria_meaning", "entry_conditions"}:
                 continue
             if value and len(value) <= 600:
                 evidence.append({"chunkIndex": index, **metadata(content), "field": field, "text": value})
@@ -2379,7 +2394,7 @@ def _qualify_knowledge_facts(result: ReaderResult, knowledge_context: Any) -> Re
     """Keep the subject of an exact manual excerpt when presenting its text."""
     passages = [passage for content in _knowledge_evidence_strings(knowledge_context)
                 for passage in _knowledge_semantic_passages(content)]
-    facts = []
+    facts, sources = [], set()
     for fact in result.facts:
         subjects = set()
         normalized = ' '.join(fact.split())
@@ -2387,6 +2402,10 @@ def _qualify_knowledge_facts(result: ReaderResult, knowledge_context: Any) -> Re
             title = re.match(r'## Semantic node:\s*(.*?)(?=\s+-\s*\*\*|\n|$)', passage)
             if title and normalized in ' '.join(passage.split()):
                 subjects.add(title[1].strip())
+                fields = _knowledge_content_fields(passage, include_metadata=True)
+                page = fields.get('page', '').strip('` ')
+                if page.startswith('/') and not page.startswith('//') and not any(c in page for c in '?#\\'):
+                    sources.add((page, fields.get('section', '')[:240]))
         if len(subjects) == 1:
             subject = next(iter(subjects))
             labeled = f'{subject}: {fact}'
@@ -2394,7 +2413,81 @@ def _qualify_knowledge_facts(result: ReaderResult, knowledge_context: Any) -> Re
                 facts.append(labeled)
                 continue
         facts.append(fact)
-    return replace(result, facts=tuple(facts))
+    # Documentation navigation hints preserve a follow-up's source without
+    # claiming that the page was read or that this role can access it.
+    hint = result.source_hint
+    if len({page for page, _ in sources}) == 1:
+        hint = {'page': next(iter(sources))[0]}
+        if len(sources) == 1:
+            hint['section'] = next(iter(sources))[1]
+    return replace(result, facts=tuple(facts), source_hint=hint)
+
+
+def _documented_object_source(knowledge: dict[str, Any], question: str, context: dict[str, Any]) -> str:
+    """Resolve only an unambiguous documented primary identity in the named module.
+
+    This is a navigation hint, not an authorization grant or a data-scope claim.
+    Foreign-key columns never nominate their containing page as the target list.
+    """
+    if question_is_conceptual(question) or re.search(r'/[a-zA-Z][\w/-]+', question):
+        return ''
+    tokens = lambda s: {t.rstrip('s') for t in re.findall(r'[a-z]+', s.casefold())}
+    values = _resolved_intent_values(context)
+    requested = tokens(values.get('businessObject') or question)
+    hint = context.get('sourceHint') or semantic_source_hint(context)
+    module_hint = str(hint.get('page') or '').strip('/').split('/')[0]
+    candidates = set()
+    for content in _knowledge_evidence_strings(knowledge):
+        for passage in _knowledge_semantic_passages(content):
+            fields = _knowledge_content_fields(passage, include_metadata=True)
+            page = fields.get('page', '').strip('` ')
+            if not page.startswith('/') or page.startswith('//') or any(c in page for c in '?#\\'):
+                continue
+            module = page.strip('/').split('/')[0]
+            if not (tokens(module) & tokens(question) or module == module_hint):
+                continue
+            for column in re.split(r'[;,]', fields.get('content', '')):
+                match = re.fullmatch(r'\s*([A-Za-z ]+?)\s+(?:No\.?|Number|ID)\s*', column)
+                if not match:
+                    continue
+                subject = tokens(match[1])
+                if subject & {'source', 'related', 'parent', 'linked', 'reference'}:
+                    continue
+                if subject and subject <= requested:
+                    candidates.add(page)
+                break  # Subsequent identities are related fields, not the primary object.
+    return next(iter(candidates)) if len(candidates) == 1 else ''
+
+
+def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: list[dict[str, Any]]) -> ReaderOutcome:
+    """Report only rendered filter schema or a verified open/dismiss sequence."""
+    if outcome.result.status in {'no_permission', 'load_failed'} or not _question_needs_native_surface(question):
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get('observation')
+    if (not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True
+            or _observation_has_error_state(observation)):
+        return outcome
+    dialogs = observation.get('dialogs') or []
+    fields = tuple(dict.fromkeys(str(label) for label in observation.get('filterDialogFields', []) if isinstance(label, str)))
+    facts = ()
+    if re.search(r'\bopen\b.{0,50}\bfilter\b|打开.{0,15}筛选', question, re.I):
+        if (len(dialogs) == 1 and re.search(r'\bfilter\b|筛选', str(dialogs[0]), re.I) and fields
+                and executions and executions[-1].get('status') == 'passed'
+                and executions[-1].get('input', {}).get('actionTypes') == ['show_filter']):
+            facts = ('The Filter surface is open. Its observed fields are: ' + '; '.join(fields[:20]) + '.',
+                     'No filter criteria were applied.')
+    elif re.search(r'\b(?:cancel|close|dismiss)\b.{0,50}\bfilter\b|(?:关闭|取消).{0,15}筛选', question, re.I):
+        if (not dialogs and executions and executions[-1].get('status') == 'passed'
+                and executions[-1].get('input', {}).get('actionTypes') == ['show_filter', 'dismiss_overlay']):
+            facts = ('In a fresh read-only view, the Filter surface was opened and Cancel was selected; the surface is now closed. '
+                     'This confirms the cancellation flow in that fresh view, not a change to your browser session or any business data.',)
+    if not facts:
+        return outcome
+    result = replace(outcome.result, status='success', answer_shape='detail', facts=facts, missing=(),
+                     completeness='bounded', source_section='filterControls', scope='unknown')
+    return ReaderOutcome(result, {**evidence, 'nativeFilterEvidence': {'fields': list(fields), 'dialogCount': len(dialogs)},
+                                 'result': result.public_json()})
 
 
 def knowledge_supports_result(result: ReaderResult, knowledge_context: Any) -> bool:
@@ -5100,7 +5193,14 @@ def _guard_requested_team_scope(outcome: ReaderOutcome, intent_state: dict[str, 
             labels.append(headers[0])
     if any(isinstance(label, str) and re.search(r"\bteam\b|团队|فريق", label, re.IGNORECASE) for label in labels):
         return outcome
-    guarded = replace(result, status="not_confirmed", facts=(), missing=("requested_team_scope_unverified",))
+    role = str((evidence.get('permission') or {}).get('currentRole') or '')
+    tabs = tuple(dict.fromkeys(str(t.get('name')) for t in (observation or {}).get('tabControls', [])
+                              if isinstance(t, dict) and t.get('name')))
+    facts = ()
+    if role and tabs and (observation.get('readHealth') or {}).get('healthy') is True:
+        facts = (f'The current {role} view shows these tabs: {", ".join(tabs[:12])}. '
+                 'A team-scoped view has not been verified here; these records and their count cannot be used as the team result.',)
+    guarded = replace(result, status="not_confirmed", facts=facts, missing=("requested_team_scope_unverified",))
     return ReaderOutcome(guarded, {**evidence, "scopeGuard": {"requested": "team", "verified": result.scope},
                                   "result": guarded.public_json()})
 
@@ -5171,7 +5271,7 @@ class AdminPortalReader:
             raise
         if intent_state:
             hint = parse_intent_resolution(intent_state, question, bounded_context).planner_context(bounded_context).get("sourceHint", {})
-            result = replace(outcome.result, intent_context=intent_state, source_hint=hint)
+            result = replace(outcome.result, intent_context=intent_state, source_hint=outcome.result.source_hint or hint)
             expected_shape = _resolved_intent_values({"resolvedIntent": intent_state}).get("answerShape")
             if result.status in {"success", "no_data"} and expected_shape not in {None, "unspecified", result.answer_shape}:
                 result = _reconcile_verified_answer_shape(result, expected_shape, question)
@@ -5188,6 +5288,7 @@ class AdminPortalReader:
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
         executions = [entry for entry in trace.entries if entry.get("stage") == "portal_execution"]
+        outcome = _native_filter_outcome(outcome, question, executions)
         if (outcome.result.status in {"success", "no_data"} and executions
                 and executions[-1].get("status") == "passed"
                 and executions[-1].get("output", {}).get("searchClearVerified") is True
@@ -6379,9 +6480,20 @@ class AdminPortalReader:
                     failure_code="knowledge_timeout",
                 )
                 knowledge_trace_recorded = True
-        knowledge_context = _knowledge_for_current_role(
-            project_knowledge_result(knowledge_result, max_chunks=self.knowledge_top_k), permission_context, question,
-        )
+        all_knowledge = project_knowledge_result(knowledge_result, max_chunks=self.knowledge_top_k)
+        object_source = _documented_object_source(all_knowledge, question, bounded_conversation_context)
+        knowledge_context = _knowledge_for_current_role(all_knowledge, permission_context, question)
+        if object_source:
+            knowledge_context = {**knowledge_context, 'documentedPrimarySource': object_source}
+            probe = PortalReadRequest(start_path=object_source, actions=({'type': 'observe'},))
+            if self.policy.validate(probe, permission_context) == 'page_not_permitted':
+                result = ReaderResult(status='no_permission', summary='The documented primary-record page is not permitted.',
+                    page=object_source, source_hint={'page': object_source},
+                    facts=(f'Current role: {permission_context.current_role}. The requested records belong to {object_source}, '
+                           'which the current account permissions do not authorize reading. No requested records were verified.',),
+                    missing=('page_not_permitted',))
+                return ReaderOutcome(result, {'stage': 'primary_source_permission', 'permission': permission_audit,
+                    'sourceSelection': {'page': object_source, 'basis': 'retrieved_primary_identity'}, 'result': result.public_json()})
         if question_is_conceptual(question):
             hint = bounded_conversation_context.get('sourceHint') or semantic_source_hint(bounded_conversation_context)
             relation = bounded_conversation_context.get('resolvedIntent', {}).get('relation')
@@ -6432,7 +6544,7 @@ class AdminPortalReader:
             )
         resolved_values = _resolved_intent_values(bounded_conversation_context)
         conceptual_request = question_is_conceptual(question)
-        explicit_identity = bool(resolved_values.get("recordIdentity") and re.search(
+        explicit_identity = bool(not _question_is_capability_catalogue(question) and resolved_values.get("recordIdentity") and re.search(
             r"(?<![\w-])" + re.escape(resolved_values["recordIdentity"]) + r"(?![\w-])", question, re.IGNORECASE,
         ))
         if conceptual_request and not any(
@@ -6526,9 +6638,9 @@ class AdminPortalReader:
                 )
             supported_facts = tuple(dict.fromkeys(
                 fact for candidate in (repaired_result, knowledge_result_from_planner)
-                if candidate is not None and candidate.status == "success"
+                if candidate is not None and candidate.status in {'success', 'not_confirmed'}
                 for fact in candidate.facts
-                if knowledge_supports_result(replace(candidate, facts=(fact,)), knowledge_context)
+                if knowledge_supports_result(replace(candidate, status='success', facts=(fact,)), knowledge_context)
             ))[:8]
             result = ReaderResult(
                 status="not_confirmed",

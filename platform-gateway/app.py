@@ -2398,8 +2398,18 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
         key=lambda summary: str(summary.get("nodeId") or ""),
     )
 
+    filter_dialog_fields: list[str] = []
+    filter_dialog_commands: list[str] = []
+    if await _visible_overlay_count(page) == 1:
+        overlay = _visible_overlay(page)
+        heading = await visible_texts(overlay.locator('h1,h2,h3,[role="heading"],.ant-modal-title,.ant-drawer-title'), max_each=4, max_chars=120)
+        if any(re.fullmatch(r'Filter|筛选', title, re.I) for title in heading):
+            filter_dialog_fields = await visible_texts(overlay.locator('label'), max_each=min(limit, 20), max_chars=120)
+            filter_dialog_commands = await visible_texts(overlay.locator('button'), max_each=8, max_chars=120)
     return {
         **(await _observe_filter_surface(page, limit)),
+        "filterDialogFields": filter_dialog_fields,
+        "filterDialogCommands": filter_dialog_commands,
         "headings": await texts("h1,h2,h3,[role='heading']", max_each=min(limit, 12)),
         "labels": await texts("label", max_each=min(limit, 12)),
         "columnHeaders": await texts("th,[role='columnheader']", max_each=min(limit, 20), max_chars=120),
