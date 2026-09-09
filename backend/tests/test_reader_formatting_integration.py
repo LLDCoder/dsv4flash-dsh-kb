@@ -2,7 +2,11 @@ import json
 
 import pytest
 
-from app.portal_reader import _current_list_count_candidates, _serialize_api_mapping
+from app.portal_reader import (
+    _current_list_count_candidates, _serialize_api_mapping,
+    _knowledge_route_recovery_request, knowledge_search_query,
+    UserPermissionContext, ReadOnlyPortalPolicy,
+)
 from app.reader_intent import SLOT_NAMES, bind_literal_intent_quotes, parse_intent_resolution
 
 
@@ -79,3 +83,29 @@ def test_requested_readable_status_survives_bounded_record_projection():
     fact=json.loads(_serialize_api_mapping(record,semantic_query='Show records and their statuses.',answer_shape='list'))
     assert fact['statusName']=='Pending Committee Decision'
     assert len(json.dumps(fact,separators=(',',':')))<=300
+
+
+def test_retrieval_does_not_replace_requested_topic_with_permission_routes():
+    permissions = UserPermissionContext(roles=('Reader',), pages=('/overview', '/finance/records'), departments=('99',))
+    query = knowledge_search_query('Show queued work items.', permissions)
+    assert 'Show queued work items.' in query
+    assert 'Reader' in query
+    assert '/overview' not in query and '/finance/records' not in query and '99' not in query
+
+
+def test_route_recovery_preserves_denied_best_target_for_policy_validation():
+    permissions = UserPermissionContext(roles=('Reader',), pages=('/overview',))
+    knowledge = {'chunks': [
+        {'content': '## Work - **page:** `/work/items` - **section:** Queued work items - **type:** list - **meaning:** Queued work items - **use_when:** Show queued work items'},
+        {'content': '## Overview - **page:** `/overview` - **section:** Summary - **type:** summary - **content:** work'},
+    ]}
+    request = _knowledge_route_recovery_request('Show queued work items.', knowledge, permissions)
+    assert request is not None and request.start_path == '/work/items'
+    assert request.actions == ({'type': 'observe'},)
+    assert ReadOnlyPortalPolicy('https://portal.example.test').validate(request, permissions) == 'page_not_permitted'
+
+
+@pytest.mark.parametrize('path', ['https://other.example/work/items', '//other.example/work/items', 'work/items'])
+def test_route_recovery_does_not_convert_external_or_relative_references_to_local(path):
+    knowledge = {'chunks': [{'content': f'## Work - **page:** `{path}` - **section:** Queued work items - **type:** list'}]}
+    assert _knowledge_route_recovery_request('Show queued work items.', knowledge, UserPermissionContext()) is None

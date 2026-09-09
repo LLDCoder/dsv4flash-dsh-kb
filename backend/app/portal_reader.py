@@ -1195,7 +1195,7 @@ def knowledge_search_query(
     context: UserPermissionContext,
     conversation_context: dict[str, Any] | None = None,
 ) -> str:
-    """Add current permission vocabulary so retrieval can disambiguate Admin manuals."""
+    """Retrieve the requested topic without bias toward accessible sibling pages."""
 
     question_text = question.strip()[:1_200]
     bounded_context = _bounded_conversation_context(conversation_context)
@@ -1245,15 +1245,8 @@ def knowledge_search_query(
             parts.append("Prior follow-up intent: " + ", ".join(continuity))
     if context.roles:
         parts.append("Current roles: " + ", ".join(context.roles[:4]))
-    if context.departments:
-        parts.append("Current departments: " + ", ".join(context.departments[:4]))
-    permitted_paths = [
-        path
-        for path in (*context.pages, *context.subpages)
-        if isinstance(path, str) and path.startswith("/")
-    ]
-    if permitted_paths:
-        parts.append("Relevant permitted pages: " + ", ".join(dict.fromkeys(permitted_paths[:20])))
+    # Access is validated separately using GetUserInfo. Adding every allowed
+    # route here made unavailable topics retrieve accessible, unrelated views.
     query = ". ".join(parts)
     if len(query) <= 2_000:
         return query
@@ -3412,14 +3405,13 @@ def _knowledge_route_recovery_request(
     permission_context: UserPermissionContext,
     conversation_context: dict[str, Any] | None = None,
 ) -> PortalReadRequest | None:
-    """Recover one uniquely best documented permitted data surface after planner refusal."""
+    """Propose the best documented surface for policy validation after refusal."""
 
     if not isinstance(knowledge_context, dict):
         return None
     question_tokens = _section_match_tokens(question)
     if not question_tokens:
         return None
-    permitted = (*permission_context.pages, *permission_context.subpages)
     bounded_context = _bounded_conversation_context(conversation_context)
     resolved_values = _resolved_intent_values(bounded_context)
     previous = bounded_context.get("previousIntent")
@@ -3530,9 +3522,12 @@ def _knowledge_route_recovery_request(
         if score <= 0:
             continue
         for raw_path in raw_paths:
-            path = urlsplit(raw_path.strip()).path.rstrip("/") or "/"
-            if not any(permission_path_matches(path, allowed) for allowed in permitted):
+            parsed = urlsplit(raw_path.strip())
+            if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
                 continue
+            path = parsed.path.rstrip("/") or "/"
+            # Do not replace an unavailable target with an accessible runner-up.
+            # The caller validates this observe-only proposal before any access.
             scores[path] = max(scores.get(path, 0), score)
     if not scores:
         return None

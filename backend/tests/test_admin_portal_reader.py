@@ -290,7 +290,8 @@ def test_knowledge_query_uses_permission_context_without_identity() -> None:
 
     assert query.startswith("Admin Portal user manual")
     assert "Licensing Officer" in query
-    assert "/licensing/profile" in query
+    assert "/licensing/profile" not in query
+    assert "/dashboard" not in query
     assert "sensitive-user-id" not in query
 
 

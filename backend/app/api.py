@@ -413,6 +413,9 @@ def make_router(service: DSHService) -> APIRouter:
         readable labels take precedence over redundant internal IDs within the
         bounded presentation. Intent quote repair preserves semantic values and
         cannot invent record identities or widen ownership scope.
+        Topic retrieval does not use unrelated permitted routes as search terms.
+        Recovery proposes the best documented local route for permission validation;
+        an unavailable target is not replaced with an accessible sibling page.
         """
         try:
             return await service.submit_message(
