@@ -88,3 +88,51 @@ def test_closed_fresh_page_alone_does_not_prove_cancel():
 def test_failed_prior_request_establishes_neither_sample_nor_total():
     assert previous_sample_explanation('Is that the total or just the sample shown?',
         {'previousIntent':{'resultStatus':'no_permission'}})==PRIOR_UNVERIFIED_LIST_FACT
+
+
+@pytest.mark.parametrize('question',[
+    'From the queued task list, give me one Task No. and only the information needed to identify it.',
+    'Open /work/team-management specifically and tell me whether that page works.',
+])
+def test_explicit_record_and_route_commands_require_a_live_permission_check(question):
+    from app.portal_reader import question_requires_live_portal
+    assert question_requires_live_portal(question)
+
+
+def test_denied_same_record_followup_never_invents_an_identifier():
+    outcome=run_reader(Gateway(info={'ok':True,'result':user_info_for_paths('/allowed')}),Planner(),
+        question='Find that same task by its Task No.',
+        conversation_context={'previousIntent':{'question':'Show a task','resultStatus':'no_permission','page':'/work/tasks'}})
+    assert outcome.result.status=='no_permission'
+    assert 'no identifier was guessed' in outcome.result.facts[0]
+
+
+def test_missing_parent_tab_is_explained_without_attempting_hidden_child():
+    from test_admin_portal_reader import portal_plan_for
+    obs={'readHealth':{'healthy':True},'tabControls':[{'name':'To Do','selected':True},{'name':'Completed','selected':False}]}
+    g=Gateway(info={'ok':True,'result':user_info_for_paths('/work/tasks')},
+        portal_result={'ok':True,'result':{'result':'success','page':'/work/tasks','observation':obs}})
+    p=Planner(portal_plan_for('/work/tasks',[{'type':'switch_tab','role':'tab','name':'Team Tasks'},
+                                         {'type':'switch_tab','role':'tab','name':'Completed'}]))
+    result=run_reader(g,p,question='Show completed team work tasks.').result
+    assert result.missing==('requested_view_not_visible',)
+    assert 'Team Tasks tab is not visible' in result.facts[0]
+    reads=[args for name,args,_ in g.calls if name=='admin.portal.read']
+    assert len(reads)==1 and reads[0]['actions']==[{'type':'observe'}]
+
+
+def test_final_nested_observation_can_establish_native_filter_fields():
+    obs={'readHealth':{'healthy':True},'dialogs':['Filter Type Priority'], 'filterDialogFields':['Type','Priority']}
+    outcome=ReaderOutcome(ReaderResult(status='not_confirmed',summary=''),{'portalEvidence':{'result':{'observation':obs}}})
+    result=_native_filter_outcome(outcome,'Open the filter and inspect its fields.',
+        [{'status':'passed','input':{'actionTypes':['show_filter'],'startPath':'/work'}}]).result
+    assert result.status=='success' and result.page=='/work' and 'Type; Priority' in result.facts[0]
+
+
+def test_created_by_dependency_remains_get_only():
+    import json
+    from pathlib import Path
+    policy=json.loads((Path(__file__).parents[2]/'platform-gateway/config/reader-network-policy.json').read_text())
+    path='/api/admin/inspection/tasks/created-by-users'
+    assert path in policy['allowedMethods']['GET']
+    assert all(path not in paths for method,paths in policy['allowedMethods'].items() if method!='GET')

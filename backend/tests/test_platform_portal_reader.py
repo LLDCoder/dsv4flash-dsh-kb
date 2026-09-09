@@ -2314,6 +2314,7 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/admin/inspection/lookup/emirates",
         "/api/admin/inspection/lookup/priorities",
         "/api/admin/inspection/tasks",
+        "/api/admin/inspection/tasks/created-by-users",
         "/api/admin/inspection/tasks/stats",
         "/api/admin/finance/transactions",
         "/api/admin/finance/lookups/payment-methods",
@@ -2539,7 +2540,7 @@ def test_guard_keeps_inspection_task_creation_and_exports_blocked() -> None:
 def test_health_reports_fixed_allowlist_counts() -> None:
     health = asyncio.run(gateway.healthz())
 
-    assert health["readOnlyGetPathCount"] == 73
+    assert health["readOnlyGetPathCount"] == 74
     assert health["readOnlyPostPathCount"] == 7
 
 

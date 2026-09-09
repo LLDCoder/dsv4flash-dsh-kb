@@ -2107,6 +2107,10 @@ def question_requires_live_portal(question: str) -> bool:
     """Identify generic freshness/personalization language without module routing."""
 
     normalized = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
+    if re.search(r'\bgive me\s+(?:one|a|an|[1-9][0-9]?)\s+(?:[a-z]+\s+){0,3}(?:no\.?|number|id|record|task|item)\b', normalized):
+        return True
+    if re.match(r'(?:please\s+)?(?:open|visit|navigate to|go to)\s+/[a-z0-9_/-]+', normalized):
+        return True
     documentation_intent = any(marker in normalized for marker in _DOCUMENTATION_QUESTION_MARKERS)
     personal_intent = bool(
         re.search(r"\b(?:my|mine|do i|can i|for me|i have)\b", normalized)
@@ -2465,6 +2469,8 @@ def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: li
         return outcome
     evidence = outcome.audit_evidence
     observation = evidence.get('observation')
+    if not isinstance(observation, dict):
+        observation = ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
     if (not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True
             or _observation_has_error_state(observation)):
         return outcome
@@ -2485,8 +2491,9 @@ def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: li
     if not facts:
         return outcome
     result = replace(outcome.result, status='success', answer_shape='detail', facts=facts, missing=(),
+                     page=outcome.result.page or str(executions[-1].get('input', {}).get('startPath') or ''),
                      completeness='bounded', source_section='filterControls', scope='unknown')
-    return ReaderOutcome(result, {**evidence, 'nativeFilterEvidence': {'fields': list(fields), 'dialogCount': len(dialogs)},
+    return ReaderOutcome(result, {**evidence, 'observation':observation, 'nativeFilterEvidence': {'fields': list(fields), 'dialogCount': len(dialogs)},
                                  'result': result.public_json()})
 
 
@@ -6407,6 +6414,16 @@ class AdminPortalReader:
                 {"stage": "prior_answer_coverage", "permission": permission_audit,
                  "source": "previous_result_presentation_metadata"},
             )
+        previous = bounded_conversation_context.get('previousIntent') or {}
+        previous_source = semantic_source_hint(bounded_conversation_context).get('page', '')
+        if (previous.get('resultStatus') == 'no_permission' and previous_source
+                and re.match(r'\s*(?:find|locate)\s+(?:that|the)\s+same\s+', question, re.I)
+                and self.policy.validate(PortalReadRequest(start_path=previous_source, actions=({'type':'observe'},)), permission_context) == 'page_not_permitted'):
+            result = ReaderResult(status='no_permission', summary='The previous request established no readable record.',
+                page=previous_source, source_hint={'page':previous_source}, missing=('page_not_permitted',),
+                facts=('The preceding request did not verify a record identifier. Current permissions still do not '
+                       'authorize the requested source page, so no identifier was guessed or searched.',))
+            return ReaderOutcome(result, {'stage':'prior_denied_record','permission':permission_audit,'result':result.public_json()})
         resolver = getattr(self.planner, "resolve_admin_portal_intent", None)
         if bounded_conversation_context and callable(resolver):
             intent_started_at = time.perf_counter()
@@ -6800,7 +6817,7 @@ class AdminPortalReader:
             can_defer_state = bool(
                 not can_defer_detail
                 and raw_policy_error is None
-                and len(state_actions) == 1
+                and len(state_actions) >= 1
                 and all(
                     str(action.get("type") or "").casefold().replace("-", "_")
                     in {"switch_tab", "query", "observe"}
@@ -6827,7 +6844,8 @@ class AdminPortalReader:
             )
             if policy_error:
                 status = "no_permission" if policy_error in {"page_not_permitted", "permission_context_incomplete", "button_not_permitted"} else "not_confirmed"
-                result = ReaderResult(status=status, summary="The requested portal operation is not permitted by the read-only reader.", missing=(policy_error,))  # type: ignore[arg-type]
+                result = ReaderResult(status=status, summary="The requested portal operation is not permitted by the read-only reader.",
+                                      page=request.start_path, source_hint={'page': request.start_path}, missing=(policy_error,))  # type: ignore[arg-type]
                 return ReaderOutcome(result, {"stage": "policy", "plan": bounded_json(request.as_payload()), "policyError": policy_error, "permission": permission_audit})
             normalized_request = _normalize_initial_observation_request(request)
             if normalized_request is None:
@@ -7010,6 +7028,16 @@ class AdminPortalReader:
                     # observation validator still checks health and row scope.
                     deferred_state_action = None
                 elif native_tabs and not matching_tabs:
+                    if len(state_actions) > 1:
+                        names = ', '.join(str(tab.get('name')) for tab in native_tabs if isinstance(tab, dict) and tab.get('name'))
+                        result = ReaderResult(status='not_confirmed', summary='The first requested tab is absent from the observed layout.',
+                            page=request.start_path, source_hint={'page':request.start_path}, answer_shape='detail',
+                            facts=(f'The current {permission_context.current_role} view shows {names}. '
+                                   f'The requested {deferred_state_action.get("name")} tab is not visible in this layout, '
+                                   'so its child queue and records were not read. The available list is not a substitute.',),
+                            missing=('requested_view_not_visible',))
+                        return ReaderOutcome(result, {'stage':'native_view_boundary','permission':permission_audit,
+                            'observation':observed_context['portalObservation'],'result':result.public_json()})
                     # The fresh page may start on a parent queue. Let the
                     # existing observed planner resolve prerequisites from the
                     # manual instead of treating a hidden child as ambiguous.
