@@ -224,6 +224,12 @@ def test_documented_tab_can_locate_source_when_primary_list_chunk_was_not_retrie
     kb={'ok':True,'chunks':[{'content':'### Control: Queued Tasks tab\n- **name:** Queued Tasks tab\n- **type:** tab switcher\n- **destination:** Local state on `/work/tasks` with the Queued Tasks view.'}]}
     assert _documented_object_source(kb,'From the queued task list, give me one Task No.',{})=='/work/tasks'
     assert _documented_object_source(kb,'Show tasks.',{})==''
+    kb['chunks'].append({'content':'## Semantic node: Team Tasks - To Do\n- **page:** `/other/team-management`\n- **section:** Team Tasks / To Do\n- **content:** Task No., Status, Assigned To.'})
+    # The word 'to' in a purpose clause must not nominate the unrelated To Do list.
+    question='From the queued task list, give me one Task No. and only the information needed to identify it.'
+    assert _documented_object_source(kb,question,{})=='/work/tasks'
+    kb['chunks'].append({'content':'### Control: Queued Tasks tab\n- **name:** Queued Tasks tab\n- **type:** tab switcher\n- **destination:** Local state on `/another/tasks`.'})
+    assert _documented_object_source(kb,question,{})==''
 
 
 def test_filter_catalogue_keeps_scope_and_does_not_merge_inline_controls():

@@ -2747,7 +2747,9 @@ def _documented_object_source(knowledge: dict[str, Any], question: str, context:
                 continue
             module = page.strip('/').split('/')[0]
             section_words = tokens(fields.get('section', '')) - {'task', 'record', 'list', 'view', 'item'}
-            named_view = not module_hint and bool(section_words & tokens(question))
+            # A preposition such as 'to' in 'To Do' cannot name that queue.
+            # Require the complete distinctive label, not one shared token.
+            named_view = not module_hint and bool(section_words) and section_words <= tokens(question)
             if not (tokens(module) & tokens(question) or module == module_hint or named_view):
                 continue
             for column in re.split(r'[;,]', fields.get('content', '')):

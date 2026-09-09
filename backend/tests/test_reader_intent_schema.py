@@ -282,3 +282,34 @@ def test_previous_explicit_identity_clear_does_not_allow_stale_identity_inherita
     })
     with pytest.raises(ValueError):
         parse_intent_resolution(plan(recordIdentity=slot("REF-41", source="previous")), "Show it", context)
+
+
+def test_observed_result_scope_is_not_an_inherited_requested_ownership():
+    from app.reader_intent import bind_literal_intent_quotes
+    context={'previousIntent':{'question':'What does service satisfaction show?', 'scope':'global'}}
+    payload=plan('refine', requestedScope=slot('global', source='previous'),
+                 answerShape=slot('overview', evidence='summary'))
+    question='Show a bounded current summary of service satisfaction, without emails or mobile numbers.'
+    repaired=bind_literal_intent_quotes(payload,question,context)
+    resolved=parse_intent_resolution(repaired,question,context).public_json()
+    assert resolved['slots']['requestedScope']['source']=='unspecified'
+    assert resolved['slots']['answerShape']==payload['slots']['answerShape']
+    assert payload['slots']['requestedScope']['value']=='global'
+
+
+@pytest.mark.parametrize('prior',[
+    {'question':'Show global totals.', 'scope':'global'},
+    {'question':'Show records.', 'scope':'global', 'requestedScope':'global'},
+])
+def test_real_requested_scope_survives_observed_scope_repair(prior):
+    from app.reader_intent import bind_literal_intent_quotes
+    payload=plan('continue',requestedScope=slot('global',source='previous'))
+    assert bind_literal_intent_quotes(payload,'Show the summary.',{'previousIntent':prior})==payload
+
+
+def test_unrelated_invalid_ownership_still_fails_validation():
+    from app.reader_intent import bind_literal_intent_quotes
+    context={'previousIntent':{'question':'What do the metrics mean?', 'scope':'global'}}
+    payload=plan('continue',requestedScope=slot('personal',source='previous'))
+    repaired=bind_literal_intent_quotes(payload,'Show the summary.',context)
+    with pytest.raises(ValueError):parse_intent_resolution(repaired,'Show the summary.',context)
