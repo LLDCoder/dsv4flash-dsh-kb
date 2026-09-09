@@ -441,6 +441,8 @@ class FakeObservationContainer:
         return None
 
     async def evaluate(self, script):
+        if script == gateway.READER_TABLE_TAB_PATH_SCRIPT:
+            return []  # This adapter has no DOM ancestry; covered by browser fixtures.
         if "tagName" in script:
             return self.tag
         if "let panel = element.closest" in script:

@@ -19,6 +19,7 @@ from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
 from .portal_reader import AdminPortalReader, PRIOR_EMPTY_LIST_FACT, PRIOR_LIST_SAMPLE_FACT, ReaderTimeoutBudget, bounded_json, reader_answer_shape
 from .reader_intent import format_clarification_options, semantic_source_hint
+from .reader_limits import requested_record_limit
 from .principal import Principal
 from .reader_limits import (
     MAX_PLATFORM_TIMEOUT_SECONDS,
@@ -461,6 +462,11 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
     )):
         return False
     support = f"{verified_text}\n{question}".casefold()
+    # Negation/ownership claims need their own evidence; blank cells and queue
+    # labels cannot establish either a positive or negative personal assignment.
+    if re.search(r'\b(?:not assigned to you|unassigned|rather than assigned to you)\b', lowered):
+        if not re.search(r'\b(?:not assigned to you|unassigned)\b', verified_text, re.I):
+            return False
     factual_tokens = re.findall(
         r"(?<![\w])(?:[a-z]+-\d[\w-]*|[a-z]*\d[\w-]*|[-+]?\d+(?:[.,:]\d+)*(?:%|[a-z]+)?)(?![\w])",
         answer,
@@ -564,6 +570,28 @@ def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
     if hint.get("page") and hint.get("section"):
         return {"businessFocus": hint["section"], "sourceHint": hint}
     return {}
+
+
+def _reader_select_requested_records(result: dict[str, Any], question: str) -> dict[str, Any]:
+    result = _reader_select_requested_single_record(result, question)
+    limit = requested_record_limit(question)
+    if not limit or result.get('result') != 'success' or result.get('answerShape') != 'list':
+        return result
+    facts, count = [], 0
+    for fact in result.get('facts') or []:
+        try:
+            fields = json.loads(fact)
+        except (ValueError, TypeError):
+            return result  # Do not truncate narrative evidence or field fragments.
+        if not isinstance(fields, dict):
+            return result
+        is_record = bool(_reader_semantic_anchors({**result, 'facts': [fact]}).get('recordIdentity'))
+        if is_record:
+            count += 1
+            if count > limit:
+                continue
+        facts.append(fact)
+    return {**result, 'facts': facts, 'completeness': 'bounded'} if count > limit else result
 
 
 def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, str]:
@@ -1351,6 +1379,9 @@ class DSHService:
             "not help answer the question. A zero remains meaningful for a genuine metric such as an urgent count, "
             "but a zero identity such as Task ID 0 is a placeholder and must not be shown. Never rename, substitute, "
             "normalize, or infer an unknown field label or relationship. When facts are positional or "
+            "unlabeled, keep them literal. A blank assignee/owner field or a queue status does not prove that "
+            "a record is unassigned or not assigned to the current user. Without explicit assignment evidence, "
+            "say that personal assignment is not confirmed. When facts are positional or "
             "unlabeled, do not construct a labeled table or map positions to columns; state only what each fact "
             "directly supports. Prefer only the user-requested fields that have direct evidence, and omit unsupported "
             "fields rather than guessing. For partial results, use a brief natural qualifier only when material; do not "
@@ -1550,7 +1581,7 @@ class DSHService:
                                 ),
                                 timeout=total_timeout,
                             )
-                            evidence = _reader_select_requested_single_record(outcome.result.public_json(), latest_content)
+                            evidence = _reader_select_requested_records(outcome.result.public_json(), latest_content)
                             audit_evidence = outcome.audit_evidence
                         except asyncio.TimeoutError:
                             evidence = {

@@ -1815,6 +1815,44 @@ def _reader_leaf_headers(rows: Any) -> list[str] | None:
     return headers
 
 
+READER_TABLE_TAB_PATH_SCRIPT = """element => {
+    const visible = el => el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+    const labels = [];
+    let panel = element.closest('[role="tabpanel"]');
+    while (panel) {
+        const id = panel.getAttribute('aria-labelledby') || '';
+        const tab = !/\\s/.test(id) && document.getElementById(id);
+        if (visible(tab) && tab.getAttribute('role') === 'tab' &&
+            tab.getAttribute('aria-controls') === panel.id && tab.getAttribute('aria-selected') === 'true') {
+            labels.push((tab.innerText || '').trim());
+        }
+        panel = panel.parentElement && panel.parentElement.closest('[role="tabpanel"]');
+    }
+    if (labels.length) return labels;
+    // Some tab libraries render the table beside the tab bar, with no panels.
+    // Bind only a unique table and one new tab group at each ancestor level.
+    // Stop before combining independent sibling groups or multiple tables.
+    const seen = new Set();
+    for (let parent = element.parentElement; parent && !['BODY','HTML'].includes(parent.tagName); parent = parent.parentElement) {
+        const tables = [...parent.querySelectorAll('table,[role="grid"]')].filter(visible);
+        if (tables.length !== 1 || tables[0] !== element) break;
+        const groups = [...parent.querySelectorAll('[role="tablist"]')].filter(visible);
+        const added = groups.filter(g => !seen.has(g));
+        if (added.length > 1) break;
+        if (added.length === 1) {
+            const group = added[0];
+            const selected = [...group.querySelectorAll('[role="tab"][aria-selected="true"]')]
+                .filter(t => visible(t) && t.closest('[role="tablist"]') === group);
+            if (selected.length !== 1) break;
+            labels.push((selected[0].innerText || '').trim());
+            seen.add(group);
+        }
+        if (parent.matches('section,[role="region"]') || labels.length >= 4) break;
+    }
+    return labels;
+}"""
+
+
 READER_TABLE_PAGINATION_SCRIPT = """element => {
     const visible = node => !!(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
     const root = element.closest('.ant-table-wrapper') || element.closest('section,[role="region"]');
@@ -2213,21 +2251,7 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
         if len(tab_controls) >= 20:
             break
     for container_index, container in visible_containers:
-        state = await container.evaluate("""element => {
-            let panel = element.closest('[role="tabpanel"]');
-            const labels = [];
-            while (panel) {
-                const label = panel.getAttribute('aria-labelledby') || '';
-                const tab = !/\\s/.test(label) && document.getElementById(label);
-                if (tab && tab.getAttribute('role') === 'tab' &&
-                    tab.getAttribute('aria-controls') === panel.id &&
-                    tab.getAttribute('aria-selected') === 'true' && tab.getClientRects().length) {
-                    labels.push((tab.innerText || '').trim());
-                }
-                panel = panel.parentElement && panel.parentElement.closest('[role="tabpanel"]');
-            }
-            return labels;
-        }""")
+        state = await container.evaluate(READER_TABLE_TAB_PATH_SCRIPT)
         if isinstance(state, str):
             state = [state]
         if isinstance(state, list):

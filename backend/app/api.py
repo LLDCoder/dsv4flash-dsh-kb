@@ -396,6 +396,11 @@ def make_router(service: DSHService) -> APIRouter:
         not_confirmed. A bounded row sample is not a collection total or proof of
         personal assignment. Knowledge answers require retrieved supporting text.
         Planner schema repair is bounded and does not relax access or evidence checks.
+        Same-topic explanations retain their source module for knowledge retrieval.
+        API row answers preserve a native view only when one healthy table has
+        matching record identities. Explicit requested sample sizes bound returned
+        rows while retaining independently verified totals. Blank assignee fields
+        do not establish non-assignment; role restrictions cannot be overridden.
         Grouped table headers retain their parent labels for native value binding;
         ambiguous layouts remain unconfirmed. Search-only clears retain unrelated
         criteria. Approval, modification, export and download are not reader operations.

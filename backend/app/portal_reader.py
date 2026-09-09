@@ -23,8 +23,8 @@ from urllib.parse import unquote, urlsplit
 import httpx
 
 from .principal import Principal
-from .reader_intent import parse_intent_resolution
-from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOUT_SECONDS, bounded_reader_total_timeout
+from .reader_intent import parse_intent_resolution, semantic_source_hint
+from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOUT_SECONDS, bounded_reader_total_timeout, requested_record_limit
 
 
 ReaderStatus = Literal["success", "no_data", "no_permission", "load_failed", "not_confirmed"]
@@ -864,6 +864,13 @@ def _bind_observed_actions(
         action_type = str(action.get("type") or "").casefold().replace("-", "_")
         if action_type == "switch_tab":
             bound = _observed_switch_tab_action(action, observation)
+            if bound is None and any(a.get('type') == 'switch_tab' for a in bound_actions):
+                # A preceding verified tab may reveal a child tab. Pass only
+                # its semantic label; the gateway resolves exactly one visible
+                # role=tab again immediately before executing each click.
+                name = str(action.get('name') or action.get('label') or '').strip()
+                if name and not ReadOnlyPortalPolicy._contains_mutation_command(name):
+                    bound = {'type': 'switch_tab', 'role': 'tab', 'name': name}
             if bound is None:
                 return None, "state_control_not_unique"
             bound_actions.append(bound)
@@ -1204,6 +1211,10 @@ def knowledge_search_query(
         previous = bounded_context.get("previousIntent") or {}
         parts = ["Admin Portal user manual", "Question: " + question_text]
         parts.extend(f"Topic {name}: {resolved_values[name]}" for name in ('businessObject', 'businessFocus') if resolved_values.get(name))
+        hint = bounded_context.get('sourceHint') or semantic_source_hint(bounded_context)
+        relation = bounded_context.get('resolvedIntent', {}).get('relation')
+        if hint.get('page') and relation in {None, 'continue', 'refine'}:
+            parts.append('Explanation concerns the previous page: ' + hint['page'])
         if isinstance(previous, dict) and previous.get('question'):
             parts.append("Previous question: " + str(previous['question'])[:400])
         # Permission page lists and department numbers are not definition
@@ -2726,6 +2737,7 @@ def _api_evidence_fallback_plan(
         row_mappings = [mapping for mapping in row_mappings if mapping]
         if row_mappings:
             row_limit = 7 if count_mappings else 8
+            row_limit = min(row_limit, requested_record_limit(semantic_query) or row_limit)
             selected_mappings = [
                 *((mapping, ()) for mapping in row_mappings[:row_limit]),
                 *((mapping, path) for mapping, _unit, path in count_units[:1]),
@@ -4378,6 +4390,29 @@ def _list_selection_review_context(plan: Any, context: dict[str, Any]) -> dict[s
     }
 
 
+def _api_native_source(observation: Any) -> dict[str, Any] | None:
+    """Carry view provenance only when API values match one fresh native table."""
+    if not isinstance(observation, dict) or not _observation_no_data_allowed(observation):
+        return None
+    api = observation.get('apiEvidence')
+    if not isinstance(api, dict) or 'data' not in api:
+        return None
+    values = {s.casefold() for s in _observation_scalar_strings(api['data'])}
+    matches = []
+    for node in _observation_semantic_nodes(observation):
+        if node.get('kind') not in {'table', 'grid'}:
+            continue
+        headers, rows = node.get('columnHeaders') or [], node.get('rowFields') or []
+        if not headers or not rows:
+            continue
+        identities = [str(row.get(headers[0]) or '').strip() for row in rows if isinstance(row, dict)]
+        if (len(identities) == len(rows) and all(len(v) >= 4 and not v.isdigit() for v in identities)
+                and len(set(identities)) == len(identities)
+                and all(v.casefold() in values for v in identities)):
+            matches.append(node)
+    return matches[0] if len(matches) == 1 else None
+
+
 def observation_result_from_plan(
     plan: Any,
     observation: Any,
@@ -4401,6 +4436,11 @@ def observation_result_from_plan(
         return None
     api_evidence = observation.get("apiEvidence") if isinstance(observation, dict) else None
     if isinstance(api_evidence, dict) and "data" in api_evidence:
+        native_source = _api_native_source(observation)
+        if native_source is not None:
+            result = replace(result, source_section=str(native_source.get('nodeId') or ''),
+                             section=str(native_source.get('selectedState') or native_source.get('heading') or ''),
+                             selected_state=str(native_source.get('selectedState') or ''))
         operation_key = str(api_evidence.get("operationKey") or "")
         public_source = result.source_section or result.section
         if (operation_key and operation_key in public_source) or public_source.casefold().startswith("api:"):
@@ -6033,6 +6073,12 @@ class AdminPortalReader:
                              missing=("action_not_read_only",)),
                 {"stage": "read_only_boundary", "permission": permission_audit},
             )
+        if re.search(r'\b(?:ignore|bypass|override)\s+(?:the\s+)?(?:role|permission|access)\s+(?:restriction|check|limit|control)s?\b', question, re.I):
+            return ReaderOutcome(
+                ReaderResult(status='no_permission', summary='Role restrictions cannot be bypassed.',
+                             missing=('role_scope_override_not_permitted',)),
+                {'stage': 'permission_scope_boundary', 'permission': permission_audit},
+            )
         absence_explanation = reader_absence_limit_explanation(question)
         if absence_explanation:
             return ReaderOutcome(
@@ -6122,6 +6168,19 @@ class AdminPortalReader:
                 )
                 knowledge_trace_recorded = True
         knowledge_context = project_knowledge_result(knowledge_result, max_chunks=self.knowledge_top_k)
+        if question_is_conceptual(question):
+            hint = bounded_conversation_context.get('sourceHint') or semantic_source_hint(bounded_conversation_context)
+            relation = bounded_conversation_context.get('resolvedIntent', {}).get('relation')
+            page = hint.get('page', '')
+            if page and relation in {None, 'continue', 'refine'}:
+                module = '/' + page.strip('/').split('/')[0] + '/'
+                chunks = knowledge_context.get('chunks') or []
+                matched = [c for c in chunks if any(
+                    path == page or path.startswith(module)
+                    for path in re.findall(r'\*\*page:\*\*\s*`([^`]+)`', str(c.get('content') or '')))]
+                if matched:
+                    knowledge_context = {**knowledge_context, 'chunks': matched,
+                                         'followUpKnowledgeSource': {'page': page, 'excludedSiblingChunks': len(chunks)-len(matched)}}
         if not knowledge_trace_recorded:
             retrieval_ok = bool(knowledge_result.get("ok"))
             trace.record(
@@ -6605,6 +6664,18 @@ class AdminPortalReader:
                 if len(matching_tabs) == 1 and matching_tabs[0].get("selected") is True:
                     # A fresh selected tab needs no second click. The normal
                     # observation validator still checks health and row scope.
+                    deferred_state_action = None
+                elif native_tabs and not matching_tabs:
+                    # The fresh page may start on a parent queue. Let the
+                    # existing observed planner resolve prerequisites from the
+                    # manual instead of treating a hidden child as ambiguous.
+                    observed_context = {**observed_context, 'planningDirective': {
+                        **observed_context.get('planningDirective', {}),
+                        'requestedStateRequiresParent': deferred_state_action.get('name'),
+                        'reason': 'requested_child_tab_not_yet_visible',
+                        'requirePortalRead': True,
+                        'instruction': 'Use the retrieved control steps to select the visible parent before the requested child; do not substitute the current queue.',
+                    }}
                     deferred_state_action = None
             if deferred_state_action is not None:
                 state_request = PortalReadRequest(

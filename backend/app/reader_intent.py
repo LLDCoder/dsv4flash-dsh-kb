@@ -326,7 +326,7 @@ def parse_intent_resolution(
                 raise ValueError("cleared intent slot requires evidence from the current question")
         else:
             if name in _ENUMS and value not in _ENUMS[name]:
-                raise ValueError("invalid intent slot enum")
+                raise ValueError(f"invalid intent slot enum (slot={name}; allowed={','.join(sorted(_ENUMS[name]))})")
             evidence_sources = [current_source] if source == "current" else previous_sources
             if not any(_normalized(evidence) in candidate for candidate in evidence_sources):
                 raise ValueError(f"intent slot evidence is absent from its declared source (slot={name}, source={source})")
