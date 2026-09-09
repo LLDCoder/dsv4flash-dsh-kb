@@ -136,3 +136,55 @@ def test_created_by_dependency_remains_get_only():
     path='/api/admin/inspection/tasks/created-by-users'
     assert path in policy['allowedMethods']['GET']
     assert all(path not in paths for method,paths in policy['allowedMethods'].items() if method!='GET')
+
+
+@pytest.mark.parametrize('status',['success','not_confirmed','no_permission'])
+def test_first_turn_documented_source_survives_service_projection(status):
+    from app.service import _reader_conversation_context
+    from test_reader_intent_service import event
+    history=[event(1,'user.message',{'content':'Which work filter criteria are available?'}),
+             event(2,'reader.result',{'result':status,'page':'','sourceHint':{'page':'/work/tasks','section':'Filter'}}),
+             event(3,'user.message',{'content':'Open the Filter surface and list its fields without applying changes.'})]
+    context=_reader_conversation_context(history,history[-1])
+    assert context['previousIntent']['sourceHint']=={'page':'/work/tasks','section':'Filter'}
+    from app.reader_intent import resolve_literal_filter_followup
+    resolution=resolve_literal_filter_followup(history[-1].event_json['content'],context)
+    assert resolution.planner_context(context)['sourceHint']['page']=='/work/tasks'
+
+
+@pytest.mark.parametrize('q',[
+    'Open the Filter surface and list its fields without applying changes.',
+    'Cancel that filter and return to the task list.',
+    'Open that ticket filter and inspect the available fields without applying it.',
+])
+def test_same_filter_source_denial_does_not_read_another_page(q):
+    context={'previousIntent':{'question':'What work filters can I use?',
+             'sourceHint':{'page':'/work/tasks','section':'Filter'}}}
+    g=Gateway(info={'ok':True,'result':user_info_for_paths('/work/cases')})
+    result=run_reader(g,Planner(),question=q,conversation_context=context).result
+    assert result.status=='no_permission' and result.page=='/work/tasks'
+    assert 'admin.portal.read' not in g.events
+
+
+def test_explicit_denied_route_is_not_replaced_by_a_permitted_sibling():
+    g=Gateway(info={'ok':True,'result':user_info_for_paths('/work/tasks')})
+    result=run_reader(g,Planner(),question='Open /work/team-management specifically and tell me whether that page works.').result
+    assert result.status=='no_permission' and result.page=='/work/team-management'
+    assert g.events==['GetUserInfo']
+
+
+def test_formatter_cannot_erase_documented_role_or_fresh_view_qualifiers():
+    from app.service import reader_natural_answer_is_grounded as grounded
+    source='The filter was rechecked for Inspection Manager; Authority is available.'
+    assert not grounded('Your filter offers Authority.',source,'Which filters can I use?')
+    assert grounded('The Inspection Manager filter offers Authority.',source,'Which filters can I use?')
+    source='In a fresh read-only view, the Filter surface is now closed.'
+    assert not grounded('Your filter is now closed.',source,'Cancel the filter.')
+    assert grounded('The filter is closed in a fresh read-only view.',source,'Cancel the filter.')
+
+
+def test_filter_followup_does_not_capture_an_explicit_new_module_request():
+    from app.reader_intent import resolve_literal_filter_followup
+    context={'previousIntent':{'sourceHint':{'page':'/work/tasks','section':'Filter'}}}
+    assert resolve_literal_filter_followup('Open the Licensing filter instead.',context) is None
+    assert resolve_literal_filter_followup('Open /other/tasks and inspect the filter.',context) is None

@@ -475,6 +475,14 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
     )):
         return False
     support = f"{verified_text}\n{question}".casefold()
+    # Layout applicability and isolated UI state are material facts, not
+    # optional prose that the formatter may turn into current-user access.
+    qualifiers = re.findall(r'\b([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,4}) layout\b', verified_text)
+    qualifiers += re.findall(r'\brechecked for ([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,4})(?=[;.,])', verified_text)
+    if any(role.casefold() not in lowered for role in qualifiers):
+        return False
+    if 'fresh read-only view' in verified_text.casefold() and 'fresh' not in lowered:
+        return False
     # Negation/ownership claims need their own evidence; blank cells and queue
     # labels cannot establish either a positive or negative personal assignment.
     if re.search(r'\b(?:not assigned to you|unassigned|rather than assigned to you)\b', lowered):
@@ -569,7 +577,8 @@ def _reader_select_requested_single_record(result: dict[str, Any], question: str
 def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
     """Keep a verified semantic region, never its historical counts or rows."""
 
-    if not isinstance(result, dict) or result.get("result") not in {"success", "no_data"}:
+    if not isinstance(result, dict) or (result.get("result") not in {"success", "no_data"}
+                                     and not isinstance(result.get('sourceHint'), dict)):
         return {}
     intent = result.get("intentContext")
     slots = intent.get("slots") if isinstance(intent, dict) else None
@@ -577,6 +586,7 @@ def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(focus, dict) and focus.get("source") == "clear" and focus.get("evidence"):
         return {}
     hint = semantic_source_hint({"previousIntent": {
+        **({'sourceHint': result['sourceHint']} if isinstance(result.get('sourceHint'), dict) else {}),
         "page": result.get("page"), "section": result.get("section"),
         "sourceSection": result.get("sourceSection"),
     }})
@@ -675,6 +685,10 @@ def _reader_conversation_context(
         focus_anchor = _reader_focus_anchor(previous_result)
         focus_slot = slots.get("businessFocus", {}) if isinstance(slots, dict) else {}
         focus_cleared = isinstance(focus_slot, dict) and focus_slot.get("source") == "clear" and bool(focus_slot.get("evidence"))
+        if not focus_cleared and isinstance(previous_result.get('sourceHint'), dict):
+            navigation = semantic_source_hint({'previousIntent': {'sourceHint': previous_result['sourceHint']}})
+            if navigation.get('page'):
+                current['sourceHint'] = navigation
         if not focus_anchor and resolved.get("relation") in {"continue", "refine"} and not focus_cleared:
             if isinstance(previous_result.get("sourceHint"), dict):
                 hint = semantic_source_hint({"previousIntent": {"sourceHint": previous_result["sourceHint"]}})
@@ -717,6 +731,7 @@ def _reader_conversation_context(
             candidate_focus = " ".join(focus_anchor["businessFocus"].casefold().split())
             if known_focus != candidate_focus:
                 focus_anchor = {}
+                current.pop('sourceHint', None)
         if focus_anchor:
             current.setdefault("businessFocus", focus_anchor["businessFocus"])
             current["sourceHint"] = focus_anchor["sourceHint"]
@@ -782,6 +797,10 @@ def _reader_conversation_context(
         )[:500],
     }
     intent.update(_reader_focus_anchor(previous_result))
+    if isinstance(previous_result.get('sourceHint'), dict):
+        navigation = semantic_source_hint({'previousIntent': {'sourceHint': previous_result['sourceHint']}})
+        if navigation.get('page'):
+            intent['sourceHint'] = navigation
     # Preserve only stable semantic anchors needed by an elliptical follow-up;
     # never carry prior facts or unrestricted page payloads forward.
     for key, limit in (
@@ -1468,7 +1487,10 @@ class DSHService:
             "Do not mention evidence, APIs, fields, JSON, tools, or verification. Do not use a 'Confirmed details' "
             "heading or reproduce a field-by-field dump. Answer the question directly in one short paragraph, "
             "optionally followed by a small bullet list only when it materially improves clarity. It is acceptable "
-            "to omit irrelevant verified details. Do not number a list unless those numbers are verified facts."
+            "to omit irrelevant verified details. Role/layout applicability and a fresh read-only view limitation "
+            "are always relevant: preserve them explicitly. A documented Manager layout is not the current user's "
+            "permission, and closing a filter in a fresh read-only view does not close the user's browser panel. "
+            "Do not number a list unless those numbers are verified facts."
         )
         payload = json.dumps(
             {

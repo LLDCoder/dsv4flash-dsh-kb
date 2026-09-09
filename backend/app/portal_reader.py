@@ -2465,7 +2465,10 @@ def _documented_object_source(knowledge: dict[str, Any], question: str, context:
 
 def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: list[dict[str, Any]]) -> ReaderOutcome:
     """Report only rendered filter schema or a verified open/dismiss sequence."""
-    if outcome.result.status in {'no_permission', 'load_failed'} or not _question_needs_native_surface(question):
+    if (outcome.result.status in {'no_permission', 'load_failed'}
+            or any(m in {'requested_queue_view_unverified', 'requested_team_scope_unverified',
+                         'requested_view_not_visible', 'requested_object_unverified'} for m in outcome.result.missing)
+            or not _question_needs_native_surface(question)):
         return outcome
     evidence = outcome.audit_evidence
     observation = evidence.get('observation')
@@ -6414,6 +6417,11 @@ class AdminPortalReader:
                 {"stage": "prior_answer_coverage", "permission": permission_audit,
                  "source": "previous_result_presentation_metadata"},
             )
+        explicit_route = re.match(r'\s*open\s+(/[a-zA-Z][\w/-]+)(?:\s|[.?!]|$)', question, re.I)
+        if explicit_route and self.policy.validate(PortalReadRequest(start_path=explicit_route[1], actions=({'type':'observe'},)), permission_context) == 'page_not_permitted':
+            result = ReaderResult(status='no_permission', summary='The explicitly requested route is not permitted.',
+                page=explicit_route[1], source_hint={'page':explicit_route[1]}, missing=('page_not_permitted',))
+            return ReaderOutcome(result, {'stage':'explicit_route_permission', 'permission':permission_audit, 'result':result.public_json()})
         previous = bounded_conversation_context.get('previousIntent') or {}
         previous_source = semantic_source_hint(bounded_conversation_context).get('page', '')
         if (previous.get('resultStatus') == 'no_permission' and previous_source
@@ -6498,6 +6506,15 @@ class AdminPortalReader:
                 )
                 knowledge_trace_recorded = True
         all_knowledge = project_knowledge_result(knowledge_result, max_chunks=self.knowledge_top_k)
+        from .reader_intent import resolve_literal_filter_followup
+        filter_followup = resolve_literal_filter_followup(question, conversation_context or {})
+        filter_source = semantic_source_hint(conversation_context or {}).get('page', '') if filter_followup else ''
+        if filter_source:
+            bounded_conversation_context['sourceHint'] = {'page': filter_source}
+            if self.policy.validate(PortalReadRequest(start_path=filter_source, actions=({'type':'observe'},)), permission_context) == 'page_not_permitted':
+                result = ReaderResult(status='no_permission', summary='The same filter source is not permitted.',
+                    page=filter_source, source_hint={'page':filter_source}, missing=('page_not_permitted',))
+                return ReaderOutcome(result, {'stage':'filter_source_permission', 'permission':permission_audit, 'result':result.public_json()})
         object_source = _documented_object_source(all_knowledge, question, bounded_conversation_context)
         knowledge_context = _knowledge_for_current_role(all_knowledge, permission_context, question)
         if object_source:

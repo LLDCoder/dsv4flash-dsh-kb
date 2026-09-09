@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 import httpx
 
 from .config import Settings
-from .reader_intent import SLOT_NAMES, bind_literal_intent_quotes, parse_intent_resolution, resolve_literal_same_record_reference, resolve_literal_view_followup
+from .reader_intent import SLOT_NAMES, bind_literal_intent_quotes, parse_intent_resolution, resolve_literal_same_record_reference, resolve_literal_view_followup, resolve_literal_filter_followup
 from .portal_reader import (
     _observation_evidence_for_section,
     _observation_supports_fact,
@@ -117,7 +117,8 @@ class LLMAdapter:
     ) -> dict[str, object]:
         """Resolve bounded semantic continuity before retrieval or page selection."""
 
-        literal_reference = (resolve_literal_same_record_reference(question, conversation_context)
+        literal_reference = (resolve_literal_filter_followup(question, conversation_context)
+                             or resolve_literal_same_record_reference(question, conversation_context)
                              or resolve_literal_view_followup(question, conversation_context))
         if literal_reference is not None:
             return literal_reference.public_json()

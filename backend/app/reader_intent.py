@@ -205,6 +205,23 @@ class IntentResolution:
         return context
 
 
+def resolve_literal_filter_followup(question: str, conversation_context: Any) -> IntentResolution | None:
+    """A reference to the same filter retains its source, not its prior UI state."""
+    match = re.fullmatch(
+        r'\s*(?:please\s+)?(?P<command>open|cancel|close|dismiss)\s+(?:the|that)\s+'
+        r'(?:(?:ticket|task)\s+)?filter(?:\s+surface)?'
+        r'(?:\s+and\s+(?:list|inspect)\s+(?:its|the available)\s+fields(?:\s+without applying(?: changes| it)?)?'
+        r'|\s+and\s+return\s+to\s+the\s+(?:(?:task|tickets?)\s+)?list)?[.!]?\s*', question, re.I)
+    hint = semantic_source_hint(conversation_context)
+    if not match or not hint.get('page'):
+        return None
+    prior = _previous_slots(conversation_context)
+    slots = {name: ({'source': 'previous', 'value': prior[name], 'evidence': prior[name]}
+                   if name in prior else {'source': 'unspecified', 'value': '', 'evidence': ''}) for name in SLOT_NAMES}
+    slots['answerShape'] = {'source': 'current', 'value': 'detail', 'evidence': match['command']}
+    return parse_intent_resolution({'relation': 'continue', 'slots': slots, 'clarificationOptions': []}, question, conversation_context)
+
+
 def resolve_literal_same_record_reference(question: str, conversation_context: Any) -> IntentResolution | None:
     """Resolve one literal same-record command from an already selected identity."""
     match = re.fullmatch(
