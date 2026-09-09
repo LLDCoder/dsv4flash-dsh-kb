@@ -1002,7 +1002,7 @@ class DSHService:
             return "llm"
         if record_type in {"skill.route", "skill.route.shadow", "tool.call", "tool.result", "turn.started", "turn.completed", "runtime.error", "turn.cancelled"}:
             return "dsh"
-        if record_type.startswith("user.") or record_type.startswith("assistant."):
+        if record_type.startswith("user.") or record_type.startswith("assistant.") or record_type.startswith("message.feedback."):
             return "conversation"
         return "runtime"
 

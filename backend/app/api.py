@@ -19,10 +19,10 @@ from sqlalchemy.exc import IntegrityError
 from .config import config_catalog, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
 from .customer_documents import CustomerDocumentNotConfigured
-from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, Skill, Tool, get_db
+from .db import AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, Tool, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .profile_scope import normalize_profile_scope
-from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
+from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key, is_system_default_tool, system_default_tool_definitions
@@ -31,6 +31,36 @@ from .umc_auth import UMCAuthError
 # Uvicorn configures this logger at INFO for container output. Using it keeps
 # correlation records visible without changing the global logging policy.
 logger = logging.getLogger("uvicorn.error")
+
+
+def message_feedback_change(
+    existing: MessageFeedback | None,
+    assistant_event_seq: int,
+    rating: str | None,
+    reason: str | None,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Describe a feedback state change and its append-only audit payload."""
+
+    next_reason = reason if rating == "down" else None
+    previous_rating = existing.rating if existing else None
+    previous_reason = existing.reason if existing else None
+    changed = (previous_rating, previous_reason) != (rating, next_reason)
+    if not changed:
+        action = "noop"
+    elif rating is None:
+        action = "clear"
+    elif existing is None:
+        action = "create"
+    else:
+        action = "change"
+    return changed, action, {
+        "assistantEventSeq": assistant_event_seq,
+        "action": action,
+        "previousRating": previous_rating,
+        "previousReason": previous_reason,
+        "rating": rating,
+        "reason": next_reason,
+    }
 
 
 def audit_identity_from_user_info(payload: Any) -> dict[str, str]:
@@ -752,12 +782,113 @@ def make_router(service: DSHService) -> APIRouter:
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         events = await service.list_events(db, conversation)
+        feedback_by_seq = {
+            item.assistant_event_seq: item.rating
+            for item in (
+                await db.execute(
+                    select(MessageFeedback).where(
+                        MessageFeedback.conversation_id == conversation_id,
+                        MessageFeedback.tenant_id == principal.tenant_id,
+                        MessageFeedback.user_id == principal.user_id,
+                    )
+                )
+            ).scalars().all()
+        }
         return {
             "conversationId": conversation_id,
             "events": [
-                {"seq": event.seq, "eventType": event.event_type, "data": event.event_json}
+                {
+                    "seq": event.seq,
+                    "eventType": event.event_type,
+                    "data": {
+                        **(event.event_json or {}),
+                        **(
+                            {"feedback": feedback_by_seq[event.seq]}
+                            if event.event_type == "assistant.message" and event.seq in feedback_by_seq
+                            else {}
+                        ),
+                    },
+                }
                 for event in events
             ],
+        }
+
+    @router.put("/conversations/{conversation_id}/messages/{assistant_event_seq}/feedback")
+    async def put_message_feedback(
+        conversation_id: str,
+        assistant_event_seq: int,
+        payload: MessageFeedbackCreate,
+        db: AsyncSession = Depends(get_db),
+        principal: Principal = Depends(get_principal),
+    ):
+        try:
+            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        assistant_event = (
+            await db.execute(
+                select(SessionEvent.id).where(
+                    SessionEvent.conversation_id == conversation_id,
+                    SessionEvent.seq == assistant_event_seq,
+                    SessionEvent.event_type == "assistant.message",
+                )
+            )
+        ).scalar_one_or_none()
+        if assistant_event is None:
+            raise HTTPException(status_code=404, detail="assistant message not found")
+        existing = (
+            await db.execute(
+                select(MessageFeedback).where(
+                    MessageFeedback.conversation_id == conversation_id,
+                    MessageFeedback.assistant_event_seq == assistant_event_seq,
+                    MessageFeedback.tenant_id == principal.tenant_id,
+                    MessageFeedback.user_id == principal.user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        changed, _action, audit_payload = message_feedback_change(
+            existing,
+            assistant_event_seq,
+            payload.rating,
+            payload.reason,
+        )
+        reason = audit_payload["reason"]
+        if not changed:
+            return {
+                "conversationId": conversation_id,
+                "assistantEventSeq": assistant_event_seq,
+                "rating": payload.rating,
+                "reason": reason,
+            }
+        if payload.rating is None:
+            if existing:
+                await db.delete(existing)
+        elif existing:
+            existing.rating = payload.rating
+            existing.reason = reason
+        else:
+            db.add(
+                MessageFeedback(
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    conversation_id=conversation_id,
+                    assistant_event_seq=assistant_event_seq,
+                    rating=payload.rating,
+                    reason=reason,
+                )
+            )
+        await service.append_audit(
+            db,
+            conversation,
+            "message.feedback.changed",
+            audit_payload,
+            request_id=principal.request_id,
+        )
+        return {
+            "conversationId": conversation_id,
+            "assistantEventSeq": assistant_event_seq,
+            "rating": payload.rating,
+            "reason": reason,
         }
 
     @router.get("/conversations/{conversation_id}/audit", tags=["Audit"])

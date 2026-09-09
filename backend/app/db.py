@@ -100,6 +100,30 @@ class MessageIdempotency(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MessageFeedback(Base):
+    __tablename__ = "message_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "assistant_event_seq",
+            "tenant_id",
+            "user_id",
+            name="uq_message_feedback_owner_response",
+        ),
+        Index("ix_message_feedback_owner", "tenant_id", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    conversation_id: Mapped[str] = mapped_column(String(64), index=True)
+    assistant_event_seq: Mapped[int] = mapped_column(Integer)
+    rating: Mapped[str] = mapped_column(String(8))
+    reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class ConfigEntry(Base):
     __tablename__ = "config_entry"
     __table_args__ = (UniqueConstraint("scope", "key", name="uq_config_scope_key"),)
@@ -192,6 +216,7 @@ async def init_db() -> None:
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS negative_examples JSONB NOT NULL DEFAULT '[]'::jsonb"))
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS workflow JSONB NOT NULL DEFAULT '{}'::jsonb"))
             await connection.execute(text("ALTER TABLE tool_registry ADD COLUMN IF NOT EXISTS profile_scope JSONB NOT NULL DEFAULT '{}'::jsonb"))
+            await connection.execute(text("ALTER TABLE message_feedback ADD COLUMN IF NOT EXISTS reason VARCHAR(64)"))
 
     # Seed the routing skills once so the Skill API and the runtime share the
     # same guardrails. Existing operator-managed versions are preserved.

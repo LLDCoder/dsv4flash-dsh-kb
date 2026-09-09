@@ -64,6 +64,11 @@ class MessageCreate(APIModel):
         return self
 
 
+class MessageFeedbackCreate(APIModel):
+    rating: Literal["up", "down"] | None
+    reason: str | None = Field(default=None, max_length=64)
+
+
 class ConfigPatch(APIModel):
     scope: str = "system"
     version: int | None = None
