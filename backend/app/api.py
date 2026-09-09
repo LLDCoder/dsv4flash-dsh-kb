@@ -408,6 +408,11 @@ def make_router(service: DSHService) -> APIRouter:
         with deterministic fallback when formatting cannot be validated. Equal
         headings or selected tabs do not merge independent evidence sources;
         complementary wrapper evidence requires a verified nested parent chain.
+        Counts for the current list bind to matching native record references;
+        aggregate response totals cannot substitute for that collection. Requested
+        readable labels take precedence over redundant internal IDs within the
+        bounded presentation. Intent quote repair preserves semantic values and
+        cannot invent record identities or widen ownership scope.
         """
         try:
             return await service.submit_message(

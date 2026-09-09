@@ -517,9 +517,47 @@ def _relevant_selectable_api_candidates(
     business_candidates = tuple(
         candidate for candidate in candidates if candidate.get("candidateKind") != "support"
     )
+    list_bound = _current_list_count_candidates(observation, business_candidates, question, conversation_context)
+    if list_bound:
+        business_candidates = list_bound
     return _prefer_semantic_response_candidates(
         observation, business_candidates, question, conversation_context,
     )
+
+
+def _current_list_count_candidates(observation: Any, candidates: tuple[dict[str, Any], ...],
+                                   question: str, context: Any) -> tuple[dict[str, Any], ...]:
+    """A current-view count must use the collection matching the native rows.
+
+    Merely sharing an object name with a statistics endpoint is insufficient.
+    Narrow only when a single list response has exact native record references.
+    """
+    shape = _resolved_intent_values(context).get("answerShape") or reader_answer_shape(question, context)
+    if shape != "count" or not re.search(r"\b(?:current|this|that)\s+(?:authorized\s+)?(?:view|list|queue)\b|当前.*(?:列表|视图)", question, re.I):
+        return ()
+    if not isinstance(observation, dict) or not _observation_no_data_allowed(observation):
+        return ()
+    tables = [n for n in _observation_semantic_nodes(observation) if n.get("kind") == "table"]
+    if len(tables) != 1:
+        return ()
+    references = set(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*-\d[A-Za-z0-9_-]*\b",
+                               json.dumps({k:tables[0].get(k) for k in ('rowFields','rowSummaries')}, ensure_ascii=False)))
+    if not references:
+        return ()
+    def matches_collection(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        has_total = any(_key(k) in {'total', 'totalcount'} and type(v) is int for k,v in value.items())
+        if has_total:
+            for rows in value.values():
+                if isinstance(rows, list) and rows and all(isinstance(r, dict) for r in rows):
+                    native = set(_observation_scalar_strings(rows))
+                    if references <= native:
+                        return True
+        return any(matches_collection(v) for v in value.values() if isinstance(v, dict))
+    matched = tuple(c for c in candidates if matches_collection(
+        (_api_response_evidence_for_operation(observation, str(c.get('operationKey') or '')) or {}).get('data')))
+    return matched if len(matched) == 1 else ()
 
 
 def _api_response_evidence_for_operation(observation: Any, operation_key: str) -> dict[str, Any] | None:
@@ -1162,6 +1200,15 @@ def knowledge_search_query(
     question_text = question.strip()[:1_200]
     bounded_context = _bounded_conversation_context(conversation_context)
     resolved_values = _resolved_intent_values(bounded_context)
+    if question_is_conceptual(question) and not re.search(r"\b(?:current|today|latest|visible)\b|当前|今天|最新", question, re.I):
+        previous = bounded_context.get("previousIntent") or {}
+        parts = ["Admin Portal user manual", "Question: " + question_text]
+        parts.extend(f"Topic {name}: {resolved_values[name]}" for name in ('businessObject', 'businessFocus') if resolved_values.get(name))
+        if isinstance(previous, dict) and previous.get('question'):
+            parts.append("Previous question: " + str(previous['question'])[:400])
+        # Permission page lists and department numbers are not definition
+        # search terms; they otherwise pull retrieval toward dashboard manuals.
+        return ". ".join(parts)[:2000]
     if bounded_context.get("resolvedIntent"):
         parts = ["Admin Portal user manual"]
         if context.roles:
@@ -2363,7 +2410,9 @@ def _api_query_tokens(value: str) -> frozenset[str]:
     # API fields commonly use `task` while natural-language questions use
     # `tasks`; treating those as unrelated destabilizes semantic selection.
     for token in tuple(tokens):
-        if len(token) > 4 and token.endswith("ies"):
+        if token == "statuses":
+            tokens.add("status")
+        elif len(token) > 4 and token.endswith("ies"):
             tokens.add(token[:-3] + "y")
         elif len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us", "is")):
             tokens.add(token[:-1])
@@ -2415,8 +2464,14 @@ def _serialize_api_mapping(
     def field_priority(item: tuple[str, Any]) -> tuple[int, int]:
         key, value = item
         tokens = frozenset((*_api_field_tokens(key), *_api_field_tokens(value)))
+        key_tokens = _api_field_tokens(key)
+        readable_requested_label = bool(
+            isinstance(value, str) and value.strip() and key_tokens
+            and key_tokens[-1] in {"name", "label"}
+            and set(key_tokens[:-1]).intersection(query_tokens)
+        )
         return (
-            4 * len(tokens.intersection(shape_tokens)) + len(tokens.intersection(query_tokens)),
+            20 * readable_requested_label + 4 * len(tokens.intersection(shape_tokens)) + len(tokens.intersection(query_tokens)),
             1 if re.search(r"(?:id|number|no|name|title|status)$", _key(key)) else 0,
         )
 

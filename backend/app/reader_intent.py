@@ -259,6 +259,37 @@ def resolve_literal_view_followup(question: str, conversation_context: Any) -> I
     return parse_intent_resolution({'relation': 'refine', 'slots': slots, 'clarificationOptions': []}, question, conversation_context)
 
 
+def bind_literal_intent_quotes(payload: Any, question: str, context: Any) -> Any:
+    """Repair only a quote's provenance when its unchanged value is literal.
+
+    No slots, semantic values, identities, or ownership scopes are inferred.
+    The closed parser remains authoritative after this mechanical repair.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("slots"), dict):
+        return payload
+    previous, _ = _previous_sources(context)
+    slots = dict(payload["slots"])
+    for name in ("businessObject", "businessFocus", "view", "filter", "dateRange"):
+        slot = slots.get(name)
+        if not isinstance(slot, dict) or set(slot) != {"source", "value", "evidence"}:
+            continue
+        source, value, quote = slot.get("source"), slot.get("value"), slot.get("evidence")
+        if source not in {"current", "previous"} or not isinstance(value, str) or not isinstance(quote, str):
+            continue
+        sources = [_normalized(question)] if source == "current" else previous
+        if quote and any(_normalized(quote) in text for text in sources):
+            continue
+        # Require every literal value token in one source; never combine
+        # different prior turns or synthesize an evidence sentence.
+        tokens = set(re.findall(r"\w+", _normalized(value)))
+        if not tokens or any(char.isdigit() for char in value) or "/" in value:
+            continue
+        matching = [text for text in sources if tokens <= set(re.findall(r"\w+", text)) and len(text) <= 500]
+        if matching:
+            slots[name] = {**slot, "evidence": min(matching, key=len)}
+    return {**payload, "slots": slots}
+
+
 def parse_intent_resolution(
     payload: Any, question: str, conversation_context: Any,
 ) -> IntentResolution:

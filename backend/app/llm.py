@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 import httpx
 
 from .config import Settings
-from .reader_intent import SLOT_NAMES, parse_intent_resolution, resolve_literal_same_record_reference, resolve_literal_view_followup
+from .reader_intent import SLOT_NAMES, bind_literal_intent_quotes, parse_intent_resolution, resolve_literal_same_record_reference, resolve_literal_view_followup
 from .portal_reader import (
     _observation_evidence_for_section,
     _observation_supports_fact,
@@ -368,6 +368,7 @@ class LLMAdapter:
                     candidate = _bind_answer_shape_quote(
                         _parse_planner_object(_planner_content(response.json())), question,
                     )
+                    candidate = bind_literal_intent_quotes(candidate, question, conversation_context)
                     return parse_intent_resolution(candidate, question, conversation_context).public_json()
                 except (json.JSONDecodeError, ValueError) as exc:
                     validation_error = (
@@ -789,6 +790,15 @@ class LLMAdapter:
                        'object or criteria, or claim collection-wide coverage to fill this limit.')
         planner_input["knowledgeFactEvidence"] = [item for item in knowledge_fact_evidence(knowledge_context, question)
                                                  if len(item['text']) <= 500]
+        system += (
+            " A permitted page for a DIFFERENT business object is never an alternative to a denied requested page. "
+            "If the manual identifies the requested source page but GetUserInfo does not permit it, return a "
+            "portal_read plan for that exact documented source so the code can return no_permission. "
+            "Never substitute dashboard category counts for task queues or related-record foreign keys "
+            "for the requested records. Explanation questions about ownership, field meanings or evidence "
+            "limits should use knowledge_only without reading unrelated live records. A question comparing "
+            "two concepts asks for their distinction, not a choice between two scopes."
+        )
         observation = knowledge_context.get("portalObservation")
         if isinstance(observation, dict):
             planner_input["observedInlineFilterCommands"] = sorted({
