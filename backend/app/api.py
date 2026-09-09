@@ -401,6 +401,9 @@ def make_router(service: DSHService) -> APIRouter:
         matching record identities. Explicit requested sample sizes bound returned
         rows while retaining independently verified totals. Blank assignee fields
         do not establish non-assignment; role restrictions cannot be overridden.
+        Exact knowledge excerpts retain their unique semantic subject when passed
+        to the answer formatter. Contextual phrases such as this account are not
+        accepted as record identifiers or converted into search filters.
         Grouped table headers retain their parent labels for native value binding;
         ambiguous layouts remain unconfirmed. Search-only clears retain unrelated
         criteria. Approval, modification, export and download are not reader operations.

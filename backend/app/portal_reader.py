@@ -2296,6 +2296,28 @@ def knowledge_fact_evidence(knowledge_context: Any, question: str = "") -> list[
     return evidence
 
 
+def _qualify_knowledge_facts(result: ReaderResult, knowledge_context: Any) -> ReaderResult:
+    """Keep the subject of an exact manual excerpt when presenting its text."""
+    passages = [passage for content in _knowledge_evidence_strings(knowledge_context)
+                for passage in _knowledge_semantic_passages(content)]
+    facts = []
+    for fact in result.facts:
+        subjects = set()
+        normalized = ' '.join(fact.split())
+        for passage in passages:
+            title = re.match(r'## Semantic node:\s*(.*?)(?=\s+-\s*\*\*|\n|$)', passage)
+            if title and normalized in ' '.join(passage.split()):
+                subjects.add(title[1].strip())
+        if len(subjects) == 1:
+            subject = next(iter(subjects))
+            labeled = f'{subject}: {fact}'
+            if len(labeled) <= 400:
+                facts.append(labeled)
+                continue
+        facts.append(fact)
+    return replace(result, facts=tuple(facts))
+
+
 def knowledge_supports_result(result: ReaderResult, knowledge_context: Any) -> bool:
     """Require knowledge-only success facts to be grounded in retrieved content."""
 
@@ -5019,6 +5041,10 @@ class AdminPortalReader:
                 **outcome.audit_evidence, "intentResolution": intent_state, "result": result.public_json(),
             })
         outcome = _observed_explicit_route_failure(outcome, question)
+        if (str(outcome.audit_evidence.get('stage') or '').startswith('knowledge_')
+                and outcome.result.facts and isinstance(outcome.audit_evidence.get('knowledge'), dict)):
+            qualified = _qualify_knowledge_facts(outcome.result, outcome.audit_evidence['knowledge'])
+            outcome = ReaderOutcome(qualified, {**outcome.audit_evidence, 'result': qualified.public_json()})
         outcome = _observed_tab_catalogue(outcome, question)
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
@@ -5144,6 +5170,23 @@ class AdminPortalReader:
             started_at = time.perf_counter()
             observation = knowledge_or_observation.get("portalObservation")
             discovery = _api_discovery(observation)
+            requested_view = _resolved_intent_values(bounded_conversation_context).get('view', '')
+            if requested_view and isinstance(observation, dict):
+                selected = [str(tab.get('name') or '') for tab in observation.get('tabControls') or []
+                            if isinstance(tab, dict) and tab.get('selected') is True]
+                if selected and not any(_state_control_label_matches(label, requested_view) for label in selected):
+                    action = _observed_switch_tab_action({'name': requested_view}, observation)
+                    page = str((knowledge_or_observation.get('priorPortalRead') or {}).get('startPath') or '')
+                    if action is not None and page:
+                        return {'mode':'portal_read','portalRequest':{'startPath':page,'actions':[action],'expectedFields':[]}}
+                    # Do not select an API from the default queue before
+                    # resolving a requested hidden child view from the manual.
+                    discovery = None
+                    knowledge_or_observation = {**knowledge_or_observation, 'planningDirective': {
+                        **knowledge_or_observation.get('planningDirective', {}),
+                        'requestedStateRequiresParent': requested_view, 'requirePortalRead': True,
+                        'instruction': 'The requested view is not active. Use documented parent/child tab steps; current-view APIs and rows cannot answer this request.',
+                    }}
             include_support_api = _question_requests_support_api(question, bounded_conversation_context)
             prior_read = knowledge_or_observation.get("priorPortalRead") or {}
             prior_actions = prior_read.get("actions") if isinstance(prior_read, dict) else []
@@ -5431,6 +5474,19 @@ class AdminPortalReader:
                     )
             if api_decision == "select":
                 selected = api_selection_from_plan(plan, api_candidates)
+                if (selected is None and isinstance(observation, dict)
+                        and bounded_conversation_context.get('resolvedIntent', {}).get('relation') in {'continue','refine'}
+                        and re.search(r'\b(?:these|those|that queue|that list)\b', question, re.I)
+                        and not _resolved_intent_values(bounded_conversation_context).get('recordIdentity')
+                        and reader_answer_shape(question,bounded_conversation_context) in {'list','detail'}):
+                    # A deictic follow-up can reuse the source, never its old
+                    # data. Recover only one response with freshly matching
+                    # native record identities; ambiguous sources still fail.
+                    matched = [candidate for candidate in api_candidates if _api_native_source({
+                        **observation, 'apiEvidence': _api_response_evidence_for_operation(observation,candidate['operationKey'])}) is not None]
+                    if len(matched) == 1:
+                        selected = (matched[0], ('response_fields_match_answer',))
+                        trace.record('operation_source_recovery','passed',output_summary={'reason':'unique_fresh_native_record_match'})
                 if selected is None:
                     api_audit.update({
                         "maxCandidatesBeforeDrill": self.max_candidates_before_drill,

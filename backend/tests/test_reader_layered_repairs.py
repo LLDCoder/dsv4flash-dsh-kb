@@ -7,6 +7,8 @@ from app.portal_reader import (
 )
 from app.reader_limits import requested_record_limit
 from app.service import _reader_select_requested_records, reader_natural_answer_is_grounded
+from app.portal_reader import _qualify_knowledge_facts, ReaderResult
+from app.reader_intent import SLOT_NAMES, parse_intent_resolution
 
 
 def native():
@@ -77,3 +79,57 @@ def test_blank_owner_does_not_support_negative_assignment_claim():
     verified='Reference: REF-100; Inspector: ; Status: Queued'
     assert not reader_natural_answer_is_grounded('These are not assigned to you.',verified,'Are these assigned to me?')
     assert reader_natural_answer_is_grounded('The assignment to you is not confirmed.',verified,'Are these assigned to me?')
+
+
+@pytest.mark.parametrize('value',['this account','current user','that record','these items'])
+def test_context_reference_cannot_become_literal_record_search(value):
+    slots={key:{'value':'','source':'unspecified','evidence':''} for key in SLOT_NAMES}
+    slots['recordIdentity']={'value':value,'source':'current','evidence':value}
+    with pytest.raises(ValueError,match='concrete record identifier'):
+        parse_intent_resolution({'relation':'switch','slots':slots,'clarificationOptions':[]}, f'Show records for {value}.', {})
+
+
+def test_exact_knowledge_field_preserves_its_subject_without_guessing_shared_subjects():
+    before='Assigned Time is specific to this list and is not Creation Time.'
+    after='Last Update is specific to this list and is not Assigned Time.'
+    knowledge={'ok':True,'chunks':[{'content':f'## Semantic node: Pending work\n- **section:** To Do\n- **field_distinctions:** {before}'},
+                         {'content':f'## Semantic node: Finished work\n- **section:** Completed\n- **field_distinctions:** {after}'}]}
+    result=ReaderResult(status='success',summary='',facts=(before,after))
+    labeled=_qualify_knowledge_facts(result,knowledge)
+    assert labeled.facts==(f'Pending work: {before}',f'Finished work: {after}')
+    knowledge['chunks'].append({'content':f'## Semantic node: Other work\n- **field_distinctions:** {before}'})
+    assert _qualify_knowledge_facts(result,knowledge).facts[0]==before
+
+
+def test_followup_switches_requested_view_before_selecting_default_view_api():
+    from copy import deepcopy
+    from test_admin_portal_reader import Gateway, portal_plan_for, run_reader, user_info_for_paths
+    from test_reader_intent_flow import IntentPlanner, resolution, slot
+    obs=native();obs.pop('apiEvidence')
+    obs['sectionSummaries'][0]['selectedTabPath']=['To Do']
+    obs['tabControls']=[{'name':'To Do','selected':True},{'name':'Completed','selected':False}]
+    obs['controls']=['To Do','Completed']
+    obs['apiDiscovery']={'candidates':[{'operationKey':'GET /api/work','path':'/api/work','method':'GET','policyState':'allowed','candidateKind':'business','responseEvidence':{'items':[{'ref':'REF-100'}]}}], 'truncated':False}
+    class ViewGateway(Gateway):
+        async def invoke(self,principal,tool_name,arguments,**kwargs):
+            if tool_name=='knowledge.search':return await super().invoke(principal,tool_name,arguments,**kwargs)
+            self.calls.append((tool_name,arguments,kwargs))
+            current=deepcopy(obs)
+            if arguments['actions'][0]['type']=='switch_tab':
+                assert arguments['actions'][0]['name']=='Completed'
+                current.pop('apiDiscovery')
+                current['sectionSummaries'][0].update(selectedState='Completed',selectedTabPath=['Completed'],
+                    rowFields=[{'Reference':'REF-200','Status':'Completed'}],rowSummaries=['REF-200 Completed'])
+                current['tabControls']=[{'name':'Completed','selected':True}]
+            return {'ok':True,'result':{'result':'success','page':'/work','observation':current}}
+    planner=IntentPlanner(resolution('refine',view=slot('Completed'),answerShape=slot('list','tasks')),
+        portal_plan_for('/work',[{'type':'observe'}]),
+        {'mode':'observation_result','result':'success','sourceSection':'table-1','answerShape':'list',
+         'facts':[json.dumps({'Reference':'REF-200','Status':'Completed'})],'missing':[]})
+    gateway=ViewGateway(info={'ok':True,'result':user_info_for_paths('/work')})
+    result=run_reader(gateway,planner,question='How about Completed tasks?',
+        conversation_context={'previousIntent':{'question':'Show tasks in To Do','page':'/work','answerShape':'list'}})
+    assert result.result.status=='success' and result.result.selected_state=='Completed', json.dumps({
+        'result':result.result.public_json(),'stage':result.audit_evidence.get('stage'),
+        'reads':[c[1] for c in gateway.calls if c[0]=='admin.portal.read']})
+    assert any(call[1]['actions'][0]['type']=='switch_tab' for call in gateway.calls if call[0]=='admin.portal.read')

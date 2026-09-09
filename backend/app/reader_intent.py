@@ -332,6 +332,8 @@ def parse_intent_resolution(
                 raise ValueError(f"intent slot evidence is absent from its declared source (slot={name}, source={source})")
             if name == "recordIdentity":
                 identity = _normalized(value)
+                if re.fullmatch(r'(?:this|that|these|those|my|our|current|the current)\s+(?:account|user|record|item|one|view|list|queue)s?', identity):
+                    raise ValueError('recordIdentity requires a concrete record identifier; a contextual account/user/view reference is not an identifier')
                 if source == "current" and not _literal_identity_in(identity, current_source):
                     raise ValueError("current record identity is absent from the question")
                 if source == "previous" and identity not in previous_identities:

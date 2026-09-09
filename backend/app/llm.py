@@ -350,6 +350,7 @@ class LLMAdapter:
                             "answerShape must be overview, count, list, attention, due, detail or unspecified; "
                             "a summary request uses overview, never summary as an enum. requestedScope must be "
                             "personal, team, global or unknown and cannot establish access rights. "
+                            "Phrases like this account or current user describe context, never a recordIdentity. "
                             "clear has empty value and nonempty current-question evidence for removing a condition. "
                             "Nonclear evidence must occur in its stated source. No other text. "
                             "Copy the evidence quote literally; preserve singular/plural wording. A normalized "

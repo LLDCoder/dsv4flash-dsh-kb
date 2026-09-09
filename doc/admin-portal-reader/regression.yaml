@@ -9,6 +9,32 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-nested-sibling-tabs
+    observed: [single_table, sibling_tab_bar, nested_parent_tab_bar]
+    expect:
+      selected_tab_path_preserved: true
+      independent_sibling_groups_or_multiple_tables_combined: false
+
+  - id: reader-api-view-provenance
+    observed: [selected_api_rows, one_matching_native_table, verified_selected_tab_path]
+    expect:
+      bound_source_and_selected_state_retained: true
+      data_scope_permission_inferred_from_view: false
+
+  - id: reader-conceptual-followup-subject
+    observed: [previous_module_page, similarly_named_sibling_module_knowledge, exact_excerpt]
+    expect:
+      same_topic_module_context_preserved: true
+      unique_excerpt_subject_retained_in_answer_bundle: true
+      topic_switch_constrained_to_previous_page: false
+
+  - id: reader-context-reference-not-record-id
+    question: Then show three records that this account is allowed to read.
+    expect:
+      contextual_account_phrase_used_as_search_identifier: false
+      output_sample_limit: 3
+      independently_verified_total_retained: true
+
   - id: reader-explicit-filter-completion
     observed: [default_task_sample, nonzero_requested_category_metric, input_combobox, inline_filter_button]
     expect:
