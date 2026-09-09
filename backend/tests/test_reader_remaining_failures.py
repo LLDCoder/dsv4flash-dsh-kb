@@ -12,10 +12,12 @@ def catalogue():
             'headings':['Alpha Applications','Beta Permits','Unrelated heading']}
 
 
-@pytest.mark.parametrize('change,expected',[('',True),('unhealthy',False),('wrong_tab',False),('wrong_page',False),('no_headings',False)])
+@pytest.mark.parametrize('change,expected',[('',True),('unhealthy',False),('uncertain_options',True),('pending',False),('wrong_tab',False),('wrong_page',False),('no_headings',False)])
 def test_catalogue_requires_current_selected_page_and_observed_names(change,expected):
     obs=catalogue()
     if change=='unhealthy':obs['readHealth']['healthy']=False
+    if change=='uncertain_options':obs['readHealth']={'healthy':False,'uncertain':['/options']}
+    if change=='pending':obs['readHealth']={'healthy':False,'uncertain':['/options'],'pending':['/records']}
     if change=='wrong_tab':obs['tabControls'][0]['selected']=False
     if change=='no_headings':obs['headings']=[]
     kb={'ok':True,'chunks':[{'content':'## Semantic node: Report families\n- **page:** `/work/reports`\n- **section:** Reports\n- **type:** report catalogue\n- **content:** Alpha Applications; Beta Permits; Missing Family.'}]}
@@ -26,6 +28,7 @@ def test_catalogue_requires_current_selected_page_and_observed_names(change,expe
         assert 'Alpha Applications; Beta Permits' in result.facts[0]
         assert 'Missing Family' not in str(result.facts) and 'Unrelated heading' not in str(result.facts)
         assert 'No report was generated' in result.facts[1]
+        if change=='uncertain_options':assert 'not report data or filter options' in result.facts[2]
 
 
 def test_exact_manual_filter_excerpt_keeps_its_applicability_even_if_model_omits_it():
@@ -189,3 +192,80 @@ def test_natural_formatter_does_not_invent_currency():
 def test_workflow_completion_does_not_prove_bank_settlement():
     result=run_reader(Gateway(),Planner(),question='Does a completed request prove the money reached the customers bank?').result
     assert result.status=='success' and 'separate verified payment evidence' in result.facts[0]
+
+
+def test_optional_fields_keep_native_schema_without_replacing_time_or_names_with_ids():
+    from app.portal_reader import _native_optional_record_fields
+    obs={'readHealth':{'healthy':True},'sectionSummaries':[{'kind':'table','nodeId':'t1','columnHeaders':['Ticket No.','Customer','Submission Time'],
+        'rowFields':[{'Ticket No.':'REF-1','Customer':'Example','Submission Time':'2026-09-10'}]}]}
+    original=ReaderOutcome(ReaderResult(status='success',summary='',page='/work',facts=('Source ID 5 Priority ID 2 SLA end time 2026-09-11',)),{'observation':obs})
+    result=_native_optional_record_fields(original,'Show three tickets with source, priority and update time where available.').result
+    assert json.loads(result.facts[0])==obs['sectionSummaries'][0]['rowFields'][0]
+    assert 'Source ID' not in str(result.facts) and 'not interchangeable' in result.facts[-1]
+
+
+def test_documented_column_contrast_preserves_both_fields_and_prefers_current_role_variant():
+    from app.portal_reader import _documented_column_contrast
+    chunks=[]
+    for role in ['Reviewer','Manager']:
+        for state,field in [('To Do','Assigned Time'),('Completed','Last Update')]:
+            chunks.append({'content':f'## Semantic node: {role} {state}\n- **page:** `/work`\n- **content:** Ref; {field}; Status.\n- **scope:** Verified for the {role} representative. Other roles are unverified.'})
+    kb={'ok':True,'chunks':chunks}
+    result=_documented_column_contrast('Why does one list show Assigned Time and the other Last Update?',kb,'Reviewer')
+    assert result.status=='success' and 'Reviewer To Do' in str(result.facts) and 'Reviewer Completed' in str(result.facts)
+    assert 'Manager' not in str(result.facts) and 'business event' in result.facts[-1]
+    # Documentation for inaccessible roles still describes its own role only.
+    other=_documented_column_contrast('Why does one list show Assigned Time and the other Last Update?',kb,'Committee')
+    assert 'current-role access' in other.facts[-1] and 'Committee' not in str(other.facts)
+    assert _documented_column_contrast('Define Assigned Time.',kb,'Reviewer') is None
+
+
+def test_documented_tab_can_locate_source_when_primary_list_chunk_was_not_retrieved():
+    kb={'ok':True,'chunks':[{'content':'### Control: Queued Tasks tab\n- **name:** Queued Tasks tab\n- **type:** tab switcher\n- **destination:** Local state on `/work/tasks` with the Queued Tasks view.'}]}
+    assert _documented_object_source(kb,'From the queued task list, give me one Task No.',{})=='/work/tasks'
+    assert _documented_object_source(kb,'Show tasks.',{})==''
+    kb['chunks'].append({'content':'## Semantic node: Team Tasks - To Do\n- **page:** `/other/team-management`\n- **section:** Team Tasks / To Do\n- **content:** Task No., Status, Assigned To.'})
+    # The word 'to' in a purpose clause must not nominate the unrelated To Do list.
+    question='From the queued task list, give me one Task No. and only the information needed to identify it.'
+    assert _documented_object_source(kb,question,{})=='/work/tasks'
+    kb['chunks'].append({'content':'### Control: Queued Tasks tab\n- **name:** Queued Tasks tab\n- **type:** tab switcher\n- **destination:** Local state on `/another/tasks`.'})
+    assert _documented_object_source(kb,question,{})==''
+
+
+def test_filter_catalogue_keeps_scope_and_does_not_merge_inline_controls():
+    from app.portal_reader import _documented_filter_catalogue
+    kb={'ok':True,'chunks':[{'content':'## Semantic node: Queued Tasks filter\n- **type:** filter surface\n- **page:** `/work/tasks`\n- **section:** Filter\n- **content:** Region; Priority; Cancel.\n- **scope:** Opening was rechecked for Operations Manager.'},
+        {'content':'### Control: Search\n- **name:** Search\n- **content:** All Reasons; All Statuses.'}]}
+    result=_documented_filter_catalogue('What filters can I use on the Work queued task list?',kb)
+    assert result.status=='success' and 'Operations Manager' in str(result.facts)
+    assert 'All Reasons' not in str(result.facts) and 'inline list controls' in str(result.facts)
+
+
+def test_native_schema_survives_planner_exception_after_verified_read():
+    class BadSchemaPlanner(Planner):
+        async def plan_admin_portal_read(self,q,p,k,conversation_context=None):
+            if k.get('portalObservation'):raise ValueError('invalid model schema')
+            return portal_plan_for('/work',[{'type':'observe'}])
+    obs={'readHealth':{'healthy':True},'sectionSummaries':[{'kind':'table','nodeId':'t1','columnHeaders':['Customer','Current Handler'],'emptyState':'No Data','rowFields':[]}]}
+    g=Gateway(info={'ok':True,'result':user_info_for_paths('/work')},portal_result={'ok':True,'result':{'result':'not_confirmed','observation':obs}})
+    result=run_reader(g,BadSchemaPlanner(),question='Do these records have an Agent field or a Customer field for my current role?').result
+    assert result.status=='success' and result.page=='/work' and 'Customer is visible' in str(result.facts)
+
+
+@pytest.mark.parametrize('correct,trigger,expected',[(True,'action:1:switch_tab',True),(False,'action:1:switch_tab',False),(True,'page_load',False)])
+def test_empty_selected_api_can_establish_category_children_only_with_matching_action(correct,trigger,expected):
+    obs={'readHealth':{'healthy':True},'tabControls':[{'name':'Operational Insights','selected':True}],
+        'apiEvidence':{'operationKey':'POST /api/operational-insights/summary' if correct else 'POST /api/other/summary','trigger':trigger,
+            'data':{'isSuccess':True,'data':{'items':[],'totalItems':0}},'truncated':False},'sectionSummaries':[]}
+    assert _observation_has_category_children(obs,'Operational Insights') is expected
+
+
+def test_empty_queue_count_cannot_count_another_view_or_loading_table():
+    from app.portal_reader import _native_empty_queue_count
+    obs={'readHealth':{'healthy':True},'sectionSummaries':[{'kind':'table','nodeId':'t1','columnHeaders':['Ref'],'selectedState':'To Do','rowFields':[],'emptyState':'No Data'}]}
+    original=ReaderOutcome(ReaderResult(status='not_confirmed',summary='',page='/work'),{'observation':obs})
+    result=_native_empty_queue_count(original,'How many records are in To Do?').result
+    assert result.status=='success' and '0 matching records' in result.facts[0]
+    assert _native_empty_queue_count(original,'How many records are in Completed?')==original
+    obs['readHealth']['healthy']=False
+    assert _native_empty_queue_count(original,'How many records are in To Do?')==original

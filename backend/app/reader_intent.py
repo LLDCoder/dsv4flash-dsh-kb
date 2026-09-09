@@ -286,6 +286,19 @@ def bind_literal_intent_quotes(payload: Any, question: str, context: Any) -> Any
         return payload
     previous, _ = _previous_sources(context)
     slots = dict(payload["slots"])
+    ownership = slots.get('requestedScope')
+    prior_result = context.get('previousIntent', {}) if isinstance(context, dict) else {}
+    if (isinstance(ownership, dict) and set(ownership) == {'source', 'value', 'evidence'}
+            and ownership.get('source') == 'previous'
+            and ownership.get('value') in _ENUMS['requestedScope']
+            and ownership.get('value') == prior_result.get('scope')
+            and 'requestedScope' not in _previous_slots(context)
+            and isinstance(ownership.get('evidence'), str)
+            and not any(_normalized(ownership['evidence']) in text for text in previous)):
+        # Observed result coverage is not a user-requested ownership condition.
+        # Drop only this unsupported inheritance; keep every other slot and all
+        # real prior requested scopes for the closed parser to validate.
+        slots['requestedScope'] = {'source': 'unspecified', 'value': '', 'evidence': ''}
     for name in ("businessObject", "businessFocus", "view", "filter", "dateRange"):
         slot = slots.get(name)
         if not isinstance(slot, dict) or set(slot) != {"source", "value", "evidence"}:
