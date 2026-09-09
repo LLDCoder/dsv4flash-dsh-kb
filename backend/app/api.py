@@ -454,6 +454,12 @@ def make_router(service: DSHService) -> APIRouter:
         Documented field explanations retain their role applicability and verification
         limits. Workflow completion alone does not prove personal assignment or bank
         settlement, and amount formatting never introduces an unsupported currency.
+        Static catalogue names may be reported independently of an unconfirmed
+        supporting lookup, with report data and options explicitly left unverified.
+        Planner formatting failures retain the observed page and may use one healthy
+        native table for bounded rows, field schema or an explicitly empty queue count.
+        A matching selected, action-generated API response can establish an empty
+        category collection without borrowing another view's empty state.
         Selected tab labels use contiguous phrase matching to avoid sibling-view
         collisions. Model HTTP 402 failures are reported as load_failed with
         model_payment_required, not as an invalid user intent or empty data.
