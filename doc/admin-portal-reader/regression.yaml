@@ -9,6 +9,25 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-native-filter-before-record-api
+    observed: [filter_button, list_api_response]
+    expect:
+      explicit_open_filter_runs_observed_control: true
+      list_count_proves_filter_open: false
+
+  - id: reader-contiguous-tab-label
+    observed: [module_name_overlaps_sibling_tab, requested_tab_selected, healthy_empty_table]
+    expect:
+      disjoint_words_select_sibling_tab: false
+      selected_empty_child_requires_another_read: false
+
+  - id: reader-model-billing-error
+    observed: [model_http_402]
+    expect:
+      result: load_failed
+      missing: model_payment_required
+      business_empty_or_invalid_intent: false
+
   - id: reader-nested-sibling-tabs
     observed: [single_table, sibling_tab_bar, nested_parent_tab_bar]
     expect:

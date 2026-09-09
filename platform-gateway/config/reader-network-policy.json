@@ -57,6 +57,7 @@
       "/api/Enquiry/EnquiryTypes",
       "/api/Enquiry/PriorityType",
       "/api/Enquiry/EnquirySource",
+      "/api/Enquiry/ProblemCauses",
       "/api/serviceInfo/GetAllUserType",
       "/api/Application/dashboard/statistics",
       "/api/Application/dashboard/service/list",
@@ -77,6 +78,7 @@
     ],
     "POST": [
       "/api/AdminUser/GetUserInfo",
+      "/api/Role/GetRolesGroupedByDepartmentId",
       "/api/Application/MyComplatedPage",
       "/api/Application/MyTodoPage",
       "/api/LicenseManagement/list",

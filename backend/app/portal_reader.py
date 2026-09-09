@@ -2046,6 +2046,41 @@ def question_is_conceptual(question: str) -> bool:
     )) or any(marker in normalized for marker in _DOCUMENTATION_QUESTION_MARKERS)
 
 
+def _question_needs_native_surface(question: str) -> bool:
+    """Controls and rendered schemas cannot be answered from a record API."""
+    return bool(re.search(
+        r'\b(?:open|inspect|cancel|close|dismiss)\b.{0,70}\bfilters?\b'
+        r'|\b(?:fields?|columns?|criteria|layout)\b.{0,60}\b(?:current|present|view|role)\b'
+        r'|\b(?:current|these|this)\b.{0,100}\b(?:fields?|columns?|criteria|layout)\b'
+        r'|打开.{0,15}筛选|关闭.{0,15}筛选|取消.{0,15}筛选|当前.{0,20}(?:字段|列|筛选条件)',
+        question, re.I))
+
+
+def _observed_filter_transition(question: str, observation: Any, page: str) -> dict[str, Any] | None:
+    """Use only an observed Filter/Cancel control for an explicit UI request."""
+    if not isinstance(observation, dict) or not page:
+        return None
+    controls = observation.get('controls') or []
+    dialogs = observation.get('dialogs') or []
+    action = None
+    if re.search(r'\bopen\b.{0,50}\bfilter\b|打开.{0,15}筛选', question, re.I):
+        if not dialogs and controls.count('Filter') == 1:
+            action = {'type': 'show_filter', 'role': 'button', 'name': 'Filter'}
+    elif re.search(r'\b(?:cancel|close|dismiss)\b.{0,50}\bfilter\b|(?:关闭|取消).{0,15}筛选', question, re.I):
+        if len(dialogs) == 1 and re.search(r'\bfilter\b|筛选', str(dialogs[0]), re.I) and controls.count('Cancel') == 1:
+            action = {'type': 'dismiss_overlay', 'role': 'button', 'name': 'Cancel'}
+    return {'mode': 'portal_read', 'portalRequest': {'startPath': page, 'actions': [action], 'expectedFields': []}} if action else None
+
+
+def _model_http_failure(exc: Exception) -> ReaderResult | None:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    code = exc.response.status_code
+    failure = ('model_payment_required' if code == 402 else 'model_rate_limited' if code == 429
+               else 'model_authentication_failed' if code in {401, 403} else 'model_service_unavailable')
+    return ReaderResult(status='load_failed', summary='The configured model service could not complete this request.', missing=(failure,))
+
+
 def question_requires_live_portal(question: str) -> bool:
     """Identify generic freshness/personalization language without module routing."""
 
@@ -3625,8 +3660,14 @@ def _category_control_requiring_children(
     tab_controls = observation.get("tabControls", []) if isinstance(observation, dict) else []
     current_words = frozenset(re.findall(r"\w+", question.casefold()))
     current_words |= frozenset(re.findall(r"\w+", _resolved_intent_values(conversation_context).get("view", "").casefold()))
+    # Match contiguous labels. Words in a module name must not accidentally
+    # select a sibling tab sharing one of those words (e.g. X ... Y Insights).
+    phrases = [' '.join(re.findall(r'\w+', str(value).casefold())) for value in
+               (question, _resolved_intent_values(conversation_context).get('view', ''))]
     named_tabs = [control for control in (tab_controls[:20] if isinstance(tab_controls, list) else []) if isinstance(control, dict)
-                  and control.get("name") and set(re.findall(r"\w+", str(control["name"]).casefold())).issubset(current_words)]
+                  and control.get('name') and any(
+                      ' ' + ' '.join(re.findall(r'\w+', str(control['name']).casefold())) + ' ' in ' ' + phrase + ' '
+                      for phrase in phrases)]
     # A trailing page context ("... in Reports & Analytics") must not win
     # over the requested view. Keep explicitly named parent AND child tabs.
     context_parts = re.split(r"\bin\b", question.casefold(), maxsplit=1)
@@ -5103,6 +5144,7 @@ class AdminPortalReader:
         api_selected_observations: set[str] = set()
         identity_search_reviewed = False
         search_clear_planned = False
+        native_filter_transition_planned = False
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
             if bounded_conversation_context:
@@ -5159,7 +5201,7 @@ class AdminPortalReader:
             timeout_stage: str,
             reason: str,
         ) -> dict[str, Any]:
-            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed, api_selection_recovery_reviewed, api_drill_depth, identity_search_reviewed, search_clear_planned
+            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed, api_selection_recovery_reviewed, api_drill_depth, identity_search_reviewed, search_clear_planned, native_filter_transition_planned
             if not search_clear_planned:
                 clear_plan = _observed_search_clear(question, knowledge_or_observation.get("portalObservation"),
                     str((knowledge_or_observation.get("priorPortalRead") or {}).get("startPath") or ""))
@@ -5170,6 +5212,21 @@ class AdminPortalReader:
             started_at = time.perf_counter()
             observation = knowledge_or_observation.get("portalObservation")
             discovery = _api_discovery(observation)
+            if _question_needs_native_surface(question) and isinstance(observation, dict):
+                discovery = None
+                if not native_filter_transition_planned:
+                    transition = _observed_filter_transition(question, observation,
+                        str((knowledge_or_observation.get('priorPortalRead') or {}).get('startPath') or ''))
+                    if transition:
+                        native_filter_transition_planned = True
+                        return transition
+                knowledge_or_observation = {**knowledge_or_observation, 'planningDirective': {
+                    **knowledge_or_observation.get('planningDirective', {}),
+                    'nativeSurfaceRequired': True,
+                    'instruction': 'Use current rendered columnHeaders, filterControls and dialogs for schema/control questions. '
+                        'Record API rows and totals do not establish field availability or that a filter was opened or dismissed. '
+                        'An empty table can still have verified column headers. Do not infer personal scope from role labels.',
+                }}
             requested_view = _resolved_intent_values(bounded_conversation_context).get('view', '')
             if requested_view and isinstance(observation, dict):
                 selected = [str(tab.get('name') or '') for tab in observation.get('tabControls') or []
@@ -6162,10 +6219,11 @@ class AdminPortalReader:
                 resolution = parse_intent_resolution(candidate, question, bounded_conversation_context)
                 intent_state.update(resolution.public_json())
             except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
-                failure = "intent_resolution_timeout" if isinstance(exc, ReaderStageTimeout) else "intent_resolution_invalid"
+                model_failure = _model_http_failure(exc)
+                failure = model_failure.missing[0] if model_failure else "intent_resolution_timeout" if isinstance(exc, ReaderStageTimeout) else "intent_resolution_invalid"
                 trace.record("intent_resolution", "failed", started_at=intent_started_at, failure_code=failure)
                 return ReaderOutcome(
-                    ReaderResult(status="not_confirmed", summary="The current task scope could not be resolved.", missing=(failure,)),
+                    model_failure or ReaderResult(status="not_confirmed", summary="The current task scope could not be resolved.", missing=(failure,)),
                     {"stage": "intent_resolution", "permission": permission_audit,
                      "validationError": str(exc)[:200] if isinstance(exc, ValueError) else type(exc).__name__},
                 )
@@ -6262,7 +6320,7 @@ class AdminPortalReader:
             result = ReaderResult(status="not_confirmed", summary="A bounded read-only portal plan could not be prepared in time.", missing=(missing,))
             return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit, "knowledge": knowledge_context})
         except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
-            result = ReaderResult(status="not_confirmed", summary="I could not determine a bounded read-only portal plan.")
+            result = _model_http_failure(exc) or ReaderResult(status="not_confirmed", summary="I could not determine a bounded read-only portal plan.", missing=('planner_error',))
             return ReaderOutcome(
                 result,
                 {

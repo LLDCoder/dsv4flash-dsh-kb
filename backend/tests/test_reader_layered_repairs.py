@@ -11,6 +11,89 @@ from app.portal_reader import _qualify_knowledge_facts, ReaderResult
 from app.reader_intent import SLOT_NAMES, parse_intent_resolution
 
 
+def test_tab_words_separated_by_module_name_do_not_select_sibling():
+    from app.portal_reader import _category_control_requiring_children
+    obs={'readHealth':{'healthy':True}, 'tabControls':[
+        {'name':'Partner Insights','selected':False}, {'name':'Operational Insights','selected':True},
+        {'name':'Service-level Satisfaction','selected':True}],
+        'sectionSummaries':[{'nodeId':'t1','kind':'table','selectedState':'Service-level Satisfaction','rowSummaries':[], 'emptyState':'No Data'}]}
+    assert _category_control_requiring_children('Show Partner Portal Operational Insights service satisfaction.',obs,None,'overview') is None
+    # An explicit sibling request must still require a transition.
+    requirement=_category_control_requiring_children('Show Partner Insights.',obs,None,'overview')
+    assert requirement and requirement.control_label=='Partner Insights'
+
+
+@pytest.mark.parametrize('question,expected',[
+    ('Open the ticket filter and inspect its fields without applying.',True),
+    ('Cancel the filter and return to the list.',True),
+    ('Do these items have an Agent field for my current role?',True),
+    ('Which member and date criteria are present?',True),
+    ('Show three tickets with source and priority.',False),
+    ('How many tickets are in To Do?',False),
+])
+def test_control_and_schema_requests_require_native_evidence(question,expected):
+    from app.portal_reader import _question_needs_native_surface
+    assert _question_needs_native_surface(question) is expected
+
+
+def test_explicit_filter_transition_requires_unique_observed_ui():
+    from app.portal_reader import _observed_filter_transition
+    obs={'controls':['Filter'],'dialogs':[]}
+    assert _observed_filter_transition('Open the filter.',obs,'/work')['portalRequest']['actions'][0]['type']=='show_filter'
+    assert _observed_filter_transition('Apply the filter.',obs,'/work') is None
+    assert _observed_filter_transition('Open the filter.',{'controls':['Filter','Filter']},'/work') is None
+    assert _observed_filter_transition('Cancel the filter.',obs,'/work') is None
+    obs={'controls':['Cancel'],'dialogs':['Filter Search Cancel Apply']}
+    assert _observed_filter_transition('Cancel the filter.',obs,'/work')['portalRequest']['actions'][0]['type']=='dismiss_overlay'
+    assert _observed_filter_transition('Cancel the filter.',{'controls':['Cancel'],'dialogs':['Approve record Cancel']},'/work') is None
+
+
+@pytest.mark.parametrize('followup',[False,True])
+def test_model_payment_failure_is_not_bad_intent_or_empty_data(followup):
+    import httpx
+    from test_admin_portal_reader import Gateway, Planner, run_reader
+    from app.service import reader_evidence_only_response
+    class Unavailable(Planner):
+        async def resolve_admin_portal_intent(self,*args,**kwargs):
+            raise httpx.HTTPStatusError('sensitive provider text',request=httpx.Request('POST','https://model.test'),response=httpx.Response(402))
+        async def plan_admin_portal_read(self,*args,**kwargs):
+            return await self.resolve_admin_portal_intent()
+    outcome=run_reader(Gateway(),Unavailable(),question='Show current records.',
+        conversation_context={'previousIntent':{'question':'Show records','page':'/licensing'}} if followup else None)
+    assert outcome.result.status=='load_failed'
+    assert outcome.result.missing==('model_payment_required',)
+    assert 'sensitive' not in json.dumps(outcome.audit_evidence)
+    assert '余额' in reader_evidence_only_response(outcome.result.public_json(),'zh')
+
+
+def test_explicit_filter_open_precedes_default_list_api_selection():
+    from copy import deepcopy
+    from test_admin_portal_reader import Gateway, Planner, run_reader, portal_plan_for, user_info_for_paths
+    obs={'readHealth':{'healthy':True},'controls':['Filter'],'dialogs':[],
+         'sectionSummaries':[], 'apiDiscovery':{'candidates':[{
+          'operationKey':'GET /api/work','path':'/api/work','method':'GET','policyState':'allowed',
+          'candidateKind':'business','responseEvidence':{'items':[],'total':0}}],'truncated':False}}
+    class FilterGateway(Gateway):
+        async def invoke(self,principal,tool_name,arguments,**kwargs):
+            if tool_name=='knowledge.search':return await super().invoke(principal,tool_name,arguments,**kwargs)
+            self.calls.append((tool_name,arguments,kwargs))
+            current=deepcopy(obs)
+            if arguments['actions'][0]['type']=='show_filter':
+                current.update(dialogs=['Filter Search Cancel Apply'],controls=['Cancel','Apply'])
+            return {'ok':True,'result':{'result':'success','page':'/work','observation':current}}
+    class NativePlanner(Planner):
+        async def plan_admin_portal_read(self,question,permission_context,knowledge_context,conversation_context=None):
+            if knowledge_context.get('portalObservation'):
+                assert knowledge_context['planningDirective'].get('apiCandidateDecision')!='select'
+                assert knowledge_context['planningDirective']['nativeSurfaceRequired'] is True
+                return {'mode':'observation_result','result':'not_confirmed','facts':[], 'missing':['schema_not_confirmed']}
+            return portal_plan_for('/work',[{'type':'observe'}])
+    gateway=FilterGateway(info={'ok':True,'result':user_info_for_paths('/work')})
+    outcome=run_reader(gateway,NativePlanner(),question='Open the filter and inspect its fields.')
+    assert any(call[1]['actions'][0]['type']=='show_filter' for call in gateway.calls if call[0]=='admin.portal.read')
+    assert outcome.result.status!='success'  # a list total must not claim the UI is open
+
+
 def native():
     return {'readHealth': {'healthy': True}, 'apiEvidence': {'operationKey': 'POST /api/work/query',
         'data': {'items': [{'ref': 'REF-100', 'status': 'Waiting'}, {'ref': 'REF-101', 'status': 'Waiting'}], 'totalCount': 9}},

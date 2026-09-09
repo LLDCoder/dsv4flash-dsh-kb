@@ -110,6 +110,12 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str, 
         deliverable_fact(value) for value in raw_facts[:20]
     ) if fact] if isinstance(raw_facts, list) else []
     status = str(reader_result.get("result") or "")
+    if status == 'load_failed' and not facts and reader_result.get('missing') == ['model_payment_required']:
+        return {
+            'en': 'The configured model service requires a balance or billing update. This request could not be completed; no business-data conclusion was verified.',
+            'zh': '当前模型服务余额或计费状态不足，未能完成本次查询，尚未验证业务数据结论。',
+            'ar': 'تتطلب خدمة النموذج تحديث الرصيد أو الفوترة. لم يكتمل الطلب ولم يتم التحقق من نتيجة بيانات الأعمال.',
+        }.get(language, 'The configured model service requires a balance or billing update.')
     if status == 'not_confirmed' and not facts and reader_result.get('missing') == ['observed_queue_not_available']:
         return {
             'en': 'The requested queue was not visible in the current page layout; no named queue tabs were shown. This is not a no-matching-records result, and no other queue was substituted.',

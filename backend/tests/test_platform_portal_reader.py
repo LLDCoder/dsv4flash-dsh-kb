@@ -2261,6 +2261,7 @@ def test_gateway_permissions_fail_closed_when_ui_claims_access_but_tree_is_empty
 def test_default_post_allowlist_is_exact() -> None:
     assert gateway.READER_READ_ONLY_POST_PATHS == {
         "/api/AdminUser/GetUserInfo",
+        "/api/Role/GetRolesGroupedByDepartmentId",
         "/api/Application/MyComplatedPage",
         "/api/Application/MyTodoPage",
         "/api/LicenseManagement/list",
@@ -2341,6 +2342,7 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/Enquiry/EnquiryTypes",
         "/api/Enquiry/PriorityType",
         "/api/Enquiry/EnquirySource",
+        "/api/Enquiry/ProblemCauses",
         "/api/serviceInfo/GetAllUserType",
         "/api/Application/dashboard/statistics",
         "/api/Application/dashboard/service/list",
@@ -2429,14 +2431,25 @@ def test_guard_allows_only_get_for_verified_enquiry_ticket_page_reads(path) -> N
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("POST", "/api/Role/GetRolesGroupedByDepartmentId"),
-        ("GET", "/api/Enquiry/ProblemCauses"),
         ("GET", "/api/SignalR/GetNotificationInfoListShowBox"),
         ("GET", "/api/SignalR/GetNotificationInfoList"),
     ],
 )
 def test_guard_keeps_degraded_ticket_fallback_and_background_reads_blocked(method, path) -> None:
     assert guard(method, path, resource_type="fetch")[0] == "abort"
+
+
+@pytest.mark.parametrize(('method','path'),[
+    ('POST','/api/Role/GetRolesGroupedByDepartmentId'),
+    ('GET','/api/Enquiry/ProblemCauses'),
+])
+def test_verified_ticket_metadata_reads_are_exact_and_cannot_write(method,path):
+    # Admin source inspection: role grouping selects roles/departments and
+    # ProblemCauses uses AsNoTracking; neither performs business mutations.
+    assert guard(method,path,resource_type='fetch') == ('continue',None)
+    assert guard('DELETE',path,resource_type='fetch')[0] == 'abort'
+    assert guard(method,path+'/update',resource_type='fetch')[0] == 'abort'
+    assert guard('POST' if method=='GET' else 'GET',path,resource_type='fetch')[0] == 'abort'
 
 
 def test_notification_background_paths_are_explicitly_blocked_not_allowed() -> None:
@@ -2526,8 +2539,8 @@ def test_guard_keeps_inspection_task_creation_and_exports_blocked() -> None:
 def test_health_reports_fixed_allowlist_counts() -> None:
     health = asyncio.run(gateway.healthz())
 
-    assert health["readOnlyGetPathCount"] == 72
-    assert health["readOnlyPostPathCount"] == 6
+    assert health["readOnlyGetPathCount"] == 73
+    assert health["readOnlyPostPathCount"] == 7
 
 
 @pytest.mark.parametrize(

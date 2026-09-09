@@ -402,7 +402,12 @@ def make_router(service: DSHService) -> APIRouter:
         rows while retaining independently verified totals. Blank assignee fields
         do not establish non-assignment; role restrictions cannot be overridden.
         Exact knowledge excerpts retain their unique semantic subject when passed
-        to the answer formatter. Contextual phrases such as this account are not
+        to the answer formatter. Native column and filter UI requests retain
+        rendered evidence instead of being answered by unrelated list APIs.
+        Selected tab labels use contiguous phrase matching to avoid sibling-view
+        collisions. Model HTTP 402 failures are reported as load_failed with
+        model_payment_required, not as an invalid user intent or empty data.
+        Contextual phrases such as this account are not
         accepted as record identifiers or converted into search filters.
         Grouped table headers retain their parent labels for native value binding;
         ambiguous layouts remain unconfirmed. Search-only clears retain unrelated
