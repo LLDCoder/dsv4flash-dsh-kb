@@ -446,6 +446,14 @@ def make_router(service: DSHService) -> APIRouter:
         Exact knowledge excerpts retain their unique semantic subject when passed
         to the answer formatter. Native column and filter UI requests retain
         rendered evidence instead of being answered by unrelated list APIs.
+        Empty tables can still establish their visible field schema. Literal date
+        comparisons use observed date columns, reject ambiguous dates and retain
+        bounded coverage; they do not define validity or invent filter support.
+        Nested child-tab reads replay verified parent switches in each fresh context.
+        Exact identifier searches execute before selecting a default-list response.
+        Documented field explanations retain their role applicability and verification
+        limits. Workflow completion alone does not prove personal assignment or bank
+        settlement, and amount formatting never introduces an unsupported currency.
         Selected tab labels use contiguous phrase matching to avoid sibling-view
         collisions. Model HTTP 402 failures are reported as load_failed with
         model_payment_required, not as an invalid user intent or empty data.

@@ -1160,4 +1160,12 @@ acceptance:
   - Successful user answers lead with the business conclusion and do not narrate page visibility, reads, snapshots, extraction, Tool execution, or audit evidence.
   - ANSWERABLE always reaches a mechanically validated assistant.message; free-form formatter failure or unsupported output falls back to deterministic rendering of the frozen AnswerBundle.
   - Every material claim in assistant.message is supported by the AnswerBundle, with an unsupported-claim rate of zero.
+  - Fresh child-tab reads replay the same-page verified parent path and never return the default sibling queue as the requested child.
+  - Exact searches execute before default-list API selection; failed prior reads cannot supply record identifiers or sample totals.
+  - Empty healthy tables can answer explicit field-availability questions from one current native header schema without equating differently named fields.
+  - Literal date-column comparisons use verified native labels and unambiguous dates, disclose checked and skipped coverage, and never imply a global filter or validity rule.
+  - Report catalogue entries require both the documented selected catalogue and actually observed headings; no generation, export or download is performed.
+  - A trailing Source attribute is not by itself a foreign-record reference. Explicit Source Task identity protections remain active.
+  - Filter labels are read only inside one visible Filter overlay, including the shared responsive modal label elements.
+  - Knowledge field explanations keep their verified role scope, and natural formatting cannot invent an amount currency or remove that applicability.
   - Audit failure classification distinguishes evidence absence, mismatch, ambiguity, and incompleteness from planner, selector, schema, grounding, completion-review, formatter, and delivery failures.

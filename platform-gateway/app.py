@@ -2404,7 +2404,8 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
         overlay = _visible_overlay(page)
         heading = await visible_texts(overlay.locator('h1,h2,h3,[role="heading"],.ant-modal-title,.ant-drawer-title'), max_each=4, max_chars=120)
         if any(re.fullmatch(r'Filter|筛选', title, re.I) for title in heading):
-            filter_dialog_fields = await visible_texts(overlay.locator('label'), max_each=min(limit, 20), max_chars=120)
+            filter_dialog_fields = await visible_texts(
+                overlay.locator('label,.filter-modal-item-label'), max_each=min(limit, 20), max_chars=120)
             filter_dialog_commands = await visible_texts(overlay.locator('button'), max_each=8, max_chars=120)
     return {
         **(await _observe_filter_surface(page, limit)),

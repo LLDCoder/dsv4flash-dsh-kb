@@ -60,7 +60,11 @@ def test_answer_coverage_uses_only_verified_presentation_metadata(question):
 ])
 def test_missing_or_different_presentation_evidence_does_not_invent_a_sample(field, value):
     context = {"previousIntent": {**PRIOR["previousIntent"], field: value}}
-    assert previous_sample_explanation("Is that total or only a sample?", context) is None
+    explanation = previous_sample_explanation("Is that total or only a sample?", context)
+    if field == 'resultStatus' and value == 'not_confirmed':
+        assert 'Neither a sample count nor a collection total was verified' in explanation
+    else:
+        assert explanation is None
 
 
 @pytest.mark.parametrize("question", ["How many records are there now?", "Show all records.", "List the next page."])

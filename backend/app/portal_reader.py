@@ -731,6 +731,14 @@ def _observed_switch_tab_action(action: dict[str, Any], observation: Any) -> dic
     """Bind a requested state label to one currently observed tab control."""
 
     requested = action.get("name") or action.get("label")
+    native_tabs = observation.get('tabControls') if isinstance(observation, dict) else None
+    if isinstance(native_tabs, list):
+        matches = [tab for tab in native_tabs if isinstance(tab, dict)
+                   and _state_control_label_matches(tab.get('name'), requested)]
+        if len(matches) == 1 and not ReadOnlyPortalPolicy._contains_mutation_command(str(matches[0].get('name') or '')):
+            return {'type':'switch_tab', 'role':'tab', 'name':str(matches[0]['name'])}
+        if len(matches) > 1:
+            return None
     discovery = _api_discovery(observation)
     raw_controls = discovery.get("safeControls") if discovery is not None else None
     explicit_matches = []
@@ -1170,6 +1178,8 @@ def reader_answer_shape(
         normalized,
     ):
         return "overview"
+    if re.search(r'\bdate\s+is\s+(?:later|earlier)\s+than\b.{0,50}\bdate\b', normalized):
+        return 'list'
     patterns = (
         ("count", r"\bhow many\b|\bcount\b|\bnumber of\b|多少|几个|几项"),
         ("attention", r"\battention\b|pay attention|需要.{0,8}(?:关注|留意)|(?:关注|留意).{0,8}(?:什么|哪些)"),
@@ -1181,7 +1191,7 @@ def reader_answer_shape(
         ),
         ("detail", r"\bdetails?\b|详情|明细"),
         ("overview", r"\boverview\b|\bsummary\b|\bwhat (?:is shown|can i see)\b|概览|概况|总览"),
-        ("list", r"\bshow\b|\blist\b|\bwhich\b|\bwhat are\b|\b(?:check|view|find)\b.*\b(?:tasks|items|records|applications)\b|显示|列出|哪些|有什么"),
+        ("list", r"\bshow\b|\blist\b|\bwhich\b|\bwhat are\b|\b(?:check|view|find)\b.*\b(?:tasks?|items?|records?|applications?)\b|显示|列出|哪些|有什么"),
     )
     for shape, pattern in patterns:
         if re.search(pattern, normalized):
@@ -1986,6 +1996,14 @@ ABSENCE_EVIDENCE_LIMIT = 'A search with no matching records does not establish t
 
 
 def reader_absence_limit_explanation(question: str) -> str | None:
+    if re.fullmatch(r'\s*does a completed request prove the money reached the customer[’\x27]?s bank\??\s*', question, re.I):
+        return ('A request marked Completed alone does not verify that money reached the customer\x27s bank. '
+                'Bank receipt or settlement needs separate verified payment evidence. No bank receipt, settlement, '
+                'or financial finality was verified by this workflow status.')
+    if re.fullmatch(r'\s*does being in (?:to do|completed|queued) prove (?:i am|I.m) the current handler\??\s*', question, re.I):
+        return ('Queue membership alone does not establish that you are the Current Handler. '
+                'That requires a verified handler identity for the specific record and comparison with the signed-in user. '
+                'No personal assignment is established by this explanation.')
     if re.fullmatch(
         r'\s*can you confirm (?:a|the|that) [a-z]+ was deleted just because '
         r'(?:this|the|that) search found nothing\??\s*', question, re.I,
@@ -1997,6 +2015,10 @@ def reader_absence_limit_explanation(question: str) -> str | None:
 def previous_sample_explanation(question: str, context: dict[str, Any]) -> str | None:
     """Explain prior answer coverage without reusing old records or totals."""
     previous = _bounded_conversation_context(context).get("previousIntent", {})
+    if previous.get('resultStatus') in {'not_confirmed', 'load_failed'} and re.search(
+        r'\b(?:total|all)\b.*\b(?:sample|listed|shown)\b|\b(?:full set|complete list)\b', question, re.I,
+    ):
+        return PRIOR_UNVERIFIED_LIST_FACT
     if previous.get('resultStatus') == 'no_permission' and previous.get('deliveredAnswerShape') != 'list' and re.search(
         r'\b(?:total|all)\b.*\b(?:sample|listed|shown)\b', question, re.I,
     ):
@@ -2379,7 +2401,11 @@ def _knowledge_for_current_role(knowledge_context: dict[str, Any], permission: U
             # Explicit role comparisons may retain both sources, with their original scope.
             explicit_other = bool(re.search(r'\b(?:compare|difference|distinction|between)\b', question, re.I)) and any(
                 re.search(r'(?<!\w)'+re.escape(owner)+r'(?!\w)', question, re.I) for owner in owners)
-            if owners and current not in normalized and not explicit_other:
+            field_explanation = (question_is_conceptual(question)
+                and bool(re.search(r'\b(?:fields?|columns?|assigned time|last update)\b', question, re.I))
+                and not _question_is_capability_catalogue(question)
+                and not re.search(r'\b(?:filters?|criteria|access|available)\b', question, re.I))
+            if owners and current not in normalized and not explicit_other and not field_explanation:
                 excluded += 1
                 continue
             matching.append(part)
@@ -2398,21 +2424,27 @@ def _qualify_knowledge_facts(result: ReaderResult, knowledge_context: Any) -> Re
     """Keep the subject of an exact manual excerpt when presenting its text."""
     passages = [passage for content in _knowledge_evidence_strings(knowledge_context)
                 for passage in _knowledge_semantic_passages(content)]
-    facts, sources = [], set()
+    facts, sources, qualifications = [], set(), []
     for fact in result.facts:
-        subjects = set()
+        subjects, distinctions = set(), set()
         normalized = ' '.join(fact.split())
         for passage in passages:
-            title = re.match(r'## Semantic node:\s*(.*?)(?=\s+-\s*\*\*|\n|$)', passage)
+            title = re.match(r'(?:## Semantic node:|### Control:)\s*(.*?)(?=\s+-\s*\*\*|\n|$)', passage)
             if title and normalized in ' '.join(passage.split()):
                 subjects.add(title[1].strip())
                 fields = _knowledge_content_fields(passage, include_metadata=True)
+                if passage.startswith('### Control:') and normalized in ' '.join(fields.get('distinguish_from', '').split()):
+                    distinctions.add(title[1].strip())
+                for key in ('scope', 'verification_limits'):
+                    qualification = fields.get(key, '')
+                    if qualification and len(qualification) <= 350:
+                        qualifications.append(f'{title[1].strip()} {key}: {qualification}')
                 page = fields.get('page', '').strip('` ')
                 if page.startswith('/') and not page.startswith('//') and not any(c in page for c in '?#\\'):
                     sources.add((page, fields.get('section', '')[:240]))
         if len(subjects) == 1:
             subject = next(iter(subjects))
-            labeled = f'{subject}: {fact}'
+            labeled = f'{subject} is distinct from: {fact}' if subject in distinctions else f'{subject}: {fact}'
             if len(labeled) <= 400:
                 facts.append(labeled)
                 continue
@@ -2424,7 +2456,147 @@ def _qualify_knowledge_facts(result: ReaderResult, knowledge_context: Any) -> Re
         hint = {'page': next(iter(sources))[0]}
         if len(sources) == 1:
             hint['section'] = next(iter(sources))[1]
+    for qualification in dict.fromkeys(qualifications):
+        value = qualification.split(': ', 1)[-1]
+        if not any(value in fact for fact in facts):
+            facts.append(qualification)
     return replace(result, facts=tuple(facts), source_hint=hint)
+
+
+def _requested_schema_fields(question: str) -> tuple[str, ...]:
+    match = re.search(r'\bhave an? ([A-Za-z][A-Za-z ]{0,40}?) (?:field|column) or an? ([A-Za-z][A-Za-z ]{0,40}?) (?:field|column)\b', question, re.I)
+    return (match[1].strip(), match[2].strip()) if match else ()
+
+
+def _requested_date_comparison(question: str) -> tuple[str, str, str] | None:
+    match = re.search(r'\bwhose ([A-Za-z ]{1,45}?date) is (later|earlier) than (?:their |its |the )?([A-Za-z ]{1,45}?date)\b', question, re.I)
+    return (match[1].strip(), match[3].strip(), match[2].casefold()) if match else None
+
+
+def _native_date_comparison_outcome(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    comparison = _requested_date_comparison(question)
+    if not comparison or outcome.result.status in {'no_permission', 'load_failed'}:
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    if (not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True
+            or _observation_has_error_state(observation)):
+        return outcome
+    def label(value: str) -> str:
+        # A start/end modifier is accepted only if it resolves to one native header.
+        return ' '.join(t for t in value.casefold().split() if t not in {'start', 'end'})
+    candidates = []
+    for source in observation.get('sectionSummaries', []):
+        if not isinstance(source, dict) or source.get('kind') not in {'table', 'grid'}:
+            continue
+        headers = source.get('columnHeaders') or []
+        left = [h for h in headers if isinstance(h, str) and label(h) == label(comparison[0])]
+        right = [h for h in headers if isinstance(h, str) and label(h) == label(comparison[1])]
+        if len(left) == len(right) == 1 and left != right and source.get('rowFields'):
+            candidates.append((source, left[0], right[0]))
+    if len(candidates) != 1:
+        return outcome
+    source, left, right = candidates[0]
+    rows = [r for r in source['rowFields'][:20] if isinstance(r, dict)]
+    slash = [re.fullmatch(r'(\d{2})/(\d{2})/(\d{4})', str(r.get(k, ''))) for r in rows for k in (left, right)]
+    day_first = any(m and int(m[1]) > 12 for m in slash) and not any(m and int(m[2]) > 12 for m in slash)
+    month_first = any(m and int(m[2]) > 12 for m in slash) and not any(m and int(m[1]) > 12 for m in slash)
+    def parse(value: Any):
+        value = str(value or '')
+        try:
+            if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+                return datetime.strptime(value, '%Y-%m-%d').date()
+            if day_first or month_first:
+                return datetime.strptime(value, '%d/%m/%Y' if day_first else '%m/%d/%Y').date()
+        except ValueError:
+            pass
+        return None
+    compared, skipped, matches, samples = 0, 0, [], []
+    identities = [h for h in source.get('columnHeaders', []) if re.search(r'\b(?:No\.?|ID|Number)$', h, re.I)]
+    for row in rows:
+        a, b = parse(row.get(left)), parse(row.get(right))
+        if a is None or b is None:
+            skipped += 1
+            continue
+        compared += 1
+        text = '; '.join(f'{h}: {row[h]}' for h in identities[:2] if row.get(h))
+        text += f'; {left}: {row[left]}; {right}: {row[right]}'
+        samples.append(text.lstrip('; '))
+        if (a > b if comparison[2] == 'later' else a < b):
+            matches.append(text.lstrip('; '))
+    if not compared:
+        return outcome
+    facts = [f'Compared {left} with {right} for {compared} observed records: {len(matches)} matched the requested {comparison[2]}-than condition. '
+             f'{skipped} observed records had missing or ambiguous dates and were not compared.']
+    facts.extend(matches if matches else ['Checked example: ' + s for s in samples[:3]])
+    facts.append('This is a bounded comparison of the observed records, not a verified filter over the entire list. '
+                 'Unobserved records remain unchecked. It does not define permit validity, timezone rules, or date-boundary business semantics.')
+    result = replace(outcome.result, status='success', answer_shape='list', completeness='bounded', scope='unknown',
+        source_section=str(source.get('nodeId') or ''), facts=tuple(facts), missing=())
+    return ReaderOutcome(result, {**evidence, 'dateComparisonEvidence': {'fields':[left,right], 'compared':compared,
+        'matched':len(matches), 'skipped':skipped, 'coverage':'observed_records_only'}, 'result':result.public_json()})
+
+
+def _native_schema_outcome(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    requested = _requested_schema_fields(question)
+    if not requested or outcome.result.status in {'no_permission', 'load_failed'}:
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    if (not outcome.result.page or not isinstance(observation, dict)
+            or (observation.get('readHealth') or {}).get('healthy') is not True
+            or _observation_has_error_state(observation)):
+        return outcome
+    tables = [s for s in observation.get('sectionSummaries', []) if isinstance(s, dict)
+              and s.get('kind') in {'table', 'grid'} and s.get('columnHeaders')]
+    if len(tables) != 1:
+        return outcome
+    source = tables[0]
+    headers = [str(h).strip() for h in source['columnHeaders'] if isinstance(h, str)]
+    role = (evidence.get('permission') or {}).get('currentRole') or 'signed-in account'
+    facts = [f'In the current {role} view at {outcome.result.page}, the visible columns are: ' + '; '.join(headers) + '.']
+    for field in requested:
+        present = any(h.casefold() == field.casefold() for h in headers)
+        facts.append(f'A column named {field} is ' + ('visible.' if present else 'not present among those observed headers.'))
+    facts.append('Column availability does not establish record values, personal assignment, or equivalence between differently named fields.')
+    result = replace(outcome.result, status='success', answer_shape='detail', completeness='bounded',
+        source_section=str(source.get('nodeId') or ''), facts=tuple(facts), missing=(), scope='unknown')
+    return ReaderOutcome(result, {**evidence, 'nativeSchemaEvidence': {'headers': headers, 'requested': requested},
+                                  'result': result.public_json()})
+
+
+def _native_catalogue_outcome(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Read a documented catalogue's actually visible headings, never its files."""
+    if outcome.result.status in {'no_permission', 'load_failed'} or question_is_conceptual(question):
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    if (not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True
+            or _observation_has_error_state(observation)):
+        return outcome
+    selected = {str(t.get('name') or '') for t in observation.get('tabControls', []) if isinstance(t, dict) and t.get('selected') is True}
+    headings = [str(h) for h in observation.get('headings', []) if isinstance(h, str) and h.strip()]
+    candidates = []
+    for content in _knowledge_evidence_strings(evidence.get('knowledge') or {}):
+        for passage in _knowledge_semantic_passages(content):
+            fields = _knowledge_content_fields(passage, include_metadata=True)
+            page, section = fields.get('page', '').strip('` '), fields.get('section', '')
+            if ('catalogue' not in fields.get('type', '').casefold() or page != outcome.result.page
+                    or section not in selected or not fields.get('content')):
+                continue
+            names = [n.strip().rstrip('.') for n in fields['content'].split(';')]
+            visible = [n for n in names if n in headings]
+            if visible:
+                candidates.append((section, visible))
+    if len(candidates) != 1:
+        return outcome
+    section, names = candidates[0]
+    result = replace(outcome.result, status='success', section=section, selected_state=section,
+        source_section='catalogueHeadings', answer_shape='overview', completeness='bounded', scope='unknown', missing=(),
+        facts=('The currently selected catalogue shows these report families: ' + '; '.join(names[:20]) + '.',
+               'These are catalogue entries. No report was generated, opened, exported, or downloaded.'))
+    return ReaderOutcome(result, {**evidence, 'nativeCatalogueEvidence': {'selectedTab': section, 'headings': names},
+                                  'result': result.public_json()})
 
 
 def _documented_object_source(knowledge: dict[str, Any], question: str, context: dict[str, Any]) -> str:
@@ -2448,7 +2620,9 @@ def _documented_object_source(knowledge: dict[str, Any], question: str, context:
             if not page.startswith('/') or page.startswith('//') or any(c in page for c in '?#\\'):
                 continue
             module = page.strip('/').split('/')[0]
-            if not (tokens(module) & tokens(question) or module == module_hint):
+            section_words = tokens(fields.get('section', '')) - {'task', 'record', 'list', 'view', 'item'}
+            named_view = not module_hint and bool(section_words & tokens(question))
+            if not (tokens(module) & tokens(question) or module == module_hint or named_view):
                 continue
             for column in re.split(r'[;,]', fields.get('content', '')):
                 match = re.fullmatch(r'\s*([A-Za-z ]+?)\s+(?:No\.?|Number|ID)\s*', column)
@@ -3889,6 +4063,11 @@ def _observation_has_category_children(observation: Any, category_label: str) ->
     category_tokens = _section_match_tokens(category_label)
     if not category_tokens:
         return False
+    for node in _observation_semantic_nodes(observation):
+        path = node.get('selectedTabPath') or []
+        if (isinstance(path, list) and any(_state_control_label_matches(label, category_label) for label in path)
+                and node.get('kind') in {'table','grid'} and node.get('rowFields')):
+            return True
     nodes = _observation_semantic_nodes(observation)
     nodes_by_id = {
         str(node.get("nodeId") or ""): node
@@ -5125,7 +5304,7 @@ def _guard_related_record_substitution(outcome: ReaderOutcome, question: str,
                and not tokens(c) & {'source', 'related', 'parent', 'linked'}]
     for column in columns:
         related = tokens(column)
-        if not related & {'source', 'related', 'parent', 'linked'}:
+        if not re.match(r'^(?:source|related|parent|linked)\b', column.strip(), re.I):
             continue
         target = related - excluded
         if not target or not target <= requested or not primary:
@@ -5156,7 +5335,7 @@ def _guard_requested_queue_view(outcome: ReaderOutcome, question: str) -> Reader
     if (result.status not in {"success", "no_data", "not_confirmed"} or not result.page
             or question_is_conceptual(question)):
         return outcome
-    matches = re.findall(r"\b(?:in\s+(to do|completed)|((?:to do|queued)\s+tasks?(?:\s+list)?))\b", question, re.I)
+    matches = re.findall(r"\b(?:(?:in|tasks?)\s+(to do|completed)|((?:to do|queued)\s+tasks?(?:\s+list)?))\b", question, re.I)
     requested = {re.sub(r"\s+tasks?(?:\s+list)?$", "", (a or b).casefold()) for a, b in matches}
     if len(requested) != 1:
         return outcome
@@ -5173,7 +5352,13 @@ def _guard_requested_queue_view(outcome: ReaderOutcome, question: str) -> Reader
     selected = re.sub(r"\s+tasks$", "", selected)
     if not selected or selected in requested:
         return outcome
-    guarded = replace(result, status="not_confirmed", facts=(), missing=("requested_queue_view_unverified",))
+    permission = evidence.get('permission') or {}
+    role = permission.get('currentRole') or 'account'
+    tabs = [str(t.get('name')) for t in observation.get('tabControls', []) if isinstance(t, dict) and t.get('name')]
+    facts = (f'The current {role} layout shows {", ".join(tabs[:12])}. '
+             f'The requested {next(iter(requested))} view was not verified, so this other list and its count '
+             'are not presented as the requested queue.',) if tabs else ()
+    guarded = replace(result, status="not_confirmed", facts=facts, missing=("requested_queue_view_unverified",))
     return ReaderOutcome(guarded, {**evidence, "queueViewGuard": {
         "requested": next(iter(requested)), "observed": selected,
     }, "result": guarded.public_json()})
@@ -5294,6 +5479,9 @@ class AdminPortalReader:
             qualified = _qualify_knowledge_facts(outcome.result, outcome.audit_evidence['knowledge'])
             outcome = ReaderOutcome(qualified, {**outcome.audit_evidence, 'result': qualified.public_json()})
         outcome = _observed_tab_catalogue(outcome, question)
+        outcome = _native_schema_outcome(outcome, question)
+        outcome = _native_date_comparison_outcome(outcome, question)
+        outcome = _native_catalogue_outcome(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
@@ -5420,7 +5608,19 @@ class AdminPortalReader:
                     return clear_plan
             started_at = time.perf_counter()
             observation = knowledge_or_observation.get("portalObservation")
+            if _requested_schema_fields(question) and observation is None:
+                page = semantic_source_hint(bounded_conversation_context).get('page', '')
+                if page:
+                    return {'mode':'portal_read','portalRequest':{'startPath':page,'actions':[{'type':'observe'}],'expectedFields':[]}}
             discovery = _api_discovery(observation)
+            if _requested_date_comparison(question):
+                # Native labels bind the requested fields; expiry projections
+                # such as daysRemaining cannot answer a field-to-field comparison.
+                discovery = None
+                knowledge_or_observation = {**knowledge_or_observation, 'planningDirective': {
+                    **knowledge_or_observation.get('planningDirective', {}),
+                    'nativeDateComparison': True, 'instruction': 'Read the actual date columns and record identities. '
+                    'Compare only observed unambiguous dates. Keep bounded coverage explicit; do not infer filter support or global emptiness.'}}
             if _question_needs_native_surface(question) and isinstance(observation, dict):
                 discovery = None
                 if not native_filter_transition_planned:
@@ -5437,6 +5637,10 @@ class AdminPortalReader:
                         'An empty table can still have verified column headers. Do not infer personal scope from role labels.',
                 }}
             requested_view = _resolved_intent_values(bounded_conversation_context).get('view', '')
+            if not requested_view and not question_is_conceptual(question):
+                named_views = set(re.findall(r'\b(?:in\s+|tasks?\s+)(To Do|Completed)\b', question, re.I))
+                if len(named_views) == 1:
+                    requested_view = next(iter(named_views))
             if requested_view and isinstance(observation, dict):
                 selected = [str(tab.get('name') or '') for tab in observation.get('tabControls') or []
                             if isinstance(tab, dict) and tab.get('selected') is True]
@@ -5453,6 +5657,13 @@ class AdminPortalReader:
                         'requestedStateRequiresParent': requested_view, 'requirePortalRead': True,
                         'instruction': 'The requested view is not active. Use documented parent/child tab steps; current-view APIs and rows cannot answer this request.',
                     }}
+            if not identity_search_reviewed and isinstance(observation, dict):
+                search_plan = _observed_identity_search(question, bounded_conversation_context, observation,
+                    str((knowledge_or_observation.get('priorPortalRead') or {}).get('startPath') or ''))
+                if search_plan:
+                    identity_search_reviewed = True
+                    trace.record('identity_search', 'passed', output_summary={'decision':'search_before_api_selection'})
+                    return search_plan
             include_support_api = _question_requests_support_api(question, bounded_conversation_context)
             prior_read = knowledge_or_observation.get("priorPortalRead") or {}
             prior_actions = prior_read.get("actions") if isinstance(prior_read, dict) else []
@@ -6423,6 +6634,14 @@ class AdminPortalReader:
                 page=explicit_route[1], source_hint={'page':explicit_route[1]}, missing=('page_not_permitted',))
             return ReaderOutcome(result, {'stage':'explicit_route_permission', 'permission':permission_audit, 'result':result.public_json()})
         previous = bounded_conversation_context.get('previousIntent') or {}
+        if (previous.get('resultStatus') in {'not_confirmed', 'load_failed'}
+                and re.match(r'\s*(?:find|locate)\s+(?:that|the)\s+same\s+', question, re.I)
+                and not previous.get('recordIdentity')):
+            return ReaderOutcome(ReaderResult(status='not_confirmed', summary='No preceding record identifier was verified.',
+                facts=('The preceding request did not establish a verified record identifier, so there is no confirmed '
+                       'same-record search value. No identifier was guessed or searched.',),
+                missing=('prior_record_identifier_unverified',)),
+                {'stage':'prior_unverified_record', 'permission':permission_audit})
         previous_source = semantic_source_hint(bounded_conversation_context).get('page', '')
         if (previous.get('resultStatus') == 'no_permission' and previous_source
                 and re.match(r'\s*(?:find|locate)\s+(?:that|the)\s+same\s+', question, re.I)
@@ -7893,6 +8112,16 @@ class AdminPortalReader:
                     post_action_plan, follow_up_result, post_action_context, page=next_request.start_path,
                 )
                 post_action_request = portal_read_request_from_plan(post_action_plan)
+                if (post_action_request is not None and post_action_request.start_path == next_request.start_path
+                        and len(post_action_request.actions) == 1
+                        and post_action_request.actions[0].get('type') == 'switch_tab'
+                        and next_request.actions and all(a.get('type') == 'switch_tab' for a in next_request.actions)):
+                    target = post_action_request.actions[0].get('name')
+                    if all(not _state_control_label_matches(a.get('name'), target) for a in next_request.actions):
+                        # Each execution opens a fresh page. Replay its verified
+                        # parent tabs before selecting the newly observed child.
+                        post_action_request = replace(post_action_request,
+                            actions=next_request.actions + post_action_request.actions)
                 if (
                     category_requirement
                     and category_read_is_in_place
@@ -8053,6 +8282,12 @@ class AdminPortalReader:
                         answer_shape=follow_up_shape,
                         scope=verified_scope,
                     )
+                    pending_tab = any(a.get('type') == 'switch_tab' and any(
+                        isinstance(t, dict) and t.get('selected') is False
+                        and _state_control_label_matches(t.get('name'), a.get('name'))
+                        for t in bounded_follow_up_observation.get('tabControls', [])) for a in post_action_request.actions)
+                    if pending_tab:
+                        fallback_result = None  # The requested child state has not been read yet.
                     if fallback_result is not None:
                         semantic_resolution = record_semantic_resolution(
                             decision="fallback",

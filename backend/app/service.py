@@ -53,6 +53,9 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str, 
         }.get(language, 'Current permissions do not authorize the requested page read. The requested records have not been verified.')
  
     raw_facts = reader_result.get("facts")
+    workflow = str(reader_result.get('workflowState') or '')
+    if isinstance(raw_facts, list) and workflow.startswith('The Search input was explicitly cleared and verified empty in the freshly read view.'):
+        raw_facts = [*raw_facts, workflow]
  
     def unusable_field_value(key: Any, value: Any) -> bool:
         """Drop absent values and placeholder identities without hiding valid zero metrics."""
@@ -475,10 +478,18 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
     )):
         return False
     support = f"{verified_text}\n{question}".casefold()
+    # Formatting an amount must not silently assign a currency.
+    for symbol in ('$', '€', '£', '¥'):
+        if symbol in answer and symbol not in verified_text:
+            return False
+    for currency in re.findall(r'\b(?:USD|AED|EUR|GBP|CNY|SAR)\b', answer):
+        if currency.casefold() not in verified_text.casefold():
+            return False
     # Layout applicability and isolated UI state are material facts, not
     # optional prose that the formatter may turn into current-user access.
     qualifiers = re.findall(r'\b([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,4}) layout\b', verified_text)
     qualifiers += re.findall(r'\brechecked for ([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,4})(?=[;.,])', verified_text)
+    qualifiers += re.findall(r'\bverified for (?:the )?([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,4}) representative', verified_text)
     if any(role.casefold() not in lowered for role in qualifiers):
         return False
     if 'fresh read-only view' in verified_text.casefold() and 'fresh' not in lowered:

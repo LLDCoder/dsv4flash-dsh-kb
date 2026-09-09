@@ -113,7 +113,8 @@ def test_explicit_queue_must_not_be_replaced_by_another_native_view(question, se
     guarded = _guard_requested_queue_view(outcome, question)
     assert (guarded.result.status == 'not_confirmed') is blocked
     if blocked:
-        assert not guarded.result.facts
+        assert 'REF-1' not in str(guarded.result.facts)
+        assert 'layout shows' in guarded.result.facts[0]
         assert guarded.result.missing == ('requested_queue_view_unverified',)
     else:
         assert guarded == outcome
