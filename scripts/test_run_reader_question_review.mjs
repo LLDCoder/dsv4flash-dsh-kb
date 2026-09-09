@@ -21,6 +21,39 @@ test("retains source versions from early-failure traces without copying arbitrar
 const LEGACY_REVIEW_FILE = new URL("../doc/admin-portal-reader/dashboard-licensing-question-review.md", import.meta.url);
 const BASIC_REVIEW_FILE = new URL("../doc/admin-portal-reader/basic-modules-2026-09-06/questions-review.md", import.meta.url);
 
+test("transient history disconnect is retried without resubmitting a message", async () => {
+  const originalFetch = globalThis.fetch;
+  const directory = await mkdtemp(join(tmpdir(), "reader-history-retry-"));
+  let messages = 0, historyReads = 0;
+  const events = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/v1/conversations") return Response.json({conversationId:"conv_retry",lastSeq:0});
+    if (path.endsWith("/messages")) {
+      messages++;
+      events.push({seq:messages,eventType:"turn.completed",data:{}});
+      return Response.json({accepted:true});
+    }
+    if (path.endsWith("/history")) {
+      if (++historyReads === 1) throw new TypeError("fetch failed", {cause:new Error("other side closed")});
+      return Response.json({events});
+    }
+    if (path.endsWith("/audit")) return Response.json({items:[]});
+    throw new Error("unexpected test request");
+  };
+  try {
+    const result = await runGroups({token:"test-token",userId:"user-1",groupIds:["CH01"],reviewFile:BASIC_REVIEW_FILE,
+      outputFile:join(directory,"out.jsonl"),currentGetUserInfo:async()=>({id:"user-1"})});
+    assert.equal(result.steps,3);
+    assert.equal(messages,3);
+    assert.equal(historyReads,4);
+    assert.equal(result.results[0].historyReadRetries,1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory,{recursive:true,force:true});
+  }
+});
+
 test("records bounded read health and selected state without URL secrets or extra rows", () => {
   const result = boundedEvidence({ observation: {
     readHealth: { healthy: false, blocked: Array(30).fill("https://user:secret@example.test/api/Records/List?token=private#secret"), cookie: "private" },

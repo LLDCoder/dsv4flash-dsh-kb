@@ -28,6 +28,92 @@ def read_request(actions=None, **overrides):
     return gateway.AdminPortalReadRequest.model_validate(payload)
 
 
+@pytest.mark.parametrize("settings", [{"value": "R-1"}, {"value": ""}, {"values": ["R-1"]},
+                                      {"filters": {"Search": "R-1"}}, {"parameters": {"Search": "R-1"}}])
+def test_query_rejects_filter_values_instead_of_silently_ignoring_them(settings):
+    with pytest.raises(HTTPException) as error:
+        gateway._validate_reader_request(read_request([{"type": "query", "field": "Search", **settings}]))
+    assert error.value.status_code == 422
+    assert error.value.detail["code"] == "reader_query_cannot_apply_filters"
+
+
+def test_openapi_documents_query_filter_value_boundary():
+    properties = gateway.app.openapi()["components"]["schemas"]["PortalReadAction"]["properties"]
+    assert "query reads existing values" in properties["type"]["description"]
+    assert "Not permitted on query" in properties["value"]["description"]
+    assert "not permitted on query" in properties["values"]["description"]
+
+
+def test_settle_waits_for_pending_read_response_without_clearing_its_health():
+    class Page:
+        _reader_health = {'pending': {1:'/api/example/list'}, 'failed': {}}
+    async def run():
+        async def finish():
+            await asyncio.sleep(0.01)
+            Page._reader_health['pending'].clear()
+        task=asyncio.create_task(finish())
+        await gateway._settle_reader_requests(Page(),0.5)
+        await task
+        assert not Page._reader_health['pending']
+    asyncio.run(run())
+
+
+def test_settle_timeout_retains_pending_and_failed_evidence():
+    class Page:
+        _reader_health = {'pending': {1:'/api/example/list'}, 'failed': {'/api/example/failure':1}}
+    asyncio.run(gateway._settle_reader_requests(Page(),0.01))
+    assert Page._reader_health['pending'] == {1:'/api/example/list'}
+    assert Page._reader_health['failed'] == {'/api/example/failure':1}
+
+
+def test_settle_ignores_explicit_background_paths():
+    class Page:
+        _reader_health = {'pending': {1:'/api/clientlog/report'}}
+    asyncio.run(gateway._settle_reader_requests(Page(),0.5))
+    assert Page._reader_health['pending']
+
+
+def test_settle_adapter_without_health_is_compatible():
+    asyncio.run(gateway._settle_reader_requests(object(),0.5))
+
+
+def test_settle_waits_for_read_started_after_tab_click_returns():
+    class Page:
+        _reader_health = {'pending': {}, 'failed': {}}
+    async def run():
+        finished = asyncio.Event()
+        async def delayed_read():
+            await asyncio.sleep(0.05)
+            Page._reader_health['pending'][1] = '/api/example/list'
+            await asyncio.sleep(0.1)
+            Page._reader_health['pending'].clear()
+            finished.set()
+        task = asyncio.create_task(delayed_read())
+        await gateway._settle_reader_requests(Page(),1)
+        assert finished.is_set()
+        await task
+    asyncio.run(run())
+
+
+def test_settle_stable_window_restarts_for_second_read_wave():
+    class Page:
+        _reader_health = {'pending': {}, 'failed': {}}
+    async def run():
+        finished = asyncio.Event()
+        async def waves():
+            for request_id in [1,2]:
+                await asyncio.sleep(0.15)
+                Page._reader_health['pending'][request_id] = '/api/example/list'
+                await asyncio.sleep(0.1)
+                Page._reader_health['pending'].clear()
+            finished.set()
+        task = asyncio.create_task(waves())
+        await gateway._settle_reader_requests(Page(),1.5)
+        assert finished.is_set()
+        await task
+    asyncio.run(run())
+
+
 def admin_user_info(*, roles=True, pages=True):
     return {
         "data": {
@@ -135,6 +221,7 @@ class FakeLocatorGroup:
     def __init__(self, *locators):
         self.locators = locators
         self.first = locators[0] if locators else FakeLocator()
+        self.last = locators[-1] if locators else FakeLocator()
 
     async def count(self):
         return len(self.locators)
@@ -356,14 +443,33 @@ class FakeObservationContainer:
     async def evaluate(self, script):
         if "tagName" in script:
             return self.tag
+        if "let panel = element.closest" in script:
+            return ""
         if "parentIndex" in script:
             return {"heading": self.heading, "parentIndex": self.parent_index}
         return self.heading
 
     def locator(self, selector):
-        if selector in {"thead th,[role='columnheader']", ".ant-empty-description,[role='status']"}:
+        if selector in {"thead th,[role='columnheader']", ".ant-empty-description,[role='status']", ".ant-table-placeholder"}:
             return FakeObservationLocator([])
         return FakeObservationLocator(self.rows)
+
+
+class FakePaginationContainer(FakeObservationContainer):
+    async def evaluate(self, script):
+        if script == gateway.READER_TABLE_PAGINATION_SCRIPT:
+            return ["Total 36", "password=secret-value", "x" * 400, "Other 4", "ignored"]
+        return await super().evaluate(script)
+
+
+def test_observation_includes_bounded_sanitized_table_pagination():
+    container = FakePaginationContainer([("REF-4 Open", True)], heading="Records")
+    observed = asyncio.run(gateway._observe_semantics(FakeObservationPage({}, containers=[container]), 20))
+    summaries = observed["sectionSummaries"][0]["summaries"]
+    assert summaries[0] == "Total 36"
+    assert len(summaries) == 4
+    assert all(len(value) <= 200 for value in summaries)
+    assert "secret-value" not in str(summaries)
 
 
 class FakeObservationContainers:
@@ -459,18 +565,30 @@ class FakeStructuredContainer(FakeObservationContainer):
             return FakeObservationLocator(self.headers)
         if selector == ".ant-empty-description,[role='status']":
             return FakeObservationLocator([(self.empty_state, True)] if self.empty_state else [])
+        if selector == ".ant-table-placeholder":
+            return FakeObservationLocator([])
         return FakeStructuredRows(self.structured_rows)
 
 
 class FakeObservationPage:
-    def __init__(self, values_by_selector, *, containers=None, sections=None):
+    def __init__(self, values_by_selector, *, containers=None, sections=None, card_collections=None, metric_collections=None):
         self.values_by_selector = values_by_selector
         self.containers = containers or []
         self.sections = sections or []
         self.selectors = []
+        self.card_collections = card_collections or []
+        self.metric_collections = metric_collections or []
 
-    async def evaluate(self, script, limit):
-        return {"filterControls": [], "metrics": []}
+    async def evaluate(self, script, *args):
+        if args:
+            assert len(args) == 1
+            if args[0] is None:
+                return 'stable-table-fingerprint'
+            return {"filterControls": [], "metrics": []}
+        if script == gateway.READER_LABELED_METRICS_SCRIPT:
+            return self.metric_collections
+        assert script == gateway.READER_CARD_COLLECTION_SCRIPT
+        return self.card_collections
 
     def locator(self, selector):
         self.selectors.append(selector)
@@ -679,6 +797,18 @@ def test_surface_health_ignores_only_exact_blocked_notification_background_paths
     assert result["uncertain"] == ["/api/SignalR/GetNotificationInfoList/extra"]
 
 
+def test_report_page_does_not_treat_explicitly_blocked_telemetry_as_business_data():
+    class Page:
+        url = 'https://admin.example.test/content/reports-analytics'
+        _reader_health = {'blocked': ['/api/clientlog/report'], 'failed': [], 'pending': []}
+    page = Page()
+    assert gateway._reader_surface_health(page)['healthy'] is True
+    page._reader_health = {'blocked': ['/api/clientlog/report/unknown'], 'failed': [], 'pending': []}
+    assert gateway._reader_surface_health(page)['healthy'] is False
+    page._reader_health = {'blocked': [], 'failed': ['/api/ContentReports/GetData'], 'pending': []}
+    assert gateway._reader_surface_health(page)['healthy'] is False
+
+
 @pytest.mark.parametrize(
     "locator",
     [
@@ -725,6 +855,38 @@ def test_reader_text_sanitizer_redacts_basic_auth_and_all_cookie_pairs() -> None
     assert "secretvalue" not in value
     assert "access token policy" in value
     assert "Token status is active" in value
+
+
+def test_observe_semantics_preserves_bounded_card_collection_as_separate_node() -> None:
+    page = FakeObservationPage({}, card_collections=[{
+        'heading': 'Members', 'cardSummaries': [f'Person {index} | Completed | 7' for index in range(8)],
+    }])
+    result = asyncio.run(gateway._observe_semantics(page, 20))
+    node = result['sectionSummaries'][0]
+    assert node['nodeId'] == 'observation-cards-001'
+    assert node['kind'] == 'cards'
+    assert node['heading'] == 'Members'
+    assert len(node['cardSummaries']) == 4
+    assert not result['rowSummaries']
+    assert 'summaries' not in node
+
+
+def test_card_collection_does_not_use_generic_landmark_as_business_heading() -> None:
+    page = FakeObservationPage({}, card_collections=[{
+        'heading': 'scrollable content', 'cardSummaries': ['Person A | Completed | 7'],
+    }])
+    result = asyncio.run(gateway._observe_semantics(page, 20))
+    assert result['sectionSummaries'][0]['heading'] == ''
+
+
+def test_labeled_metrics_remain_separate_from_table_pagination_totals() -> None:
+    page = FakeObservationPage({}, metric_collections=[{'heading':'Category', 'summaries':['Total 40', 'Approved 17']}])
+    result = asyncio.run(gateway._observe_semantics(page,20))
+    assert result['sectionSummaries'] == [{
+        'nodeId':'observation-metrics-001', 'kind':'metrics', 'heading':'Category',
+        'sourceSection':'Category', 'summaries':['Total 40','Approved 17'], 'selectedState':'',
+    }]
+    assert not result['rowSummaries']
 
 
 def test_observe_semantics_collects_only_visible_native_table_rows_within_bounds() -> None:
@@ -981,6 +1143,64 @@ def test_observe_semantics_binds_multiword_cell_values_to_native_headers() -> No
         "Status": "Open",
     }]
     assert observation["rowSummaries"] == ["T-100 Acme Media Group Business Open"]
+
+
+@pytest.mark.parametrize('blank_indexes', [[0], [2], [0, 3]])
+def test_unlabelled_utility_columns_are_excluded_without_losing_native_bindings(blank_indexes):
+    headers=[('Reference', True), ('Status', True)]
+    cells=[('R-1', True), ('Open', True)]
+    for index in blank_indexes:
+        headers.insert(index, ('', True))
+        cells.insert(index, ('unlabelled-content-must-not-leak', True))
+    container=FakeStructuredContainer(headers,[FakeStructuredRow(cells)])
+    observation=asyncio.run(gateway._observe_semantics(FakeObservationPage({},containers=[container]),20))
+    assert observation['sectionSummaries'][0]['rowFields']==[{'Reference':'R-1','Status':'Open'}]
+    assert observation['rowSummaries']==['R-1 Open']
+    assert 'unlabelled-content' not in str(observation)
+
+
+def test_reader_leaf_headers_preserves_grouped_labels_and_rowspan_identity():
+    def cell(text, width=1, height=1):
+        return {"text": text, "colSpan": width, "rowSpan": height, "visible": True}
+    assert gateway._reader_leaf_headers([
+        [cell("Reference", height=2), cell("Distribution", width=2)],
+        [cell("North"), cell("South")],
+    ]) == ["Reference", "Distribution / North", "Distribution / South"]
+
+
+@pytest.mark.parametrize("rows", [
+    [[{"text": "Group", "colSpan": 2, "rowSpan": 1, "visible": True}], []],
+    [[{"text": "Group", "colSpan": 2, "rowSpan": 1, "visible": True}],
+     [{"text": "Same", "colSpan": 1, "rowSpan": 1, "visible": True}] * 2],
+    [[{"text": "Group", "colSpan": 1, "rowSpan": 3, "visible": True}], []],
+    [[{"text": "", "colSpan": 1, "rowSpan": 2, "visible": True}], []],
+    [[{"text": "Group", "colSpan": 1, "rowSpan": 2, "visible": False}], []],
+])
+def test_reader_leaf_headers_rejects_incomplete_ambiguous_or_hidden_grids(rows):
+    assert gateway._reader_leaf_headers(rows) is None
+
+
+def test_blank_header_with_colspan_still_rejects_ambiguous_field_alignment():
+    container=FakeStructuredContainer([('',True,{'colspan':'2'}),('Reference',True)],
+                                      [FakeStructuredRow([('',True),('R-1',True)])])
+    observation=asyncio.run(gateway._observe_semantics(FakeObservationPage({},containers=[container]),20))
+    assert observation['sectionSummaries'][0]['rowFields']==[]
+
+
+@pytest.mark.parametrize('text,visible,expected', [
+    ('No records found',True,'No records found'), ('No results',True,'No results'),
+    ('Loading...',True,''), ('Request failed',True,''), ('No records found',False,''),
+])
+def test_table_placeholder_empty_text_is_visible_explicit_and_not_a_failure(text,visible,expected):
+    class PlaceholderContainer(FakeStructuredContainer):
+        def locator(self,selector):
+            if selector=='.ant-table-placeholder':
+                return FakeObservationLocator([(text,visible)])
+            return super().locator(selector)
+    container=PlaceholderContainer([('Reference',True)],[],heading='Queue')
+    observation=asyncio.run(gateway._observe_semantics(FakeObservationPage({},containers=[container]),20))
+    nodes=observation['sectionSummaries']
+    assert (nodes[0]['emptyState'] if nodes else '')==expected
 
 
 @pytest.mark.parametrize(
@@ -1581,6 +1801,78 @@ def test_filter_sets_bounded_native_multiselect_values() -> None:
     ))
 
     assert select_locator.selected == ["Pending Review", "Completed"]
+
+
+class FakeFilterSearchPage(FakePage):
+    def __init__(self, *, labels=(), textboxes=(), placeholders=(), overlay=None):
+        super().__init__(FakeLocatorGroup())
+        self.labels=FakeLocatorGroup(*labels)
+        self.textboxes=FakeLocatorGroup(*textboxes)
+        self.placeholders=FakeLocatorGroup(*placeholders)
+        self.overlay=overlay
+    def locator(self, selector):
+        return FakeLocatorGroup(self.overlay) if self.overlay else FakeLocatorGroup()
+    def get_by_label(self, label, exact=True):
+        return self.labels
+    def get_by_role(self, role, **kwargs):
+        return self.textboxes if role=='textbox' else FakeLocatorGroup()
+    def get_by_placeholder(self, name, exact=True):
+        return self.placeholders
+
+
+@pytest.mark.parametrize('source', ['textboxes','placeholders'])
+def test_filter_field_falls_back_to_exact_unique_visible_name(source):
+    control=FakeLocator(tag='input',input_type='search')
+    page=FakeFilterSearchPage(**{source:[control]})
+    asyncio.run(gateway._set_filter_value(page,gateway.PortalReadAction(type='filter',field='Search',value='R-1')))
+    assert control.filled=='R-1'
+
+
+@pytest.mark.parametrize('source', ['labels','textboxes','placeholders'])
+def test_filter_rejects_multiple_visible_matches(source):
+    controls=[FakeLocator(tag='input'),FakeLocator(tag='input')]
+    page=FakeFilterSearchPage(**{source:controls})
+    with pytest.raises(RuntimeError,match='reader_filter_control_not_unique'):
+        asyncio.run(gateway._set_filter_value(page,gateway.PortalReadAction(type='filter',field='Search',value='R-1')))
+    assert all(x.filled is None for x in controls)
+
+
+def test_filter_ignores_hidden_name_but_keeps_exact_visible_match():
+    hidden=FakeLocator(tag='input',visible=False)
+    visible=FakeLocator(tag='input')
+    page=FakeFilterSearchPage(textboxes=[hidden,visible])
+    asyncio.run(gateway._set_filter_value(page,gateway.PortalReadAction(type='filter',field='Search',value='R-1')))
+    assert visible.filled=='R-1' and hidden.filled is None
+
+
+@pytest.mark.parametrize('source',['labels','textboxes'])
+def test_filter_fallback_does_not_drop_an_explicit_region_constraint(source):
+    control=FakeLocator(tag='input')
+    page=FakeFilterSearchPage(**{source:[control]})
+    with pytest.raises(RuntimeError,match='reader_filter_scope_not_unique'):
+        asyncio.run(gateway._set_filter_value(page,gateway.PortalReadAction(type='filter',field='Search',section='Missing',value='R-1')))
+    assert control.filled is None
+
+
+def test_filter_fallback_does_not_escape_an_open_overlay():
+    class EmptyOverlay(FakeLocator):
+        def get_by_label(self,*args,**kwargs):return FakeLocatorGroup()
+        def get_by_role(self,*args,**kwargs):return FakeLocatorGroup()
+        def get_by_placeholder(self,*args,**kwargs):return FakeLocatorGroup()
+    control=FakeLocator(tag='input')
+    page=FakeFilterSearchPage(textboxes=[control],placeholders=[control],overlay=EmptyOverlay())
+    with pytest.raises(RuntimeError,match='reader_selector_not_found'):
+        asyncio.run(gateway._set_filter_value(page,gateway.PortalReadAction(type='filter',field='Search',value='R-1')))
+    assert control.filled is None
+
+
+@pytest.mark.parametrize('input_type',['password','file','checkbox','radio','hidden','submit'])
+def test_filter_name_fallback_never_fills_nonquery_or_sensitive_controls(input_type):
+    control=FakeLocator(tag='input',input_type=input_type)
+    page=FakeFilterSearchPage(placeholders=[control])
+    with pytest.raises(RuntimeError):
+        asyncio.run(gateway._set_filter_value(page,gateway.PortalReadAction(type='filter',field='Search',value='R-1')))
+    assert control.filled is None
 
 
 def test_filter_rejects_unknown_or_password_controls() -> None:

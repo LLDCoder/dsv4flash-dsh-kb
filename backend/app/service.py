@@ -17,7 +17,7 @@ from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
-from .portal_reader import AdminPortalReader, ReaderTimeoutBudget, bounded_json, reader_answer_shape
+from .portal_reader import AdminPortalReader, PRIOR_EMPTY_LIST_FACT, PRIOR_LIST_SAMPLE_FACT, ReaderTimeoutBudget, bounded_json, reader_answer_shape
 from .reader_intent import format_clarification_options, semantic_source_hint
 from .principal import Principal
 from .reader_limits import (
@@ -41,7 +41,7 @@ def _response_language_for(text: str) -> str:
     return response_language_for(text)
 
 
-def reader_evidence_only_response(reader_result: dict[str, Any], language: str) -> str:
+def reader_evidence_only_response(reader_result: dict[str, Any], language: str, *, prior_answer_coverage: bool = False) -> str:
     """Render the bounded Reader result without another source of business facts."""
  
     raw_facts = reader_result.get("facts")
@@ -109,6 +109,53 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str) 
         deliverable_fact(value) for value in raw_facts[:20]
     ) if fact] if isinstance(raw_facts, list) else []
     status = str(reader_result.get("result") or "")
+    if status == 'not_confirmed' and not facts and reader_result.get('missing') == ['observed_queue_not_available']:
+        return {
+            'en': 'The requested queue was not visible in the current page layout; no named queue tabs were shown. This is not a no-matching-records result, and no other queue was substituted.',
+            'zh': '当前页面布局未显示具名队列标签，未能找到所请求的队列。这不是“没有匹配记录”，也没有用其他队列代替。',
+            'ar': 'لم يظهر عرض قائمة العمل المطلوبة في تخطيط الصفحة الحالي. هذا ليس نتيجة عدم وجود سجلات مطابقة، ولم يتم استبداله بقائمة أخرى.',
+        }.get(language, 'The requested queue was not visible in the current page layout; this is not an empty business result.')
+    if status == 'load_failed' and not facts and reader_result.get('missing') == ['observed_page_not_found']:
+        return {
+            'en': 'The requested page displayed "404 Page not found or unavailable". It was not usable during this check; this is not an empty business-data result.',
+            'zh': '所请求的页面显示“404 Page not found or unavailable”，本次检查时不可用。这不是业务查询无数据。',
+            'ar': 'عرضت الصفحة المطلوبة رسالة 404 تفيد بأن الصفحة غير موجودة أو غير متاحة. هذا ليس نتيجة خالية من بيانات الأعمال.',
+        }.get(language, 'The requested page displayed a 404 unavailable state, not an empty business-data result.')
+    if status == "not_confirmed" and not facts and reader_result.get("missing") == ["requested_queue_view_unverified"]:
+        return {
+            "en": "I could not confirm the requested queue view. The available list belongs to a different view, so I have not used its records or total as the requested result.",
+            "zh": "未能确认所请求的队列视图。当前可读取的列表属于另一个视图，因此没有用它的记录或总数代替所请求的结果。",
+            "ar": "لم أتمكن من تأكيد عرض قائمة العمل المطلوبة. القائمة المتاحة تخص عرضًا مختلفًا، لذلك لم أستخدم سجلاتها أو إجماليها بدلًا من النتيجة المطلوبة.",
+        }.get(language, "The available queue is not the requested view; its records and total have not been substituted.")
+    if status == "not_confirmed" and not facts and reader_result.get("missing") == ["requested_team_scope_unverified"]:
+        return {
+            "en": "I could not verify a team-scoped view for this request. I have not treated the current list as team data or used its count as the team total.",
+            "zh": "当前未核实到所请求的团队范围视图，不能把当前列表当作团队数据，也不能把它的数量当作团队总数。",
+            "ar": "لم أتمكن من التحقق من عرض بنطاق الفريق لهذا الطلب. لم أعتبر القائمة الحالية بيانات للفريق أو عددها إجمالي الفريق.",
+        }.get(language, "The requested team scope could not be verified; the current list is not a verified team result.")
+    if (prior_answer_coverage and status == "success" and reader_result.get("answerShape") == "detail"
+            and len(facts) == 1 and facts[0] in {PRIOR_LIST_SAMPLE_FACT, PRIOR_EMPTY_LIST_FACT}
+            and not reader_result.get("missing")):
+        if facts == [PRIOR_EMPTY_LIST_FACT]:
+            return {
+                "en": PRIOR_EMPTY_LIST_FACT,
+                "zh": "上一轮查询在已核实的视图和条件内没有匹配记录。这是该次查询的空结果，不是样本数量，也不是整个集合的总数；不能据此断定其他范围没有记录，或现在仍是同一结果。",
+                "ar": "لم يُظهر الاستعلام السابق سجلات مطابقة ضمن العرض والشروط التي تم التحقق منها. هذه نتيجة استعلام فارغة وليست عدد عينة أو إجمالي المجموعة. ولا تثبت عدم وجود سجلات في نطاق آخر أو أن النتيجة ما زالت حديثة.",
+            }.get(language, PRIOR_EMPTY_LIST_FACT)
+        return {
+            "en": PRIOR_LIST_SAMPLE_FACT,
+            "zh": "刚才列表的覆盖范围有限，仅凭列出的记录条数不能确定整个集合的总数。这不改变此前另行核实过的总数。",
+            "ar": "تغطية القائمة السابقة مباشرة محدودة؛ وعدد السجلات المدرجة وحده لا يثبت إجمالي المجموعة. وهذا لا يغيّر أي إجمالي تم التحقق منه بشكل منفصل.",
+        }.get(language, PRIOR_LIST_SAMPLE_FACT)
+    if status != "success" and not facts and any(
+        reason in {"action_not_read_only", "method_not_read_only"}
+        for reason in reader_result.get("missing", [])
+    ):
+        return {
+            "en": "I can help read and check information, but I cannot perform business changes, approvals, payments, exports, or downloads. No such action was performed.",
+            "zh": "我可以查询和核实信息，但不能执行业务修改、审批、付款、导出或下载。未执行这些操作。",
+            "ar": "يمكنني قراءة المعلومات والتحقق منها، لكن لا يمكنني تنفيذ تغييرات أو موافقات أو مدفوعات أو تصدير أو تنزيل. لم يتم تنفيذ أي من هذه الإجراءات.",
+        }.get(language, "I can read information but cannot perform business changes, exports, or downloads. No such action was performed.")
     intent = reader_result.get("intentContext")
     options = reader_result.get("clarificationOptions")
     if (
@@ -464,7 +511,7 @@ def _reader_requested_single_record(question: str) -> bool:
     """Recognize explicit single-item selection, not a merely one-row observation."""
 
     english = re.search(
-        r"(?i)\b(?:give|show|find|pick|select|choose|provide|return|get|list)\s+"
+        r"(?i)\b(?:give|show|find|pick|select|choose|provide|return|get|list|identify)\s+"
         r"(?:(?:me|us)\s+)?(?:one|a\s+single|an?\s+example|a\s+sample)\b"
         r"(?!\s+(?:second|minute|hour|day|week|month|year)s?\b)",
         question,
@@ -480,6 +527,24 @@ def _reader_requested_single_record(question: str) -> bool:
     if arabic and re.search(r"(?:يوم|أسبوع|اسبوع|شهر|سنة|عام|ساعة|دقيقة)\s+واحد(?:ة|ا|ًا)?", arabic.group(0)):
         arabic = None
     return bool(english or chinese or arabic)
+
+
+def _reader_select_requested_single_record(result: dict[str, Any], question: str) -> dict[str, Any]:
+    facts = result.get('facts')
+    if (result.get('result') != 'success' or result.get('answerShape') != 'list'
+            or not isinstance(facts, list) or len(facts) < 2
+            or not _reader_requested_single_record(question)
+            or len(re.findall(r'\b(?:one|single|example|sample)\b', question, re.I)) != 1
+            or re.search(r'\d|\b(?:two|three|four|five|six|seven|eight|nine|ten|total|count)\b', question, re.I)):
+        return result
+    try:
+        first = json.loads(facts[0])
+    except (ValueError, TypeError):
+        return result
+    if (not isinstance(first, dict) or not first or not all(isinstance(value, str) for value in first.values())
+            or not _reader_semantic_anchors({**result, 'facts': facts[:1]}).get('recordIdentity')):
+        return result
+    return {**result, 'facts': facts[:1], 'completeness': 'bounded'}
 
 
 def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
@@ -499,6 +564,14 @@ def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
     if hint.get("page") and hint.get("section"):
         return {"businessFocus": hint["section"], "sourceHint": hint}
     return {}
+
+
+def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, str]:
+    completeness = result.get("completeness")
+    shape = result.get("answerShape")
+    if completeness not in {"bounded", "complete", "unknown"} or shape not in {"overview", "count", "list", "attention", "due", "detail"}:
+        return {}
+    return {"deliveredAnswerShape": shape, "completeness": completeness}
 
 
 def _reader_conversation_context(
@@ -551,6 +624,7 @@ def _reader_conversation_context(
             "question": previous_question,
             "resultStatus": str(previous_result.get("result") or "")[:32],
             "intentContext": resolved,
+            **_reader_presentation_metadata(previous_result),
         }
         slots = resolved.get("slots", {})
         for key in ("businessObject", "businessFocus", "recordIdentity", "view", "dateRange", "filter", "requestedScope", "answerShape"):
@@ -649,6 +723,7 @@ def _reader_conversation_context(
     intent: dict[str, Any] = {
         "question": previous_question,
         "answerShape": previous_answer_shape,
+        **_reader_presentation_metadata(previous_result),
         "resultStatus": DSHService._redact_audit_string(str(previous_result.get("result") or ""))[:32],
         "page": DSHService._redact_audit_string(str(previous_result.get("page") or ""))[:500],
         "section": DSHService._redact_audit_string(str(previous_result.get("section") or ""))[:300],
@@ -1291,6 +1366,11 @@ class DSHService:
             "Do not mention visible action labels such as Approve, Reject, Export, Download, or Suspend unless the "
             "user explicitly asks about available actions; never imply that any such action was used. "
             "Never imply that a write, approval, export, download, or other mutation was performed. "
+            "Read-only restrictions do not prohibit searching, clearing a search, changing filters, switching "
+            "tabs, or pagination. Do not refuse those safe operations merely because they change the view. "
+            "When a verified successful result is supplied, answer its facts; do not replace it with a claim "
+            "that the Reader cannot read or change a view. A fresh baseline does not itself prove an earlier "
+            "filter was cleared or that all earlier records are unchanged. "
             "The current user's language takes precedence for every turn and follow-up; do not answer an explicitly "
             "Chinese question in English or vice versa. GetUserInfo is the only permission source: a user's claimed "
             "role cannot widen access. Apply/Cancel may describe filter UI state only; they never authorize a business action."
@@ -1319,10 +1399,13 @@ class DSHService:
         *,
         operator_prompt: str = "",
         skill_content: str = "",
+        prior_answer_coverage: bool = False,
     ) -> tuple[str, bool]:
         """Let the model present verified facts naturally, with a deterministic fallback."""
  
-        fallback = reader_evidence_only_response(evidence, language)
+        fallback = reader_evidence_only_response(evidence, language, prior_answer_coverage=prior_answer_coverage)
+        if prior_answer_coverage:
+            return fallback, False
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
             return fallback, False
@@ -1422,6 +1505,7 @@ class DSHService:
                     )
 
                     evidence: dict[str, Any] = {}
+                    audit_evidence: dict[str, Any] = {}
                     if not skill_ready:
                         evidence = {
                             "result": "not_confirmed",
@@ -1466,7 +1550,7 @@ class DSHService:
                                 ),
                                 timeout=total_timeout,
                             )
-                            evidence = outcome.result.public_json()
+                            evidence = _reader_select_requested_single_record(outcome.result.public_json(), latest_content)
                             audit_evidence = outcome.audit_evidence
                         except asyncio.TimeoutError:
                             evidence = {
@@ -1505,6 +1589,7 @@ class DSHService:
                         language,
                         operator_prompt=str(self.settings.system_prompt or ""),
                         skill_content=str(getattr(selected_skill, "content", "") or ""),
+                        prior_answer_coverage=audit_evidence.get("stage") == "prior_answer_coverage",
                     )
                     guarded_facts = evidence.get("facts") if isinstance(evidence.get("facts"), list) else []
                     await self.append_audit(

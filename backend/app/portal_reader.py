@@ -1058,6 +1058,8 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
     limits = {
         "question": 500,
         "answerShape": 40,
+        "deliveredAnswerShape": 40,
+        "completeness": 40,
         "businessObject": 160,
         "businessFocus": 240,
         "recordIdentity": 300,
@@ -1124,6 +1126,7 @@ def reader_answer_shape(
     ):
         return "overview"
     patterns = (
+        ("count", r"\bhow many\b|\bcount\b|\bnumber of\b|多少|几个|几项"),
         ("attention", r"\battention\b|pay attention|需要.{0,8}(?:关注|留意)|(?:关注|留意).{0,8}(?:什么|哪些)"),
         (
             "due",
@@ -1132,7 +1135,6 @@ def reader_answer_shape(
             r"expir|overdue|到期|逾期",
         ),
         ("detail", r"\bdetails?\b|详情|明细"),
-        ("count", r"\bhow many\b|\bcount\b|\bnumber of\b|多少|几个|几项"),
         ("overview", r"\boverview\b|\bsummary\b|\bwhat (?:is shown|can i see)\b|概览|概况|总览"),
         ("list", r"\bshow\b|\blist\b|\bwhich\b|\bwhat are\b|\b(?:check|view|find)\b.*\b(?:tasks|items|records|applications)\b|显示|列出|哪些|有什么"),
     )
@@ -1263,7 +1265,7 @@ def _stable_detail_identity_from_query(question: str, actions: tuple[dict[str, A
     candidates: set[str] = set()
     question_text = question.casefold()
     for action in actions:
-        if str(action.get("type") or "").casefold().replace("-", "_") != "query":
+        if str(action.get("type") or "").casefold().replace("-", "_") not in {"query", "filter"}:
             continue
         value = _detail_identity(action.get("value"))
         if (
@@ -1633,6 +1635,10 @@ class ReadOnlyPortalPolicy:
                     continue
                 if self._contains_mutation_command(candidate):
                     return "action_not_read_only"
+            if action_type == "query" and (
+                action.get("value") is not None or raw_values or action.get("parameters") or action.get("filters")
+            ):
+                return "query_cannot_apply_filters"
         if len(page_paths) > self.max_pages:
             return "page_limit_exceeded"
         return None
@@ -1881,6 +1887,74 @@ def _selected_api_answer_plan(
 
 
 _DOCUMENTATION_QUESTION_MARKERS = ("manual", "documented", "documentation", "user guide", "手册", "文档", "说明", "دليل")
+
+
+def question_requests_business_mutation(question: str) -> bool:
+    """Recognize explicit commands, not resource names or read-only view changes."""
+    text = re.sub(r"\s+", " ", str(question or "")).strip()
+    english = re.sub(
+        r"^(?:(?:please|now)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+)+",
+        "", text, flags=re.IGNORECASE,
+    )
+    if re.match(
+        r"^(?:approve|reject|submit|delete|remove|create|assign|reassign|export|upload|download|pay|refund|send|suspend|publish|save|archive)\b",
+        english, re.IGNORECASE,
+    ):
+        return True
+    if re.match(r"^(?:change|modify|update|edit|enable|disable|activate|deactivate)\b", english, re.IGNORECASE):
+        return not bool(re.match(
+            r"^\w+\s+(?:(?:the|that|this|my|current)\s+)?(?:filters?|search|tabs?|views?|pages?|sort(?:ing)?|date\s+range)\b",
+            english, re.IGNORECASE,
+        ))
+    if re.match(r"^turn\b.*\b(?:automatic\s+assignment|auto[- ]assignment|assignment\s+settings?)\b.*\b(?:off|on)\b", english, re.IGNORECASE):
+        return True
+    chinese = re.sub(r"^(?:(?:请|帮我|给我|现在|立即|麻烦你|我需要你|我想让你)\s*)+", "", text)
+    return bool(
+        re.match(r"^(?:删除|导出|下载|上传|批准|审批|驳回|提交|创建|新建|分配|重新分配|发送|退款|支付|停用|发布|保存)", chinese)
+        or re.match(r"^(?:关闭|开启|禁用|启用)自动分配", chinese)
+        or re.match(r"^(?:يرجى\s+)?(?:احذف|صدّر|صدر|حمّل|حمل|ارفع|أرسل|ارسل|وافق|ارفض|ادفع)\b", text)
+    )
+
+
+PRIOR_LIST_SAMPLE_FACT = (
+    "The immediately preceding list has bounded coverage; its listed record count alone does not establish the collection total. "
+    "This does not change any separately verified total."
+)
+PRIOR_EMPTY_LIST_FACT = (
+    "The immediately preceding query reported no matching records within its verified view and criteria. "
+    "That was an empty query result, not a sample count or a global collection total. "
+    "It does not establish that no records exist elsewhere or that the result is still current."
+)
+
+
+ABSENCE_EVIDENCE_LIMIT = 'A search with no matching records does not establish that a record was deleted. Deletion or historical existence requires separate evidence; this Reader has not verified that history.'
+
+
+def reader_absence_limit_explanation(question: str) -> str | None:
+    if re.fullmatch(
+        r'\s*can you confirm (?:a|the|that) [a-z]+ was deleted just because '
+        r'(?:this|the|that) search found nothing\??\s*', question, re.I,
+    ):
+        return ABSENCE_EVIDENCE_LIMIT
+    return None
+
+
+def previous_sample_explanation(question: str, context: dict[str, Any]) -> str | None:
+    """Explain prior answer coverage without reusing old records or totals."""
+    previous = _bounded_conversation_context(context).get("previousIntent", {})
+    if previous.get("deliveredAnswerShape") != "list":
+        return None
+    if re.search(
+        r"^\s*is (?:that|this|it)\b.*\b(?:total|all)\b.*\b(?:sample|listed|shown)\b|"
+        r"^\s*(?:这|那).{0,20}总数.{0,25}(?:样本|示例|列出)", question, re.IGNORECASE,
+    ):
+        if previous.get("resultStatus") == "success" and previous.get("completeness") == "bounded":
+            return PRIOR_LIST_SAMPLE_FACT
+        if previous.get("resultStatus") == "no_data" and previous.get("completeness") in {"bounded", "complete"}:
+            return PRIOR_EMPTY_LIST_FACT
+    return None
+
+
 _LIVE_TIME_MARKERS = (
     "current", "currently", "right now", "today", "latest",
     "当前", "现在", "目前", "今天", "最新", "此刻",
@@ -1899,6 +1973,26 @@ _KNOWLEDGE_PROSE_TERMS = frozenset(
         "will", "with",
     }
 )
+
+
+def question_is_conceptual(question: str) -> bool:
+    normalized = question.casefold()
+    return bool(re.search(
+        r"\b(?:explain|describe|define|meaning|definition|difference|distinction|manual)\b"
+        r"|\bwhat (?:does|do)\b.*\b(?:mean|cover|measure|provide|represent)\b"
+        r"|\bwhat information\b.*\b(?:provide|cover|contain)\b"
+        r"|\bwhat (?:information|fields|columns)\b.*\bdiffers?\b"
+        r"|\bhow (?:is|are)\b.*\b(?:different|related)\b"
+        r"|\bwhy does\b.*\bshow\b.*\b(?:other|instead)\b"
+        r"|\bdoes\b.*\btell me\b"
+        r"|\bare\b.*\bthe same (?:identifier|record type|field)\b"
+        r"|\bcan\b.*\bconfirm\b.*\bjust because\b"
+        r"|\b(?:does|do|can)\b.*\b(?:prove|guarantee|imply|establish|mean)\b"
+        r"|\balone\b.*\bidentify\b|\bhow (?:do i|can i|to)\b"
+        r"|\b(?:what|which)\b.*\b(?:criteria|filters?|fields?|columns?)\b.*\b(?:available|supported)\b"
+        r"|解释|含义|区别|手册|是什么意思|如何|怎么使用|شرح|معنى|الفرق|كيف",
+        normalized,
+    )) or any(marker in normalized for marker in _DOCUMENTATION_QUESTION_MARKERS)
 
 
 def question_requires_live_portal(question: str) -> bool:
@@ -2056,12 +2150,31 @@ def _knowledge_unit_supports_fact(fact: str, unit: str) -> bool:
 
 
 def _knowledge_claim_supported_by_chunk(fact: str, chunk: str) -> bool:
+    passages = _knowledge_semantic_passages(chunk)
+    if len(passages) > 1:
+        return any(_knowledge_claim_supported_by_chunk(fact, passage) for passage in passages)
     normalized_fact = re.sub(r"\s+", " ", fact).strip().casefold()
     if not normalized_fact or _knowledge_fact_is_structural(fact):
         return False
 
+    for field, value in _knowledge_content_fields(chunk).items():
+        prefix = re.match(re.escape(field) + r":\s*(.+)$", normalized_fact)
+        if prefix:
+            return _knowledge_claim_supported_by_chunk(prefix[1], value)
+
+    subjects = re.findall(r"(?:## Semantic node:\s*|\*\*section:\*\*\s*)(.*?)(?=\s+-\s+\*\*|$)", chunk)
+    for subject in subjects:
+        for field, value in _knowledge_content_fields(chunk).items():
+            prefix = re.match(re.escape(subject.strip().casefold()) + r"\s+" + re.escape(field) + r":\s*(.+)$", normalized_fact)
+            if prefix and _knowledge_claim_supported_by_chunk(prefix[1], value):
+                return True
+        prefix = re.match(re.escape(subject.strip().casefold()) + r"\s+(?:is|covers|includes)\s+(.+)$", normalized_fact)
+        if prefix and _knowledge_claim_supported_by_chunk(prefix[1], chunk):
+            return True
+
     quote = normalized_fact.replace("`", "").rstrip(".!?。！？ ")
-    sentences = _knowledge_fact_clauses(chunk)
+    sentences = tuple(sentence for body in _knowledge_content_fields(chunk).values()
+                      for sentence in _knowledge_fact_clauses(body)) or _knowledge_fact_clauses(chunk)
     units = [
         item.strip()
         for sentence in sentences
@@ -2097,12 +2210,48 @@ def _knowledge_claim_supported_by_chunk(fact: str, chunk: str) -> bool:
     return best_supported_overlap > best_conflicting_overlap
 
 
+def _knowledge_semantic_passages(content: str) -> tuple[str, ...]:
+    """Keep repeated manual fields inside their own semantic or control section."""
+    return tuple(part.strip() for part in re.split(r'(?=## Semantic node:|### Control:)', content) if part.strip())
+
+
+def _knowledge_content_fields(content: str, *, include_metadata: bool = False) -> dict[str, str]:
+    """Separate flattened manual fields without rewriting their assertions."""
+    fields = {}
+    for match in re.finditer(r"-\s*\*\*([a-z_]+):\*\*\s*(.*?)(?=\s+-\s*\*\*[a-z_]+:\*\*|$)", content, re.DOTALL):
+        if include_metadata or match[1] not in {"section", "page", "name", "type"}:
+            fields[match[1]] = match[2].strip()
+    return fields
+
+
+def knowledge_fact_evidence(knowledge_context: Any, question: str = "") -> list[dict[str, Any]]:
+    evidence = []
+    contents = [(index, passage) for index, content in enumerate(_knowledge_evidence_strings(knowledge_context, limit=12))
+                for passage in _knowledge_semantic_passages(content)]
+    def metadata(content: str) -> dict[str, str]:
+        fields = _knowledge_content_fields(content, include_metadata=True)
+        return {key: fields[key][:300] for key in ('section', 'page') if fields.get(key)}
+    if question:
+        words = _section_match_tokens(question)
+        contents.sort(key=lambda item: len(words & _section_match_tokens(metadata(item[1]).get('section', ''))), reverse=True)
+    for index, content in contents:
+        for field, value in _knowledge_content_fields(content).items():
+            if field not in {"meaning", "content", "distinguish_from", "field_distinctions", "filters", "scope", "evidence_limits", "verification_limits"}:
+                continue
+            if value and len(value) <= 600:
+                evidence.append({"chunkIndex": index, **metadata(content), "field": field, "text": value})
+            if len(evidence) >= 24:
+                return evidence
+    return evidence
+
+
 def knowledge_supports_result(result: ReaderResult, knowledge_context: Any) -> bool:
     """Require knowledge-only success facts to be grounded in retrieved content."""
 
     if result.status != "success" or not result.facts:
         return False
-    evidence = _knowledge_evidence_strings(knowledge_context)
+    evidence = tuple(passage for chunk in _knowledge_evidence_strings(knowledge_context)
+                     for passage in _knowledge_semantic_passages(chunk))
     if not evidence:
         return False
     for fact in result.facts:
@@ -2712,6 +2861,73 @@ def _observation_fallback_intent(
     return answer_shape
 
 
+def _observed_identity_search(question: str, context: dict[str, Any], observation: Any, current_page: str) -> dict[str, Any] | None:
+    """Bind a literal requested identity to one observed search-and-apply surface."""
+    identity = _resolved_intent_values(context).get("recordIdentity", "")
+    if not identity and re.match(r"\s*(?:find|search\b.*?\bfor|查找|搜索)\b", question, re.IGNORECASE):
+        identifiers = re.findall(r"(?<![\w/-])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![\w/-])", question)
+        if len(identifiers) == 1:
+            identity = identifiers[0]
+    if (not identity or len(identity) > 120 or not current_page or not isinstance(observation, dict)
+            or question_is_conceptual(question)
+            or not re.search(r"(?<!\w)" + re.escape(identity) + r"(?!\w)", question, re.IGNORECASE)
+            or re.search(r"\b(?:not|except|excluding|without|compare|versus)\b|排除|不要|对比", question, re.IGNORECASE)):
+        return None
+    controls = [control for control in observation.get("filterControls", []) if isinstance(control, dict)
+                and control.get("role") == "textbox" and control.get("filterSurface") is True
+                and control.get("selector") and str(control.get("label") or "").casefold() == "search"]
+    if len(controls) != 1 or controls[0].get("selected") == [identity]:
+        return None
+    commands = [command for command in controls[0].get("commands", [])
+                if str(command).casefold() in {"filter", "apply", "apply filters"}]
+    if len(commands) > 1:
+        return None
+    actions = [{"type": "filter", "selector": controls[0]["selector"], "value": identity}]
+    if commands:
+        actions.append({"type": "apply_filter", "role": "button", "name": commands[0]})
+    return {"mode": "portal_read", "portalRequest": {"startPath": current_page, "actions": [
+        *actions,
+    ], "expectedFields": []}}
+
+
+def _observed_search_clear(question: str, observation: Any, current_page: str) -> dict[str, Any] | None:
+    """Bind a literal search-only clear to one native control, never a global reset."""
+    if (not current_page or not isinstance(observation, dict)
+            or not re.match(r"\s*(?:please\s+)?clear\s+(?:(?:the|that|this|previous)\s+)?(?:(?:account|task|application)\s+)?search\b", question, re.IGNORECASE)
+            or re.search(r"\b(?:except|without|not|unless)\b", question, re.IGNORECASE)):
+        return None
+    controls = [control for control in observation.get("filterControls", []) if isinstance(control, dict)
+                and control.get("role") == "textbox" and control.get("filterSurface") is True
+                and control.get("selector") and str(control.get("label") or "").casefold() == "search"]
+    if len(controls) != 1:
+        return None
+    commands = [command for command in controls[0].get("commands", [])
+                if str(command).casefold() in {"filter", "apply", "apply filters"}]
+    if len(commands) > 1:
+        return None
+    actions = [{"type": "filter", "selector": controls[0]["selector"], "value": ""}]
+    if commands:
+        actions.append({"type": "apply_filter", "role": "button", "name": commands[0]})
+    return {"mode": "portal_read", "portalRequest": {
+        "startPath": current_page, "actions": actions, "expectedFields": [],
+    }}
+
+
+def _search_clear_verified(request: PortalReadRequest, payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("result", payload.get("status")) in {"load_failed", "no_permission"}:
+        return False
+    observation = payload.get("observation")
+    if (not isinstance(observation, dict) or not isinstance(observation.get("readHealth"), dict)
+            or observation["readHealth"].get("healthy") is not True):
+        return False
+    controls = observation.get("filterControls", [])
+    return any(action.get("type") == "filter" and action.get("value") == ""
+               and any(isinstance(control, dict) and control.get("selector") == action.get("selector")
+                       and control.get("role") == "textbox" and str(control.get("label") or "").casefold() == "search"
+                       and control.get("selected") == [] for control in controls)
+               for action in request.actions)
+
+
 def _data_observation_control(value: str) -> bool:
     normalized = value.casefold()
     if not re.search(r"\d", normalized) or not any(character.isalpha() for character in normalized):
@@ -2782,7 +2998,7 @@ def _section_observation(section: Any) -> dict[str, Any] | None:
     if not heading and not (
         isinstance(section.get("nodeId"), str)
         and section["nodeId"].strip()
-        and section.get("kind") in {"table", "grid", "region"}
+        and section.get("kind") in {"table", "grid", "region", "cards", "metrics"}
     ):
         return None
     normalized = {
@@ -2795,6 +3011,8 @@ def _section_observation(section: Any) -> dict[str, Any] | None:
         "summaries": list(section.get("summaries")) if isinstance(section.get("summaries"), (list, tuple)) else [],
         "cardSummaries": list(section.get("cardSummaries")) if isinstance(section.get("cardSummaries"), (list, tuple)) else [],
         "selectedState": str(section.get("selectedState") or "")[:300],
+        "selectedTabPath": [value[:200] for value in section.get("selectedTabPath", [])[:4] if isinstance(value, str)]
+        if isinstance(section.get("selectedTabPath"), list) else [],
         "emptyState": str(section.get("emptyState") or "")[:300],
     }
     for name, max_length in (("nodeId", 120), ("kind", 40), ("parentRef", 120)):
@@ -2985,22 +3203,31 @@ def _observation_evidence_for_section(observation: Any, section_name: str) -> di
         and len({_semantic_node_evidence_signature(node, nodes_by_id) for node in matches}) == 1
     ):
         return with_parent_state(matches[0])
-    if matches and len({str(node.get("heading") or "").casefold() for node in matches}) == 1:
-        selected_states = {
-            re.sub(r"\s+", " ", str(node.get("selectedState") or "")).strip().casefold()
-            for node in matches
-            if str(node.get("selectedState") or "").strip()
-        }
-        if len(selected_states) <= 1:
-            merged_matches = [
-                section
-                for section in _structured_observation_sections(observation)
-                if expected == section["heading"].casefold()
-                or expected in section["heading"].casefold()
-                or section["heading"].casefold() in expected
-            ]
-            if len(merged_matches) == 1:
-                return merged_matches[0]
+    if len(matches) > 1:
+        ids = {str(node.get("nodeId") or "") for node in matches}
+        parents = [str(node.get("parentRef") or "") for node in matches]
+        states = {str(node.get("selectedState") or "").strip().casefold() for node in matches
+                  if node.get("selectedState")}
+        roots = [node for node in matches if str(node.get("parentRef") or "") not in ids]
+        # Same-heading wrappers may contribute complementary bounded data only
+        # when their native parent links prove a single nested chain. Siblings
+        # and independent equal-state regions remain ambiguous.
+        if ("" not in ids and len(ids) == len(matches) and len(roots) == 1
+                and len(states) <= 1
+                and len([p for p in parents if p in ids]) == len(set(p for p in parents if p in ids))
+                and len({str(node.get("heading") or "").casefold() for node in matches}) == 1):
+            visited = {str(roots[0]["nodeId"])}
+            while True:
+                children = {str(node["nodeId"]) for node in matches
+                            if str(node.get("parentRef") or "") in visited}
+                if children <= visited:
+                    break
+                visited.update(children)
+            if visited == ids:
+                merged = [section for section in _structured_observation_sections(observation)
+                          if set(section.get("nodeRefs") or []) == ids]
+                if len(merged) == 1:
+                    return merged[0]
     if matches and all(not node.get("nodeId") and not node.get("parentRef") for node in matches):
         legacy_matches = [
             section
@@ -3049,6 +3276,13 @@ def _observation_evidence_for_result(observation: Any, result: ReaderResult) -> 
     roots = [node for node in nodes if section and section in {
         normalized(node.get("nodeId")), normalized(node.get("heading")),
     }]
+    source_node = nodes_by_id.get(source)
+    # A same-name metrics block is a sibling, not the parent of a table.
+    # Bind by the explicit source ID and its active view when no region claims it.
+    if (source_node and section and section == normalized(source_node.get("selectedState"))
+            and not any(node.get("kind") == "region" for node in roots)
+            and (not state or _observation_selected_state_matches(state, source_node))):
+        return source_node
     if not roots:
         if result.status != "no_data" and nodes_by_id and source not in nodes_by_id and not any(
             normalized(node.get("heading")) == source for node in nodes
@@ -3279,13 +3513,19 @@ def _category_control_requiring_children(
     planned_result: ReaderResult | None,
     requested_answer_shape: str,
     conversation_context: dict[str, Any] | None = None,
+    *, current_page: str = "",
 ) -> _CategoryChildRequirement | None:
     """Identify a named collection whose parent count is not enough evidence."""
 
     if (
-        requested_answer_shape not in {"list", "detail"}
+        requested_answer_shape not in {"list", "detail", "count", "overview"}
         or (planned_result is not None and planned_result.status not in {"success", "not_confirmed"})
     ):
+        return None
+    if requested_answer_shape == "detail" and re.search(
+        r"\b(?:difference|distinction|meaning)\b|\b(?:does|do)\b.+\b(?:mean|prove)\b|区别|含义|是否意味着",
+        question, re.IGNORECASE,
+    ) and not re.search(r"\b(?:show|list|open|read)\b|显示|列出|打开|读取", question, re.IGNORECASE):
         return None
     previous = _bounded_conversation_context(conversation_context).get("previousIntent")
     target_sources: tuple[Any, ...] = (
@@ -3298,7 +3538,38 @@ def _category_control_requiring_children(
         previous.get("section") if isinstance(previous, dict) else "",
     )
     candidates: dict[str, _CategoryChildRequirement] = {}
+    tab_controls = observation.get("tabControls", []) if isinstance(observation, dict) else []
+    current_words = frozenset(re.findall(r"\w+", question.casefold()))
+    current_words |= frozenset(re.findall(r"\w+", _resolved_intent_values(conversation_context).get("view", "").casefold()))
+    named_tabs = [control for control in (tab_controls[:20] if isinstance(tab_controls, list) else []) if isinstance(control, dict)
+                  and control.get("name") and set(re.findall(r"\w+", str(control["name"]).casefold())).issubset(current_words)]
+    # A trailing page context ("... in Reports & Analytics") must not win
+    # over the requested view. Keep explicitly named parent AND child tabs.
+    context_parts = re.split(r"\bin\b", question.casefold(), maxsplit=1)
+    focus_words = set(re.findall(r"\w+", context_parts[0]))
+    focus_tabs = [control for control in named_tabs
+                  if set(re.findall(r"\w+", str(control['name']).casefold())).issubset(focus_words)]
+    route_words = set(re.findall(r"\w+", urlsplit(current_page).path.rsplit("/", 1)[-1].replace("-", " ").casefold()))
+    if focus_tabs and len(context_parts) == 2 and (
+            re.search(r'\b(?:page|module|portal)\b', context_parts[1])
+            or (len(route_words) >= 2 and route_words.issubset(set(re.findall(r"\w+", context_parts[1]))))
+            or (re.search(r'&|\band\b', context_parts[1])
+                and _section_match_tokens(context_parts[0]) & _section_match_tokens(context_parts[1]))):
+        named_tabs = focus_tabs
+    if named_tabs and all(control.get("selected") is True for control in named_tabs):
+        return None
+    for control in tab_controls[:20] if isinstance(tab_controls, list) else []:
+        if not isinstance(control, dict) or control.get("selected") is not False:
+            continue
+        label = str(control.get("name") or "").strip()[:200]
+        if named_tabs and control not in named_tabs:
+            continue
+        label_words = frozenset(re.findall(r"\w+", label.casefold()))
+        if label_words and label_words.issubset(current_words) and not _observation_has_category_children(observation, label):
+            candidates.setdefault(label, _CategoryChildRequirement(semantic_label=label, control_label=label))
     for section in _observation_semantic_nodes(observation):
+        if requested_answer_shape in {"count", "overview"}:
+            break
         for control in _bounded_observation_field(section, "controls", limit=20):
             match = re.fullmatch(
                 r"(.+?)\s*(?:[([]\s*)?\d+(?:[.,]\d+)?(?:\s*[)\]])?",
@@ -3526,8 +3797,12 @@ def _result_from_structured_observation(
         answer_shape not in {"count", "list", "attention", "due"}
     ):
         return None
+    if _category_control_requiring_children(question, observation, None, answer_shape, current_page=page):
+        return None
     section = _observation_evidence_for_section(observation, section_name)
     if section is None or _observation_has_error_state(section):
+        return None
+    if section.get("kind") in {"metrics", "cards"} and not _observation_no_data_allowed(observation):
         return None
     heading = str(section.get("heading") or "")
     attention_heading = reader_answer_shape(heading) == "attention" or bool(re.search(
@@ -3700,7 +3975,9 @@ def observation_fallback_result(
     answer_shape = answer_shape or reader_answer_shape(question)
     if answer_shape in {"count", "attention", "due", "detail"}:
         return None
-    if _observation_has_error_state(observation):
+    if _observation_has_error_state(observation) or not _observation_no_data_allowed(observation):
+        return None
+    if _category_control_requiring_children(question, observation, None, answer_shape, current_page=page):
         return None
 
     source = _observation_evidence_for_section(observation, section)
@@ -3715,7 +3992,7 @@ def observation_fallback_result(
     summaries = (
         *(
             value for value in _bounded_observation_field(source, "cardSummaries", limit=12)
-            if _data_observation_control(value)
+            if (intent == "overview" and source.get("kind") == "cards") or _data_observation_control(value)
         ),
         *(
             value for value in _bounded_observation_field(source, "summaries", limit=12)
@@ -3731,14 +4008,30 @@ def observation_fallback_result(
                 summary="The requested portal section is empty.",
                 page=str(page)[:500],
                 section=str(source.get("heading") or section)[:300],
-                source_section=str(source.get("heading") or section)[:300],
+                source_section=str(source.get("nodeId") or source.get("heading") or section)[:300],
                 answer_shape="list",
                 completeness="bounded",
                 selected_state=str(source.get("selectedState") or "")[:300],
                 scope=scope,
             )
         return None
-    if intent == "overview" and not controls and not summaries:
+    native_rows = []
+    if intent == "overview" and source.get("kind") == "table":
+        for row in source.get("rowFields", [])[:4]:
+            if not isinstance(row, dict):
+                continue
+            selected = {}
+            # Retain complete native pairs; truncating serialized rows can
+            # break field bindings and make downstream formatting ambiguous.
+            for key, value in list(row.items())[:5]:
+                candidate = {**selected, key: value}
+                if len(json.dumps(candidate, ensure_ascii=False)) > _OBSERVATION_FALLBACK_MAX_FACT_CHARS:
+                    break
+                selected = candidate
+            fact = json.dumps(selected, ensure_ascii=False)
+            if len(selected) >= 2 and _structured_row_supports_fact(fact, source):
+                native_rows.append(fact)
+    if intent == "overview" and not controls and not summaries and not native_rows:
         if _raw_observation_has_empty_state(source):
             if not _observation_no_data_allowed(observation):
                 return None
@@ -3747,7 +4040,7 @@ def observation_fallback_result(
                 summary="The requested portal section is empty.",
                 page=str(page)[:500],
                 section=str(source.get("heading") or section)[:300],
-                source_section=str(source.get("heading") or section)[:300],
+                source_section=str(source.get("nodeId") or source.get("heading") or section)[:300],
                 answer_shape="overview",
                 completeness="bounded",
                 selected_state=str(source.get("selectedState") or "")[:300],
@@ -3770,7 +4063,7 @@ def observation_fallback_result(
             candidates = matching_count_controls
         else:
             candidates = (*summaries, *(count_controls if len(count_controls) >= 2 else controls))
-    facts = _bounded_fact_candidates(tuple(candidates))
+    facts = _bounded_fact_candidates((*native_rows, *candidates))
     if not facts:
         return None
     return ReaderResult(
@@ -3778,12 +4071,14 @@ def observation_fallback_result(
         summary="The bounded portal observation answered the generic request.",
         page=str(page)[:500],
         section=str(source.get("heading") or section or (headings[0] if headings else ""))[:300],
-        source_section=str(source.get("heading") or section or (headings[0] if headings else ""))[:300],
+        source_section=str(source.get("nodeId") or source.get("heading") or section or (headings[0] if headings else ""))[:300],
         answer_shape=intent,
         completeness="bounded",
         selected_state=str(source.get("selectedState") or "")[:300],
         scope=scope,
         facts=facts,
+        missing=("Overview includes only a bounded sample of rows and fields, not every analytics dimension.",)
+        if native_rows else (),
     )
 
 
@@ -3852,6 +4147,24 @@ def _table_row_supports_fact(
     return normalized_fact == normalized_row
 
 
+def _native_sample_value_facts(observation: Any) -> tuple[str, ...]:
+    """Derive field occurrences, never a complete enum or collection total."""
+    if not isinstance(observation, dict) or observation.get("kind") != "table":
+        return ()
+    rows = [row for row in observation.get("rowFields", [])[:4] if isinstance(row, dict)]
+    if not rows:
+        return ()
+    facts = []
+    for field in list(rows[0])[:12]:
+        values = list(dict.fromkeys(row[field] for row in rows if isinstance(row.get(field), str)))
+        if not values or len(values) > 4:
+            continue
+        fact = f"Values of {field} in the bounded row sample: " + json.dumps(values, ensure_ascii=False)
+        if len(fact) <= 400:
+            facts.append(fact)
+    return tuple(facts)
+
+
 def _observation_supports_fact(fact: str, observation: Any) -> bool:
     """Require a fact's labels, values, polarity and numbers in one observed unit.
 
@@ -3862,6 +4175,13 @@ def _observation_supports_fact(fact: str, observation: Any) -> bool:
     if not fact.strip():
         return False
     if isinstance(observation, dict) and str(observation.get("kind") or "").casefold() == "table":
+        if fact in _native_sample_value_facts(observation):
+            return True
+        if observation.get("rowFields") and _structured_row_supports_fact(fact, observation):
+            return True
+        if any(_observation_unit_supports_fact(fact, value, structural_tokens=frozenset())
+               for value in _bounded_observation_field(observation, "summaries", limit=4)):
+            return True
         column_headers = _bounded_observation_field(observation, "columnHeaders", limit=20)
         return any(
             _table_row_supports_fact(fact, row, column_headers=column_headers)
@@ -3942,7 +4262,7 @@ def _explicit_observed_filter(question: str, observation: Any) -> str:
                      for node in _observation_semantic_nodes(observation)}
     labels = [item.get("label") for item in observation.get("metrics", []) if isinstance(item, dict)]
     for control in observation.get("filterControls", []):
-        if isinstance(control, dict):
+        if isinstance(control, dict) and control.get("role") != "textbox":
             labels.extend(control.get("options") or [])
             labels.extend(control.get("selected") or [])
     matches = {str(label).strip() for label in labels if isinstance(label, str) and len(label.strip()) >= 3
@@ -4116,14 +4436,25 @@ def observation_result_from_plan(
         )
     if scoped_observation is None:
         return None
+    if scoped_observation.get("kind") in {"metrics", "cards"} and not _observation_no_data_allowed(observation):
+        return None
     if result.status in {"success", "not_confirmed"}:
+        sample_facts = _native_sample_value_facts(scoped_observation)
+        uses_sample_values = any(fact in sample_facts for fact in result.facts)
+        if uses_sample_values and (result.answer_shape not in {"detail", "overview"}
+                                   or not _observation_no_data_allowed(observation)):
+            return None
         supported: list[str] = []
         unsupported: list[str] = []
         structured_list = result.answer_shape == "list" and bool(scoped_observation.get("rowFields"))
+        fact_observation = scoped_observation
+        if result.answer_shape == "count" and scoped_observation.get("kind") in {"table", "grid"}:
+            # Visible record values and row counts cannot establish a collection total.
+            fact_observation = {key: scoped_observation.get(key, []) for key in ("summaries", "cardSummaries")}
         for fact in result.facts:
             fact_supported = (
                 _structured_row_supports_fact(fact, scoped_observation)
-                if structured_list else _observation_supports_fact(fact, scoped_observation)
+                if structured_list else _observation_supports_fact(fact, fact_observation)
             )
             (supported if fact_supported else unsupported).append(fact)
         supported_facts = tuple(supported)
@@ -4175,7 +4506,7 @@ def observation_result_from_plan(
             workflow_state=result.workflow_state,
             missing=missing,
         )
-        if result.answer_shape == "list":
+        if result.answer_shape == "list" or uses_sample_values:
             result = replace(result, completeness="bounded")
     elif result.status == "no_data":
         if not _observation_no_data_allowed(observation):
@@ -4198,6 +4529,72 @@ def observation_result_from_plan(
         workflow_state=result.workflow_state,
         missing=result.missing,
     )
+
+
+def normalize_bounded_list_plan(plan: Any, observation: Any, limit: int) -> Any:
+    """A verified native list need not fill an explicit upper bound."""
+    if (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 99
+            or not isinstance(plan, dict) or plan.get('mode') != 'observation_result'
+            or plan.get('result') != 'not_confirmed' or plan.get('answerShape') != 'list'
+            or not isinstance(observation, dict) or _observation_has_error_state(observation)
+            or not isinstance(observation.get('readHealth'), dict)
+            or observation.get('readHealth', {}).get('healthy') is not True):
+        return plan
+    missing = plan.get('missing')
+    if (not isinstance(missing, list) or len(missing) != 1 or not isinstance(missing[0], str)
+            or not re.fullmatch(
+                r'Only (?:one|two|[1-9]) (?:\w+ ){0,3}rows? (?:was|were|is|are) (?:returned|visible|available)'
+                r'[^.;]*[.;] (?:the )?requested first (?:one|two|three|four|five|six|seven|eight|nine|ten|[1-9]\d?) '
+                r'[\w ]*(?:records|rows|requests|items|tasks|applications|appeals|violations) '
+                r'(?:could not be fully listed|could not be confirmed|cannot be confirmed|cannot be fully listed)\.?',
+                missing[0], re.I)):
+        return plan
+    result = _observation_plan_result_from_plan(plan)
+    if result is None:
+        return plan
+    source = _observation_evidence_for_result(observation, result)
+    if (not isinstance(source, dict) or source.get('kind') not in {'table', 'grid'}
+            or (plan.get('sourceSection') or plan.get('section')) != source.get('nodeId')):
+        return plan
+    rows = source.get('rowFields')
+    facts = plan.get('facts')
+    if (not isinstance(rows, list) or not 0 < len(rows) < limit
+            or not isinstance(facts, list) or len(facts) != len(rows)
+            or any(not isinstance(fact, str) for fact in facts)
+            or len(set(facts)) != len(facts)
+            or any(not _structured_row_supports_fact(fact, source) for fact in facts)
+            or not _observation_selected_state_matches(result.selected_state, source)):
+        return plan
+    bindings = [[index for index, row in enumerate(rows)
+                 if _structured_row_supports_fact(fact, {**source, 'rowFields': [row]})] for fact in facts]
+    if any(len(indices) != 1 for indices in bindings) or len({indices[0] for indices in bindings}) != len(rows):
+        return plan
+    return {**plan, 'result': 'success', 'completeness': 'bounded', 'missing': [],
+            'workflowState': f'Returned {len(facts)} observed records within the requested limit of {limit}; this is a bounded list, not a collection-wide total.'}
+
+
+def normalize_empty_observation_plan(plan: Any, observation: Any) -> Any:
+    """Derive a fact-free empty result from native evidence, not planner prose."""
+    if (not isinstance(plan, dict) or plan.get("mode") != "observation_result"
+            or plan.get("result") != "no_data" or not isinstance(plan.get("facts"), list)
+            or not plan["facts"] or not _observation_no_data_allowed(observation)):
+        return plan
+    source = _observation_evidence_for_section(observation, plan.get("sourceSection") or plan.get("section") or "")
+    if (not source or source.get("kind") not in {"table", "grid"}
+            or source.get("rowFields") or source.get("rowSummaries")):
+        return plan
+    reference = str(plan.get("sourceSection") or plan.get("section") or "").strip().casefold()
+    if (not reference or reference not in {str(source.get("nodeId") or "").casefold(),
+                                          str(source.get("heading") or "").casefold()}):
+        return plan
+    if not all(isinstance(fact, str) for fact in plan["facts"]):
+        return plan
+    # Discard all explanatory claims. Only the independently validated native
+    # empty state survives, and downstream view/filter checks still apply.
+    normalized = {**plan, "facts": []}
+    if observation_result_from_plan(normalized, observation) is None:
+        return plan
+    return normalized
 
 
 def _reader_result_from_tool(tool_result: dict[str, Any]) -> ReaderResult:
@@ -4336,6 +4733,128 @@ def _selected_view_list_fallback(
     )
 
 
+def _observed_explicit_route_failure(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    match = re.fullmatch(r'\s*open (/[-a-zA-Z0-9_/]+) specifically and tell me whether that page works\.?\s*', question, re.I)
+    result, evidence = outcome.result, outcome.audit_evidence
+    if not match or result.status == 'no_permission' or not result.page or not _same_route(match[1], result.page):
+        return outcome
+    observation = evidence.get('observation')
+    if not isinstance(observation, dict):
+        observation = ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    if (not isinstance(observation, dict) or observation.get('rowSummaries')
+            or any(node.get('rowFields') or node.get('rowSummaries')
+                   for node in _observation_semantic_nodes(observation))):
+        return outcome
+    surface = _observation_scalar_strings({key: observation.get(key) for key in ('headings', 'regions', 'error', 'errorState')})
+    if not any(re.search(r'\b404\s+page not found or unavailable[.!]?$', text, re.I) for text in surface):
+        return outcome
+    updated = replace(result, status='load_failed', facts=(), missing=('observed_page_not_found',),
+                      answer_shape='detail', summary='The explicitly requested page displayed a 404 unavailable state.')
+    return ReaderOutcome(updated, {**evidence, 'explicitRouteFailure': {'path': match[1], 'observedCode': 404},
+                                  'result': updated.public_json()})
+
+
+def _observed_tab_catalogue(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Answer a literal control-inventory question from fresh native tab metadata."""
+    inventory = re.fullmatch(
+        r'\s*(?:in [a-z &-]+,\s*)?(?:which|what) (?:queue )?tabs are (?:available|visible|present)'
+        r'(?: (?:to|for|in) (?:my|the) (?:current )?(?:account|view))?\??\s*', question, re.I,
+    )
+    conditional_queue = re.fullmatch(
+        r'\s*show (?:one|two|three|four|five|[1-9]\d?) [a-z ]+ in [a-z ]+, '
+        r'if that queue exists for this account\.?\s*', question, re.I,
+    )
+    if not inventory and not conditional_queue:
+        return outcome
+    result, evidence = outcome.result, outcome.audit_evidence
+    if result.status in {'no_permission', 'load_failed'} or not result.page:
+        return outcome
+    observation = evidence.get('observation')
+    if not isinstance(observation, dict):
+        observation = ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    if (not isinstance(observation, dict) or not isinstance(observation.get('readHealth'), dict)
+            or observation['readHealth'].get('healthy') is not True or _observation_has_error_state(observation)):
+        return outcome
+    tabs = observation.get('tabControls')
+    if (not isinstance(tabs, list) or len(tabs) > 20 or any(not isinstance(tab, dict)
+            or not isinstance(tab.get('name'), str) or not tab['name'].strip() for tab in tabs)):
+        return outcome
+    names = tuple(dict.fromkeys(_sanitize_untrusted_text(tab['name'], max_length=200) for tab in tabs))
+    if any(not name for name in names):
+        return outcome
+    if conditional_queue:
+        if names:
+            return outcome
+        updated = replace(result, status='not_confirmed', facts=(), missing=('observed_queue_not_available',),
+                          source_section='tabControls', summary='No named queue tabs are visible in this current page layout.')
+        return ReaderOutcome(updated, {**evidence, 'uiSchemaEvidence': {'source': 'tabControls', 'names': []},
+                                      'result': updated.public_json()})
+    facts = tuple(f'Visible tab: {name}' for name in names[:8]) if names else (
+        'No named visible tab controls were observed on this page during this read.',)
+    updated = replace(result, status='success', answer_shape='detail', completeness='bounded', scope='unknown',
+                      facts=facts, source_section='tabControls', missing=(),
+                      summary='The currently visible tab controls were observed.')
+    return ReaderOutcome(updated, {**evidence, 'uiSchemaEvidence': {'source': 'tabControls', 'names': list(names[:8])},
+                                  'result': updated.public_json()})
+
+
+def _guard_requested_queue_view(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    result = outcome.result
+    if (result.status not in {"success", "no_data", "not_confirmed"} or not result.page
+            or question_is_conceptual(question)):
+        return outcome
+    matches = re.findall(r"\b(?:in\s+(to do|completed)|((?:to do|queued)\s+tasks?(?:\s+list)?))\b", question, re.I)
+    requested = {re.sub(r"\s+tasks?(?:\s+list)?$", "", (a or b).casefold()) for a, b in matches}
+    if len(requested) != 1:
+        return outcome
+    evidence = outcome.audit_evidence
+    if str(evidence.get("stage") or "").startswith("knowledge_"):
+        return outcome
+    observation = evidence.get("observation")
+    if not isinstance(observation, dict):
+        observation = ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
+    source = _observation_evidence_for_result(observation, result)
+    if not isinstance(source, dict) or source.get("kind") not in {"table", "grid"}:
+        return outcome
+    selected = str(source.get("selectedState") or "").strip().casefold()
+    selected = re.sub(r"\s+tasks$", "", selected)
+    if not selected or selected in requested:
+        return outcome
+    guarded = replace(result, status="not_confirmed", facts=(), missing=("requested_queue_view_unverified",))
+    return ReaderOutcome(guarded, {**evidence, "queueViewGuard": {
+        "requested": next(iter(requested)), "observed": selected,
+    }, "result": guarded.public_json()})
+
+
+def _guard_requested_team_scope(outcome: ReaderOutcome, intent_state: dict[str, Any], question: str = "") -> ReaderOutcome:
+    result = outcome.result
+    requested = _resolved_intent_values({"resolvedIntent": intent_state}).get("requestedScope")
+    if (not requested and not question_is_conceptual(question) and re.search(r"\bteam\b|团队|فريق", question, re.IGNORECASE)
+            and not re.search(r"\b(?:not|except|without)\b|不要|排除", question, re.IGNORECASE)):
+        requested = "team"
+    if requested != "team" or result.status not in {"success", "no_data"} or not result.page or result.scope == "team":
+        return outcome
+    evidence = outcome.audit_evidence
+    if str(evidence.get('stage') or '').startswith('knowledge_'):
+        return outcome
+    observation = evidence.get("observation")
+    if not isinstance(observation, dict):
+        observation = ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
+    source = _observation_evidence_for_result(observation, result)
+    labels = []
+    if isinstance(source, dict):
+        path = source.get("selectedTabPath")
+        labels = [source.get("heading", ""), source.get("selectedState", ""), *(path if isinstance(path, list) else [])]
+        headers = source.get("columnHeaders", [])
+        if headers and str(headers[0]).casefold() in {"team member", "team members"}:
+            labels.append(headers[0])
+    if any(isinstance(label, str) and re.search(r"\bteam\b|团队|فريق", label, re.IGNORECASE) for label in labels):
+        return outcome
+    guarded = replace(result, status="not_confirmed", facts=(), missing=("requested_team_scope_unverified",))
+    return ReaderOutcome(guarded, {**evidence, "scopeGuard": {"requested": "team", "verified": result.scope},
+                                  "result": guarded.public_json()})
+
+
 class AdminPortalReader:
     """GetUserInfo-first orchestration for one serialized Admin reader turn."""
 
@@ -4409,6 +4928,19 @@ class AdminPortalReader:
             outcome = ReaderOutcome(result, {
                 **outcome.audit_evidence, "intentResolution": intent_state, "result": result.public_json(),
             })
+        outcome = _observed_explicit_route_failure(outcome, question)
+        outcome = _observed_tab_catalogue(outcome, question)
+        outcome = _guard_requested_queue_view(outcome, question)
+        outcome = _guard_requested_team_scope(outcome, intent_state, question)
+        executions = [entry for entry in trace.entries if entry.get("stage") == "portal_execution"]
+        if (outcome.result.status in {"success", "no_data"} and executions
+                and executions[-1].get("status") == "passed"
+                and executions[-1].get("output", {}).get("searchClearVerified") is True
+                and executions[-1].get("input", {}).get("startPath") == outcome.result.page):
+            outcome = ReaderOutcome(replace(outcome.result, workflow_state=(
+                "The Search input was explicitly cleared and verified empty in the freshly read view. "
+                "Only the current view is confirmed; no claim is made about every prior filter or all records."
+            )), outcome.audit_evidence)
         result_status = "passed" if outcome.result.status in {"success", "no_data"} else "failed"
         failure_code = outcome.result.missing[0] if outcome.result.missing else ""
         trace.record(
@@ -4453,6 +4985,8 @@ class AdminPortalReader:
         api_selection_recovery_reviewed = False
         api_drill_depth = 0
         api_selected_observations: set[str] = set()
+        identity_search_reviewed = False
+        search_clear_planned = False
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
             if bounded_conversation_context:
@@ -4473,7 +5007,14 @@ class AdminPortalReader:
                 return {"planType": type(plan).__name__}
             request = plan.get("portalRequest")
             if not isinstance(request, dict):
-                return {"mode": str(plan.get("mode") or ""), "hasPortalRequest": False}
+                return {"mode": str(plan.get("mode") or ""), "hasPortalRequest": False,
+                        "resultStatus": str(plan.get("result") or "")[:32],
+                        "resultKeys": sorted(str(key)[:60] for key in plan)[:20],
+                        "factsType": type(plan.get("facts")).__name__,
+                        "factCount": len(plan["facts"]) if isinstance(plan.get("facts"), list) else 0,
+                        "missingType": type(plan.get("missing")).__name__,
+                        "missingCount": len(plan["missing"]) if isinstance(plan.get("missing"), list) else 0,
+                        "answerShape": str(plan.get("answerShape") or "")[:32]}
             actions = request.get("actions")
             return {
                 "mode": str(plan.get("mode") or ""),
@@ -4502,7 +5043,14 @@ class AdminPortalReader:
             timeout_stage: str,
             reason: str,
         ) -> dict[str, Any]:
-            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed, api_selection_recovery_reviewed, api_drill_depth
+            nonlocal list_selection_reviewed, intent_completion_reviewed, filter_completion_reviewed, observation_schema_reviewed, action_contract_reviewed, api_selection_recovery_reviewed, api_drill_depth, identity_search_reviewed, search_clear_planned
+            if not search_clear_planned:
+                clear_plan = _observed_search_clear(question, knowledge_or_observation.get("portalObservation"),
+                    str((knowledge_or_observation.get("priorPortalRead") or {}).get("startPath") or ""))
+                if clear_plan:
+                    search_clear_planned = True
+                    trace.record("search_clear", "passed", output_summary={"decision": "observed_search_clear_required"})
+                    return clear_plan
             started_at = time.perf_counter()
             observation = knowledge_or_observation.get("portalObservation")
             discovery = _api_discovery(observation)
@@ -4945,6 +5493,14 @@ class AdminPortalReader:
                         "expectedFields": [],
                     },
                 }
+            observation = knowledge_or_observation.get("portalObservation")
+            if not identity_search_reviewed and plan.get("mode") == "observation_result":
+                search_plan = _observed_identity_search(question, bounded_conversation_context, observation,
+                    str((knowledge_or_observation.get("priorPortalRead") or {}).get("startPath") or ""))
+                if search_plan:
+                    identity_search_reviewed = True
+                    trace.record("identity_search", "degraded", output_summary={"decision": "observed_search_required"})
+                    return search_plan
             requested_filter = _explicit_observed_filter(question, observation)
             filter_controls = observation.get("filterControls", []) if isinstance(observation, dict) else []
             observed_filter_actions = [
@@ -5019,6 +5575,19 @@ class AdminPortalReader:
             expected_shape = _resolved_intent_values(bounded_conversation_context).get("answerShape") or (
                 reader_answer_shape(question, bounded_conversation_context) if requested_filter else None
             )
+            if expected_shape is None and reader_answer_shape(question) == "count":
+                expected_shape = "count"
+            elif (
+                expected_shape is None and not bounded_conversation_context
+                and reader_answer_shape(question) == "list"
+                and plan.get("mode") == "observation_result"
+                and plan.get("answerShape") in {"overview", "count"}
+            ):
+                expected_shape = "list"
+            if (plan.get("mode") == "knowledge_only" and question_is_conceptual(question)
+                    and expected_shape in {"detail", "overview"}
+                    and plan.get("answerShape") in {None, "unspecified"}):
+                plan = {**plan, "answerShape": expected_shape}
             if (
                 not intent_completion_reviewed and expected_shape not in {None, "unspecified"}
                 and plan.get("mode") in {"observation_result", "knowledge_only"}
@@ -5142,6 +5711,7 @@ class AdminPortalReader:
                     if isinstance(payload, dict) else "",
                     "factCount": len(facts) if isinstance(facts, list) else int(bool(facts)),
                     "hasObservation": bool(isinstance(payload, dict) and payload.get("observation") is not None),
+                    "searchClearVerified": bool(tool_result.get("ok") and _search_clear_verified(request, payload)),
                 },
                 failure_code=(
                     str(tool_result.get("code") or "portal_read_failed")[:120]
@@ -5405,6 +5975,30 @@ class AdminPortalReader:
                 "buttonCount": len(permission_context.buttons),
             },
         )
+        if question_requests_business_mutation(question):
+            trace.record("read_policy", "failed", failure_code="action_not_read_only",
+                         output_summary={"decision": "explicit_business_command_rejected"})
+            return ReaderOutcome(
+                ReaderResult(status="not_confirmed", summary="Business mutations are outside the read-only Reader.",
+                             missing=("action_not_read_only",)),
+                {"stage": "read_only_boundary", "permission": permission_audit},
+            )
+        absence_explanation = reader_absence_limit_explanation(question)
+        if absence_explanation:
+            return ReaderOutcome(
+                ReaderResult(status='success', summary='The read-only evidence boundary is explained.',
+                             answer_shape='detail', facts=(absence_explanation,)),
+                {'stage': 'read_evidence_boundary', 'permission': permission_audit,
+                 'source': 'reader_contract_no_history_inference'},
+            )
+        sample_explanation = previous_sample_explanation(question, bounded_conversation_context)
+        if sample_explanation is not None:
+            return ReaderOutcome(
+                ReaderResult(status="success", summary="The previous answer coverage is confirmed.",
+                             answer_shape="detail", facts=(sample_explanation,)),
+                {"stage": "prior_answer_coverage", "permission": permission_audit,
+                 "source": "previous_result_presentation_metadata"},
+            )
         resolver = getattr(self.planner, "resolve_admin_portal_intent", None)
         if bounded_conversation_context and callable(resolver):
             intent_started_at = time.perf_counter()
@@ -5420,7 +6014,8 @@ class AdminPortalReader:
                 trace.record("intent_resolution", "failed", started_at=intent_started_at, failure_code=failure)
                 return ReaderOutcome(
                     ReaderResult(status="not_confirmed", summary="The current task scope could not be resolved.", missing=(failure,)),
-                    {"stage": "intent_resolution", "permission": permission_audit},
+                    {"stage": "intent_resolution", "permission": permission_audit,
+                     "validationError": str(exc)[:200] if isinstance(exc, ValueError) else type(exc).__name__},
                 )
             trace.record(
                 "intent_resolution", "passed", started_at=intent_started_at,
@@ -5476,7 +6071,7 @@ class AdminPortalReader:
                     failure_code="knowledge_timeout",
                 )
                 knowledge_trace_recorded = True
-        knowledge_context = project_knowledge_result(knowledge_result)
+        knowledge_context = project_knowledge_result(knowledge_result, max_chunks=self.knowledge_top_k)
         if not knowledge_trace_recorded:
             retrieval_ok = bool(knowledge_result.get("ok"))
             trace.record(
@@ -5514,18 +6109,16 @@ class AdminPortalReader:
             )
         knowledge_result_from_planner = knowledge_result_from_plan(plan)
         resolved_values = _resolved_intent_values(bounded_conversation_context)
-        conceptual_request = bool(re.search(
-            r"\b(?:explain|describe|define|meaning|definition|difference|manual)\b"
-            r"|\bwhat (?:does|do)\b.*\bmean\b|\bhow (?:do i|can i|to)\b"
-            r"|解释|含义|区别|手册|是什么意思|如何|怎么使用|شرح|معنى|الفرق|كيف",
-            question.casefold(),
-        )) or any(marker in question.casefold() for marker in _DOCUMENTATION_QUESTION_MARKERS)
-        if resolved_values and conceptual_request and not any(
+        conceptual_request = question_is_conceptual(question)
+        explicit_identity = bool(resolved_values.get("recordIdentity") and re.search(
+            r"(?<![\w-])" + re.escape(resolved_values["recordIdentity"]) + r"(?![\w-])", question, re.IGNORECASE,
+        ))
+        if conceptual_request and not any(
             marker in question.casefold() for marker in (*_LIVE_TIME_MARKERS, "visible", "selected", "applied")
-        ) and not resolved_values.get("recordIdentity"):
+        ) and not explicit_identity:
             needs_live_read = False
         else:
-            needs_live_read = question_requires_live_portal(question) or bool(
+            needs_live_read = explicit_identity or question_requires_live_portal(question) or bool(
                 resolved_values and not conceptual_request and (
                     resolved_values.get("recordIdentity") or resolved_values.get("view")
                     or resolved_values.get("answerShape") in {"overview", "count", "list", "attention", "due", "detail"}
@@ -5551,7 +6144,7 @@ class AdminPortalReader:
             and plan.get("mode") == "knowledge_only"
             and not needs_live_read
             and knowledge_result_from_planner is not None
-            and knowledge_result_from_planner.status == "success"
+            and knowledge_result_from_planner.status in {"success", "not_confirmed"}
             and bool(_knowledge_evidence_strings(knowledge_context))
         ):
             # Give a stable, non-live explanation one bounded grounding repair
@@ -5590,9 +6183,16 @@ class AdminPortalReader:
                         "result": repaired_result.public_json(),
                     },
                 )
+            supported_facts = tuple(dict.fromkeys(
+                fact for candidate in (repaired_result, knowledge_result_from_planner)
+                if candidate is not None and candidate.status == "success"
+                for fact in candidate.facts
+                if knowledge_supports_result(replace(candidate, facts=(fact,)), knowledge_context)
+            ))[:8]
             result = ReaderResult(
                 status="not_confirmed",
                 summary="The manual evidence could not be grounded for this explanation.",
+                facts=supported_facts,
                 missing=("knowledge_not_grounded",),
             )
             return ReaderOutcome(
@@ -5606,6 +6206,14 @@ class AdminPortalReader:
                         "initialFacts": list(knowledge_result_from_planner.facts[:3]),
                         "repairFacts": list(repaired_result.facts[:3]) if repaired_result is not None else [],
                         "repairStatus": repaired_result.status if repaired_result is not None else "invalid_plan",
+                        "unsupportedInitialFacts": [
+                            fact for fact in knowledge_result_from_planner.facts
+                            if not knowledge_supports_result(replace(knowledge_result_from_planner, facts=(fact,)), knowledge_context)
+                        ][:3],
+                        "unsupportedRepairFacts": [
+                            fact for fact in repaired_result.facts
+                            if not knowledge_supports_result(replace(repaired_result, facts=(fact,)), knowledge_context)
+                        ][:3] if repaired_result is not None else [],
                     },
                 },
             )
@@ -5815,6 +6423,19 @@ class AdminPortalReader:
             plan = corrected_plan
             request = normalized_request
 
+        unverified_scoped_plan = (
+            plan.get("portalRequest") if deferred_state_action is not None
+            and deferred_state_action.get("section") else None
+        )
+        if any(action.get("section") and action.get("type") != "observe" for action in request.actions):
+            # A manual node title is not an observed locator. Establish the
+            # structure first and replan the original scope against that evidence.
+            unverified_scoped_plan = request.as_payload()
+            request = replace(request, actions=({"type": "observe"},))
+        elif (any(action.get("type") in {"reset_filter", "apply_filter", "dismiss_overlay"} for action in request.actions)
+              and not any(action.get("type") == "show_filter" for action in request.actions)):
+            # A fresh reader context has no previously opened filter overlay.
+            request = replace(request, actions=({"type": "observe"},))
         planned_request = portal_read_request_from_plan(plan)
         observation_section_hint = next(
             (
@@ -5841,12 +6462,27 @@ class AdminPortalReader:
         if observation is not None and (
             any(str(action.get("type") or "").casefold() == "observe" for action in request.actions)
             or not raw_tool_payload.get("facts")
+            or str(raw_tool_payload.get("result") or raw_tool_payload.get("status") or "") == "not_confirmed"
         ):
             observed_context = {
                 **knowledge_context,
                 "portalObservation": bounded_portal_observation(observation),
                 "priorPortalRead": bounded_json(request.as_payload(), max_depth=4, max_items=30, max_string=200),
             }
+            if unverified_scoped_plan is not None:
+                observed_context["unverifiedInitialPlan"] = bounded_json(unverified_scoped_plan)
+                observed_context["planningDirective"] = {
+                    "reason": "initial_section_requires_observation",
+                    "preserveRequestedScope": True,
+                    "instruction": (
+                        "Preserve the user's requested business object, view, filters and scope. "
+                        "unverifiedInitialPlan is an untrusted locator proposal, not a user scope constraint. "
+                        "Do not preserve its invented section name. Use an exact observed globally unique "
+                        "control without section when that control still fulfills the user's scope. "
+                        "If the user requires a particular region and it cannot be uniquely verified, "
+                        "return not_confirmed; never substitute another region."
+                    ),
+                }
             observation_status = str(
                 raw_tool_payload.get("result") or raw_tool_payload.get("status") or ""
             ).strip()
@@ -5897,8 +6533,29 @@ class AdminPortalReader:
                 None,
                 requested_answer_shape,
                 bounded_conversation_context,
+                current_page=request.start_path,
             )
+            if category_requirement:
+                observed_context = {**observed_context, "planningDirective": {
+                    **observed_context.get("planningDirective", {}),
+                    "requirePortalRead": True,
+                    "reason": "named_collection_requires_child_evidence",
+                    "currentPage": request.start_path,
+                    "categoryControl": category_requirement.control_label,
+                    "categorySemanticLabel": category_requirement.semantic_label,
+                    "requestedAnswerShape": requested_answer_shape,
+                    "requireChildEvidence": True,
+                    "parentCountNotSufficient": True,
+                }}
             deferred_plan: dict[str, Any] | None = None
+            if deferred_state_action is not None:
+                native_tabs = observed_context["portalObservation"].get("tabControls") or []
+                matching_tabs = [tab for tab in native_tabs if isinstance(tab, dict)
+                    and _state_control_label_matches(tab.get("name"), deferred_state_action.get("name"))]
+                if len(matching_tabs) == 1 and matching_tabs[0].get("selected") is True:
+                    # A fresh selected tab needs no second click. The normal
+                    # observation validator still checks health and row scope.
+                    deferred_state_action = None
             if deferred_state_action is not None:
                 state_request = PortalReadRequest(
                     start_path=request.start_path,
@@ -6156,8 +6813,13 @@ class AdminPortalReader:
                 planned_result,
                 requested_answer_shape,
                 bounded_conversation_context,
+                current_page=request.start_path,
             )
-            if category_requirement:
+            existing_category_request = portal_read_request_from_plan(next_plan)
+            category_read_is_in_place = bool(category_requirement and existing_category_request and
+                _request_advances_category_on_current_page(existing_category_request,
+                    current_page=request.start_path, category_control=category_requirement.control_label))
+            if category_requirement and not category_read_is_in_place:
                 refinement_context = {
                     **observed_context,
                     "planningDirective": {

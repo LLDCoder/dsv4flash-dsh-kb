@@ -272,7 +272,8 @@ def test_partial_native_rows_are_rendered_as_labeled_values_not_json():
     answer = reader_evidence_only_response({
         "result": "not_confirmed", "facts": [json.dumps({"Reference": "REF-101", "Status": "Pending Review"})],
     }, "en")
-    assert "Reference: REF-101; Status: Pending Review" in answer
+    assert "Reference: REF-101" in answer
+    assert "Status: Pending Review" in answer
     assert "{" not in answer
 
 

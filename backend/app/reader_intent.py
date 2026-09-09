@@ -94,6 +94,9 @@ def _previous_slots(context: Any) -> dict[str, str]:
     )
     if focus:
         values.setdefault("businessFocus", focus)
+    selected_view = _human_section(previous.get("selectedState"))
+    if selected_view:
+        values.setdefault("view", selected_view)
     prior_intent = previous.get("intentContext")
     slots = prior_intent.get("slots") if isinstance(prior_intent, dict) else None
     if isinstance(slots, dict):
@@ -202,6 +205,60 @@ class IntentResolution:
         return context
 
 
+def resolve_literal_same_record_reference(question: str, conversation_context: Any) -> IntentResolution | None:
+    """Resolve one literal same-record command from an already selected identity."""
+    match = re.fullmatch(
+        r"\s*(?:please\s+)?(?P<command>find|locate)\s+(?:that|the)\s+same\s+"
+        r"(?P<object>[a-z]+(?:\s+[a-z]+)?)(?:\s+by\s+its\s+(?P<field>[a-z ]+(?:no\.?|number|id)))?\.?\s*",
+        question, re.I,
+    )
+    if not match:
+        return None
+    prior = _previous_slots(conversation_context)
+    previous = conversation_context.get("previousIntent", {}) if isinstance(conversation_context, dict) else {}
+    antecedent = str(previous.get("question") or "")
+    anchors = (antecedent, prior.get('businessObject', ''), prior.get('businessFocus', ''))
+    object_matches = any(re.search(r"\b" + re.escape(match['object']) + r"s?\b", text, re.I) for text in anchors)
+    words = match['object'].casefold().split()
+    if not object_matches and len(words) == 2:
+        # A route can disambiguate an object qualifier, but is never slot evidence
+        # or a permission grant. The noun and identity must still come from history.
+        route_words = semantic_source_hint(conversation_context).get('page', '').casefold().split('/')
+        object_matches = words[0] in route_words and any(
+            re.search(r'\b' + re.escape(words[1]) + r's?\b', text, re.I) for text in anchors)
+    if (not prior.get("recordIdentity")
+            or not object_matches
+            or (match['field'] and _normalized(match['field']).rstrip('.') not in _normalized(antecedent))):
+        return None
+    slots = {
+        name: ({"source": "previous", "value": prior[name], "evidence": prior[name]}
+               if name in prior else {"source": "unspecified", "value": "", "evidence": ""})
+        for name in SLOT_NAMES
+    }
+    slots["answerShape"] = {"source": "current", "value": "detail", "evidence": match["command"]}
+    return parse_intent_resolution({"relation": "continue", "slots": slots, "clarificationOptions": []},
+                                   question, conversation_context)
+
+
+def resolve_literal_view_followup(question: str, conversation_context: Any) -> IntentResolution | None:
+    """Resolve a simple named queue change while retaining only known prior slots."""
+    match = re.fullmatch(r"\s*(?:how|what)\s+about\s+(?:the\s+)?(?P<view>completed|to do|queued)\s+"
+                         r"(?P<object>applications?|tasks?|records?|items?)\s*[?.]?\s*", question, re.I)
+    if not match:
+        return None
+    prior = _previous_slots(conversation_context)
+    previous = conversation_context.get('previousIntent', {}) if isinstance(conversation_context, dict) else {}
+    anchors = [str(previous.get('question') or ''), prior.get('businessObject', ''), prior.get('businessFocus', '')]
+    noun = match['object'].casefold().rstrip('s')
+    if (not prior or prior.get('recordIdentity') or not any(
+            re.search(r'\b' + re.escape(noun) + r's?\b', anchor, re.I) for anchor in anchors)):
+        return None
+    slots = {name: ({'source': 'previous', 'value': prior[name], 'evidence': prior[name]}
+                   if name in prior else {'source': 'unspecified', 'value': '', 'evidence': ''}) for name in SLOT_NAMES}
+    slots['view'] = {'source': 'current', 'value': match['view'], 'evidence': match['view']}
+    return parse_intent_resolution({'relation': 'refine', 'slots': slots, 'clarificationOptions': []}, question, conversation_context)
+
+
 def parse_intent_resolution(
     payload: Any, question: str, conversation_context: Any,
 ) -> IntentResolution:
@@ -241,7 +298,7 @@ def parse_intent_resolution(
                 raise ValueError("invalid intent slot enum")
             evidence_sources = [current_source] if source == "current" else previous_sources
             if not any(_normalized(evidence) in candidate for candidate in evidence_sources):
-                raise ValueError("intent slot evidence is absent from its declared source")
+                raise ValueError(f"intent slot evidence is absent from its declared source (slot={name}, source={source})")
             if name == "recordIdentity":
                 identity = _normalized(value)
                 if source == "current" and not _literal_identity_in(identity, current_source):
@@ -260,7 +317,23 @@ def parse_intent_resolution(
     if not isinstance(options, list) or len(options) != (2 if relation == "clarify" else 0):
         raise ValueError("clarification requires exactly two options and other relations none")
     safe_options = _clarification_labels(options) if options else ()
+    if safe_options and _splits_requested_conjunction(question, safe_options):
+        raise ValueError("clarification splits explicitly requested conjuncts; preserve both requested criteria")
     return IntentResolution(relation, tuple(resolved_slots), tuple(safe_options))
+
+
+def _splits_requested_conjunction(question: str, options: tuple[str, str]) -> bool:
+    """Reject a literal X-and-Y request being restated as an X-or-Y choice."""
+    words = [set(re.findall(r"\w+", _normalized(option))) for option in options]
+    distinct = [words[0] - words[1], words[1] - words[0]]
+    if not all(distinct):
+        return False
+    for conjunction in re.finditer(r"\band\b", _normalized(question)):
+        before = set(re.findall(r"\w+", _normalized(question)[:conjunction.start()]))
+        after = set(re.findall(r"\w+", _normalized(question)[conjunction.end():]))
+        if any(left <= before and right <= after for left, right in (distinct, distinct[::-1])):
+            return True
+    return False
 
 
 def _clarification_labels(options: Any) -> tuple[str, str]:

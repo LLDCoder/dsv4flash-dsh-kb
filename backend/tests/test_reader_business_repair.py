@@ -512,9 +512,9 @@ def test_record_detail_missing_model_binding_fields_is_resolved_from_current_obs
     ]
 
 
-def test_query_then_detail_recovers_identity_from_exact_question_value():
+def test_filter_then_detail_recovers_identity_from_exact_question_value():
     initial = portal_plan_for("/records", [
-        {"type": "query", "role": "textbox", "name": "Application No.", "value": "APP-123"},
+        {"type": "filter", "role": "textbox", "name": "Application No.", "value": "APP-123"},
         {"type": "show_detail", "role": "cell", "name": "Application No."},
     ])
     detail_result = {
@@ -547,7 +547,7 @@ def test_query_then_detail_recovers_identity_from_exact_question_value():
     portal_calls = [arguments for tool_name, arguments, _allowed in gateway.calls if tool_name == "admin.portal.read"]
     assert portal_calls[0]["actions"] == [{"type": "observe"}]
     assert portal_calls[1]["actions"] == [
-        {"type": "query", "role": "textbox", "name": "Application No.", "value": "APP-123"},
+        {"type": "filter", "role": "textbox", "name": "Application No.", "value": "APP-123"},
     ]
     assert portal_calls[2]["actions"] == [
         {"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},

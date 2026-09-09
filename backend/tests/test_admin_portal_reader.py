@@ -61,6 +61,14 @@ def user_info_for_paths(*paths: str) -> dict:
     return info
 
 
+@pytest.mark.parametrize("settings", [{"value": "R-1"}, {"value": ""}, {"values": ["R-1"]},
+                                      {"filters": {"Search": "R-1"}}, {"parameters": {"Search": "R-1"}}])
+def test_backend_query_policy_rejects_unapplied_filter_values(settings):
+    policy = ReadOnlyPortalPolicy("https://admin.example.test")
+    request = PortalReadRequest(start_path="/licensing", actions=({"type": "query", "field": "Search", **settings},))
+    assert policy.validate(request, permission_context_from_user_info(user_info())) == "query_cannot_apply_filters"
+
+
 def principal(user_id="admin-7") -> Principal:
     return Principal(user_id=user_id, tenant_id="tenant", request_id="request", umc_token="token")
 
@@ -2097,8 +2105,13 @@ def test_observation_fallback_rejects_detail_date_and_filter_questions(question)
     outcome = run_reader(gateway, planner, question=question)
 
     assert outcome.result.status == "not_confirmed"
-    assert outcome.result.missing == ("needs_semantic_read",)
-    assert outcome.audit_evidence["stage"] == "completed_after_observe"
+    if question == "Approve my tasks":
+        assert outcome.result.missing == ("action_not_read_only",)
+        assert gateway.events == ["GetUserInfo"]
+        assert outcome.audit_evidence["stage"] == "read_only_boundary"
+    else:
+        assert outcome.result.missing == ("needs_semantic_read",)
+        assert outcome.audit_evidence["stage"] == "completed_after_observe"
 
 
 @pytest.mark.parametrize(
