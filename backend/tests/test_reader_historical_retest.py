@@ -33,12 +33,13 @@ def test_listing_date_columns_does_not_request_an_expiration_countdown():
     assert reader_answer_shape('Show permits expiring soon, including Expiry Date.')=='due'
 
 
-@pytest.mark.parametrize('phrase',['including their identifiers and statuses where those fields exist','with Status where available'])
+@pytest.mark.parametrize('phrase',['including their identifiers and statuses where those fields exist','with Status where available','and include Status only if it exists'])
 def test_optional_field_list_preserves_native_status_instead_of_api_code(phrase):
     old=outcome(status='success',missing=())
     result=_native_optional_record_fields(old,'Show the first three permits, '+phrase+'.').result
     assert result.status=='success' and json.loads(result.facts[0])['Status']=='Active'
     assert 'Permit No.' in result.facts[0]
+    assert any('current selected view is Permits' in fact for fact in result.facts)
 
 
 @pytest.mark.parametrize('change,allowed',[('',True),('unhealthy',False),('multiple',False),('permission',False)])
@@ -82,3 +83,108 @@ def test_post_switch_planning_failure_keeps_deep_native_rows_for_recovery():
     g=Gateway(info={'ok':True,'result':user_info_for_paths('/work/permits')},portal_result={'ok':True,'result':{'result':'not_confirmed','observation':obs}})
     result=run_reader(g,FailingPlanner(),question='Show the first three records with Status where available.').result
     assert result.status=='success' and json.loads(result.facts[0])['Status']=='Active'
+
+
+@pytest.mark.parametrize('shape', ['list', 'detail', 'overview'])
+def test_structured_answers_preserve_column_value_pairs_without_llm_reinterpretation(shape):
+    import asyncio
+    from app.service import DSHService
+    class SwappingLLM:
+        async def stream(self, messages):
+            raise AssertionError('Structured values must not be reinterpreted')
+            yield ''
+    service = object.__new__(DSHService)
+    service.llm = SwappingLLM()
+    answer, failed = asyncio.run(service._natural_reader_response('Show current records', {
+        'result': 'success', 'answerShape': shape, 'facts': [
+            'The current selected view is Completed. These records belong to that view.',
+            json.dumps({'Service Name': 'Video Game Approval Package', 'Service Category': 'Video Games'}),
+            json.dumps({'Applications': 4, 'Local': 7, 'Import': 38}),
+        ], 'missing': []}, 'en'))
+    assert not failed
+    assert 'Service Name: Video Game Approval Package' in answer
+    assert 'Service Category: Video Games' in answer
+    assert 'Applications: 4' in answer and 'Local: 7' in answer and 'Import: 38' in answer
+    assert 'current selected view is Completed' in answer
+
+
+def test_cleared_search_returns_requested_rows_not_just_a_restoration_message():
+    from app.portal_reader import _native_cleared_search_result
+    obs = native('To Do')
+    obs['sectionSummaries'][0]['rowFields'] *= 3
+    result = _native_cleared_search_result(outcome(obs),
+                                          'Clear that search and show up to three records again.').result
+    records = [json.loads(f) for f in result.facts if f.startswith('{')]
+    assert result.status == 'success' and result.answer_shape == 'list'
+    assert len(records) == 3 and records[0]['Permit No.'] == 'P-1'
+    assert result.selected_state == 'To Do'
+
+
+def test_cleared_search_preserves_successful_projection_and_recovers_only_requested_columns():
+    from app.portal_reader import _native_cleared_search_result
+    obs = native('Accounts')
+    table = obs['sectionSummaries'][0]
+    table['columnHeaders'] = ['Account ID', 'Email', 'Full Name']
+    table['rowFields'] = [{'Account ID': 'A-1', 'Email': 'private@example.test', 'Full Name': 'Private Name'}]
+    question = 'Clear that search and show three Account IDs only.'
+    old = outcome(obs, status='success', missing=())
+    assert _native_cleared_search_result(old, question) == old
+    result = _native_cleared_search_result(outcome(obs), question).result
+    assert json.loads(result.facts[0]) == {'Account ID': 'A-1'}
+    assert 'private@' not in str(result.facts) and 'Private Name' not in str(result.facts)
+
+
+@pytest.mark.parametrize('missing', [('page_not_permitted',), ('requested_queue_view_unverified',)])
+def test_cleared_search_does_not_override_permission_or_queue_failure(missing):
+    from app.portal_reader import _native_cleared_search_result
+    old = outcome(missing=missing)
+    assert _native_cleared_search_result(old, 'Clear and show up to three records.') == old
+
+
+def test_count_presentation_keeps_verified_queue_and_count_without_invented_denial():
+    import asyncio
+    from app.service import DSHService
+    service = object.__new__(DSHService)
+    answer, failed = asyncio.run(service._natural_reader_response('How many in Completed?', {
+        'result': 'success', 'answerShape': 'count', 'selectedState': 'Completed',
+        'facts': ['{"page.total":93}'], 'missing': []}, 'en'))
+    assert not failed and '93' in answer and 'Current selected view: Completed.' in answer
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_repeated_module_in_bounded_list_is_not_an_unrequested_filter(explicit):
+    from app.reader_intent import bind_literal_intent_quotes
+    payload = {'slots': {'filter': {'source': 'current', 'value': 'Work', 'evidence': 'Work'}}}
+    context = {'previousIntent': {'page': '/work/tasks', 'question': 'How many Work queued tasks?'}}
+    question = 'Show only the first three Work queued tasks, including identifiers where available.'
+    if explicit:
+        question += ' Filter the reason.'
+    fixed = bind_literal_intent_quotes(payload, question, context)
+    assert fixed['slots']['filter']['source'] == ('current' if explicit else 'unspecified')
+
+
+def test_successful_bound_summary_keeps_native_metrics_omitted_by_planner_and_excludes_contacts():
+    from dataclasses import replace
+    obs = {'readHealth': {'healthy': True}, 'sectionSummaries': [{'kind': 'table', 'nodeId': 't1',
+        'selectedState': 'Top Customers by Cases', 'columnHeaders': ['Account ID', 'Email', 'Complaints', 'Refunds', 'Total'],
+        'rowFields': [{'Account ID': 'A-1', 'Email': 'private@example.test', 'Complaints': '2', 'Refunds': '4', 'Total': '6'}]}]}
+    old = outcome(obs, status='success', missing=())
+    old = ReaderOutcome(replace(old.result, source_section='t1', selected_state='Top Customers by Cases'), old.audit_evidence)
+    result = _native_bounded_summary(old, 'Show a bounded current summary of top accounts without emails.').result
+    assert json.loads(result.facts[0]) == {'Account ID': 'A-1', 'Complaints': '2', 'Refunds': '4', 'Total': '6'}
+    assert 'private@' not in str(result.facts)
+
+
+def test_distinct_documented_permission_scopes_keep_their_source_attribution():
+    import asyncio
+    from app.service import DSHService
+    service = object.__new__(DSHService)
+    answer, failed = asyncio.run(service._natural_reader_response('Are all these tasks mine?', {
+        'result': 'success', 'answerShape': 'detail', 'facts': [
+            'Queue membership does not prove personal assignment.',
+            'Team list scope: The Agent permission set does not grant this route.',
+            'Personal list scope: The Agent layout showed both queues.',
+        ], 'missing': []}, 'en'))
+    assert not failed
+    assert 'Team list scope: The Agent permission set does not grant this route.' in answer
+    assert 'Personal list scope: The Agent layout showed both queues.' in answer

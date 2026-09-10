@@ -468,6 +468,9 @@ def make_router(service: DSHService) -> APIRouter:
         Fresh native observations survive post-action planning failures; optional
         fields, bounded status values and matching-view summaries use rendered
         labels rather than internal status codes or invented field definitions.
+        Structured record and metric answers retain exact label/value pairs without
+        model reinterpretation. Optional-field lists retain the observed selected
+        view; verified search clears with a requested limit return bounded rows.
         Selected tab labels use contiguous phrase matching to avoid sibling-view
         collisions. Model HTTP 402 failures are reported as load_failed with
         model_payment_required, not as an invalid user intent or empty data.

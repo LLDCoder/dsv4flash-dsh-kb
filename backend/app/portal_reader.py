@@ -2632,6 +2632,8 @@ def _native_schema_outcome(outcome: ReaderOutcome, question: str) -> ReaderOutco
 def _native_optional_record_fields(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Keep optional-field lists on their observed schema instead of API lookup IDs."""
     optional_fields = bool(re.search(r'\bshow\b.*\b(?:with|including)\b.*\bwhere (?:available|those fields exist)\b', question, re.I))
+    optional_fields = optional_fields or bool(re.search(
+        r'\bshow\b.*\binclude\b.*\bonly if (?:it|they) exists?\b', question, re.I))
     native_description = bool(re.search(r'\bshow\b.*(?:\bincluding their statuses\b|\binformation (?:used to identify|identifies)\b)', question, re.I))
     failed_bounded_list = (outcome.result.status=='not_confirmed' and requested_record_limit(question) is not None
                           and any(m in {'planner_error','invalid_observation_schema','invalid_follow_up_plan'} for m in outcome.result.missing))
@@ -2652,13 +2654,53 @@ def _native_optional_record_fields(outcome: ReaderOutcome, question: str) -> Rea
     rows = [r for r in rows if r][:requested_record_limit(question) or 4]
     if not rows:
         return outcome
-    facts = tuple(json.dumps(r,ensure_ascii=False) for r in rows) + (
+    selected_state = str(source.get('selectedState') or '').strip()
+    context = ((f'The current selected view is {selected_state}. These records belong to that view.',)
+               if selected_state else ())
+    facts = tuple(json.dumps(r,ensure_ascii=False) for r in rows) + context + (
         'These are bounded current records using their native column names. Visible columns: ' + '; '.join(source['columnHeaders']) + '. '
-        'Other requested fields are not established by this layout; differently named time fields are not interchangeable.',)
+        'Only the displayed record columns and values are reported; column availability does not define the business meaning of time fields. Differently named time columns are not interchangeable.',)
     result = replace(outcome.result,status='success',answer_shape='list',completeness='bounded',
         source_section=str(source.get('nodeId') or ''),selected_state=str(source.get('selectedState') or ''),
         facts=facts,missing=())
     return ReaderOutcome(result,{**evidence,'nativeOptionalFields':{'columns':source['columnHeaders'],'count':len(rows)},'result':result.public_json()})
+
+
+def _native_cleared_search_result(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Recover a bounded list after the caller verifies a successful search clear."""
+    limit = requested_record_limit(question)
+    if (outcome.result.status != 'not_confirmed'
+            or set(outcome.result.missing) - {'planner_error'}):
+        return outcome
+    observation = outcome.audit_evidence.get('observation') or {}
+    tables = [s for s in observation.get('sectionSummaries', [])
+              if isinstance(s, dict) and s.get('kind') in {'table', 'grid'}]
+    if ((observation.get('readHealth') or {}).get('healthy') is not True
+            or _observation_has_error_state(observation) or len(tables) != 1
+            or not tables[0].get('rowFields')):
+        return outcome
+    table = tables[0]
+    rows = [{k: v for k, v in row.items() if k in table.get('columnHeaders', [])}
+            for row in table['rowFields'] if isinstance(row, dict)]
+    rows = [row for row in rows if row][:limit or 4]
+    if re.search(r'\bonly[.!?]*\s*$', question, re.I):
+        normalize = lambda v: re.sub(r'[^a-z0-9]+', ' ', re.sub(r'\bstatuses\b', 'status', re.sub(r'\bids\b', 'id', v.casefold()))).strip()
+        requested = [key for key in table.get('columnHeaders', []) if normalize(key) in normalize(question)]
+        if not requested:
+            return outcome
+        rows = [{key: value for key, value in row.items() if key in requested} for row in rows]
+    if limit is not None and not rows:
+        return outcome
+    facts = tuple(json.dumps(row, ensure_ascii=False) for row in rows) if limit is not None else ()
+    state = str(table.get('selectedState') or '')
+    if state:
+        facts += (f'The current selected view is {state}.',)
+    facts += ('The cleared-search list is available again in the freshly read view. '
+              'Only the displayed sample is established; other prior filters and the entire collection are not established.',)
+    result = replace(outcome.result, status='success', answer_shape='list' if limit is not None else 'overview',
+                     completeness='bounded', scope='unknown', missing=(), facts=facts,
+                     source_section=str(table.get('nodeId') or ''), selected_state=state)
+    return ReaderOutcome(result, {**outcome.audit_evidence, 'result': result.public_json()})
 
 
 def _native_empty_queue_count(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
@@ -2702,7 +2744,7 @@ def _native_status_values(outcome: ReaderOutcome, question: str) -> ReaderOutcom
 
 
 def _native_bounded_summary(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
-    if (outcome.result.status!='not_confirmed' or not outcome.result.page
+    if (outcome.result.status not in {'success', 'not_confirmed'} or not outcome.result.page
             or not re.search(r'\bshow a bounded (?:current )?summary\b',question,re.I)):
         return outcome
     observation=outcome.audit_evidence.get('observation')
@@ -2711,7 +2753,10 @@ def _native_bounded_summary(outcome: ReaderOutcome, question: str) -> ReaderOutc
     if len(tables)!=1:return outcome
     table=tables[0];label=str(table.get('selectedState') or '')
     words=lambda v:set(re.findall(r'[a-z]+',v.casefold()))-{'view','analytics'}
-    if not words(label) or not words(label)<=words(question):return outcome
+    bound_source = (outcome.result.status == 'success'
+                    and outcome.result.source_section == table.get('nodeId')
+                    and _observation_selected_state_matches(outcome.result.selected_state, table))
+    if not words(label) or not (words(label)<=words(question) or bound_source):return outcome
     rows=[{k:v for k,v in r.items() if k in table.get('columnHeaders',[]) and not re.search(r'email|mobile|phone',k,re.I)} for r in table['rowFields'] if isinstance(r,dict)][:4]
     if not rows or not all(rows):return outcome
     result=replace(outcome.result,status='success',answer_shape='overview',completeness='bounded',scope='unknown',missing=(),
@@ -5686,16 +5731,7 @@ class AdminPortalReader:
                 and executions[-1].get("status") == "passed"
                 and executions[-1].get("output", {}).get("searchClearVerified") is True
                 and executions[-1].get("input", {}).get("startPath") == outcome.result.page):
-            observation=outcome.audit_evidence.get('observation') or {}
-            tables=[s for s in observation.get('sectionSummaries',[]) if isinstance(s,dict) and s.get('kind') in {'table','grid'}]
-            if (outcome.result.status=='not_confirmed' and not set(outcome.result.missing)-{'planner_error'}
-                    and (observation.get('readHealth') or {}).get('healthy') is True
-                    and not _observation_has_error_state(observation) and len(tables)==1 and tables[0].get('rowFields')):
-                table=tables[0]
-                result=replace(outcome.result,status='success',answer_shape='overview',completeness='bounded',scope='unknown',missing=(),
-                    source_section=str(table.get('nodeId') or ''),selected_state=str(table.get('selectedState') or ''),
-                    facts=(f'The cleared-search current view shows {len(table["rowFields"])} observed rows. This confirms the list is available again in the freshly read view, not that every prior filter or the entire collection was restored.',))
-                outcome=ReaderOutcome(result,{**outcome.audit_evidence,'result':result.public_json()})
+            outcome = _native_cleared_search_result(outcome, question)
             outcome = ReaderOutcome(replace(outcome.result, workflow_state=(
                 "The Search input was explicitly cleared and verified empty in the freshly read view. "
                 "Only the current view is confirmed; no claim is made about every prior filter or all records."

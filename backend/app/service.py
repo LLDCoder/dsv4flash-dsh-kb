@@ -53,6 +53,14 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str, 
         }.get(language, 'Current permissions do not authorize the requested page read. The requested records have not been verified.')
  
     raw_facts = reader_result.get("facts")
+    selected_view = str(reader_result.get('selectedState') or '').strip()
+    if reader_result.get('result') == 'success' and selected_view and isinstance(raw_facts, list) and raw_facts:
+        view_fact = {
+            'en': f'Current selected view: {selected_view}.',
+            'zh': f'当前选中的视图：{selected_view}。',
+            'ar': f'العرض المحدد حاليًا: {selected_view}.',
+        }.get(language, f'Current selected view: {selected_view}.')
+        raw_facts = [*raw_facts[:19], view_fact]
     workflow = str(reader_result.get('workflowState') or '')
     if isinstance(raw_facts, list) and workflow.startswith('The Search input was explicitly cleared and verified empty in the freshly read view.'):
         raw_facts = [*raw_facts, workflow]
@@ -1483,6 +1491,25 @@ class DSHService:
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
             return fallback, False
+        if evidence.get('answerShape') == 'count':
+            return fallback, False
+        scoped_sources = {str(fact).split(' scope:', 1)[0] for fact in facts if ' scope:' in str(fact)}
+        if len(scoped_sources) > 1 and any(re.search(
+                r'\b(?:does not grant|not permitted|no permission)\b', str(fact), re.I) for fact in facts):
+            # A permission limit on one documented surface cannot be merged
+            # with another surface's independently verified queue controls.
+            return fallback, False
+        # Structured records already have a readable presentation with exact
+        # label/value pairs. Rewriting them can swap labels or invent relations
+        # between independent metrics, even when every token is supported.
+        if evidence.get('answerShape') in {'list', 'detail', 'overview'}:
+            for fact in facts:
+                try:
+                    fields = json.loads(fact)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(fields, dict) and len(fields) > 1:
+                    return fallback, False
         if not self.settings.llm_base_url or not self.settings.llm_api_key:
             return fallback, True
         system = self._runtime_system_prompt(

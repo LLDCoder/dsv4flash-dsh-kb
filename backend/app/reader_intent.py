@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import re
 import unicodedata
 from typing import Any
+from .reader_limits import requested_record_limit
 
 
 SLOT_NAMES = (
@@ -286,6 +287,18 @@ def bind_literal_intent_quotes(payload: Any, question: str, context: Any) -> Any
         return payload
     previous, _ = _previous_sources(context)
     slots = dict(payload["slots"])
+    module = semantic_source_hint(context).get('page', '').strip('/').split('/')[0]
+    condition = slots.get('filter')
+    if (module and isinstance(condition, dict) and condition.get('source') == 'current'
+            and _normalized(str(condition.get('value') or '')) == _normalized(module)
+            and _normalized(str(condition.get('evidence') or '')) == _normalized(module)
+            and requested_record_limit(question) is not None
+            and len(re.findall(r'\b' + re.escape(module) + r'\b', question, re.I)) == 1
+            and not re.search(r'\b(?:filter|search|reason|equals?|matching|named|called)\b', question, re.I)
+            and 'filter' not in _previous_slots(context)):
+        # A repeated module name in a bounded-list follow-up names its source;
+        # it does not introduce a new predicate on an unrelated filter control.
+        slots['filter'] = {'source': 'unspecified', 'value': '', 'evidence': ''}
     ownership = slots.get('requestedScope')
     prior_result = context.get('previousIntent', {}) if isinstance(context, dict) else {}
     if (isinstance(ownership, dict) and set(ownership) == {'source', 'value', 'evidence'}
