@@ -30,6 +30,8 @@ def test_explicit_mutation_stops_after_identity_without_planner_or_page_read(que
     "Clear the account search.", "Cancel that filter.", "Open the filter dialog.",
     "Change the filter to Active.", "Please update the date range.",
     "Change the tab to Completed.", "What does automatic assignment mean?",
+    "Change to the past 30 days?", "Change the date range to the past 30 days.",
+    "Switch to the current period.",
     "显示退款申请", "不要删除记录", "清空搜索条件", "取消筛选弹窗",
 ])
 def test_resource_names_conceptual_questions_and_view_changes_are_not_business_commands(question):

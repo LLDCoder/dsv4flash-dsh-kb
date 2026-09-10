@@ -1967,7 +1967,11 @@ def question_requests_business_mutation(question: str) -> bool:
         return True
     if re.match(r"^(?:change|modify|update|edit|enable|disable|activate|deactivate)\b", english, re.IGNORECASE):
         return not bool(re.match(
-            r"^\w+\s+(?:(?:the|that|this|my|current)\s+)?(?:filters?|search|tabs?|views?|pages?|sort(?:ing)?|date\s+range)\b",
+            r"^(?:change|modify|update|edit)\s+"
+            r"(?:(?:to|into|the)\s+)?"
+            r"(?:(?:the|that|this|my|current)\s+)?"
+            r"(?:filters?|search(?:es)?|tabs?|views?|pages?|sort(?:ing)?|date\s+range|"
+            r"(?:past|last|current|previous|next)\s+\d*\s*(?:days?|weeks?|months?|period))\b",
             english, re.IGNORECASE,
         ))
     if re.match(r"^turn\b.*\b(?:automatic\s+assignment|auto[- ]assignment|assignment\s+settings?)\b.*\b(?:off|on)\b", english, re.IGNORECASE):

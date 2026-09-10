@@ -85,6 +85,9 @@ def test_reader_response_prompt_forbids_claiming_bounded_rows_are_complete() -> 
 def test_reader_response_prompt_leads_with_business_answer_without_audit_narration() -> None:
     prompt = DSHService._runtime_system_prompt("admin_portal_reader", "en", "", "")
 
+    assert "You are NMA AI Assistant." in prompt
+    assert "describe the available help positively" in prompt
+    assert "Do not turn a routine capability answer into a restriction list" in prompt
     assert "lead with the business answer" in prompt
     assert "'currently' or 'in your dashboard'" in prompt
     assert "Do not narrate the evidence-gathering process" in prompt
