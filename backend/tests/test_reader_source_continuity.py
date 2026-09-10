@@ -1,8 +1,10 @@
 from dataclasses import replace
+import json
 import pytest
 from app.portal_reader import (
     ReaderResult, ReaderOutcome, _documented_object_source, _qualify_knowledge_facts,
     _native_filter_outcome, previous_sample_explanation, PRIOR_UNVERIFIED_LIST_FACT,
+    reader_answer_shape,
 )
 from app.reader_intent import SLOT_NAMES
 from test_admin_portal_reader import Gateway, Planner, run_reader, user_info_for_paths
@@ -32,6 +34,166 @@ def test_primary_source_is_resolved_before_role_variant_is_excluded():
 ])
 def test_source_selection_is_primary_unambiguous_and_module_bounded(q,expected):
     assert _documented_object_source(knowledge(),q,{})==expected
+
+
+def test_documented_source_rejects_trailing_prose_in_page_field():
+    kb = {'ok': True, 'chunks': [{'content':
+        '## Semantic node: Application detail\n'
+        '- **page:** `/licensing/applications/applicationsDetails`, entered from a permitted visible row on `/licensing/applications`\n'
+        '- **section:** Application detail\n'
+        '- **content:** Application No.; Status.\n'}]}
+
+    assert _documented_object_source(
+        kb, 'Please provide me with a list of My Application Tasks details.', {},
+    ) == ''
+
+
+def test_explicit_list_details_selects_collection_not_record_detail():
+    kb = {'ok': True, 'chunks': [{'content':
+        '## Semantic node: My Application Tasks\n'
+        '- **page:** `/licensing/applications`\n'
+        '- **section:** My Application Tasks\n'
+        '- **content:** Application No.; Service Name; Status.\n'
+        '## Semantic node: Application detail\n'
+        '- **page:** `/licensing/applications/applicationsDetails`\n'
+        '- **section:** Application detail\n'
+        '- **content:** Application No.; Applicant; Status.\n'}]}
+    question = 'Please provide me with a list of My Application Tasks details.'
+
+    assert reader_answer_shape(question, {}) == 'list'
+    assert _documented_object_source(kb, question, {}) == '/licensing/applications'
+
+
+def test_list_details_ignores_malformed_detail_path_and_reads_permitted_collection():
+    from test_admin_portal_reader import portal_plan_for
+
+    kb = {'ok': True, 'chunks': [{'content':
+        '## Semantic node: My Application Tasks\n'
+        '- **page:** `/licensing/applications`\n'
+        '- **section:** My Application Tasks\n'
+        '- **content:** Application No.; Service Name; Status.\n'
+        '## Semantic node: Application detail\n'
+        '- **page:** `/licensing/applications/applicationsDetails`, entered from a permitted visible row on `/licensing/applications`\n'
+        '- **section:** Application detail\n'
+        '- **content:** Application No.; Applicant; Status.\n'}]}
+    gateway = Gateway(
+        info={'ok': True, 'result': user_info_for_paths('/licensing/applications')},
+        knowledge_result={'ok': True, 'result': kb},
+        portal_result={'ok': True, 'result': {'result': 'success', 'observation': {
+            'sectionSummaries': [{
+                'heading': 'My Application Tasks',
+                'columnHeaders': ['Application No.', 'Service Name', 'Status'],
+                'rowSummaries': ['ML-123 Ground Photography Pending Review'],
+            }],
+        }}},
+    )
+    planner = Planner(
+        portal_plan_for(
+            '/licensing/applications', [{'type': 'observe', 'section': 'My Application Tasks'}],
+        ),
+        {
+            'mode': 'observation_result',
+            'result': 'success',
+            'page': '/licensing/applications',
+            'section': 'My Application Tasks',
+            'sourceSection': 'My Application Tasks',
+            'answerShape': 'list',
+            'facts': ['ML-123 Ground Photography Pending Review'],
+            'missing': [],
+        },
+    )
+
+    outcome = run_reader(
+        gateway, planner,
+        question='Please provide me with a list of My Application Tasks details.',
+    )
+
+    assert outcome.result.status == 'success'
+    assert outcome.result.page == '/licensing/applications'
+    assert gateway.events == ['GetUserInfo', 'knowledge.search', 'admin.portal.read']
+    source_trace = next(
+        item for item in outcome.audit_evidence['qualityTrace']
+        if item['stage'] == 'documented_source_selection'
+    )
+    assert source_trace['status'] == 'degraded'
+    assert source_trace['failureCode'] == 'invalid_documented_path'
+    assert source_trace['output'] == {
+        'decision': 'ignored_non_primary_candidates',
+        'selectedPrimarySource': True,
+        'invalidPathCount': 1,
+        'detailCandidateCount': 0,
+    }
+
+
+def test_list_details_uses_unique_structured_rows_when_follow_up_planner_is_invalid():
+    from test_admin_portal_reader import portal_plan_for
+
+    rows = [{
+        'Application No.': 'ML-1-7-6577159',
+        'Service Name': 'Ground Photography Permit within UAE',
+        'Service Category': 'Filming Permit',
+        'Type': 'New',
+        'Status': 'Final Approval',
+        'SLA': '4d Overdue',
+        'Apply For': 'Peter',
+        'Submission Time': '03/09/2026 06:36:13',
+    }]
+    observation = {
+        'readHealth': {'healthy': True},
+        'sectionSummaries': [{
+            'nodeId': 'observation-table-001',
+            'parentRef': 'observation-region-002',
+            'heading': '',
+            'kind': 'table',
+            'selectedState': 'To Do',
+            'summaries': ['Total 70'],
+            'columnHeaders': list(rows[0]),
+            'rowFields': rows,
+            'rowSummaries': ['ML-1-7-6577159 Ground Photography Permit within UAE Final Approval'],
+        }],
+        'regionSummaries': [],
+    }
+
+    class InvalidFollowUpPlanner(Planner):
+        async def plan_admin_portal_read(
+            self, question, permission_context, knowledge_context, conversation_context=None,
+        ):
+            self.calls.append((question, permission_context, knowledge_context))
+            if len(self.calls) == 1:
+                return portal_plan_for('/licensing/applications', [{'type': 'observe'}])
+            raise ValueError('observation sourceSection is not an existing nodeId')
+
+    gateway = Gateway(
+        info={'ok': True, 'result': user_info_for_paths('/licensing/applications')},
+        knowledge_result={'ok': True, 'result': {'ok': True, 'chunks': [{'content':
+            '## Semantic node: My Application Tasks\n'
+            '- **page:** `/licensing/applications`\n'
+            '- **section:** My Application Tasks\n'
+            '- **content:** Application No.; Service Name; Status.\n'
+        }]}},
+        portal_result={'ok': True, 'result': {
+            'result': 'success', 'page': '/licensing/applications', 'observation': observation,
+        }},
+    )
+
+    outcome = run_reader(
+        gateway, InvalidFollowUpPlanner(),
+        question='Please provide me with a list of My Application Tasks details.',
+    )
+
+    assert outcome.result.status == 'success'
+    assert outcome.result.answer_shape == 'list'
+    assert outcome.result.source_section == 'observation-table-001'
+    assert json.loads(outcome.result.facts[0]) == rows[0]
+    assert outcome.audit_evidence['stage'] == 'completed_from_observation_fallback'
+    planning_failure = next(
+        item for item in outcome.audit_evidence['qualityTrace']
+        if item['stage'] == 'planning' and item['status'] == 'failed'
+    )
+    assert planning_failure['output'] == {
+        'exceptionType': 'ValueError',
+        'validationError': 'observation sourceSection is not an existing nodeId',
+    }
 
 
 def test_knowledge_facts_preserve_unique_source_without_claiming_live_page():

@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from app.portal_reader import AdminPortalReader, _observation_evidence_for_section
 from app.principal import Principal
-from app.service import DSHService, reader_evidence_only_response, reader_natural_answer_is_grounded
+from app.service import DSHService, _format_remaining_minutes, reader_evidence_only_response, reader_natural_answer_is_grounded
 
 
 PAGE = "/workspace"
@@ -521,6 +521,24 @@ def test_service_omits_placeholder_identity_but_keeps_zero_business_metric() -> 
     assert "Urgent Count: 0" in response
     assert "ML-1-8007-0457147" in response
     assert "Task Id" not in response
+
+
+def test_service_formats_remaining_minutes_without_exposing_the_raw_value() -> None:
+    assert _format_remaining_minutes(2166) == "about 1 day and 12 hours remaining"
+    assert _format_remaining_minutes(-2880) == "overdue by about 2 days"
+
+    response = reader_evidence_only_response(
+        {
+            "result": "success",
+            "answerShape": "attention",
+            "facts": [json.dumps({"taskNo": "MC-2-1001-7396175", "remainingMinutes": 2166})],
+            "missing": [],
+        },
+        "en",
+    )
+
+    assert "Remaining time: about 1 day and 12 hours remaining" in response
+    assert "2166" not in response
  
  
 def test_natural_answer_guard_rejects_invented_numbers_and_identifiers() -> None:
@@ -543,6 +561,8 @@ def test_natural_reader_response_uses_model_for_concise_grounded_answer() -> Non
         async def stream(self, messages):
             assert "Do not use a 'Confirmed details' heading" in messages[0]["content"]
             assert "Do not turn a routine capability question into a list of restrictions" in messages[0]["content"]
+            assert "Never expose raw minute values" in messages[0]["content"]
+            assert "may need attention" in messages[0]["content"]
             assert "What should I prioritize?" in messages[1]["content"]
             yield "You have 7 tasks. None is marked urgent, so review the 5 awaiting External Approval first."
  

@@ -1180,6 +1180,11 @@ def reader_answer_shape(
         return "overview"
     if re.search(r'\bdate\s+is\s+(?:later|earlier)\s+than\b.{0,50}\bdate\b', normalized):
         return 'list'
+    # An explicit request for a list remains a list even when the user calls
+    # the visible row fields "details". A detail answer is for one selected
+    # record, not a synonym for a collection with columns.
+    if re.search(r"\blist\b", normalized):
+        return "list"
     patterns = (
         ("count", r"\bhow many\b|\bcount\b|\bnumber of\b|多少|几个|几项"),
         ("attention", r"\battention\b|pay attention|需要.{0,8}(?:关注|留意)|(?:关注|留意).{0,8}(?:什么|哪些)"),
@@ -2723,20 +2728,56 @@ def _native_catalogue_outcome(outcome: ReaderOutcome, question: str) -> ReaderOu
                                   'result': result.public_json()})
 
 
-def _documented_object_source(knowledge: dict[str, Any], question: str, context: dict[str, Any]) -> str:
+@dataclass(frozen=True)
+class _DocumentedSourceResolution:
+    page: str = ""
+    invalid_path_count: int = 0
+    detail_candidate_count: int = 0
+
+
+def _canonical_documented_page(value: Any) -> str:
+    """Accept one standalone Markdown or plain route, never trailing prose."""
+
+    if not isinstance(value, str):
+        return ""
+    match = re.fullmatch(r"\s*`?(/[A-Za-z][A-Za-z0-9_/-]*)`?\s*", value)
+    if not match:
+        return ""
+    page = match[1]
+    if page.startswith("//") or any(char in page for char in "?#\\"):
+        return ""
+    return page
+
+
+def _documented_source_is_detail(passage: str, fields: dict[str, str], page: str) -> bool:
+    """Keep record-detail destinations out of primary collection discovery."""
+
+    heading = passage.splitlines()[0] if passage else ""
+    semantic_labels = " ".join((heading, fields.get("section", ""), fields.get("type", "")))
+    return bool(
+        re.search(r"(?:^|[/_-])[^/]*details?(?:$|[/_-])", page, re.IGNORECASE)
+        or re.search(r"\b(?:record|item|application|task)?\s*details?\b", semantic_labels, re.IGNORECASE)
+    )
+
+
+def _resolve_documented_object_source(
+    knowledge: dict[str, Any], question: str, context: dict[str, Any],
+) -> _DocumentedSourceResolution:
     """Resolve only an unambiguous documented primary identity in the named module.
 
     This is a navigation hint, not an authorization grant or a data-scope claim.
-    Foreign-key columns never nominate their containing page as the target list.
+    Foreign-key columns and record-detail pages never nominate a target list.
     """
     if question_is_conceptual(question) or re.search(r'/[a-zA-Z][\w/-]+', question):
-        return ''
+        return _DocumentedSourceResolution()
     tokens = lambda s: {t.rstrip('s') for t in re.findall(r'[a-z]+', s.casefold())}
     values = _resolved_intent_values(context)
     requested = tokens(values.get('businessObject') or question)
     hint = context.get('sourceHint') or semantic_source_hint(context)
     module_hint = str(hint.get('page') or '').strip('/').split('/')[0]
     candidates = set()
+    invalid_path_count = 0
+    detail_candidate_count = 0
     for content in _knowledge_evidence_strings(knowledge):
         for passage in _knowledge_semantic_passages(content):
             fields = _knowledge_content_fields(passage, include_metadata=True)
@@ -2746,8 +2787,15 @@ def _documented_object_source(knowledge: dict[str, Any], question: str, context:
                 paths = set(re.findall(r'`(/[A-Za-z][A-Za-z0-9_/-]*)`',fields.get('destination','')))
                 if name and specific and name <= tokens(question) and len(paths)==1:
                     candidates.update(paths)
-            page = fields.get('page', '').strip('` ')
-            if not page.startswith('/') or page.startswith('//') or any(c in page for c in '?#\\'):
+            raw_page = fields.get('page', '')
+            page = _canonical_documented_page(raw_page)
+            if raw_page and not page:
+                invalid_path_count += 1
+                continue
+            if not page:
+                continue
+            if _documented_source_is_detail(passage, fields, page):
+                detail_candidate_count += 1
                 continue
             module = page.strip('/').split('/')[0]
             section_words = tokens(fields.get('section', '')) - {'task', 'record', 'list', 'view', 'item'}
@@ -2766,7 +2814,15 @@ def _documented_object_source(knowledge: dict[str, Any], question: str, context:
                 if subject and subject <= requested:
                     candidates.add(page)
                 break  # Subsequent identities are related fields, not the primary object.
-    return next(iter(candidates)) if len(candidates) == 1 else ''
+    return _DocumentedSourceResolution(
+        page=next(iter(candidates)) if len(candidates) == 1 else '',
+        invalid_path_count=invalid_path_count,
+        detail_candidate_count=detail_candidate_count,
+    )
+
+
+def _documented_object_source(knowledge: dict[str, Any], question: str, context: dict[str, Any]) -> str:
+    return _resolve_documented_object_source(knowledge, question, context).page
 
 
 def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: list[dict[str, Any]]) -> ReaderOutcome:
@@ -2860,6 +2916,9 @@ _OBSERVATION_FALLBACK_DISALLOWED_TERMS = frozenset(
         "状态", "类型", "类别", "待处理", "已完成", "逾期", "到期", "日期", "最近", "经理",
         "اهتمام", "قائمة سوداء", "بحث", "محدد", "تفاصيل", "تصفية", "حالة", "نوع", "فئة", "تاريخ",
     }
+)
+_COLLECTION_FIELD_DETAIL_TERMS = frozenset(
+    {"detail", "details", "详情", "明细", "تفاصيل"}
 )
 _OBSERVATION_FALLBACK_MAX_FACTS = 8
 _OBSERVATION_FALLBACK_MAX_FACT_CHARS = 300
@@ -3416,11 +3475,14 @@ def _observation_fallback_intent(
     ):
         return None
     latin_words = set(re.findall(r"[a-z]+", normalized))
-    disallowed_terms = (
-        _OBSERVATION_FALLBACK_DISALLOWED_TERMS - {"status", "状态", "حالة"}
-        if answer_shape == "overview"
-        else _OBSERVATION_FALLBACK_DISALLOWED_TERMS
-    )
+    disallowed_terms = _OBSERVATION_FALLBACK_DISALLOWED_TERMS
+    if answer_shape == "overview":
+        disallowed_terms -= {"status", "状态", "حالة"}
+    elif answer_shape == "list":
+        # Once semantic resolution has established a collection answer, words
+        # such as "details" describe the requested row fields. Record-specific
+        # requests remain blocked by the identity and filter guards above.
+        disallowed_terms -= _COLLECTION_FIELD_DETAIL_TERMS
     if any(
         (" " in term and term in normalized)
         or (term.isascii() and term in latin_words)
@@ -4407,6 +4469,7 @@ def _result_from_structured_observation(
         # evidence needs semantic evaluation by the planner, not label copying.
         return None
     rows = _bounded_observation_field(section, "rowSummaries", limit=8)
+    native_rows = _bounded_native_row_facts(section, limit=8)
     controls = _bounded_observation_field(section, "controls", limit=20)
     card_summaries = _bounded_observation_field(section, "cardSummaries", limit=20)
     summaries = _bounded_observation_field(section, "summaries", limit=20)
@@ -4439,7 +4502,7 @@ def _result_from_structured_observation(
             and not re.search(r"(?:^|\s)\d+(?:[.,]\d+)?\s*$", value)
         )
         selected_state = str(section.get("selectedState") or "").strip()
-        if answer_shape == "list" and not rows and not card_summaries and len(category_controls) >= 2:
+        if answer_shape == "list" and not native_rows and not rows and not card_summaries and len(category_controls) >= 2:
             if not selected_state:
                 return None
             requested_tokens = _section_match_tokens(question)
@@ -4451,7 +4514,7 @@ def _result_from_structured_observation(
                 requested_tokens & _section_match_tokens(selected_state)
             ):
                 return None
-        candidates = rows or card_summaries or non_count_controls
+        candidates = native_rows or rows or card_summaries or non_count_controls
         if answer_shape == "attention" and not candidates and category_controls:
             return ReaderResult(
                 status="not_confirmed",
@@ -4470,7 +4533,7 @@ def _result_from_structured_observation(
             summary="The requested portal section was observed.",
             page=str(page)[:500],
             section=str(section.get("heading") or section_name)[:300],
-            source_section=str(section.get("heading") or section_name)[:300],
+            source_section=str(section.get("nodeId") or section.get("heading") or section_name)[:300],
             answer_shape=answer_shape,
             completeness="bounded",
             selected_state=str(section.get("selectedState") or "")[:300],
@@ -4551,6 +4614,40 @@ def _bounded_fact_candidates(candidates: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(facts)
 
 
+def _bounded_native_row_facts(source: Any, *, limit: int = 4) -> tuple[str, ...]:
+    """Project complete, uniquely grounded table rows without page-specific fields."""
+
+    if not isinstance(source, dict) or not isinstance(source.get("rowFields"), (list, tuple)):
+        return ()
+    facts: list[str] = []
+    for row in source["rowFields"][:limit]:
+        if not isinstance(row, dict):
+            continue
+        selected: dict[str, str] = {}
+        for raw_key, raw_value in list(row.items())[:20]:
+            if not isinstance(raw_value, str):
+                continue
+            normalized_key = _key(raw_key)
+            if (
+                normalized_key in {_key(key) for key in SENSITIVE_KEYS}
+                or any(fragment in normalized_key for fragment in SENSITIVE_KEY_FRAGMENTS)
+            ):
+                continue
+            key = _sanitize_untrusted_text(raw_key, max_length=120)
+            value = _sanitize_untrusted_text(raw_value, max_length=500)
+            if not key or not value:
+                continue
+            candidate = {**selected, key: value}
+            encoded = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) > _OBSERVATION_FALLBACK_MAX_FACT_CHARS:
+                break
+            selected = candidate
+        fact = json.dumps(selected, ensure_ascii=False, separators=(",", ":"))
+        if selected and _structured_row_supports_fact(fact, source):
+            facts.append(fact)
+    return _bounded_fact_candidates(tuple(facts))
+
+
 def observation_fallback_result(
     question: str,
     observation: Any,
@@ -4582,6 +4679,7 @@ def observation_fallback_result(
         if _data_observation_control(value)
     )
     rows = _bounded_observation_field(source, "rowSummaries", limit=4)
+    list_native_rows = _bounded_native_row_facts(source, limit=4) if intent == "list" else ()
     summaries = (
         *(
             value for value in _bounded_observation_field(source, "cardSummaries", limit=12)
@@ -4592,7 +4690,7 @@ def observation_fallback_result(
             if _data_observation_control(value)
         ),
     )
-    if intent == "list" and not rows:
+    if intent == "list" and not list_native_rows and not rows:
         if _structured_observation_sections(observation) and _raw_observation_has_empty_state(source):
             if not _observation_no_data_allowed(observation):
                 return None
@@ -4641,7 +4739,7 @@ def observation_fallback_result(
             )
         return None
     if intent == "list":
-        candidates = rows
+        candidates = list_native_rows or rows
     else:
         count_controls = tuple(
             value for value in controls
@@ -6014,12 +6112,19 @@ class AdminPortalReader:
                     )
                     raise
                 except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
+                    validation_error = (
+                        _sanitize_untrusted_text(exc, max_length=200)
+                        if isinstance(exc, ValueError) else ""
+                    )
                     trace.record(
                         "planning",
                         "failed",
                         started_at=started_at,
                         input_summary=input_summary,
-                        output_summary={"exceptionType": type(exc).__name__},
+                        output_summary={
+                            "exceptionType": type(exc).__name__,
+                            **({"validationError": validation_error} if validation_error else {}),
+                        },
                         failure_code="planner_error",
                     )
                     raise
@@ -6878,7 +6983,27 @@ class AdminPortalReader:
                 result = ReaderResult(status='no_permission', summary='The same filter source is not permitted.',
                     page=filter_source, source_hint={'page':filter_source}, missing=('page_not_permitted',))
                 return ReaderOutcome(result, {'stage':'filter_source_permission', 'permission':permission_audit, 'result':result.public_json()})
-        object_source = _documented_object_source(all_knowledge, question, bounded_conversation_context)
+        source_resolution = _resolve_documented_object_source(
+            all_knowledge, question, bounded_conversation_context,
+        )
+        object_source = source_resolution.page
+        if source_resolution.invalid_path_count or source_resolution.detail_candidate_count:
+            failure_code = (
+                "invalid_documented_path"
+                if source_resolution.invalid_path_count
+                else "detail_source_requires_observed_record"
+            )
+            trace.record(
+                "documented_source_selection",
+                "degraded",
+                output_summary={
+                    "decision": "ignored_non_primary_candidates",
+                    "selectedPrimarySource": bool(object_source),
+                    "invalidPathCount": source_resolution.invalid_path_count,
+                    "detailCandidateCount": source_resolution.detail_candidate_count,
+                },
+                failure_code=failure_code,
+            )
         knowledge_context = _knowledge_for_current_role(all_knowledge, permission_context, question)
         if object_source:
             knowledge_context = {**knowledge_context, 'documentedPrimarySource': object_source}
@@ -6938,6 +7063,7 @@ class AdminPortalReader:
             return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit, "knowledge": knowledge_context})
         except (httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
             result = _model_http_failure(exc) or ReaderResult(status="not_confirmed", summary="I could not determine a bounded read-only portal plan.", missing=('planner_error',))
+            validation_error = _sanitize_untrusted_text(exc, max_length=200) if isinstance(exc, ValueError) else ""
             return ReaderOutcome(
                 result,
                 {
@@ -6945,6 +7071,7 @@ class AdminPortalReader:
                     "permission": permission_audit,
                     "knowledge": knowledge_context,
                     "errorType": type(exc).__name__,
+                    **({"validationError": validation_error} if validation_error else {}),
                 },
             )
         resolved_values = _resolved_intent_values(bounded_conversation_context)
@@ -7632,6 +7759,7 @@ class AdminPortalReader:
                     {**_timeout_evidence(exc, budget), "permission": permission_audit, "observation": observed_context["portalObservation"], "semanticResolution": semantic_resolution},
                 )
             except (httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError) as exc:
+                validation_error = _sanitize_untrusted_text(exc, max_length=200) if isinstance(exc, ValueError) else ""
                 if category_requirement:
                     result = ReaderResult(
                         status="not_confirmed",
@@ -7652,6 +7780,7 @@ class AdminPortalReader:
                             "observation": observed_context["portalObservation"],
                             "semanticResolution": semantic_resolution,
                             "errorType": type(exc).__name__,
+                            **({"validationError": validation_error} if validation_error else {}),
                         },
                     )
                 fallback_result, fallback_strategy = deterministic_observation_fallback(
@@ -7678,6 +7807,7 @@ class AdminPortalReader:
                             "result": fallback_result.public_json(),
                             "semanticResolution": semantic_resolution,
                             "errorType": type(exc).__name__,
+                            **({"validationError": validation_error} if validation_error else {}),
                         },
                     )
                 api_failure = str(api_audit.get("reason") or "") if api_audit.get("decision") == "not_confirmed" else ""
@@ -7687,7 +7817,7 @@ class AdminPortalReader:
                     page=request.start_path,
                     missing=(api_failure or "planner_error",),
                 )
-                return ReaderOutcome(result, {"stage": "planning_after_observe", "permission": permission_audit, "observation": observed_context["portalObservation"], "semanticResolution": semantic_resolution, "errorType": type(exc).__name__})
+                return ReaderOutcome(result, {"stage": "planning_after_observe", "permission": permission_audit, "observation": observed_context["portalObservation"], "semanticResolution": semantic_resolution, "errorType": type(exc).__name__, **({"validationError": validation_error} if validation_error else {})})
             planned_result = _observation_plan_result_from_plan(next_plan)
             category_requirement = category_requirement or _category_control_requiring_children(
                 question,
