@@ -463,6 +463,11 @@ def make_router(service: DSHService) -> APIRouter:
         Documented queue navigation requires the full distinctive label; a shared
         preposition cannot select another module. Prior observed result coverage
         cannot become an inherited user-requested ownership condition.
+        Explicit module names constrain documented source selection. Identifier
+        searches remain list searches rather than automatically opening details.
+        Fresh native observations survive post-action planning failures; optional
+        fields, bounded status values and matching-view summaries use rendered
+        labels rather than internal status codes or invented field definitions.
         Selected tab labels use contiguous phrase matching to avoid sibling-view
         collisions. Model HTTP 402 failures are reported as load_failed with
         model_payment_required, not as an invalid user intent or empty data.

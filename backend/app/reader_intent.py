@@ -252,7 +252,7 @@ def resolve_literal_same_record_reference(question: str, conversation_context: A
                if name in prior else {"source": "unspecified", "value": "", "evidence": ""})
         for name in SLOT_NAMES
     }
-    slots["answerShape"] = {"source": "current", "value": "detail", "evidence": match["command"]}
+    slots["answerShape"] = {"source": "current", "value": "list" if match['field'] else "detail", "evidence": match["command"]}
     return parse_intent_resolution({"relation": "continue", "slots": slots, "clarificationOptions": []},
                                    question, conversation_context)
 

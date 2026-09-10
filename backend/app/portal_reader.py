@@ -1180,6 +1180,9 @@ def reader_answer_shape(
         return "overview"
     if re.search(r'\bdate\s+is\s+(?:later|earlier)\s+than\b.{0,50}\bdate\b', normalized):
         return 'list'
+    field_list = re.match(r'\s*show\b(?P<subject>.*?)\b(?:including|with)\b.*\bexpiry date\b', normalized)
+    if field_list and not re.search(r'expir|overdue|\bdue\b', field_list['subject']):
+        return 'list'
     patterns = (
         ("count", r"\bhow many\b|\bcount\b|\bnumber of\b|多少|几个|几项"),
         ("attention", r"\battention\b|pay attention|需要.{0,8}(?:关注|留意)|(?:关注|留意).{0,8}(?:什么|哪些)"),
@@ -2628,10 +2631,11 @@ def _native_schema_outcome(outcome: ReaderOutcome, question: str) -> ReaderOutco
 
 def _native_optional_record_fields(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Keep optional-field lists on their observed schema instead of API lookup IDs."""
-    optional_fields = bool(re.search(r'\bshow\b.*\bwith\b.*\bwhere available\b', question, re.I))
+    optional_fields = bool(re.search(r'\bshow\b.*\b(?:with|including)\b.*\bwhere (?:available|those fields exist)\b', question, re.I))
+    native_description = bool(re.search(r'\bshow\b.*(?:\bincluding their statuses\b|\binformation (?:used to identify|identifies)\b)', question, re.I))
     failed_bounded_list = (outcome.result.status=='not_confirmed' and requested_record_limit(question) is not None
                           and any(m in {'planner_error','invalid_observation_schema','invalid_follow_up_plan'} for m in outcome.result.missing))
-    if (not (optional_fields or failed_bounded_list)
+    if (not (optional_fields or native_description or failed_bounded_list)
             or outcome.result.status not in {'success','not_confirmed'} or not outcome.result.page):
         return outcome
     evidence = outcome.audit_evidence
@@ -2676,6 +2680,44 @@ def _native_empty_queue_count(outcome: ReaderOutcome, question: str) -> ReaderOu
         source_section=str(source.get('nodeId') or ''),selected_state=str(source['selectedState']),
         facts=(f'The currently selected {source["selectedState"]} query has 0 matching records. This is the verified empty current view, not a count across other views or criteria.',))
     return ReaderOutcome(result,{**evidence,'nativeEmptyCount':{'source':source['nodeId'],'state':source['selectedState']},'result':result.public_json()})
+
+
+def _native_status_values(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    if (not re.fullmatch(r'\s*(?:which|what)\s+[a-z ]*statuses\s+are\s+shown\s+in\s+(?:this|the current)\s+list[?.]?\s*', question, re.I)
+            or outcome.result.status not in {'success','not_confirmed'} or not outcome.result.page):
+        return outcome
+    observation=outcome.audit_evidence.get('observation')
+    if not isinstance(observation,dict) or (observation.get('readHealth') or {}).get('healthy') is not True or _observation_has_error_state(observation):
+        return outcome
+    tables=[s for s in observation.get('sectionSummaries',[]) if isinstance(s,dict) and s.get('kind') in {'table','grid'} and 'Status' in s.get('columnHeaders',[])]
+    if len(tables)!=1:return outcome
+    rows=tables[0].get('rowFields') or []
+    values=list(dict.fromkeys(str(r['Status']) for r in rows if isinstance(r,dict) and r.get('Status')))
+    if not values:return outcome
+    result=replace(outcome.result,status='success',answer_shape='list',completeness='bounded',scope='unknown',missing=(),
+        source_section=str(tables[0].get('nodeId') or ''),selected_state=str(tables[0].get('selectedState') or ''),
+        facts=('Status values in the currently observed rows: '+ '; '.join(values)+'.',
+               f'This covers {len(rows)} observed rows only. It is not a complete status enumeration or a definition of those statuses.'))
+    return ReaderOutcome(result,{**outcome.audit_evidence,'result':result.public_json(),'nativeStatusValues':values})
+
+
+def _native_bounded_summary(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    if (outcome.result.status!='not_confirmed' or not outcome.result.page
+            or not re.search(r'\bshow a bounded (?:current )?summary\b',question,re.I)):
+        return outcome
+    observation=outcome.audit_evidence.get('observation')
+    if not isinstance(observation,dict) or (observation.get('readHealth') or {}).get('healthy') is not True or _observation_has_error_state(observation):return outcome
+    tables=[s for s in observation.get('sectionSummaries',[]) if isinstance(s,dict) and s.get('kind') in {'table','grid'} and s.get('rowFields')]
+    if len(tables)!=1:return outcome
+    table=tables[0];label=str(table.get('selectedState') or '')
+    words=lambda v:set(re.findall(r'[a-z]+',v.casefold()))-{'view','analytics'}
+    if not words(label) or not words(label)<=words(question):return outcome
+    rows=[{k:v for k,v in r.items() if k in table.get('columnHeaders',[]) and not re.search(r'email|mobile|phone',k,re.I)} for r in table['rowFields'] if isinstance(r,dict)][:4]
+    if not rows or not all(rows):return outcome
+    result=replace(outcome.result,status='success',answer_shape='overview',completeness='bounded',scope='unknown',missing=(),
+        selected_state=label,source_section=str(table.get('nodeId') or ''),
+        facts=tuple(json.dumps(r,ensure_ascii=False) for r in rows)+(f'These are {len(rows)} observed rows in {label}; other rows and filter contexts are not covered by this bounded summary.',))
+    return ReaderOutcome(result,{**outcome.audit_evidence,'result':result.public_json(),'nativeSummaryState':label})
 
 
 def _native_catalogue_outcome(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
@@ -2733,6 +2775,11 @@ def _documented_object_source(knowledge: dict[str, Any], question: str, context:
     hint = context.get('sourceHint') or semantic_source_hint(context)
     module_hint = str(hint.get('page') or '').strip('/').split('/')[0]
     candidates = set()
+    passages = [p for c in _knowledge_evidence_strings(knowledge) for p in _knowledge_semantic_passages(c)]
+    documented_modules = {path.strip('/').split('/')[0] for p in passages
+                          for path in re.findall(r'`(/[A-Za-z][A-Za-z0-9_/-]*)`', p)}
+    named_modules = {m for m in documented_modules if tokens(m) <= tokens(question)}
+    explicit_module = next(iter(named_modules)) if len(named_modules) == 1 else ''
     for content in _knowledge_evidence_strings(knowledge):
         for passage in _knowledge_semantic_passages(content):
             fields = _knowledge_content_fields(passage, include_metadata=True)
@@ -2740,12 +2787,16 @@ def _documented_object_source(knowledge: dict[str, Any], question: str, context:
                 name = tokens(fields.get('name','')) - {'tab','switcher','control'}
                 specific = name - {'task','record','item','list','queue'}
                 paths = set(re.findall(r'`(/[A-Za-z][A-Za-z0-9_/-]*)`',fields.get('destination','')))
+                if explicit_module:
+                    paths = {p for p in paths if p.strip('/').split('/')[0] == explicit_module}
                 if name and specific and name <= tokens(question) and len(paths)==1:
                     candidates.update(paths)
             page = fields.get('page', '').strip('` ')
             if not page.startswith('/') or page.startswith('//') or any(c in page for c in '?#\\'):
                 continue
             module = page.strip('/').split('/')[0]
+            if explicit_module and module != explicit_module:
+                continue
             section_words = tokens(fields.get('section', '')) - {'task', 'record', 'list', 'view', 'item'}
             # A preposition such as 'to' in 'To Do' cannot name that queue.
             # Require the complete distinctive label, not one shared token.
@@ -3434,9 +3485,11 @@ def _observed_identity_search(question: str, context: dict[str, Any], observatio
         identifiers = re.findall(r"(?<![\w/-])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![\w/-])", question)
         if len(identifiers) == 1:
             identity = identifiers[0]
+    same_record_search = bool(re.fullmatch(r'\s*(?:please\s+)?(?:find|locate)\s+(?:that|the)\s+same\s+[a-z ]+\s+by\s+its\s+[a-z ]+(?:no\.?|number|id)\.?\s*', question, re.I)
+                              and _resolved_intent_values(context).get('recordIdentity'))
     if (not identity or len(identity) > 120 or not current_page or not isinstance(observation, dict)
             or question_is_conceptual(question)
-            or not re.search(r"(?<!\w)" + re.escape(identity) + r"(?!\w)", question, re.IGNORECASE)
+            or not (same_record_search or re.search(r"(?<!\w)" + re.escape(identity) + r"(?!\w)", question, re.IGNORECASE))
             or re.search(r"\b(?:not|except|excluding|without|compare|versus)\b|排除|不要|对比", question, re.IGNORECASE)):
         return None
     controls = [control for control in observation.get("filterControls", []) if isinstance(control, dict)
@@ -5620,6 +5673,8 @@ class AdminPortalReader:
         outcome = _native_schema_outcome(outcome, question)
         outcome = _native_date_comparison_outcome(outcome, question)
         outcome = _native_optional_record_fields(outcome, question)
+        outcome = _native_status_values(outcome, question)
+        outcome = _native_bounded_summary(outcome, question)
         outcome = _native_empty_queue_count(outcome, question)
         outcome = _native_catalogue_outcome(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
@@ -5631,6 +5686,16 @@ class AdminPortalReader:
                 and executions[-1].get("status") == "passed"
                 and executions[-1].get("output", {}).get("searchClearVerified") is True
                 and executions[-1].get("input", {}).get("startPath") == outcome.result.page):
+            observation=outcome.audit_evidence.get('observation') or {}
+            tables=[s for s in observation.get('sectionSummaries',[]) if isinstance(s,dict) and s.get('kind') in {'table','grid'}]
+            if (outcome.result.status=='not_confirmed' and not set(outcome.result.missing)-{'planner_error'}
+                    and (observation.get('readHealth') or {}).get('healthy') is True
+                    and not _observation_has_error_state(observation) and len(tables)==1 and tables[0].get('rowFields')):
+                table=tables[0]
+                result=replace(outcome.result,status='success',answer_shape='overview',completeness='bounded',scope='unknown',missing=(),
+                    source_section=str(table.get('nodeId') or ''),selected_state=str(table.get('selectedState') or ''),
+                    facts=(f'The cleared-search current view shows {len(table["rowFields"])} observed rows. This confirms the list is available again in the freshly read view, not that every prior filter or the entire collection was restored.',))
+                outcome=ReaderOutcome(result,{**outcome.audit_evidence,'result':result.public_json()})
             outcome = ReaderOutcome(replace(outcome.result, workflow_state=(
                 "The Search input was explicitly cleared and verified empty in the freshly read view. "
                 "Only the current view is confirmed; no claim is made about every prior filter or all records."
@@ -8749,5 +8814,6 @@ class AdminPortalReader:
                 "knowledge": knowledge_context,
                 "plan": bounded_json(request.as_payload()),
                 "portalEvidence": bounded_json(tool_result, max_depth=6, max_items=100, max_string=1_000),
+                "observation": bounded_portal_observation(raw_final_payload.get('observation')) if isinstance(raw_final_payload, dict) and isinstance(raw_final_payload.get('observation'), dict) else {},
             },
         )
