@@ -471,6 +471,8 @@ def make_router(service: DSHService) -> APIRouter:
         Structured record and metric answers retain exact label/value pairs without
         model reinterpretation. Optional-field lists retain the observed selected
         view; verified search clears with a requested limit return bounded rows.
+        Identity searches present a unique matching native row; a healthy explicit
+        empty list with the requested search value reports no_data without lookup rows.
         Selected tab labels use contiguous phrase matching to avoid sibling-view
         collisions. Model HTTP 402 failures are reported as load_failed with
         model_payment_required, not as an invalid user intent or empty data.

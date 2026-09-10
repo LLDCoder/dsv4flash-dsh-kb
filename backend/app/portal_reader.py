@@ -2629,6 +2629,44 @@ def _native_schema_outcome(outcome: ReaderOutcome, question: str) -> ReaderOutco
                                   'result': result.public_json()})
 
 
+def _native_identity_search_result(outcome: ReaderOutcome, question: str, intent: dict[str, Any]) -> ReaderOutcome:
+    """Present the matched native row instead of accompanying API lookup lists."""
+    identity = str(_resolved_intent_values({'resolvedIntent': intent}).get('recordIdentity') or '')
+    if not identity:
+        tokens = re.findall(r'(?<![\w/-])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![\w/-])', question)
+        if len(tokens) == 1:
+            identity = tokens[0]
+    if (outcome.result.status != 'success' or not identity
+            or not re.search(r'\b(?:find|search)\b', question, re.I)):
+        return outcome
+    observation = outcome.audit_evidence.get('observation') or {}
+    if ((observation.get('readHealth') or {}).get('healthy') is not True
+            or _observation_has_error_state(observation)):
+        return outcome
+    tables = [s for s in observation.get('sectionSummaries', []) if isinstance(s, dict)
+              and s.get('kind') in {'table', 'grid'} and s.get('columnHeaders')]
+    if len(tables) != 1:
+        return outcome
+    table = tables[0]
+    primary = table['columnHeaders'][0]
+    if not re.search(r'\b(?:no\.?|number|id)\s*$', primary, re.I):
+        return outcome
+    rows = [r for r in table.get('rowFields', []) if isinstance(r, dict)]
+    search_matches = any(str(c.get('label') or '').casefold() == 'search' and c.get('selected') == [identity]
+                         for c in observation.get('filterControls', []) if isinstance(c, dict))
+    if (not rows and search_matches and _observation_no_data_allowed(observation)
+            and _raw_observation_has_empty_state(table)):
+        result = replace(outcome.result, status='no_data', facts=(), missing=(), answer_shape='list', completeness='bounded')
+        return ReaderOutcome(result, {**outcome.audit_evidence, 'nativeIdentityMatch': identity, 'result': result.public_json()})
+    if len(rows) != 1 or str(rows[0].get(primary) or '').casefold() != identity.casefold():
+        return outcome
+    fields = {key: value for key, value in rows[0].items() if key in table['columnHeaders']}
+    result = replace(outcome.result, facts=(json.dumps(fields, ensure_ascii=False),),
+                     source_section=str(table.get('nodeId') or ''), selected_state=str(table.get('selectedState') or ''),
+                     answer_shape='list', completeness='bounded')
+    return ReaderOutcome(result, {**outcome.audit_evidence, 'nativeIdentityMatch': identity, 'result': result.public_json()})
+
+
 def _native_optional_record_fields(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Keep optional-field lists on their observed schema instead of API lookup IDs."""
     optional_fields = bool(re.search(r'\bshow\b.*\b(?:with|including)\b.*\bwhere (?:available|those fields exist)\b', question, re.I))
@@ -2658,8 +2696,8 @@ def _native_optional_record_fields(outcome: ReaderOutcome, question: str) -> Rea
     context = ((f'The current selected view is {selected_state}. These records belong to that view.',)
                if selected_state else ())
     facts = tuple(json.dumps(r,ensure_ascii=False) for r in rows) + context + (
-        'These are bounded current records using their native column names. Visible columns: ' + '; '.join(source['columnHeaders']) + '. '
-        'Only the displayed record columns and values are reported; column availability does not define the business meaning of time fields. Differently named time columns are not interchangeable.',)
+        'These are bounded records from the current view. Fields absent from the displayed columns are not established. '
+        'Differently named time columns are not interchangeable; their business event semantics are not established.',)
     result = replace(outcome.result,status='success',answer_shape='list',completeness='bounded',
         source_section=str(source.get('nodeId') or ''),selected_state=str(source.get('selectedState') or ''),
         facts=facts,missing=())
@@ -5725,6 +5763,7 @@ class AdminPortalReader:
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
+        outcome = _native_identity_search_result(outcome, question, intent_state)
         executions = [entry for entry in trace.entries if entry.get("stage") == "portal_execution"]
         outcome = _native_filter_outcome(outcome, question, executions)
         if (outcome.result.status in {"success", "no_data", "not_confirmed"} and executions

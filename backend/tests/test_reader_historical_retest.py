@@ -188,3 +188,30 @@ def test_distinct_documented_permission_scopes_keep_their_source_attribution():
     assert not failed
     assert 'Team list scope: The Agent permission set does not grant this route.' in answer
     assert 'Personal list scope: The Agent layout showed both queues.' in answer
+
+
+@pytest.mark.parametrize('identity,extra', [('P-1', False), ('P-2', False), ('P-1', True)])
+def test_identity_search_returns_only_unique_matching_primary_native_row(identity, extra):
+    from app.portal_reader import _native_identity_search_result
+    obs = native()
+    if not extra:
+        obs['sectionSummaries'][0]['rowFields'] = obs['sectionSummaries'][0]['rowFields'][:1]
+    old = outcome(obs, status='success', missing=())
+    intent = {'slots': {'recordIdentity': {'value': identity, 'source': 'previous', 'evidence': identity}}}
+    result = _native_identity_search_result(old, 'Find that same record by its ID.', intent)
+    if identity == 'P-1' and not extra:
+        assert len(result.result.facts) == 1 and json.loads(result.result.facts[0])['Permit No.'] == 'P-1'
+    else:
+        assert result == old
+
+
+@pytest.mark.parametrize('selected', [['NO-SUCH-123'], ['different']])
+def test_empty_identity_search_requires_matching_applied_search_and_healthy_empty_list(selected):
+    from app.portal_reader import _native_identity_search_result
+    obs = native()
+    obs['sectionSummaries'][0]['rowFields'] = []
+    obs['sectionSummaries'][0]['emptyState'] = 'No Data'
+    obs['filterControls'] = [{'label': 'Search', 'selected': selected}]
+    old = outcome(obs, status='success', missing=())
+    result = _native_identity_search_result(old, 'Find record NO-SUCH-123.', {}).result
+    assert (result.status == 'no_data') == (selected == ['NO-SUCH-123'])

@@ -60,7 +60,8 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str, 
             'zh': f'当前选中的视图：{selected_view}。',
             'ar': f'العرض المحدد حاليًا: {selected_view}.',
         }.get(language, f'Current selected view: {selected_view}.')
-        raw_facts = [*raw_facts[:19], view_fact]
+        if not any(f'The current selected view is {selected_view}.' in str(fact) for fact in raw_facts):
+            raw_facts = [*raw_facts[:19], view_fact]
     workflow = str(reader_result.get('workflowState') or '')
     if isinstance(raw_facts, list) and workflow.startswith('The Search input was explicitly cleared and verified empty in the freshly read view.'):
         raw_facts = [*raw_facts, workflow]
