@@ -146,7 +146,7 @@ def test_explicit_same_selected_record_does_not_need_a_model_call(monkeypatch, q
     context = {"previousIntent": {"question": "Show accounts and identify one Account ID", "recordIdentity": "2026090300001"}}
     result = asyncio.run(adapter.resolve_admin_portal_intent(question, context))
     assert result['slots']['recordIdentity']['value'] == '2026090300001'
-    assert result['slots']['answerShape']['value'] == 'detail'
+    assert result['slots']['answerShape']['value'] == ('list' if 'by its' in question else 'detail')
     assert requests == []
 
 

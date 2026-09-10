@@ -427,6 +427,10 @@ def make_router(service: DSHService) -> APIRouter:
         personal assignment. Knowledge answers require retrieved supporting text.
         Planner schema repair is bounded and does not relax access or evidence checks.
         Same-topic explanations retain their source module for knowledge retrieval.
+        Basic field comparisons use supported manual meanings and layout distinctions;
+        unrequested business-event or date-boundary rules are not prerequisites for
+        that explanation. Requested unsupported rules remain unconfirmed. Explanations
+        of another role's documented layout do not grant access to its live records.
         Capability and entry explanations may use applicable retrieved documentation
         without treating a named page or tab as a record identifier. A uniquely
         documented primary-identity source is permission-checked before considering
@@ -463,6 +467,16 @@ def make_router(service: DSHService) -> APIRouter:
         Documented queue navigation requires the full distinctive label; a shared
         preposition cannot select another module. Prior observed result coverage
         cannot become an inherited user-requested ownership condition.
+        Explicit module names constrain documented source selection. Identifier
+        searches remain list searches rather than automatically opening details.
+        Fresh native observations survive post-action planning failures; optional
+        fields, bounded status values and matching-view summaries use rendered
+        labels rather than internal status codes or invented field definitions.
+        Structured record and metric answers retain exact label/value pairs without
+        model reinterpretation. Optional-field lists retain the observed selected
+        view; verified search clears with a requested limit return bounded rows.
+        Identity searches present a unique matching native row; a healthy explicit
+        empty list with the requested search value reports no_data without lookup rows.
         Selected tab labels use contiguous phrase matching to avoid sibling-view
         collisions. Model HTTP 402 failures are reported as load_failed with
         model_payment_required, not as an invalid user intent or empty data.

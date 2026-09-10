@@ -612,13 +612,13 @@ def test_natural_reader_response_falls_back_when_model_invents_a_fact() -> None:
     service.llm = _AnswerLLM()
     evidence = {
         "result": "success",
-        "answerShape": "count",
+        "answerShape": "attention",
         "facts": [json.dumps({"totalCount": 7})],
         "missing": [],
     }
  
     response, formatting_failed = asyncio.run(service._natural_reader_response(
-        "How many tasks do I have?",
+        "Which tasks should I review?",
         evidence,
         "en",
     ))
