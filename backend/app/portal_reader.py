@@ -589,6 +589,105 @@ def _api_response_evidence_for_operation(observation: Any, operation_key: str) -
     return None
 
 
+def _native_detail_observation_result(
+    observation: Any,
+    *,
+    page: str,
+    record_identity: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult | None:
+    """Deliver one already-loaded application detail without replaying its click.
+
+    The portal can return a detail page as the result of the preceding
+    ``show_detail`` action. A planner may still ask for the same click again
+    after observing that page; that is redundant, not missing evidence.
+    """
+
+    identity = _detail_identity(record_identity)
+    if not identity or not isinstance(observation, dict):
+        return None
+
+    operation_keys = (
+        "GET /api/Application/MyReviewDetail/{taskId}",
+        "GET /api/Application/MyCompletedDetail/{taskId}",
+    )
+    detail: dict[str, Any] | None = None
+
+    def find_detail(value: Any, depth: int = 0) -> dict[str, Any] | None:
+        if depth > 8:
+            return None
+        if isinstance(value, dict):
+            application_number = next(
+                (child for key, child in value.items() if _key(key) in {"applicationnumber", "applicationno"}),
+                None,
+            )
+            if isinstance(application_number, str) and application_number.casefold() == identity.casefold():
+                return value
+            for child in value.values():
+                found = find_detail(child, depth + 1)
+                if found is not None:
+                    return found
+        elif isinstance(value, (list, tuple)):
+            for child in value[:20]:
+                found = find_detail(child, depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    for operation_key in operation_keys:
+        evidence = _api_response_evidence_for_operation(observation, operation_key)
+        if evidence is not None:
+            detail = find_detail(evidence.get("data"))
+            if detail is not None:
+                break
+    if detail is None:
+        # The API candidate key can vary by portal build, but the response is
+        # still usable when it was triggered by the already executed detail
+        # action and contains the exact requested application number.
+        discovery = _api_discovery(observation) or {}
+        for candidate in (discovery.get("candidates") or [])[:40]:
+            if not isinstance(candidate, dict) or "responseEvidence" not in candidate:
+                continue
+            if "detail" not in str(candidate.get("operationKey") or "").casefold():
+                continue
+            detail = find_detail(candidate.get("responseEvidence"))
+            if detail is not None:
+                break
+    if detail is None:
+        return None
+
+    field_aliases = (
+        ("Application No.", ("applicationnumber", "applicationno")),
+        ("Service Name", ("servicenameen", "servicename")),
+        ("Service Category", ("servicecategorynameen", "servicecategory")),
+        ("Type", ("servicetypenameen", "servicetype", "type")),
+        ("Status", ("status",)),
+        ("SLA", ("sladescription",)),
+        ("Apply For", ("applyforen", "applyfor")),
+        ("Submission Time", ("submissiontime",)),
+        ("My Decision", ("mydecision",)),
+    )
+    fields: dict[str, str] = {}
+    for label, aliases in field_aliases:
+        value = next((child for key, child in detail.items() if _key(key) in aliases), None)
+        if value is None or isinstance(value, bool) or not str(value).strip():
+            continue
+        fields[label] = _sanitize_untrusted_text(value, max_length=300)
+    if fields.get("Application No.", "").casefold() != identity.casefold():
+        return None
+    return ReaderResult(
+        status="success",
+        summary="The requested application detail was already present in the fresh portal read.",
+        page=str(page)[:500],
+        section="Application Details",
+        source_section="api:application-detail",
+        answer_shape="detail",
+        completeness="bounded",
+        scope=scope,
+        facts=(json.dumps(fields, ensure_ascii=False, separators=(",", ":")),),
+    )
+
+
 def _api_discovery_is_truncated(
     discovery: dict[str, Any], *, include_support: bool, delta_only: bool,
 ) -> bool:
@@ -8806,6 +8905,33 @@ class AdminPortalReader:
             if follow_up_observation is not None:
                 bounded_follow_up_observation = bounded_portal_observation(follow_up_observation)
                 follow_up_shape = reader_answer_shape(question, bounded_conversation_context)
+                resolved_detail_identity = _detail_identity(resolved_values.get("recordIdentity"))
+                if follow_up_shape == "detail" and resolved_detail_identity:
+                    detail_result = _native_detail_observation_result(
+                        bounded_follow_up_observation,
+                        page=next_request.start_path,
+                        record_identity=resolved_detail_identity,
+                        scope=verified_scope,
+                    )
+                    if detail_result is not None:
+                        semantic_resolution = record_semantic_resolution(
+                            decision="fallback",
+                            reason="detail_already_loaded",
+                            result=detail_result,
+                            fallback_strategy="native_detail_observation",
+                        )
+                        return ReaderOutcome(
+                            detail_result,
+                            {
+                                "stage": "completed_from_detail_observation",
+                                "permission": permission_audit,
+                                "knowledge": knowledge_context,
+                                "portalReadPlan": bounded_json(next_request.as_payload()),
+                                "observation": bounded_follow_up_observation,
+                                "result": detail_result.public_json(),
+                                "semanticResolution": semantic_resolution,
+                            },
+                        )
                 follow_up_section = next(
                     (
                         str(action.get("section") or "").strip()
@@ -8826,7 +8952,6 @@ class AdminPortalReader:
                 }
                 post_action_plan: Any = None
                 post_action_error = ""
-                resolved_detail_identity = _detail_identity(resolved_values.get("recordIdentity"))
                 bound_post_action_detail = (
                     _observed_cell_detail_action(
                         bounded_follow_up_observation, resolved_detail_identity,

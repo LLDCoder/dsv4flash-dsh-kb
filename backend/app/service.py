@@ -81,7 +81,13 @@ def _format_remaining_minutes(value: int | float | str) -> str:
     return f"about {duration} remaining"
 
 
-def reader_evidence_only_response(reader_result: dict[str, Any], language: str, *, prior_answer_coverage: bool = False) -> str:
+def reader_evidence_only_response(
+    reader_result: dict[str, Any],
+    language: str,
+    *,
+    prior_answer_coverage: bool = False,
+    question: str = "",
+) -> str:
     """Render the bounded Reader result without another source of business facts."""
     if (reader_result.get('result') == 'no_permission' and not reader_result.get('facts')
             and reader_result.get('missing') == ['page_not_permitted']):
@@ -514,6 +520,30 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str, 
                 limitation = partial_messages.get(language, partial_messages["en"])
             return f"**{fact_prefix.get(language, fact_prefix['en'])}**\n\n{rendered_facts}\n\n{limitation}"
         return f"**{fact_prefix.get(language, fact_prefix['en'])}**\n\n{rendered_facts}"
+    record_identity = ""
+    intent_context = reader_result.get("intentContext")
+    if isinstance(intent_context, dict):
+        slots = intent_context.get("slots")
+        if isinstance(slots, dict):
+            identity_slot = slots.get("recordIdentity")
+            if isinstance(identity_slot, dict):
+                record_identity = str(identity_slot.get("value") or "").strip()
+    if not record_identity:
+        identity_matches = re.findall(
+            r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"
+            r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9])",
+            str(question or ""),
+        )
+        if len(identity_matches) == 1:
+            record_identity = identity_matches[0]
+    if status == "not_confirmed" and not facts and record_identity:
+        detail_messages = {
+            "ar": f"وجدت طلب الترخيص {record_identity}، لكن لم تكتمل قراءة تفاصيله الحالية. لم أستبدل تفاصيله بسجل آخر.",
+            "zh": f"我已定位到申请 {record_identity}，但本次详情读取没有完整返回。我没有用其他申请的信息替代它。",
+            "en": f"I located application {record_identity}, but its current detail read did not finish. I have not substituted another application’s details.",
+        }
+        if "additional_portal_read_required" in {str(item) for item in reader_result.get("missing", [])}:
+            return detail_messages.get(language, detail_messages["en"])
     if status in messages["en"]:
         return messages.get(language, messages["en"])[status]
     generic = {
@@ -1542,7 +1572,12 @@ class DSHService:
     ) -> tuple[str, bool, str]:
         """Let the model present verified facts naturally, with a deterministic fallback."""
  
-        fallback = reader_evidence_only_response(evidence, language, prior_answer_coverage=prior_answer_coverage)
+        fallback = reader_evidence_only_response(
+            evidence,
+            language,
+            prior_answer_coverage=prior_answer_coverage,
+            question=question,
+        )
         if prior_answer_coverage:
             return fallback, False, "prior_answer_coverage"
         facts = evidence.get("facts")

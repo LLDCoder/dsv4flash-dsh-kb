@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from app.portal_reader import ReaderTimeoutBudget, observation_result_from_plan
+from app.portal_reader import ReaderTimeoutBudget, _native_detail_observation_result, observation_result_from_plan
 from app.tool_gateway import ToolGateway
 from test_admin_portal_reader import Gateway, Planner, portal_plan_for, principal, run_reader, user_info_for_paths
 
@@ -552,6 +552,59 @@ def test_filter_then_detail_recovers_identity_from_exact_question_value():
     assert portal_calls[2]["actions"] == [
         {"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},
     ]
+
+
+def test_loaded_application_detail_is_delivered_without_replaying_show_detail():
+    observation = {
+        "apiDiscovery": {
+            "candidates": [{
+                "operationKey": "GET /api/Application/MyReviewDetail/{taskId}",
+                "candidateKind": "business",
+                "method": "GET",
+                "status": 200,
+                "responseEvidenceTruncated": True,
+                "responseEvidence": {
+                    "data": {
+                        "detail": {
+                            "applicationNumber": "ML-1-7-6577159",
+                            "serviceNameEn": "Ground Photography Permit within the UAE",
+                            "serviceCategoryNameEn": "Filming Permit",
+                            "serviceTypeNameEn": "New",
+                            "status": "Final Approval",
+                            "slaDescription": "5d Overdue",
+                            "applyForEn": "Peter",
+                            "submissionTime": "2026-09-03T06:20:54",
+                            "taskId": "private-task-id",
+                        }
+                    },
+                    "isSuccess": True,
+                },
+            }],
+            "deltaCandidates": [],
+        },
+    }
+
+    result = _native_detail_observation_result(
+        observation,
+        page="/licensing/applications",
+        record_identity="ML-1-7-6577159",
+        scope="team",
+    )
+
+    assert result is not None
+    assert result.status == "success"
+    assert result.answer_shape == "detail"
+    fields = json.loads(result.facts[0])
+    assert fields == {
+        "Application No.": "ML-1-7-6577159",
+        "Service Name": "Ground Photography Permit within the UAE",
+        "Service Category": "Filming Permit",
+        "Type": "New",
+        "Status": "Final Approval",
+        "SLA": "5d Overdue",
+        "Apply For": "Peter",
+        "Submission Time": "2026-09-03T06:20:54",
+    }
 
 
 def test_unique_current_record_detail_is_bound_before_api_candidate_selection():
