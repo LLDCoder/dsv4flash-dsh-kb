@@ -106,6 +106,42 @@ def _bind_answer_shape_quote(candidate: dict, question: str) -> dict:
     return {**candidate, "slots": {**slots, "answerShape": {**slot, "evidence": match.group(1)}}}
 
 
+def _bind_explicit_list_request(candidate: dict, question: str) -> dict:
+    """Let an explicit data-view request replace an inherited count shape."""
+
+    slots = candidate.get("slots")
+    slot = slots.get("answerShape") if isinstance(slots, dict) else None
+    if not isinstance(slot, dict) or set(slot) != {"source", "value", "evidence"}:
+        return candidate
+    if slot.get("value") != "count" or slot.get("source") not in {"previous", "unspecified"}:
+        return candidate
+    if re.search(
+        r"\b(?:how many|what(?:'s| is)\s+the\s+(?:total\s+)?number|count)\b",
+        question,
+        re.IGNORECASE,
+    ):
+        return candidate
+    match = re.search(
+        r"\b(?P<command>view|show|display|list)\s+(?:the\s+)?"
+        r"(?:data|records?|items?|applications?|tasks?)\b",
+        question,
+        re.IGNORECASE,
+    )
+    if not match:
+        return candidate
+    return {
+        **candidate,
+        "slots": {
+            **slots,
+            "answerShape": {
+                "source": "current",
+                "value": "list",
+                "evidence": match.group("command"),
+            },
+        },
+    }
+
+
 class LLMAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -375,6 +411,7 @@ class LLMAdapter:
                     candidate = _bind_answer_shape_quote(
                         _parse_planner_object(_planner_content(response.json())), question,
                     )
+                    candidate = _bind_explicit_list_request(candidate, question)
                     candidate = bind_literal_intent_quotes(candidate, question, conversation_context)
                     return parse_intent_resolution(candidate, question, conversation_context).public_json()
                 except (json.JSONDecodeError, ValueError) as exc:

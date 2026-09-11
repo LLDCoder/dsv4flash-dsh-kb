@@ -86,26 +86,33 @@ def test_post_switch_planning_failure_keeps_deep_native_rows_for_recovery():
 
 
 @pytest.mark.parametrize('shape', ['list', 'detail', 'overview'])
-def test_structured_answers_preserve_column_value_pairs_without_llm_reinterpretation(shape):
+def test_structured_answers_use_llm_organization_with_grounded_fallback(shape):
     import asyncio
     from app.service import DSHService
-    class SwappingLLM:
+    class OrganizingLLM:
         async def stream(self, messages):
-            raise AssertionError('Structured values must not be reinterpreted')
-            yield ''
+            assert "Do not use a 'Confirmed details' heading" in messages[0]['content']
+            yield 'The verified records are in the Completed view.\n\n'
+            yield '- Service Name: Video Game Approval Package\n'
+            yield '- Service Category: Video Games\n'
+            yield '- Applications: 4; Local: 7; Import: 38'
     service = object.__new__(DSHService)
-    service.llm = SwappingLLM()
-    answer, failed = asyncio.run(service._natural_reader_response('Show current records', {
+    service.settings = type('Settings', (), {
+        'llm_base_url': 'https://llm.example.test',
+        'llm_api_key': 'test',
+        'system_prompt': '',
+    })()
+    service.llm = OrganizingLLM()
+    answer, failed, strategy = asyncio.run(service._natural_reader_response('Show current records', {
         'result': 'success', 'answerShape': shape, 'facts': [
             'The current selected view is Completed. These records belong to that view.',
             json.dumps({'Service Name': 'Video Game Approval Package', 'Service Category': 'Video Games'}),
             json.dumps({'Applications': 4, 'Local': 7, 'Import': 38}),
         ], 'missing': []}, 'en'))
     assert not failed
-    assert 'Service Name: Video Game Approval Package' in answer
-    assert 'Service Category: Video Games' in answer
-    assert 'Applications: 4' in answer and 'Local: 7' in answer and 'Import: 38' in answer
-    assert 'current selected view is Completed' in answer
+    assert strategy == 'llm_organized'
+    assert answer.startswith('The verified records are in the Completed view.')
+    assert 'Confirmed details' not in answer
 
 
 def test_cleared_search_returns_requested_rows_not_just_a_restoration_message():
@@ -145,10 +152,10 @@ def test_count_presentation_keeps_verified_queue_and_count_without_invented_deni
     import asyncio
     from app.service import DSHService
     service = object.__new__(DSHService)
-    answer, failed = asyncio.run(service._natural_reader_response('How many in Completed?', {
+    answer, failed, strategy = asyncio.run(service._natural_reader_response('How many in Completed?', {
         'result': 'success', 'answerShape': 'count', 'selectedState': 'Completed',
         'facts': ['{"page.total":93}'], 'missing': []}, 'en'))
-    assert not failed and '93' in answer and 'Current selected view: Completed.' in answer
+    assert not failed and strategy == 'deterministic_count' and '93' in answer and 'Current selected view: Completed.' in answer
 
 
 @pytest.mark.parametrize('explicit', [False, True])
@@ -179,13 +186,14 @@ def test_distinct_documented_permission_scopes_keep_their_source_attribution():
     import asyncio
     from app.service import DSHService
     service = object.__new__(DSHService)
-    answer, failed = asyncio.run(service._natural_reader_response('Are all these tasks mine?', {
+    answer, failed, strategy = asyncio.run(service._natural_reader_response('Are all these tasks mine?', {
         'result': 'success', 'answerShape': 'detail', 'facts': [
             'Queue membership does not prove personal assignment.',
             'Team list scope: The Agent permission set does not grant this route.',
             'Personal list scope: The Agent layout showed both queues.',
         ], 'missing': []}, 'en'))
     assert not failed
+    assert strategy == 'deterministic_permission_scope'
     assert 'Team list scope: The Agent permission set does not grant this route.' in answer
     assert 'Personal list scope: The Agent layout showed both queues.' in answer
 

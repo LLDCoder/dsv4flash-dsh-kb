@@ -72,6 +72,7 @@ def test_answer_assembly_trace_keeps_only_stage_metrics() -> None:
         "You have two current tasks.",
         duration_ms=12.4,
         formatting_failed=False,
+        strategy="llm_organized",
     )
 
     assert trace == {
@@ -84,7 +85,11 @@ def test_answer_assembly_trace_keeps_only_stage_metrics() -> None:
             "missingCount": 0,
             "answerShape": "overview",
         },
-        "output": {"responseChars": 27, "usedFormattingFallback": False},
+        "output": {
+            "responseChars": 27,
+            "usedFormattingFallback": False,
+            "strategy": "llm_organized",
+        },
         "failureCode": "",
     }
 

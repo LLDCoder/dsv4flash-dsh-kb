@@ -22,8 +22,56 @@ from app.portal_reader import (
     PortalReadRequest,
     _observed_search_clear,
     _search_clear_verified,
+    _bind_observed_actions,
+    _native_metric_count_fallback,
 )
 from test_admin_portal_reader import Gateway, Planner, portal_plan_for, run_reader, user_info_for_paths
+
+
+def test_filter_action_binds_to_the_current_observed_control():
+    request = PortalReadRequest(
+        start_path='/licensing/applications',
+        actions=({'type': 'filter', 'field': 'All Statuses', 'value': 'Final Approval'},),
+    )
+    observation = {'filterControls': [{
+        'role': 'combobox', 'label': 'All Statuses',
+        'selector': '#status-filter', 'filterSurface': True,
+        'options': ['External Approval', 'Final Approval'],
+    }]}
+    bound, error = _bind_observed_actions(request, observation, record_identity='')
+    assert not error
+    assert bound is not None
+    assert bound.actions == ({'type': 'filter', 'selector': '#status-filter', 'value': 'Final Approval'},)
+
+
+def test_filter_action_rejects_an_unobserved_value():
+    request = PortalReadRequest(
+        start_path='/work',
+        actions=({'type': 'filter', 'field': 'Status', 'value': 'Invented'},),
+    )
+    observation = {'filterControls': [{
+        'role': 'combobox', 'label': 'Status', 'selector': '#status',
+        'filterSurface': True, 'options': ['Open', 'Closed'],
+    }]}
+    bound, error = _bind_observed_actions(request, observation, record_identity='')
+    assert bound is None and error == 'filter_value_not_observed'
+
+
+def test_count_fallback_prefers_a_uniquely_matching_visible_metric():
+    result = _native_metric_count_fallback(
+        {
+            'readHealth': {'healthy': True},
+            'metrics': [
+                {'label': 'To Do', 'value': '70'},
+                {'label': 'Pending Review', 'value': '53'},
+            ],
+            'sectionSummaries': [{'kind': 'table', 'selectedState': 'To Do'}],
+        },
+        page='/licensing/applications', scope='unknown',
+        question='How many applications are waiting for me to review?',
+    )
+    assert result is not None
+    assert result.facts == ('Pending Review: 53',)
 
 
 @pytest.mark.parametrize('question,accepted', [
@@ -142,6 +190,51 @@ def test_fallback_retains_native_node_id_for_member_scope_verification():
     outcome = ReaderOutcome(result, {'observation': observation})
     intent = {'slots': {'requestedScope': {'source': 'current', 'value': 'team', 'evidence': 'Team'}}}
     assert _guard_requested_team_scope(outcome, intent) == outcome
+
+
+def test_native_list_fallback_allows_requested_status_field():
+    observation = {
+        'readHealth': {'healthy': True},
+        'sectionSummaries': [{
+            'nodeId': 'task-table', 'kind': 'table', 'heading': '',
+            'columnHeaders': ['Task No.', 'Status', 'Assigned To'],
+            'rowFields': [
+                {'Task No.': 'TASK-1', 'Status': 'Initial Approval', 'Assigned To': 'Staff A'},
+                {'Task No.': 'TASK-2', 'Status': 'Completed', 'Assigned To': 'Staff B'},
+            ],
+            'rowSummaries': ['TASK-1 Initial Approval Staff A', 'TASK-2 Completed Staff B'],
+        }],
+    }
+    result = observation_fallback_result(
+        'Please provide a list of records including detailed information and status.',
+        observation,
+        page='/tasks',
+        answer_shape='list',
+    )
+    assert result is not None and result.status == 'success'
+    assert json.loads(result.facts[0])['Status'] == 'Initial Approval'
+    assert json.loads(result.facts[1])['Task No.'] == 'TASK-2'
+
+
+def test_native_list_fallback_marks_comprehensive_request_as_bounded():
+    observation = {
+        'readHealth': {'healthy': True},
+        'sectionSummaries': [{
+            'nodeId': 'task-table', 'kind': 'table', 'heading': '',
+            'rowFields': [{'Task No.': 'TASK-1', 'Status': 'Initial Approval'}],
+        }],
+    }
+    result = observation_fallback_result(
+        'Provide a comprehensive list of records including status.',
+        observation,
+        page='/tasks',
+        answer_shape='list',
+    )
+    assert result is not None
+    assert result.status == 'not_confirmed'
+    assert result.completeness == 'bounded'
+    assert result.missing == ('complete_collection_not_verified',)
+    assert json.loads(result.facts[0]) == {'Task No.': 'TASK-1', 'Status': 'Initial Approval'}
 
 
 @pytest.mark.parametrize('kind,facts,shape', [

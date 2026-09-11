@@ -17,7 +17,15 @@ from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
 from .platform import PlatformGatewayClient
-from .portal_reader import AdminPortalReader, PRIOR_EMPTY_LIST_FACT, PRIOR_LIST_SAMPLE_FACT, ReaderTimeoutBudget, bounded_json, reader_answer_shape
+from .portal_reader import (
+    AdminPortalReader,
+    PRIOR_EMPTY_LIST_FACT,
+    PRIOR_LIST_SAMPLE_FACT,
+    ReaderTimeoutBudget,
+    _api_business_mapping,
+    bounded_json,
+    reader_answer_shape,
+)
 from .reader_intent import format_clarification_options, semantic_source_hint
 from .reader_limits import requested_record_limit
 from .principal import Principal
@@ -145,7 +153,7 @@ def reader_evidence_only_response(reader_result: dict[str, Any], language: str, 
             "statuscode", "success", "timestamp", "traceid",
         }
         filtered = {
-            key: child for key, child in fields.items()
+            key: child for key, child in _api_business_mapping(fields).items()
             if re.sub(r"[^a-z0-9]", "", str(key).casefold()) not in envelope_fields
             and not unusable_field_value(key, child)
         }
@@ -929,6 +937,7 @@ def reader_answer_assembly_evidence(
     *,
     duration_ms: float,
     formatting_failed: bool,
+    strategy: str,
 ) -> dict[str, Any]:
     """Record answer assembly quality without copying the answer or source facts."""
 
@@ -947,6 +956,7 @@ def reader_answer_assembly_evidence(
         "output": {
             "responseChars": len(content),
             "usedFormattingFallback": formatting_failed,
+            "strategy": strategy,
         },
         "failureCode": "internal_tool_protocol" if formatting_failed else "",
     }
@@ -1529,36 +1539,25 @@ class DSHService:
         operator_prompt: str = "",
         skill_content: str = "",
         prior_answer_coverage: bool = False,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, str]:
         """Let the model present verified facts naturally, with a deterministic fallback."""
  
         fallback = reader_evidence_only_response(evidence, language, prior_answer_coverage=prior_answer_coverage)
         if prior_answer_coverage:
-            return fallback, False
+            return fallback, False, "prior_answer_coverage"
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
-            return fallback, False
+            return fallback, False, "status_guard"
         if evidence.get('answerShape') == 'count':
-            return fallback, False
+            return fallback, False, "deterministic_count"
         scoped_sources = {str(fact).split(' scope:', 1)[0] for fact in facts if ' scope:' in str(fact)}
         if len(scoped_sources) > 1 and any(re.search(
                 r'\b(?:does not grant|not permitted|no permission)\b', str(fact), re.I) for fact in facts):
             # A permission limit on one documented surface cannot be merged
             # with another surface's independently verified queue controls.
-            return fallback, False
-        # Structured records already have a readable presentation with exact
-        # label/value pairs. Rewriting them can swap labels or invent relations
-        # between independent metrics, even when every token is supported.
-        if evidence.get('answerShape') in {'list', 'detail', 'overview'}:
-            for fact in facts:
-                try:
-                    fields = json.loads(fact)
-                except (TypeError, ValueError):
-                    continue
-                if isinstance(fields, dict) and len(fields) > 1:
-                    return fallback, False
-        if not self.settings.llm_base_url or not self.settings.llm_api_key:
-            return fallback, True
+            return fallback, False, "deterministic_permission_scope"
+        if not getattr(self.settings, "llm_base_url", "") or not getattr(self.settings, "llm_api_key", ""):
+            return fallback, True, "deterministic_formatting_fallback"
         system = self._runtime_system_prompt(
             "admin_portal_reader",
             language,
@@ -1606,13 +1605,13 @@ class DSHService:
             ]):
                 chunks.append(chunk)
                 if sum(len(item) for item in chunks) > 6_000:
-                    return fallback, True
+                    return fallback, True, "deterministic_formatting_fallback"
             draft = "".join(chunks).strip()
         except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError):
-            return fallback, True
+            return fallback, True, "deterministic_formatting_fallback"
         if not reader_natural_answer_is_grounded(draft, fallback, question):
-            return fallback, True
-        return draft, False
+            return fallback, True, "deterministic_formatting_fallback"
+        return draft, False, "llm_organized"
  
     async def _published_generic_skill(self, db: AsyncSession, skill_id: str) -> Skill | None:
         result = await db.execute(
@@ -1745,7 +1744,7 @@ class DSHService:
                         )
                     await self.append_status(db, conversation, "drafting", language, request_id=principal.request_id)
                     assembly_started = time.perf_counter()
-                    content, formatting_failed = await self._natural_reader_response(
+                    content, formatting_failed, assembly_strategy = await self._natural_reader_response(
                         latest_content,
                         evidence,
                         language,
@@ -1761,11 +1760,7 @@ class DSHService:
                         {
                             "readerStatus": str(evidence.get("result") or "")[:40],
                             "factCount": len(guarded_facts),
-                            "reason": (
-                                "deterministic_fallback"
-                                if formatting_failed
-                                else "grounded_natural_answer"
-                            ),
+                            "reason": assembly_strategy,
                         },
                         request_id=principal.request_id,
                         runtime_id=conversation.runtime_id,
@@ -1785,6 +1780,7 @@ class DSHService:
                             content,
                             duration_ms=(time.perf_counter() - assembly_started) * 1000,
                             formatting_failed=formatting_failed,
+                            strategy=assembly_strategy,
                         ),
                         request_id=principal.request_id,
                         runtime_id=conversation.runtime_id,

@@ -6,6 +6,7 @@ import pytest
 
 from app.config import Settings
 from app.llm import LLMAdapter
+from app.llm import _bind_explicit_list_request
 from app.reader_intent import SLOT_NAMES
 
 
@@ -42,6 +43,19 @@ def _adapter(monkeypatch, bodies, *, status=200):
 
 def _response(content):
     return {"choices": [{"message": {"content": content}}]}
+
+
+def test_explicit_view_data_request_overrides_inherited_count_shape():
+    candidate = _intent_result()
+    candidate['slots']['answerShape'] = {
+        'source': 'previous', 'value': 'count', 'evidence': 'count',
+    }
+    resolved = _bind_explicit_list_request(
+        candidate, 'I now want to view the data in Final Approval',
+    )
+    assert resolved['slots']['answerShape'] == {
+        'source': 'current', 'value': 'list', 'evidence': 'view',
+    }
 
 
 def test_intent_resolver_preserves_original_question_and_bounded_semantic_context(monkeypatch):

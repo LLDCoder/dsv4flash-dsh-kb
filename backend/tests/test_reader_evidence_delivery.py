@@ -586,13 +586,14 @@ def test_natural_reader_response_uses_model_for_concise_grounded_answer() -> Non
         "missing": [],
     }
  
-    response, formatting_failed = asyncio.run(service._natural_reader_response(
+    response, formatting_failed, strategy = asyncio.run(service._natural_reader_response(
         "What should I prioritize?",
         evidence,
         "en",
     ))
  
     assert not formatting_failed
+    assert strategy == "llm_organized"
     assert response.startswith("You have 7 tasks.")
     assert "Task Id" not in response
     assert "Confirmed details" not in response
@@ -617,13 +618,14 @@ def test_natural_reader_response_falls_back_when_model_invents_a_fact() -> None:
         "missing": [],
     }
  
-    response, formatting_failed = asyncio.run(service._natural_reader_response(
+    response, formatting_failed, strategy = asyncio.run(service._natural_reader_response(
         "Which tasks should I review?",
         evidence,
         "en",
     ))
  
     assert formatting_failed
+    assert strategy == "deterministic_formatting_fallback"
     assert "Total Count: 7" in response
     assert "8" not in response
     assert "ML-1-9999" not in response

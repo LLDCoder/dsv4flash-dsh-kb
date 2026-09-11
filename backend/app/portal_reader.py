@@ -858,6 +858,63 @@ def _detail_action_can_use_observed_identity(action: dict[str, Any], record_iden
     )
 
 
+def _observed_filter_action(
+    action: dict[str, Any], observation: Any,
+) -> tuple[dict[str, Any] | None, str]:
+    """Bind a semantic filter request to one exact current filter control."""
+
+    controls = [
+        control for control in (observation.get("filterControls", []) if isinstance(observation, dict) else [])
+        if isinstance(control, dict)
+        and control.get("filterSurface") is True
+        and control.get("selector")
+    ]
+    if not controls:
+        # Some bounded observations intentionally omit filter metadata. Keep a
+        # complete semantic role/name locator for the gateway in that case;
+        # when controls are present, all matching and option checks below are
+        # mandatory and model-provided labels are never passed through.
+        if action.get("name") or action.get("label") or action.get("field"):
+            return dict(action), ""
+        return None, "filter_control_not_observed"
+    selector = str(action.get("selector") or "").strip()
+    if selector:
+        matches = [control for control in controls if str(control.get("selector")) == selector]
+    else:
+        requested = str(action.get("field") or action.get("name") or action.get("label") or "").strip()
+        if not requested:
+            return None, "filter_locator_missing"
+        requested_key = _key(requested)
+        matches = [
+            control for control in controls
+            if requested_key in {
+                _key(control.get("label")),
+                _key(control.get("placeholder")),
+                _key(control.get("name")),
+            }
+        ]
+    if len(matches) != 1:
+        return None, "filter_control_not_unique"
+    control = matches[0]
+    values = action.get("values")
+    if values not in (None, [], ""):
+        requested_values = [str(value).strip() for value in values] if isinstance(values, list) else []
+        if not requested_values or any(not value for value in requested_values):
+            return None, "filter_values_invalid"
+        observed_options = {str(value).strip().casefold() for value in control.get("options", [])}
+        if observed_options and any(value.casefold() not in observed_options for value in requested_values):
+            return None, "filter_value_not_observed"
+        return {"type": "filter", "selector": str(control["selector"]), "values": requested_values}, ""
+    value = action.get("value")
+    if value is None:
+        return None, "filter_value_missing"
+    value = str(value)
+    observed_options = {str(option).strip().casefold() for option in control.get("options", [])}
+    if value.strip() and observed_options and value.strip().casefold() not in observed_options:
+        return None, "filter_value_not_observed"
+    return {"type": "filter", "selector": str(control["selector"]), "value": value}, ""
+
+
 def _bind_observed_actions(
     request: PortalReadRequest,
     observation: Any,
@@ -895,6 +952,12 @@ def _bind_observed_actions(
             bound = _observed_cell_detail_action(observation, identity)
             if bound is None:
                 return None, "detail_target_not_unique"
+            bound_actions.append(bound)
+            continue
+        if action_type == "filter":
+            bound, binding_error = _observed_filter_action(action, observation)
+            if bound is None:
+                return None, binding_error
             bound_actions.append(bound)
             continue
         bound_actions.append(dict(action))
@@ -3156,6 +3219,95 @@ def _api_unit_relevance(unit: str, *, answer_shape: str, semantic_query: str) ->
     return 4 * len(unit_tokens.intersection(shape_tokens)) + len(unit_tokens.intersection(query_tokens))
 
 
+_API_INTERNAL_BUSINESS_FIELDS = frozenset({
+    "canassign", "canapprove", "canedit", "canreassign", "canview",
+    "categorycode", "displayonly", "sourceid", "statusid",
+})
+_API_INTERNAL_FIELD_SUFFIXES = ("code", "displayonly", "sourceid", "statusid")
+_API_COLLECTION_CONTEXT_FIELDS = frozenset({
+    "data", "pageitems", "payload", "response", "result",
+})
+
+
+def _api_field_is_internal(key: str) -> bool:
+    normalized = _key(key)
+    tokens = _api_field_tokens(key)
+    return (
+        normalized in _API_INTERNAL_BUSINESS_FIELDS
+        or normalized.endswith(_API_INTERNAL_FIELD_SUFFIXES)
+        or (bool(tokens) and tokens[-1] == "id")
+    )
+
+
+def _api_public_field_key(key: str) -> str:
+    parts = [part for part in str(key).split(".") if part]
+    visible = [part for part in parts if _key(part) not in _API_COLLECTION_CONTEXT_FIELDS]
+    public = ".".join(visible) or str(key)
+    # Model-produced facts may already contain the humanized form of a
+    # collection path (for example, "Page Items Task No").
+    while True:
+        cleaned = re.sub(
+            r"^(?:page\s*items?|items|rows|records|results|data|list)\s+",
+            "",
+            public,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if cleaned == public:
+            return public
+        public = cleaned
+
+
+def _api_business_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Keep business values while removing transport metadata and enum helpers."""
+
+    scalar = {
+        _api_public_field_key(str(key)): value
+        for key, value in mapping.items()
+        if (value is None or isinstance(value, (str, int, float, bool)))
+        and not _api_field_is_internal(_api_public_field_key(str(key)).rsplit(".", 1)[-1])
+    }
+    if not scalar:
+        return {}
+
+    # Prefer the actual display field when an API returns both a business value
+    # and its display/name/code variants. Keep the original key so evidence
+    # grounding remains compatible with the selected response.
+    normalized_keys = {_key(key) for key in scalar}
+    selected: dict[str, Any] = {}
+    for key, value in scalar.items():
+        normalized = _key(key)
+        base = normalized
+        for suffix in ("displayonly", "display", "name", "label"):
+            if base.endswith(suffix) and len(base) > len(suffix):
+                base = base[:-len(suffix)]
+                break
+        if normalized.endswith(("displayonly", "display")) and base in normalized_keys:
+            continue
+        if normalized.endswith(("name", "label")) and base in normalized_keys:
+            continue
+        selected[key] = value
+    return selected
+
+
+def _api_project_fact(fact: str) -> str:
+    """Apply the public business-field boundary to one JSON fact."""
+
+    try:
+        fields = json.loads(fact)
+    except (TypeError, ValueError):
+        return fact
+    if not isinstance(fields, dict):
+        return fact
+    projected = _api_business_mapping(fields)
+    if not projected:
+        return ""
+    try:
+        return json.dumps(projected, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        return ""
+
+
 def _serialize_api_mapping(
     mapping: dict[str, Any],
     *,
@@ -3183,9 +3335,10 @@ def _serialize_api_mapping(
         )
 
     selected: dict[str, Any] = {}
+    mapping = _api_business_mapping(mapping)
     visible_context = tuple(
         part for part in context_path
-        if _key(part) not in {"data", "payload", "response", "result"}
+        if _key(part) not in _API_COLLECTION_CONTEXT_FIELDS
     )
     for key, value in sorted(mapping.items(), key=field_priority, reverse=True):
         if _key(key) in _API_ENVELOPE_FIELDS:
@@ -4693,6 +4846,60 @@ def _result_from_structured_observation(
     return None
 
 
+def _native_metric_count_fallback(
+    observation: Any,
+    *,
+    page: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+    question: str,
+) -> ReaderResult | None:
+    """Use one uniquely matching visible metric before a broader table total."""
+
+    if not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return None
+    metrics = [
+        metric for metric in observation.get("metrics", [])
+        if isinstance(metric, dict)
+        and str(metric.get("label") or "").strip()
+        and re.fullmatch(r"\s*\d+(?:[.,]\d+)?\s*", str(metric.get("value") or ""))
+    ]
+    if not metrics:
+        return None
+    query_tokens = _api_query_tokens(question)
+    ranked = [
+        (len(set(_api_query_tokens(str(metric["label"]))).intersection(query_tokens)), metric)
+        for metric in metrics
+    ]
+    ranked = [item for item in ranked if item[0] > 0]
+    if not ranked:
+        return None
+    best_score = max(score for score, _metric in ranked)
+    best = [metric for score, metric in ranked if score == best_score]
+    if len(best) != 1:
+        return None
+    metric = best[0]
+    selected_state = next(
+        (
+            str(node.get("selectedState") or "").strip()
+            for node in _observation_semantic_nodes(observation)
+            if str(node.get("selectedState") or "").strip()
+        ),
+        "",
+    )
+    return ReaderResult(
+        status="success",
+        summary="A uniquely matching visible metric answered the request.",
+        page=str(page)[:500],
+        section="metrics",
+        source_section="metrics",
+        answer_shape="count",
+        completeness="bounded",
+        selected_state=selected_state[:300],
+        scope=scope,
+        facts=(f"{str(metric['label']).strip()}: {str(metric['value']).strip()}",),
+    )
+
+
 def _raw_observation_has_empty_state(observation: Any) -> bool:
     values: list[str] = []
 
@@ -4784,6 +4991,87 @@ def _bounded_native_row_facts(source: Any, *, limit: int = 4) -> tuple[str, ...]
     return _bounded_fact_candidates(tuple(facts))
 
 
+_COMPLETE_COLLECTION_PATTERN = re.compile(
+    r"\b(?:comprehensive|complete|entire|full)\s+(?:list|set|collection)\b"
+    r"|\b(?:show|list|give)\s+all\b"
+    r"|\bevery\b|全部|所有|完整(?:列表|清单|数据)|全面",
+    re.IGNORECASE,
+)
+
+
+def _complete_collection_requested(question: str) -> bool:
+    return bool(_COMPLETE_COLLECTION_PATTERN.search(str(question or "")))
+
+
+def _explicit_collection_field_request(question: str) -> bool:
+    """Allow native rows when field words are output requirements, not filters."""
+
+    normalized = re.sub(r"\s+", " ", str(question or "").casefold()).strip()
+    match = re.search(r"\b(?:including|with)\b(?P<fields>.*)$", normalized)
+    if not match:
+        return False
+    fields = match.group("fields")
+    if re.search(
+        r"\b(?:pending|completed|overdue|today|between|before|after|assigned\s+to|search|filter)\b",
+        fields,
+    ):
+        return False
+    return bool(re.search(
+        r"\b(?:detail|details|information|status|type|category|sla|date|assigned|fields?)\b"
+        r"|详情|明细|信息|状态|类型|类别|日期",
+        fields,
+    ))
+
+
+def _native_list_fallback_result(
+    observation: Any,
+    *,
+    page: str,
+    section: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+    question: str,
+) -> ReaderResult | None:
+    """Project a safe bounded list before lexical fallback guards run."""
+
+    if _observation_has_error_state(observation) or not _observation_no_data_allowed(observation):
+        return None
+    if (
+        _observation_fallback_intent(question, "list") is None
+        and not _explicit_collection_field_request(question)
+    ):
+        return None
+    resolved_section = section
+    if not resolved_section:
+        table_nodes = [
+            node for node in _observation_semantic_nodes(observation)
+            if str(node.get("kind") or "").casefold() in {"table", "grid"}
+            and node.get("rowFields")
+            and node.get("nodeId")
+        ]
+        if len(table_nodes) == 1:
+            resolved_section = str(table_nodes[0]["nodeId"])
+    source = _observation_evidence_for_section(observation, resolved_section)
+    if not isinstance(source, dict) or not source.get("rowFields"):
+        return None
+    result = _result_from_structured_observation(
+        observation,
+        page=page,
+        section_name=resolved_section,
+        answer_shape="list",
+        scope=scope,
+        question=question,
+    )
+    if result is None:
+        return None
+    if _complete_collection_requested(question) and result.completeness != "complete":
+        result = replace(
+            result,
+            status="not_confirmed",
+            missing=(*result.missing, "complete_collection_not_verified"),
+        )
+    return result
+
+
 def observation_fallback_result(
     question: str,
     observation: Any,
@@ -4795,10 +5083,20 @@ def observation_fallback_result(
 ) -> ReaderResult | None:
     """Return exact facts from one plan-selected or unambiguous semantic region."""
 
+    answer_shape = answer_shape or reader_answer_shape(question)
+    if answer_shape == "list":
+        native = _native_list_fallback_result(
+            observation,
+            page=page,
+            section=section,
+            scope=scope,
+            question=question,
+        )
+        if native is not None:
+            return native
     intent = _observation_fallback_intent(question, answer_shape)
     if intent is None:
         return None
-    answer_shape = answer_shape or reader_answer_shape(question)
     if answer_shape in {"count", "attention", "due", "detail"}:
         return None
     if _observation_has_error_state(observation) or not _observation_no_data_allowed(observation):
@@ -5220,11 +5518,19 @@ def observation_result_from_plan(
             supported_facts: tuple[str, ...] = ()
             unsupported_facts: tuple[str, ...] = ()
         else:
-            supported_facts = tuple(
-                fact for fact in result.facts
-                if _api_evidence_supports_fact(fact, api_evidence.get("data"))
-            )
-            unsupported_facts = tuple(fact for fact in result.facts if fact not in supported_facts)
+            supported_values: list[str] = []
+            unsupported_values: list[str] = []
+            for fact in result.facts:
+                if not _api_evidence_supports_fact(fact, api_evidence.get("data")):
+                    unsupported_values.append(fact)
+                    continue
+                projected = _api_project_fact(fact)
+                if projected:
+                    supported_values.append(projected)
+                else:
+                    unsupported_values.append(fact)
+            supported_facts = tuple(supported_values)
+            unsupported_facts = tuple(unsupported_values)
             if not supported_facts:
                 return ReaderResult(
                     status="not_confirmed",
@@ -5466,14 +5772,16 @@ def _reader_result_from_tool(tool_result: dict[str, Any]) -> ReaderResult:
     facts_value = payload.get("facts") or payload.get("items") or payload.get("data") or []
     if not isinstance(facts_value, list):
         facts_value = [facts_value] if facts_value else []
-    facts: tuple[str, ...] = tuple(
-        (
+    normalized_facts: list[str] = []
+    for item in facts_value[:20]:
+        raw_fact = (
             str(item)[:500]
             if isinstance(item, str)
             else json.dumps(bounded_json(item, max_depth=3, max_items=20, max_string=500), ensure_ascii=False)[:500]
         )
-        for item in facts_value[:20]
-    )
+        projected_fact = _api_project_fact(raw_fact)
+        normalized_facts.append(projected_fact or raw_fact)
+    facts: tuple[str, ...] = tuple(normalized_facts)
     if not requested_status:
         status = "success" if facts else "no_data"
     summary = str(payload.get("summary") or payload.get("message") or "").strip()
@@ -6821,6 +7129,25 @@ class AdminPortalReader:
                 if binding is None:
                     return None, "none"
                 section = binding.source_section or binding.section
+            if answer_shape == "list":
+                native = _native_list_fallback_result(
+                    observation,
+                    page=page,
+                    section=section,
+                    scope=scope,
+                    question=question,
+                )
+                if native is not None:
+                    return native, "native_row_fallback"
+            if answer_shape == "count":
+                metric = _native_metric_count_fallback(
+                    observation,
+                    page=page,
+                    scope=scope,
+                    question=question,
+                )
+                if metric is not None:
+                    return metric, "metric_semantic_match"
             fallback_intent = _observation_fallback_intent(question, answer_shape)
             if fallback_intent is None and answer_shape == "list":
                 selected_view = _selected_view_list_fallback(
@@ -6883,6 +7210,8 @@ class AdminPortalReader:
                 else {}
             )
             status = "passed" if result is not None and result.status in {"success", "no_data"} else "degraded"
+            if decision == "fallback":
+                status = "degraded"
             failure_code = "" if status == "passed" else reason
             trace.record(
                 "semantic_resolution",
@@ -6900,15 +7229,24 @@ class AdminPortalReader:
                 },
                 failure_code=failure_code,
             )
-            return {
+            resolution = {
                 "decision": decision,
                 "reason": reason,
                 "llmMode": str(llm_plan.get("mode") or "")[:80] if isinstance(llm_plan, dict) else "",
                 "llmSelection": bounded_json(llm_selection, max_depth=3, max_items=8, max_string=160),
-                "validation": "passed" if decision == "llm_result" else "failed" if "invalid" in reason else "not_applicable",
+                "validation": "passed" if decision == "llm_result" else "failed"
+                if "invalid" in reason or reason == "planner_error" else "not_applicable",
                 "fallbackUsed": decision == "fallback",
                 "fallbackStrategy": fallback_strategy,
             }
+            if decision == "fallback":
+                resolution["quality"] = "degraded"
+                resolution["selectedEvidence"] = bounded_json({
+                    "sourceSection": result.source_section if result is not None else "",
+                    "answerShape": result.answer_shape if result is not None else "",
+                    "facts": list(result.facts[:8]) if result is not None else [],
+                }, max_depth=3, max_items=10, max_string=300)
+            return resolution
 
         # Finish just inside the service guard so the current stage can be
         # recorded instead of collapsing into a generic runtime timeout.

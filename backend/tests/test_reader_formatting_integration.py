@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app.portal_reader import (
-    _current_list_count_candidates, _serialize_api_mapping,
+    _api_project_fact, _current_list_count_candidates, _serialize_api_mapping,
     _knowledge_route_recovery_request, knowledge_search_query,
     UserPermissionContext, ReadOnlyPortalPolicy,
 )
@@ -83,6 +83,45 @@ def test_requested_readable_status_survives_bounded_record_projection():
     fact=json.loads(_serialize_api_mapping(record,semantic_query='Show records and their statuses.',answer_shape='list'))
     assert fact['statusName']=='Pending Committee Decision'
     assert len(json.dumps(fact,separators=(',',':')))<=300
+
+
+@pytest.mark.parametrize('answer_shape', ['overview', 'count', 'list', 'attention', 'due', 'detail'])
+def test_api_projection_exposes_business_values_not_transport_enums(answer_shape):
+    record = {
+        'pageItems.taskNo': 'ML-5-7-6245691',
+        'pageItems.status': 'Initial Approval',
+        'pageItems.statusId': 2,
+        'pageItems.statusDisplay': 'Initial Approval',
+        'pageItems.statusDisplayOnly': 'Initial Approval',
+        'pageItems.taskCategory': 'Applications',
+        'pageItems.taskCategoryCode': 'applications',
+        'pageItems.sourceId': '6703a757-7d0f-11f1-825e-86a333376d33',
+        'pageItems.canReassign': True,
+    }
+    fact = json.loads(_serialize_api_mapping(
+        record,
+        semantic_query='Please provide all task details and status.',
+        answer_shape=answer_shape,
+    ))
+    assert fact == {
+        'taskNo': 'ML-5-7-6245691',
+        'status': 'Initial Approval',
+        'taskCategory': 'Applications',
+    }
+
+
+def test_api_projection_cleans_model_fact_before_final_delivery():
+    projected = json.loads(_api_project_fact(json.dumps({
+        'Page Items Task No': 'ML-5-7-6245691',
+        'Page Items Status': 'Initial Approval',
+        'Page Items Status Id': 2,
+        'Page Items Source Id': '6703a757-7d0f-11f1-825e-86a333376d33',
+        'Page Items Task Category Code': 'applications',
+    })))
+    assert projected == {
+        'Task No': 'ML-5-7-6245691',
+        'Status': 'Initial Approval',
+    }
 
 
 def test_retrieval_does_not_replace_requested_topic_with_permission_routes():
