@@ -14,6 +14,10 @@ then commit/push, then server pull/deployment when requested. This local setup
 does not itself authorize a production deployment or database migration.
 Only DSH is deployed here: audit `18112`, backend/docs `8001`; do not require
 or change the separate business Portal deployment for this task.
+The user also explicitly authorized the local knowledge gateway's existing
+MailGraph service identity (`internal-knowledge-gateway` / `knowledge-gateway` /
+`system_admin`) for read/search requests on 2026-09-14. This authorization does
+not extend to business mutations or changes to server access-control settings.
 
 ## Admin System Locations
 

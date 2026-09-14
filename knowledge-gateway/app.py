@@ -9,13 +9,27 @@ from pydantic import BaseModel, Field
 
 UPSTREAM_BASE_URL = os.getenv("KNOWLEDGE_BASE_URL", "http://ai-generation-service:8091").rstrip("/")
 GATEWAY_AUTH = os.getenv("KNOWLEDGE_GATEWAY_AUTH", "").strip()
+GATEWAY_TENANT_ID = os.getenv("KNOWLEDGE_GATEWAY_TENANT_ID", "").strip()
+GATEWAY_SUBJECT_ID = os.getenv("KNOWLEDGE_GATEWAY_SUBJECT_ID", "").strip()
+GATEWAY_SUBJECT_ROLES = os.getenv("KNOWLEDGE_GATEWAY_SUBJECT_ROLES", "").strip()
 PUBLIC_KNOWLEDGE_PATH = os.getenv("KNOWLEDGE_PUBLIC_PATH", "/public/knowledge").rstrip("/")
 TIMEOUT_SECONDS = float(os.getenv("KNOWLEDGE_TIMEOUT_SECONDS", "30"))
 RETRY_ATTEMPTS = max(1, int(os.getenv("KNOWLEDGE_RETRY_ATTEMPTS", "2")))
 UPSTREAM_MAX_TOP_K = max(1, int(os.getenv("KNOWLEDGE_UPSTREAM_MAX_TOP_K", "20")))
 RETRIEVAL_MODES = tuple(x.strip().lower() for x in os.getenv("KNOWLEDGE_RETRIEVAL_MODES", "bm25,graph,vector").split(",") if x.strip())
 
-app = FastAPI(title="DSH Knowledge Gateway", version="0.3.0")
+app = FastAPI(
+    title="DSH Knowledge Gateway", version="0.3.0",
+    description=(
+        "Internal read/search gateway. Upstream authentication is deployment-managed: "
+        "KNOWLEDGE_GATEWAY_AUTH enables X-FF-Gateway-Auth; optional "
+        "KNOWLEDGE_GATEWAY_TENANT_ID, KNOWLEDGE_GATEWAY_SUBJECT_ID and "
+        "KNOWLEDGE_GATEWAY_SUBJECT_ROLES supply the authorized service context. "
+        "No service context is sent without the credential. API callers cannot "
+        "override this identity. Upstream HTTP failures return 502; connection "
+        "failures return 503. Keep this service on the internal deployment network."
+    ),
+)
 
 
 class SearchRequest(BaseModel):
@@ -32,6 +46,13 @@ def _headers() -> dict[str, str]:
     headers = {"X-Request-ID": str(uuid.uuid4())}
     if GATEWAY_AUTH:
         headers["X-FF-Gateway-Auth"] = GATEWAY_AUTH
+        for key, value in (
+            ("X-FF-Tenant-ID", GATEWAY_TENANT_ID),
+            ("X-FF-Subject-ID", GATEWAY_SUBJECT_ID),
+            ("X-FF-Subject-Roles", GATEWAY_SUBJECT_ROLES),
+        ):
+            if value:
+                headers[key] = value
     return headers
 
 

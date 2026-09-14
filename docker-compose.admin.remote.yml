@@ -21,6 +21,10 @@ services:
       KNOWLEDGE_BASE_URL: http://host.docker.internal:18002
       KNOWLEDGE_PUBLIC_PATH: /api/knowledge
       KNOWLEDGE_GATEWAY_AUTH: ${KNOWLEDGE_GATEWAY_AUTH:?Set the authorized MailGraph gateway credential}
+      # Explicitly authorized on 2026-09-14; matches the existing MailGraph proxy.
+      KNOWLEDGE_GATEWAY_TENANT_ID: internal-knowledge-gateway
+      KNOWLEDGE_GATEWAY_SUBJECT_ID: knowledge-gateway
+      KNOWLEDGE_GATEWAY_SUBJECT_ROLES: system_admin
     restart: unless-stopped
   backend:
     extends:

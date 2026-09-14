@@ -48,6 +48,12 @@ The local knowledge gateway also requires `KNOWLEDGE_GATEWAY_AUTH` from the
 authorized MailGraph runtime in the ignored env file. It sends this only to
 the configured knowledge upstream; anonymous deployments retain their current
 behavior when the credential is absent. Do not print or commit the credential.
+On 2026-09-14 the user explicitly authorized the local gateway to use the existing
+MailGraph service context: tenant `internal-knowledge-gateway`, subject
+`knowledge-gateway`, role `system_admin`, for the existing read/search routes.
+The Compose file configures these values; the gateway sends them only when the
+service credential is present. This context may read across user-specific
+knowledge scopes. It does not change business Portal permissions or server ACLs.
 After modifications, verify locally, commit and push the intended branch, then
 pull that branch on the server and use its existing production deployment setup.
 Do not use the local remote-DB Compose file for production. Local Docker Desktop
