@@ -6035,9 +6035,15 @@ def _selected_view_list_fallback(
     if any(resolved.get(key) for key in ("dateRange", "recordIdentity")):
         return None
     section = _observation_evidence_for_section(observation, section_name)
+    if section is None and not section_name:
+        tables = [node for node in _observation_semantic_nodes(observation)
+                  if node.get('kind') in {'table', 'grid'} and node.get('rowFields')]
+        if len(tables) == 1:
+            section = tables[0]
     if section is None or not section.get("selectedState") or not section.get("rowFields"):
         return None
-    if re.search(r"\d", question) or _observation_has_error_state(observation):
+    if (re.search(r"\d", question) or _observation_has_error_state(observation)
+            or not _observation_no_data_allowed(observation)):
         return None
 
     def tokens(value: str) -> set[str]:
@@ -6050,18 +6056,17 @@ def _selected_view_list_fallback(
         return None
     if not question_tokens & view_tokens:
         return None
-    request_words = tokens("show list display please me the all records items tasks")
+    request_words = tokens("show list display please me the all records items tasks now for that same")
     if scope == "personal":
         request_words.add("my")
     if scope == "team":
         request_words.add("our")
-    if question_tokens - view_tokens - tokens(str(section.get("heading") or "")) - request_words:
+    native_path_tokens = tokens(' '.join(section.get('selectedTabPath') or []))
+    source_tokens = tokens(page) | tokens(str(section.get('heading') or '')) | native_path_tokens
+    if question_tokens - view_tokens - source_tokens - request_words:
         return None
     # Native field bindings avoid reconstructing cells from flattened text.
-    facts = tuple(
-        json.dumps(row, ensure_ascii=False)
-        for row in section["rowFields"][:4] if row
-    )
+    facts = _bounded_native_row_facts(section)
     if (
         not facts or any(len(fact) > 500 for fact in facts)
         or sum(len(f.encode("utf-8")) for f in facts) > 2400
@@ -8235,7 +8240,7 @@ class AdminPortalReader:
                 native_tabs = observed_context["portalObservation"].get("tabControls") or []
                 matching_tabs = [tab for tab in native_tabs if isinstance(tab, dict)
                     and _state_control_label_matches(tab.get("name"), deferred_state_action.get("name"))]
-                if len(matching_tabs) == 1 and matching_tabs[0].get("selected") is True:
+                if len(matching_tabs) == 1 and matching_tabs[0].get("selected") is True and len(state_actions) == 1:
                     # A fresh selected tab needs no second click. The normal
                     # observation validator still checks health and row scope.
                     deferred_state_action = None
@@ -8264,7 +8269,10 @@ class AdminPortalReader:
             if deferred_state_action is not None:
                 state_request = PortalReadRequest(
                     start_path=request.start_path,
-                    actions=(deferred_state_action,),
+                    # Keep a requested parent/child sequence together. Discarding
+                    # the child forces a third fresh-page read and loses context.
+                    # Each label is still bound/validated at execution time.
+                    actions=tuple(dict(action) for action in state_actions),
                     expected_fields=request.expected_fields,
                 )
                 bound_state_request, binding_error = _bind_observed_actions(

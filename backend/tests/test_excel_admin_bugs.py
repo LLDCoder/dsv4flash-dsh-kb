@@ -5,11 +5,11 @@ import pytest
 
 from app.portal_reader import (
     PortalReadRequest, ReaderOutcome, ReaderResult, _native_filter_outcome,
-    _native_list_fallback_result, _replay_observed_tab_path, _minimal_identity_plan,
+    _native_list_fallback_result, _replay_observed_tab_path, _minimal_identity_plan, _selected_view_list_fallback,
     previous_sample_explanation, reader_absence_limit_explanation,
 )
 from app.reader_intent import resolve_literal_view_followup
-from test_admin_portal_reader import Gateway, Planner, run_reader, user_info_for_paths
+from test_admin_portal_reader import Gateway, Planner, run_reader, user_info_for_paths, portal_plan_for
 
 
 def observation():
@@ -27,6 +27,52 @@ def test_new_browser_read_replays_native_parent_before_completed():
     replay = _replay_observed_tab_path(request, observation())
     assert [a['name'] for a in replay.actions] == ['Team Tasks','To Do','Completed']
     assert request.actions[0]['name'] == 'Completed'
+
+
+def test_initial_parent_child_plan_is_executed_together_after_observation():
+    initial=observation()
+    initial['tabControls']=initial['tabControls'][:2]
+    initial['tabControls'][0]['selected']=True
+    initial['tabControls'][1]['selected']=False
+    initial['sectionSummaries'][0]['selectedTabPath']=['Queued Tasks']
+    initial['sectionSummaries'][0]['selectedState']='Queued Tasks'
+    completed=observation()
+    completed['tabControls'][2]['selected']=False
+    completed['tabControls'][3]['selected']=True
+    completed['sectionSummaries'][0].update({'selectedState':'Completed','selectedTabPath':['Team Tasks','Completed']})
+    class FreshGateway(Gateway):
+        async def invoke(self,principal,tool,arguments,*,allowed_tools=None):
+            if tool!='admin.portal.read':
+                return await super().invoke(principal,tool,arguments,allowed_tools=allowed_tools)
+            self.calls.append((tool,arguments,allowed_tools))
+            names=[a.get('name') for a in arguments['actions']]
+            o=completed if names==['Team Tasks','Completed'] else initial
+            return {'ok':True,'result':{'result':'success','observation':o}}
+    gateway=FreshGateway(info={'ok':True,'result':user_info_for_paths('/inspection/tasks')})
+    planner=Planner(portal_plan_for('/inspection/tasks',[
+        {'type':'switch_tab','role':'tab','name':'Team Tasks'},
+        {'type':'switch_tab','role':'tab','name':'Completed'}]),
+        {'mode':'observation_result','result':'success','sourceSection':'table-1',
+         'selectedState':'Completed','answerShape':'list','facts':['{"Task No.":"IN-100","Status":"Queued"}'],'missing':[]})
+    result=run_reader(gateway,planner,question="Now show the team's completed inspection tasks.").result
+    reads=[call[1] for call in gateway.calls if call[0]=='admin.portal.read']
+    assert len(reads)==2
+    assert [a.get('name') for a in reads[1]['actions']]==['Team Tasks','Completed']
+    assert result.status=='success' and result.selected_state=='Completed'
+
+
+def test_completed_team_fallback_requires_native_scope_and_rejects_extra_predicates():
+    o=observation();o['sectionSummaries'][0].update({'selectedState':'Completed','selectedTabPath':['Team Tasks','Completed']})
+    def recover(q):
+        return _selected_view_list_fallback(o,section_name='',question=q,page='/inspection/tasks',scope='unknown',conversation_context={})
+    assert recover("Now show the team's completed inspection tasks.").status=='success'
+    assert recover("Now show the team's completed inspection tasks before yesterday.") is None
+    assert recover("Now show my completed inspection tasks.") is None
+    o['readHealth']['healthy']=False
+    assert recover("Now show the team's completed inspection tasks.") is None
+    o['readHealth']['healthy']=True
+    o['sectionSummaries'][0]['selectedTabPath']=['Completed']
+    assert recover("Now show the team's completed inspection tasks.") is None
 
 
 @pytest.mark.parametrize('bad', ['unhealthy','ambiguous','unselected','mutation'])
