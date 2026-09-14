@@ -454,6 +454,13 @@ def make_router(service: DSHService) -> APIRouter:
         comparisons use observed date columns, reject ambiguous dates and retain
         bounded coverage; they do not define validity or invent filter support.
         Nested child-tab reads replay verified parent switches in each fresh context.
+        The replay uses native tab paths from the current turn and revalidates the
+        effective action list against page permissions and read-only limits. A
+        same-team view change retains its module without granting team access.
+        Requests for one Account ID without personal details project only that
+        verified native identifier; profile or authentication responses cannot
+        substitute for the requested customer account collection. Missing or
+        unhealthy identifier evidence remains not_confirmed.
         Exact identifier searches execute before selecting a default-list response.
         Documented field explanations retain their role applicability and verification
         limits. Workflow completion alone does not prove personal assignment or bank

@@ -826,6 +826,38 @@ def _state_control_label_matches(observed: object, requested: object) -> bool:
     return bool(re.fullmatch(re.escape(requested_text) + r"\s+\d+", observed_text))
 
 
+def _replay_observed_tab_path(request: PortalReadRequest, observation: Any) -> PortalReadRequest:
+    """Restore a verified tab path because gateway reads start with a new page.
+
+    Only native, uniquely named selected tabs can be replayed. This is navigation
+    metadata from this turn, not prior records, a model route, or authorization.
+    The effective request is still checked against the read-only policy.
+    """
+    if (not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True
+            or len(request.actions) != 1 or request.actions[0].get('type') != 'switch_tab'):
+        return request
+    paths = {tuple(node['selectedTabPath']) for node in _observation_semantic_nodes(observation)
+             if isinstance(node.get('selectedTabPath'), list) and node['selectedTabPath']
+             and all(isinstance(label, str) for label in node['selectedTabPath'])}
+    if len(paths) != 1:
+        return request
+    path = next(iter(paths))
+    if len(path) < 2:
+        return request
+    target = request.actions[0].get('name')
+    prefix = []
+    for label in path:
+        if _state_control_label_matches(label, target):
+            break
+        action = _observed_switch_tab_action({'name': label}, observation)
+        tabs = observation.get('tabControls') or []
+        if action is None or not any(isinstance(t, dict) and t.get('selected') is True
+                                    and t.get('name') == action['name'] for t in tabs):
+            return request
+        prefix.append(action)
+    return replace(request, actions=(*prefix, *request.actions)) if prefix else request
+
+
 def _observed_switch_tab_action(action: dict[str, Any], observation: Any) -> dict[str, Any] | None:
     """Bind a requested state label to one currently observed tab control."""
 
@@ -2170,6 +2202,11 @@ ABSENCE_EVIDENCE_LIMIT = 'A search with no matching records does not establish t
 
 
 def reader_absence_limit_explanation(question: str) -> str | None:
+    if re.fullmatch(r'\s*do (?:these|the) (?:aggregate or risk figures|aggregate figures|risk figures) '
+                    r'prove a final violation decision[?.]?\s*', question, re.I):
+        return ('Aggregate counts and risk indicators alone do not establish a final decision for an individual violation. '
+                'A final decision requires separately verified record-level decision evidence. '
+                'No final violation decision is established by those figures alone.')
     if re.fullmatch(r'\s*does a completed request prove the money reached the customer[’\x27]?s bank\??\s*', question, re.I):
         return ('A request marked Completed alone does not verify that money reached the customer\x27s bank. '
                 'Bank receipt or settlement needs separate verified payment evidence. No bank receipt, settlement, '
@@ -2189,6 +2226,16 @@ def reader_absence_limit_explanation(question: str) -> str | None:
 def previous_sample_explanation(question: str, context: dict[str, Any]) -> str | None:
     """Explain prior answer coverage without reusing old records or totals."""
     previous = _bounded_conversation_context(context).get("previousIntent", {})
+    if re.fullmatch(r'\s*are (?:these|those) tasks assigned to me,? or are they (?:simply |just )?'
+                    r'in the (?:inspection )?queue[?.]?\s*', question, re.I):
+        if previous.get('resultStatus') not in {'success', 'no_data'}:
+            return ('The previous request did not establish a verified task list. Personal assignment therefore '
+                    'cannot be confirmed from that answer. Queue membership alone would not prove assignment to you.')
+        view = str(previous.get('selectedState') or '')
+        return (f'The previous answer described the {view} view. ' if view else 'The previous answer described a task view. ') + (
+            'Being shown in that queue does not establish that the tasks are assigned to you personally. '
+            'Personal assignment requires a verified assignee identity matching the signed-in user; '
+            'that comparison was not established by the queue summary.')
     if previous.get('resultStatus') in {'not_confirmed', 'load_failed'} and re.search(
         r'\b(?:total|all)\b.*\b(?:sample|listed|shown)\b|\b(?:full set|complete list)\b', question, re.I,
     ):
@@ -3137,16 +3184,19 @@ def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: li
         return outcome
     dialogs = observation.get('dialogs') or []
     fields = tuple(dict.fromkeys(str(label) for label in observation.get('filterDialogFields', []) if isinstance(label, str)))
+    actions = executions[-1].get('input', {}).get('actionTypes', []) if executions else []
+    # Entering a verified parent tab does not apply any filter criteria.
+    filter_actions = [action for action in actions if action not in {'observe', 'switch_tab', 'navigate'}]
     facts = ()
     if re.search(r'\bopen\b.{0,50}\bfilter\b|打开.{0,15}筛选', question, re.I):
         if (len(dialogs) == 1 and re.search(r'\bfilter\b|筛选', str(dialogs[0]), re.I) and fields
                 and executions and executions[-1].get('status') == 'passed'
-                and executions[-1].get('input', {}).get('actionTypes') == ['show_filter']):
+                and filter_actions == ['show_filter']):
             facts = ('The Filter surface is open. Its observed fields are: ' + '; '.join(fields[:20]) + '.',
                      'No filter criteria were applied.')
     elif re.search(r'\b(?:cancel|close|dismiss)\b.{0,50}\bfilter\b|(?:关闭|取消).{0,15}筛选', question, re.I):
         if (not dialogs and executions and executions[-1].get('status') == 'passed'
-                and executions[-1].get('input', {}).get('actionTypes') == ['show_filter', 'dismiss_overlay']):
+                and filter_actions == ['show_filter', 'dismiss_overlay']):
             facts = ('In a fresh read-only view, the Filter surface was opened and Cancel was selected; the surface is now closed. '
                      'This confirms the cancellation flow in that fresh view, not a change to your browser session or any business data.',)
     if not facts:
@@ -5106,6 +5156,9 @@ def _explicit_collection_field_request(question: str) -> bool:
     """Allow native rows when field words are output requirements, not filters."""
 
     normalized = re.sub(r"\s+", " ", str(question or "").casefold()).strip()
+    if re.fullmatch(r'show (?:the )?current [a-z ]+ task queue and (?:the )?information '
+                    r'(?:shown|displayed) for each task[.!?]?', normalized):
+        return True
     match = re.search(r"\b(?:including|with)\b(?P<fields>.*)$", normalized)
     if not match:
         return False
@@ -5120,6 +5173,34 @@ def _explicit_collection_field_request(question: str) -> bool:
         r"|详情|明细|信息|状态|类型|类别|日期",
         fields,
     ))
+
+
+def _minimal_identity_plan(question: str, observation: Any) -> dict[str, Any] | None:
+    """A request for one identifier must not fall back to a personal profile API."""
+    match = re.search(r'\bidentify one (?P<field>[A-Za-z][A-Za-z ]{0,60}?\b(?:ID|Number))\b'
+                      r'.*\bwithout\b.*\bpersonal\b', question, re.I)
+    if not match or not isinstance(observation, dict):
+        return None
+    failure = {'mode':'observation_result','result':'not_confirmed','answerShape':'list','facts':[],
+               'missing':['requested_identifier_not_observed']}
+    if ((observation.get('readHealth') or {}).get('healthy') is not True
+            or _observation_has_error_state(observation)):
+        return {**failure, 'missing':['requested_identifier_source_unhealthy']}
+    tables = [node for node in _observation_semantic_nodes(observation)
+              if node.get('kind') in {'table','grid'} and node.get('nodeId')
+              and any(_key(h) == _key(match['field']) for h in node.get('columnHeaders', []))]
+    if len(tables) != 1:
+        return failure
+    source = tables[0]
+    for row in source.get('rowFields', []):
+        fields = {key:value for key,value in row.items() if _key(key)==_key(match['field'])
+                  and isinstance(value,str) and value.strip() not in {'','-','—'}}
+        fact = json.dumps(fields,ensure_ascii=False)
+        if len(fields)==1 and _structured_row_supports_fact(fact,source):
+            return {'mode':'observation_result','result':'success','sourceSection':source['nodeId'],
+                    'selectedState':source.get('selectedState',''),'answerShape':'list',
+                    'completeness':'bounded','scope':'unknown','facts':[fact],'missing':[]}
+    return failure
 
 
 def _native_list_fallback_result(
@@ -6331,6 +6412,8 @@ class AdminPortalReader:
         identity_search_reviewed = False
         search_clear_planned = False
         native_filter_transition_planned = False
+        last_portal_page = ''
+        last_portal_observation: dict[str, Any] = {}
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
             if bounded_conversation_context:
@@ -6402,6 +6485,9 @@ class AdminPortalReader:
                 if page:
                     return {'mode':'portal_read','portalRequest':{'startPath':page,'actions':[{'type':'observe'}],'expectedFields':[]}}
             discovery = _api_discovery(observation)
+            minimal_identity = _minimal_identity_plan(question, observation)
+            if minimal_identity is not None:
+                return minimal_identity
             if _requested_date_comparison(question):
                 # Native labels bind the requested fields; expiry projections
                 # such as daysRemaining cannot answer a field-to-field comparison.
@@ -7083,6 +7169,12 @@ class AdminPortalReader:
             timeout_stage: str,
             attempt: str,
         ) -> dict[str, Any]:
+            nonlocal last_portal_page, last_portal_observation
+            if request.start_path == last_portal_page:
+                request = _replay_observed_tab_path(request, last_portal_observation)
+            replay_policy_error = validate_policy(request, reason='effective_read_with_tab_prerequisites')
+            if replay_policy_error:
+                return {'ok': False, 'code': replay_policy_error}
             started_at = time.perf_counter()
             request_trace = {"attempt": attempt, **request_summary(request)}
             try:
@@ -7118,6 +7210,11 @@ class AdminPortalReader:
                 )
                 raise
             payload = tool_result.get("result") if isinstance(tool_result, dict) else None
+            if (tool_result.get('ok') and isinstance(payload, dict) and isinstance(payload.get('observation'), dict)):
+                last_portal_page = request.start_path
+                last_portal_observation = payload['observation']
+            else:
+                last_portal_page, last_portal_observation = '', {}
             facts = payload.get("facts") if isinstance(payload, dict) else []
             trace.record(
                 "portal_execution",
@@ -7432,12 +7529,27 @@ class AdminPortalReader:
                              missing=("action_not_read_only",)),
                 {"stage": "read_only_boundary", "permission": permission_audit},
             )
-        if re.search(r'\b(?:ignore|bypass|override)\s+(?:the\s+)?(?:role|permission|access)\s+(?:restriction|check|limit|control)s?\b', question, re.I):
+        if re.search(r'\b(?:i?gnore|bypass|override)\s+(?:the\s+)?(?:role|permission|access)\s+(?:restriction|check|limit|control)s?\b', question, re.I):
             return ReaderOutcome(
                 ReaderResult(status='no_permission', summary='Role restrictions cannot be bypassed.',
                              missing=('role_scope_override_not_permitted',)),
                 {'stage': 'permission_scope_boundary', 'permission': permission_audit},
             )
+        # Reviewed Admin title-to-route binding. A capability probe must not be
+        # answered from a sibling's Source Task foreign key. The route supplies
+        # no authority: the current GetUserInfo envelope remains decisive.
+        inspection_task_probe = bool(re.fullmatch(
+            r'\s*can (?:this|the) current account read inspection task management[?.]?\s*', question, re.I))
+        if inspection_task_probe:
+            page = '/inspection/tasks'
+            denied = self.policy.validate(PortalReadRequest(start_path=page, actions=({'type': 'observe'},)), permission_context)
+            if denied == 'page_not_permitted':
+                result = ReaderResult(status='no_permission', page=page, source_hint={'page': page},
+                    summary='The current account cannot read Inspection Task Management.',
+                    facts=('The current account permissions do not include Inspection Task Management. '
+                           'No inspection task records were read.',), missing=('page_not_permitted',))
+                return ReaderOutcome(result, {'stage':'named_page_permission', 'permission':permission_audit,
+                                              'result':result.public_json()})
         absence_explanation = reader_absence_limit_explanation(question)
         if absence_explanation:
             return ReaderOutcome(
@@ -7999,6 +8111,12 @@ class AdminPortalReader:
               and not any(action.get("type") == "show_filter" for action in request.actions)):
             # A fresh reader context has no previously opened filter overlay.
             request = replace(request, actions=({"type": "observe"},))
+        elif (_question_needs_native_surface(question)
+              and any(action.get('type') == 'show_filter' and not (action.get('name') or action.get('selector'))
+                      for action in request.actions)):
+            # Bind the actual Filter button from a fresh observation; an action
+            # type alone is not a locator and would fail the gateway schema.
+            request = replace(request, actions=({'type': 'observe'},))
         planned_request = portal_read_request_from_plan(plan)
         observation_section_hint = next(
             (

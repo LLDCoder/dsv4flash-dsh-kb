@@ -262,6 +262,22 @@ def resolve_literal_view_followup(question: str, conversation_context: Any) -> I
     """Resolve a simple named queue change while retaining only known prior slots."""
     match = re.fullmatch(r"\s*(?:how|what)\s+about\s+(?:the\s+)?(?P<view>completed|to do|queued)\s+"
                          r"(?P<object>applications?|tasks?|records?|items?)\s*[?.]?\s*", question, re.I)
+    same_team = re.fullmatch(
+        r"\s*(?:now\s+)?show\s+(?P<view>completed|to do|queued)\s+for\s+(?:that|the)\s+same\s+team[.!?]?\s*",
+        question, re.I,
+    )
+    if same_team:
+        prior = _previous_slots(conversation_context)
+        previous = conversation_context.get('previousIntent', {}) if isinstance(conversation_context, dict) else {}
+        if (not semantic_source_hint(conversation_context).get('page') or prior.get('recordIdentity')
+                or not re.search(r'\bteam\b', str(previous.get('question') or ''), re.I)):
+            return None
+        slots = {name: ({'source': 'previous', 'value': prior[name], 'evidence': prior[name]}
+                       if name in prior else {'source': 'unspecified', 'value': '', 'evidence': ''}) for name in SLOT_NAMES}
+        slots['view'] = {'source': 'current', 'value': same_team['view'], 'evidence': same_team['view']}
+        slots['requestedScope'] = {'source': 'current', 'value': 'team', 'evidence': 'team'}
+        slots['answerShape'] = {'source': 'current', 'value': 'list', 'evidence': 'show'}
+        return parse_intent_resolution({'relation': 'refine', 'slots': slots, 'clarificationOptions': []}, question, conversation_context)
     if not match:
         return None
     prior = _previous_slots(conversation_context)
