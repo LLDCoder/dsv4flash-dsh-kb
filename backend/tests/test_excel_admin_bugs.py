@@ -9,6 +9,17 @@ from app.portal_reader import (
     previous_sample_explanation, reader_absence_limit_explanation,
 )
 from app.reader_intent import resolve_literal_view_followup
+from app.service import reader_evidence_only_response, reader_natural_answer_is_grounded
+
+
+def test_bounded_sample_cannot_be_presented_as_full_queue():
+    evidence='Four refund requests are shown. This is a partial view.'
+    answer="Four requests are shown, so that's the full set available there rather than five."
+    assert not reader_natural_answer_is_grounded(answer,evidence,'Show up to five.',completeness='bounded')
+    assert reader_natural_answer_is_grounded('All four listed records share the same status.',
+        'Four records share the same status. Partial view.','Show records.',completeness='bounded')
+    assert reader_natural_answer_is_grounded('This is the full set.',
+        'This is the full set.','Show records.',completeness='complete')
 from test_admin_portal_reader import Gateway, Planner, run_reader, user_info_for_paths, portal_plan_for
 
 
@@ -128,6 +139,24 @@ def test_one_account_identifier_never_includes_personal_profile_fields():
     o['readHealth']['healthy']=False
     assert _minimal_identity_plan(q,o)['result']=='not_confirmed'
     assert _minimal_identity_plan('Show all customer profile details.',o) is None
+
+
+def test_requested_native_account_id_survives_presentation_but_internal_ids_do_not():
+    evidence={'result':'success','answerShape':'list','sourceSection':'observation-table-001',
+              'facts':['{"Account ID":"2026091400003","statusId":8,"Session ID":"hidden"}']}
+    answer=reader_evidence_only_response(evidence,'en',question='Identify one Account ID without extra personal details.')
+    assert '2026091400003' in answer and 'Status Id' not in answer and 'hidden' not in answer
+    assert '2026091400003' not in reader_evidence_only_response(evidence,'en',question='Show the current queue.')
+    assert '2026091400003' not in reader_evidence_only_response({**evidence,'sourceSection':'api:profile'},'en',question='Identify one Account ID.')
+
+
+def test_reviewed_refund_queue_wording_uses_only_its_healthy_native_collection():
+    o=observation();o['sectionSummaries'][0]['selectedTabPath']=['To Do']
+    q='What refund requests are currently in the Customer Happiness queue?'
+    assert _native_list_fallback_result(o,page='/happiness/refunds',section='',scope='unknown',question=q).status=='success'
+    assert _native_list_fallback_result(o,page='/other',section='',scope='unknown',question=q) is None
+    o['readHealth']['healthy']=False
+    assert _native_list_fallback_result(o,page='/happiness/refunds',section='',scope='unknown',question=q) is None
 
 
 def test_filter_fields_after_parent_navigation_are_not_rejected_as_row_facts():

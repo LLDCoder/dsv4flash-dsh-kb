@@ -1382,6 +1382,8 @@ def reader_answer_shape(
     # record, not a synonym for a collection with columns.
     if re.search(r"\blist\b", normalized):
         return "list"
+    if re.search(r'\bwhat\b.{0,80}\b(?:requests|tasks|records|accounts|items)\s+are\b', normalized):
+        return 'list'
     patterns = (
         ("count", r"\bhow many\b|\bcount\b|\bnumber of\b|多少|几个|几项"),
         ("attention", r"\battention\b|pay attention|需要.{0,8}(?:关注|留意)|(?:关注|留意).{0,8}(?:什么|哪些)"),
@@ -5218,6 +5220,8 @@ def _native_list_fallback_result(
     if (
         _observation_fallback_intent(question, "list") is None
         and not _explicit_collection_field_request(question)
+        and not (page == '/happiness/refunds' and re.fullmatch(
+            r'\s*what refund requests are currently in (?:the )?customer happiness queue[?.]?\s*', question, re.I))
     ):
         return None
     resolved_section = section
@@ -6419,6 +6423,7 @@ class AdminPortalReader:
         native_filter_transition_planned = False
         last_portal_page = ''
         last_portal_observation: dict[str, Any] = {}
+        last_portal_changed_tabs = False
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
             if bounded_conversation_context:
@@ -7174,9 +7179,9 @@ class AdminPortalReader:
             timeout_stage: str,
             attempt: str,
         ) -> dict[str, Any]:
-            nonlocal last_portal_page, last_portal_observation
+            nonlocal last_portal_page, last_portal_observation, last_portal_changed_tabs
             original_request = request
-            if request.start_path == last_portal_page:
+            if request.start_path == last_portal_page and last_portal_changed_tabs:
                 request = _replay_observed_tab_path(request, last_portal_observation)
             if request != original_request:
                 replay_policy_error = validate_policy(request, reason='effective_read_with_tab_prerequisites')
@@ -7220,8 +7225,10 @@ class AdminPortalReader:
             if (tool_result.get('ok') and isinstance(payload, dict) and isinstance(payload.get('observation'), dict)):
                 last_portal_page = request.start_path
                 last_portal_observation = payload['observation']
+                last_portal_changed_tabs = any(a.get('type') == 'switch_tab' for a in request.actions)
             else:
                 last_portal_page, last_portal_observation = '', {}
+                last_portal_changed_tabs = False
             facts = payload.get("facts") if isinstance(payload, dict) else []
             trace.record(
                 "portal_execution",
