@@ -1,0 +1,51 @@
+# Standalone local Admin stack using an explicitly configured existing DB.
+# bash scripts/build-admin-local.sh && docker compose --env-file .env.admin.remote.local -f docker-compose.admin.remote.yml up -d --no-build
+name: admin-dsh-local
+services:
+  redis:
+    extends:
+      file: docker-compose.lite.yml
+      service: redis
+    image: redis:7-alpine
+    restart: unless-stopped
+  platform-gateway:
+    extends:
+      file: docker-compose.lite.yml
+      service: platform-gateway
+    restart: unless-stopped
+  knowledge-gateway:
+    extends:
+      file: docker-compose.lite.yml
+      service: knowledge-gateway
+    environment:
+      KNOWLEDGE_BASE_URL: http://host.docker.internal:18002
+      KNOWLEDGE_PUBLIC_PATH: /api/knowledge
+      KNOWLEDGE_GATEWAY_AUTH: ${KNOWLEDGE_GATEWAY_AUTH:?Set the authorized MailGraph gateway credential}
+    restart: unless-stopped
+  backend:
+    extends:
+      file: docker-compose.lite.yml
+      service: backend
+    environment:
+      DATABASE_URL: ${DSH_DATABASE_URL:?Set the authorized existing Admin database URL}
+      DATABASE_INIT_ENABLED: "false"
+      AUDIT_CLEANUP_ENABLED: "false"
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      platform-gateway:
+        condition: service_healthy
+      knowledge-gateway:
+        condition: service_healthy
+    ports: !override
+      - "127.0.0.1:8001:8000"
+    restart: unless-stopped
+  frontend:
+    extends:
+      file: docker-compose.lite.yml
+      service: frontend
+    ports: !override
+      - "127.0.0.1:18112:80"
+    restart: unless-stopped
+volumes:
+  redis_data:

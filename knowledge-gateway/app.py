@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 UPSTREAM_BASE_URL = os.getenv("KNOWLEDGE_BASE_URL", "http://ai-generation-service:8091").rstrip("/")
+GATEWAY_AUTH = os.getenv("KNOWLEDGE_GATEWAY_AUTH", "").strip()
 PUBLIC_KNOWLEDGE_PATH = os.getenv("KNOWLEDGE_PUBLIC_PATH", "/public/knowledge").rstrip("/")
 TIMEOUT_SECONDS = float(os.getenv("KNOWLEDGE_TIMEOUT_SECONDS", "30"))
 RETRY_ATTEMPTS = max(1, int(os.getenv("KNOWLEDGE_RETRY_ATTEMPTS", "2")))
@@ -28,7 +29,10 @@ def _headers() -> dict[str, str]:
     # not synthesize ``Authorization: Bearer `` when no service token exists:
     # httpx rejects that malformed header before the request reaches 77 and
     # the gateway previously surfaced the client-side failure as HTTP 503.
-    return {"X-Request-ID": str(uuid.uuid4())}
+    headers = {"X-Request-ID": str(uuid.uuid4())}
+    if GATEWAY_AUTH:
+        headers["X-FF-Gateway-Auth"] = GATEWAY_AUTH
+    return headers
 
 
 async def _request(method: str, path: str, *, params: dict[str, Any] | None = None, json: dict[str, Any] | None = None) -> Any:
@@ -64,7 +68,7 @@ async def healthz() -> dict[str, Any]:
         "provider": "dsh-knowledge-proxy",
         "upstream": UPSTREAM_BASE_URL,
         "upstreamPath": PUBLIC_KNOWLEDGE_PATH,
-        "authMode": "anonymous-public",
+        "authMode": "service-gateway" if GATEWAY_AUTH else "anonymous-public",
         "retrievalModes": list(RETRIEVAL_MODES),
         "upstreamMaxTopK": UPSTREAM_MAX_TOP_K,
     }

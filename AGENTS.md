@@ -1,5 +1,20 @@
 # Admin DSH Repository Rules
 
+## Authorized deployment on y's workstation (2026-09-14)
+
+For the checkout at `/Volumes/01101100-固态/项目/ai开发/ff-ai-platform-old/admin-dsv4flash-dsh-kb`,
+the user explicitly requested a local DSH instance connected to the existing
+Admin database at `10.255.1.157:15432/dsh_admin_import_20260907_040500`.
+Follow `LOCAL_ADMIN_REMOTE_DB.md` for this checkout instead of the local-copy
+database and old-machine path defaults below. Never initialize, reseed, migrate,
+or schedule audit cleanup against that shared database as part of local startup.
+Business interactions use the existing shared Admin data. Keep all customer
+boundaries below. The requested workflow is local edits and verification,
+then commit/push, then server pull/deployment when requested. This local setup
+does not itself authorize a production deployment or database migration.
+Only DSH is deployed here: audit `18112`, backend/docs `8001`; do not require
+or change the separate business Portal deployment for this task.
+
 ## Admin System Locations
 
 - Admin DSH code: `/Users/thron/Documents/odt/admin-dsv4flash-dsh-kb`

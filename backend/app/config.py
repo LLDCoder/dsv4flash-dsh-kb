@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     app_name: str = "DSH External Service"
     environment: str = "development"
     database_url: str = "postgresql+asyncpg://dsh:dsh@postgres:5432/dsh"
+    # Deployment-only controls for instances sharing an existing database.
+    database_init_enabled: bool = True
+    audit_cleanup_enabled: bool = True
     redis_url: str = "redis://redis:6379/0"
     cors_origins: str = "*"
     runtime_idle_ttl_seconds: int = 900

@@ -1056,7 +1056,7 @@ class DSHService:
         subsequent turns and tool calls.
         """
 
-        restart_only = {"database_url", "redis_url"}
+        restart_only = {"database_url", "redis_url", "database_init_enabled", "audit_cleanup_enabled"}
         numeric = {
             "llm_timeout_seconds": float,
             "reader_total_timeout_seconds": float,
