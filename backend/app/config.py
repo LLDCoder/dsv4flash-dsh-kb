@@ -64,6 +64,21 @@ class Settings(BaseSettings):
     # other users' conversations merely by selecting the admin portal.
     audit_admin_enabled: bool = False
     audit_admin_user_ids: str = ""
+    # Dedicated deliverable audit console. The first Administrator is created
+    # only when both explicit bootstrap values are supplied and no audit
+    # operator exists yet; later restarts never overwrite operator accounts.
+    audit_bootstrap_username: str = ""
+    audit_bootstrap_password: str = ""
+    audit_bootstrap_display_name: str = "Administrator"
+    audit_session_idle_seconds: int = 1800
+    audit_session_max_age_seconds: int = 8 * 60 * 60
+    audit_cookie_secure: bool = False
+    audit_login_max_failures: int = 5
+    audit_login_lock_seconds: int = 15 * 60
+    audit_login_rate_max_attempts: int = 10
+    audit_login_rate_window_seconds: int = 60
+    audit_session_retention_days: int = 7
+    audit_security_event_retention_days: int = 90
     knowledge_gateway_url: str = "http://knowledge-gateway:8101"
     knowledge_timeout_seconds: float = 30.0
     knowledge_retry_attempts: int = 2

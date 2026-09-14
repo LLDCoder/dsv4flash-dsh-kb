@@ -1,0 +1,458 @@
+import sys
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.api import make_router
+from app.audit_auth import (
+    AUDIT_ROLE_ADMINISTRATOR,
+    AUDIT_ROLE_AUDITOR,
+    AUDIT_SESSION_COOKIE,
+    LoginRateLimiter,
+    hash_password,
+    issue_session_token,
+    normalize_username,
+    session_token_digest,
+    validate_password_policy,
+    verify_password,
+)
+from app.console_auth import CONSOLE_SESSION_COOKIE
+from app.db import (
+    AuditOperator,
+    AuditOperatorEvent,
+    AuditOperatorSession,
+    AuditRecord,
+    Base,
+    Conversation,
+    SessionEvent,
+    Skill,
+    Tool,
+    bootstrap_audit_operator,
+    get_db,
+    purge_expired_audit_data,
+)
+from app.service import DSHService
+
+
+class FakeService:
+    def __init__(self):
+        self.console_password = "legacy-console-password"
+        self.settings = SimpleNamespace(
+            audit_session_idle_seconds=1800,
+            audit_session_max_age_seconds=28800,
+            audit_cookie_secure=False,
+            audit_login_max_failures=2,
+            audit_login_lock_seconds=900,
+            audit_login_rate_max_attempts=3,
+            audit_login_rate_window_seconds=60,
+        )
+
+    audit_payload = staticmethod(DSHService.audit_payload)
+    audit_category = staticmethod(DSHService.audit_category)
+    conversation_json = staticmethod(DSHService.conversation_json)
+
+
+class AuditAuthPrimitiveTests(unittest.TestCase):
+    def test_password_policy_requires_length_upper_lower_and_number(self):
+        self.assertEqual(validate_password_policy("Admin123"), "Admin123")
+        for invalid in ("Admin12", "ADMIN123", "admin123", "AdminPass"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_password_policy(invalid)
+
+    def test_login_rate_limiter_uses_a_sliding_window(self):
+        limiter = LoginRateLimiter()
+
+        self.assertIsNone(limiter.check("ip\nuser", limit=2, window_seconds=10, now=1))
+        self.assertIsNone(limiter.check("ip\nuser", limit=2, window_seconds=10, now=2))
+        self.assertEqual(limiter.check("ip\nuser", limit=2, window_seconds=10, now=3), 9)
+        self.assertIsNone(limiter.check("ip\nuser", limit=2, window_seconds=10, now=12))
+
+    def test_password_hash_is_salted_and_verifiable(self):
+        first = hash_password("correct horse battery staple", iterations=1_000)
+        second = hash_password("correct horse battery staple", iterations=1_000)
+
+        self.assertNotEqual(first, second)
+        self.assertTrue(verify_password("correct horse battery staple", first))
+        self.assertFalse(verify_password("wrong", first))
+        self.assertFalse(verify_password("correct horse battery staple", "invalid"))
+
+    def test_session_database_value_is_not_the_browser_token(self):
+        token, digest = issue_session_token()
+
+        self.assertNotEqual(token, digest)
+        self.assertEqual(session_token_digest(token), digest)
+        self.assertEqual(normalize_username("  Audit.User@Example.TEST "), "audit.user@example.test")
+
+    def test_audit_payload_redacts_common_key_styles(self):
+        payload = DSHService.audit_payload({
+            "accessToken": "secret",
+            "refreshToken": "secret",
+            "api_key": "secret",
+            "nested": {"UMC-TOKEN": "secret", "content": "visible"},
+        })
+
+        self.assertEqual(payload, {
+            "accessToken": "[redacted]",
+            "refreshToken": "[redacted]",
+            "api_key": "[redacted]",
+            "nested": {"UMC-TOKEN": "[redacted]", "content": "visible"},
+        })
+
+
+class AuditConsoleApiTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine(
+            "sqlite+aiosqlite://",
+            poolclass=StaticPool,
+        )
+        async with self.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        self.sessions = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+        self.service = FakeService()
+        self.app = FastAPI()
+        self.app.include_router(make_router(self.service))
+
+        async def test_db():
+            async with self.sessions() as session:
+                yield session
+
+        self.app.dependency_overrides[get_db] = test_db
+        self.client = AsyncClient(transport=ASGITransport(app=self.app), base_url="http://test")
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        await self.engine.dispose()
+
+    async def add_operator(self, username: str, password: str, role: str) -> AuditOperator:
+        async with self.sessions() as db:
+            operator = AuditOperator(
+                username=normalize_username(username),
+                display_name=username,
+                password_hash=hash_password(password, iterations=1_000),
+                role=role,
+            )
+            db.add(operator)
+            await db.commit()
+            await db.refresh(operator)
+            return operator
+
+    async def login(self, username: str, password: str, *, client: AsyncClient | None = None):
+        return await (client or self.client).post(
+            "/api/v1/audit-auth/login",
+            json={"username": username, "password": password},
+        )
+
+    async def test_fixed_roles_last_admin_and_session_revocation(self):
+        administrator = await self.add_operator("Admin@Example.test", "admin-password", AUDIT_ROLE_ADMINISTRATOR)
+
+        anonymous = await self.client.get("/api/v1/audit/conversations")
+        self.assertEqual(anonymous.status_code, 401)
+
+        legacy = await self.client.post("/api/v1/console/login", json={"password": self.service.console_password})
+        self.assertEqual(legacy.status_code, 200)
+        self.assertIn(CONSOLE_SESSION_COOKIE, legacy.cookies)
+        self.assertNotIn(AUDIT_SESSION_COOKIE, legacy.cookies)
+        legacy_cannot_read_audit = await self.client.get("/api/v1/audit/conversations")
+        self.assertEqual(legacy_cannot_read_audit.status_code, 401)
+
+        logged_in = await self.login("  ADMIN@example.TEST ", "admin-password")
+        self.assertEqual(logged_in.status_code, 200)
+        self.assertIn(AUDIT_SESSION_COOKIE, logged_in.cookies)
+        self.assertIn(CONSOLE_SESSION_COOKIE, self.client.cookies)
+
+        last_admin = await self.client.patch(
+            f"/api/v1/audit/users/{administrator.id}",
+            json={"role": AUDIT_ROLE_AUDITOR},
+        )
+        self.assertEqual(last_admin.status_code, 409)
+
+        created = await self.client.post(
+            "/api/v1/audit/users",
+            json={
+                "username": "  Reader@Example.TEST ",
+                "displayName": "Audit Reader",
+                "role": AUDIT_ROLE_AUDITOR,
+                "password": "ReaderPass123",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        reader_id = created.json()["user"]["id"]
+        self.assertEqual(created.json()["user"]["username"], "reader@example.test")
+        promoted = await self.client.patch(
+            f"/api/v1/audit/users/{reader_id}",
+            json={"role": AUDIT_ROLE_ADMINISTRATOR},
+        )
+        self.assertEqual(promoted.json()["user"]["role"], AUDIT_ROLE_ADMINISTRATOR)
+        demoted = await self.client.patch(
+            f"/api/v1/audit/users/{reader_id}",
+            json={"role": AUDIT_ROLE_AUDITOR},
+        )
+        self.assertEqual(demoted.json()["user"]["role"], AUDIT_ROLE_AUDITOR)
+
+        reader_client = AsyncClient(transport=ASGITransport(app=self.app), base_url="http://test")
+        try:
+            reader_login = await self.login("reader@example.test", "ReaderPass123", client=reader_client)
+            self.assertEqual(reader_login.status_code, 200)
+            readable = await reader_client.get("/api/v1/audit/conversations")
+            self.assertEqual(readable.status_code, 200)
+            forbidden = await reader_client.get("/api/v1/audit/users")
+            self.assertEqual(forbidden.status_code, 403)
+
+            disabled = await self.client.patch(f"/api/v1/audit/users/{reader_id}", json={"disabled": True})
+            self.assertEqual(disabled.status_code, 200)
+            revoked = await reader_client.get("/api/v1/audit-auth/session")
+            self.assertEqual(revoked.status_code, 200)
+            self.assertFalse(revoked.json()["authenticated"])
+
+            reenabled = await self.client.patch(f"/api/v1/audit/users/{reader_id}", json={"disabled": False})
+            self.assertEqual(reenabled.status_code, 200)
+            self.assertEqual((await self.login("reader@example.test", "ReaderPass123", client=reader_client)).status_code, 200)
+            reset = await self.client.post(
+                f"/api/v1/audit/users/{reader_id}/password",
+                json={"password": "NewReader123"},
+            )
+            self.assertEqual(reset.status_code, 200)
+            reset_revoked = await reader_client.get("/api/v1/audit-auth/session")
+            self.assertFalse(reset_revoked.json()["authenticated"])
+            self.assertEqual((await self.login("reader@example.test", "ReaderPass123", client=reader_client)).status_code, 401)
+            self.assertEqual((await self.login("reader@example.test", "NewReader123", client=reader_client)).status_code, 200)
+        finally:
+            await reader_client.aclose()
+
+    async def test_bootstrap_is_explicit_and_only_applies_to_an_empty_table(self):
+        settings = SimpleNamespace(
+            audit_bootstrap_username=" First.Admin@Example.TEST ",
+            audit_bootstrap_password="Bootstrap123",
+            audit_bootstrap_display_name="First Administrator",
+        )
+        async with self.sessions() as db:
+            self.assertTrue(await bootstrap_audit_operator(db, settings))
+            await db.commit()
+            operator = (await db.execute(select(AuditOperator))).scalar_one()
+            self.assertEqual(operator.username, "first.admin@example.test")
+            self.assertEqual(operator.role, AUDIT_ROLE_ADMINISTRATOR)
+
+            settings.audit_bootstrap_username = "replacement@example.test"
+            settings.audit_bootstrap_password = "Replacement123"
+            self.assertFalse(await bootstrap_audit_operator(db, settings))
+            count = int((await db.execute(select(func.count(AuditOperator.id)))).scalar_one())
+            self.assertEqual(count, 1)
+
+        incomplete = SimpleNamespace(
+            audit_bootstrap_username="admin@example.test",
+            audit_bootstrap_password="",
+            audit_bootstrap_display_name="Administrator",
+        )
+        async with self.sessions() as db:
+            with self.assertRaises(RuntimeError):
+                await bootstrap_audit_operator(db, incomplete)
+
+    async def test_failed_login_locks_account(self):
+        await self.add_operator("reader", "correct-password", AUDIT_ROLE_AUDITOR)
+
+        first = await self.login("reader", "wrong-password")
+        second = await self.login("reader", "wrong-password")
+        correct_while_locked = await self.login("reader", "correct-password")
+
+        self.assertEqual(first.status_code, 401)
+        self.assertEqual(second.status_code, 429)
+        self.assertEqual(correct_while_locked.status_code, 429)
+
+    async def test_unknown_account_login_is_rate_limited_by_client_and_username(self):
+        responses = [await self.login("missing-user", "wrong-password") for _ in range(4)]
+
+        self.assertEqual([response.status_code for response in responses], [401, 401, 401, 429])
+        self.assertIn("Retry-After", responses[-1].headers)
+
+    async def test_only_administrator_can_read_redacted_skill_and_tool_diagnostics(self):
+        await self.add_operator("diagnostic-admin", "AdminPass123", AUDIT_ROLE_ADMINISTRATOR)
+        await self.add_operator("diagnostic-reader", "ReaderPass123", AUDIT_ROLE_AUDITOR)
+        async with self.sessions() as db:
+            db.add(Skill(
+                skill_id="diagnostic-skill",
+                name="Diagnostic Skill",
+                version=2,
+                source="ops",
+                status="PUBLISHED",
+                enabled=True,
+                allowed_tools=["diagnostic.tool", "missing.tool"],
+                dependencies=["base-skill"],
+                domain="diagnostic",
+                aliases=["diagnose"],
+                workflow={"password": "skill-secret"},
+                content="contains skill-secret",
+            ))
+            db.add(Tool(
+                tool_name="diagnostic.tool",
+                display_name="Diagnostic Tool",
+                operation_id="diagnose",
+                http_method="POST",
+                http_path="https://internal.example/private?apiKey=tool-secret",
+                interface_key="POST /private",
+                parameters={"apiKey": "tool-secret"},
+                response_schema={"secret": "tool-secret"},
+                auth_strategy="Bearer tool-auth-secret",
+                rbac_policy="tool-rbac-secret",
+                masking_policy="configured",
+                profile_scope={"secret": "tool-profile-secret"},
+                swagger_source="https://internal.example/swagger?token=tool-secret",
+                enabled=True,
+                published=True,
+            ))
+            await db.commit()
+
+        self.assertEqual((await self.login("diagnostic-admin", "AdminPass123")).status_code, 200)
+        skills_response = await self.client.get("/api/v1/audit/skills")
+        tools_response = await self.client.get("/api/v1/audit/tools?search=diagnostic.tool")
+        self.assertEqual(skills_response.status_code, 200, skills_response.text)
+        self.assertEqual(tools_response.status_code, 200, tools_response.text)
+
+        skill = skills_response.json()["items"][0]
+        self.assertEqual(skill["missingTools"], ["missing.tool"])
+        self.assertTrue(skill["workflowConfigured"])
+        self.assertTrue(skill["contentConfigured"])
+        self.assertTrue({"workflow", "content", "positiveExamples", "negativeExamples"}.isdisjoint(skill))
+
+        tool = tools_response.json()["items"][0]
+        self.assertEqual(tool["httpPath"], "/private")
+        self.assertTrue(tool["authenticationRequired"])
+        self.assertTrue(tool["maskingConfigured"])
+        self.assertTrue({
+            "parameters", "responseSchema", "authStrategy", "rbacPolicy",
+            "profileScope", "swaggerSource", "interfaceKey",
+        }.isdisjoint(tool))
+        serialized = str({"skills": skills_response.json(), "tools": tools_response.json()})
+        for secret in ("skill-secret", "tool-secret", "tool-auth-secret", "tool-rbac-secret", "tool-profile-secret"):
+            self.assertNotIn(secret, serialized)
+
+        auditor = AsyncClient(transport=ASGITransport(app=self.app), base_url="http://test")
+        try:
+            self.assertEqual((await self.login("diagnostic-reader", "ReaderPass123", client=auditor)).status_code, 200)
+            self.assertEqual((await auditor.get("/api/v1/audit/skills")).status_code, 403)
+            self.assertEqual((await auditor.get("/api/v1/audit/tools")).status_code, 403)
+        finally:
+            await auditor.aclose()
+
+    async def test_configured_retention_cleans_expired_security_data(self):
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(days=100)
+        async with self.sessions() as db:
+            operator = AuditOperator(
+                username="retention-admin",
+                display_name="Retention Admin",
+                password_hash=hash_password("retention-password", iterations=1_000),
+                role=AUDIT_ROLE_ADMINISTRATOR,
+            )
+            db.add(operator)
+            await db.flush()
+            db.add_all((
+                AuditRecord(
+                    tenant_id="tenant", user_id="user", conversation_id="old", dsh_session_id="old-session",
+                    category="runtime", record_type="old", payload={}, created_at=old,
+                ),
+                AuditRecord(
+                    tenant_id="tenant", user_id="user", conversation_id="new", dsh_session_id="new-session",
+                    category="runtime", record_type="new", payload={}, created_at=now,
+                ),
+                AuditOperatorSession(
+                    operator_id=operator.id, token_digest="a" * 64, created_at=old,
+                    last_seen_at=old, expires_at=old,
+                ),
+                AuditOperatorSession(
+                    operator_id=operator.id, token_digest="b" * 64, created_at=now,
+                    last_seen_at=now, expires_at=now + timedelta(hours=1),
+                ),
+                AuditOperatorEvent(
+                    actor_operator_id=operator.id, username=operator.username,
+                    event_type="old", created_at=old,
+                ),
+                AuditOperatorEvent(
+                    actor_operator_id=operator.id, username=operator.username,
+                    event_type="new", created_at=now,
+                ),
+            ))
+            await db.commit()
+
+            deleted = await purge_expired_audit_data(
+                db,
+                SimpleNamespace(
+                    audit_retention_days=30,
+                    audit_session_retention_days=7,
+                    audit_security_event_retention_days=90,
+                ),
+                now=now,
+            )
+            await db.commit()
+
+            self.assertEqual(deleted, {"auditRecords": 1, "operatorSessions": 1, "operatorEvents": 1})
+            self.assertEqual(int((await db.execute(select(func.count(AuditRecord.id)))).scalar_one()), 1)
+            self.assertEqual(int((await db.execute(select(func.count(AuditOperatorSession.id)))).scalar_one()), 1)
+            self.assertEqual(int((await db.execute(select(func.count(AuditOperatorEvent.id)))).scalar_one()), 1)
+
+    async def test_detail_uses_unique_dsh_session_id(self):
+        await self.add_operator("auditor", "auditor-password", AUDIT_ROLE_AUDITOR)
+        now = datetime.now(timezone.utc)
+        async with self.sessions() as db:
+            first = Conversation(
+                conversation_id="shared-browser-id",
+                tenant_id="tenant-1",
+                user_id="user-1",
+                dsh_session_id="dsh-session-1",
+                last_activity_at=now,
+            )
+            second = Conversation(
+                conversation_id="shared-browser-id",
+                tenant_id="tenant-2",
+                user_id="user-2",
+                dsh_session_id="dsh-session-2",
+                last_activity_at=now,
+            )
+            db.add_all((first, second))
+            db.add_all((
+                AuditRecord(
+                    tenant_id="tenant-1", user_id="user-1", conversation_id="shared-browser-id",
+                    dsh_session_id="dsh-session-1", category="conversation", record_type="user.message",
+                    payload={"content": "first tenant", "accessToken": "legacy-secret"},
+                ),
+                AuditRecord(
+                    tenant_id="tenant-2", user_id="user-2", conversation_id="shared-browser-id",
+                    dsh_session_id="dsh-session-2", category="conversation", record_type="user.message",
+                    payload={"content": "second tenant"},
+                ),
+                SessionEvent(
+                    tenant_id="tenant-1", user_id="user-1", conversation_id="shared-browser-id",
+                    dsh_session_id="dsh-session-1", seq=1, event_type="user.message",
+                    event_json={"content": "first title"},
+                ),
+                SessionEvent(
+                    tenant_id="tenant-2", user_id="user-2", conversation_id="shared-browser-id",
+                    dsh_session_id="dsh-session-2", seq=2, event_type="user.message",
+                    event_json={"content": "second title"},
+                ),
+            ))
+            await db.commit()
+
+        self.assertEqual((await self.login("auditor", "auditor-password")).status_code, 200)
+        listing = await self.client.get("/api/v1/audit/conversations")
+        self.assertEqual(listing.status_code, 200)
+        titles = {item["dshSessionId"]: item["title"] for item in listing.json()["conversations"]}
+        self.assertEqual(titles, {"dsh-session-1": "first title", "dsh-session-2": "second title"})
+
+        detail = await self.client.get("/api/v1/audit/conversations/dsh-session-1")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual([item["payload"]["content"] for item in detail.json()["items"]], ["first tenant"])
+        self.assertEqual(detail.json()["items"][0]["payload"]["accessToken"], "[redacted]")
+
+
+if __name__ == "__main__":
+    unittest.main()

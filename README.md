@@ -26,6 +26,10 @@ Backend 会把每轮用户/助手对话、Skill 路由、DSH Tool 调用与结�
 
 如果部署的是隔离的 Chatbot 管理员控制台，可通过运行环境显式开启全局审计范围：`AUDIT_ADMIN_ENABLED=true`，并将管理员的 UMC User ID 填入 `AUDIT_ADMIN_USER_IDS`（多个 ID 用逗号分隔）。仅命中 allowlist 的账号会收到 `scope=admin`，可查看任意账号和租户的审计；`*` 仅适用于已由网关隔离的管理员专用部署。部署环境中的管理员 allowlist 作为可信引导配置，优先于数据库里历史保存的关闭值，避免升级后因旧运行配置继续看不到记录。审计管理员开关和 allowlist 只能由已具备全局审计权限的管理员在控制台修改，默认关闭，不会因为选择 `admin` Portal 自动放大权限。未开启时接口返回 `scope=owner`。
 
+可交付的独立审计页面使用另一套账号体系，与上述测试控制台口令完全隔离。固定角色只有 `Administrator`（审计只读 + 账号管理）和 `Auditor`（审计只读）；两种角色都可通过 `GET /api/v1/audit/conversations` 查看全部客户审计会话，并以列表中的唯一 `dshSessionId` 请求详情。账号密码登录使用 `/api/v1/audit-auth/*`，密码以 PBKDF2-SHA256 哈希保存，浏览器只获得可撤销的 `dsh_audit_session` HttpOnly Cookie。停用账号、重置密码和角色变更都会撤销该账号现有会话；连续失败默认 5 次后锁定 15 分钟。
+
+首次部署时，仅在 `audit_operator` 表为空且同时显式设置 `AUDIT_BOOTSTRAP_USERNAME`、`AUDIT_BOOTSTRAP_PASSWORD` 时创建首个 Administrator。初始化成功后应从部署环境移除这两个值。HTTPS 客户环境必须设置 `AUDIT_COOKIE_SECURE=true`；会话空闲与绝对时限分别由 `AUDIT_SESSION_IDLE_SECONDS` 和 `AUDIT_SESSION_MAX_AGE_SECONDS` 控制。系统不会生成或硬编码独立审计页面的默认账号密码。
+
 ## 测试控制台密码
 
 测试控制台启动时会在 PostgreSQL `config_entry`（`scope=system`、`key=console_password`）中初始化固定控制台密码。页面登录成功后仅获得短期 HttpOnly Cookie；测试 API 和 WebSocket 均要求该 Cookie，密码不会回显到配置页、响应或普通日志。密码遗失时，使用受控的数据库管理员账号查询：

@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID
-from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill, Tool
+from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill, Tool, purge_expired_audit_data
 from .customer_documents import CustomerDocumentClient
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
@@ -1013,11 +1013,17 @@ class DSHService:
         if depth > 8:
             return "[max-depth]"
         if isinstance(value, dict):
-            sensitive = {"token", "access_token", "umc_token", "authorization", "password", "api_key", "providerkey", "provider_key"}
-            return {
-                str(key): "[redacted]" if str(key).lower() in sensitive else cls.audit_payload(item, depth + 1)
-                for key, item in value.items()
-            }
+            sensitive = {"token", "accesstoken", "umctoken", "authorization", "password", "apikey", "providerkey"}
+            redacted: dict[str, Any] = {}
+            for key, item in value.items():
+                normalized_key = "".join(character for character in str(key).casefold() if character.isalnum())
+                is_sensitive = (
+                    normalized_key in sensitive
+                    or normalized_key.endswith("token")
+                    or "password" in normalized_key
+                )
+                redacted[str(key)] = "[redacted]" if is_sensitive else cls.audit_payload(item, depth + 1)
+            return redacted
         if isinstance(value, list):
             return [cls.audit_payload(item, depth + 1) for item in value]
         return value
@@ -1048,12 +1054,10 @@ class DSHService:
         await db.commit()
 
     async def purge_expired_audit(self) -> int:
-        retention_days = max(1, int(self.settings.audit_retention_days))
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         async with SessionLocal() as db:
-            result = await db.execute(delete(AuditRecord).where(AuditRecord.created_at < cutoff))
+            deleted = await purge_expired_audit_data(db, self.settings)
             await db.commit()
-            return int(result.rowcount or 0)
+            return sum(deleted.values())
 
     async def submit_message(
         self,
