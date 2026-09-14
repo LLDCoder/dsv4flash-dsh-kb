@@ -26,6 +26,14 @@ umc-customer-portal-features-ai-chatbot-upgrade/.env.*
 # Test outputs can contain authenticated responses or generated artifacts.
 # Keep existing tracked outputs available, but do not add new local captures.
 /outputs/**
+/backups/
+
+# Local exports, database archives, scratch space, and dependency links are
+# operational artifacts and must not be committed with application changes.
+/exports/
+/tmp/
+/node_modules
+/customer-dsh-db0backups*.zip
 
 # This is a separately managed customer frontend workspace, not part of the
 # DSH knowledge-base repository.
