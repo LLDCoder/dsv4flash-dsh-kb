@@ -2267,6 +2267,7 @@ def test_default_post_allowlist_is_exact() -> None:
         "/api/LicenseManagement/list",
         "/api/licensing/team-management/tasks/query",
         "/api/inspection/team-management/tasks/query",
+        "/api/customer-happiness/team-management/tasks/query",
     }
 
 
@@ -2304,6 +2305,7 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/Lookup/GetSubjectList",
         "/api/Inspection/Dashboard/Overview",
         "/api/Inspection/Dashboard/TaskList",
+        "/api/inspection/reportsAnalytics/riskInsights",
         "/api/inspection/team-management/metadata",
         "/api/inspection/team-management/members",
         "/api/inspection/team-management/summary",
@@ -2316,6 +2318,8 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/admin/inspection/tasks",
         "/api/admin/inspection/tasks/created-by-users",
         "/api/admin/inspection/tasks/stats",
+        "/api/admin/inspection/violations",
+        "/api/admin/inspection/violations/stats",
         "/api/admin/finance/transactions",
         "/api/admin/finance/lookups/payment-methods",
         "/api/admin/finance/lookups/transaction-types",
@@ -2324,8 +2328,13 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/admin/finance/transactions/payment-method-statistics",
         "/api/CustomerHappiness/Dashboard/Overview",
         "/api/CustomerHappiness/Dashboard/TaskList",
+        "/api/customer-happiness/team-management/metadata",
+        "/api/customer-happiness/team-management/summary",
         "/api/AdminUser/LoginMethod",
         "/api/UserManagement/GetAdminUserAsync",
+        "/api/UserManagement/GetCustomerUsersAsync",
+        "/api/UserManagement/GetCustomerInfoCountDto",
+        "/api/TypeDictionary/GetTypeDictionaries/LoginMethod",
         "/api/TypeDictionary/GetTypeDictionaries/ServiceConfigServiceType",
         "/api/Application/UrgenCount",
         "/api/UserManagement/UserProfile/Approves",
@@ -2335,6 +2344,12 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/LicenseManagement/statistics",
         "/api/Refund/Admin/Tickets",
         "/api/Refund/Admin/Tickets/Statistics",
+        "/api/Refund/Admin/Tickets/CustomerService",
+        "/api/Refund/Admin/Types/Status",
+        "/api/Refund/Admin/Types/Categories",
+        "/api/Refund/Admin/Types/SourceType",
+        "/api/Refund/Admin/User/Departments",
+        "/api/Refund/Admin/Departments",
         "/api/Enquiry/Management/List",
         "/api/Enquiry/Management/UserInfo",
         "/api/Enquiry/Management/TeamTask/List",
@@ -2540,8 +2555,8 @@ def test_guard_keeps_inspection_task_creation_and_exports_blocked() -> None:
 def test_health_reports_fixed_allowlist_counts() -> None:
     health = asyncio.run(gateway.healthz())
 
-    assert health["readOnlyGetPathCount"] == 74
-    assert health["readOnlyPostPathCount"] == 7
+    assert health["readOnlyGetPathCount"] == 88
+    assert health["readOnlyPostPathCount"] == 8
 
 
 @pytest.mark.parametrize(

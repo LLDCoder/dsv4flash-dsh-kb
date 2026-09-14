@@ -7170,11 +7170,13 @@ class AdminPortalReader:
             attempt: str,
         ) -> dict[str, Any]:
             nonlocal last_portal_page, last_portal_observation
+            original_request = request
             if request.start_path == last_portal_page:
                 request = _replay_observed_tab_path(request, last_portal_observation)
-            replay_policy_error = validate_policy(request, reason='effective_read_with_tab_prerequisites')
-            if replay_policy_error:
-                return {'ok': False, 'code': replay_policy_error}
+            if request != original_request:
+                replay_policy_error = validate_policy(request, reason='effective_read_with_tab_prerequisites')
+                if replay_policy_error:
+                    return {'ok': False, 'code': replay_policy_error}
             started_at = time.perf_counter()
             request_trace = {"attempt": attempt, **request_summary(request)}
             try:
