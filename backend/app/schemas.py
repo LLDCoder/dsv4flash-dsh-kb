@@ -1,6 +1,8 @@
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .audit_auth import validate_password_policy
 
 
 class APIModel(BaseModel):
@@ -33,6 +35,37 @@ class ConfigPatch(APIModel):
 
 class ConsoleLogin(APIModel):
     password: str = Field(min_length=1, max_length=256)
+
+
+class AuditLogin(APIModel):
+    username: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class AuditOperatorCreate(APIModel):
+    username: str = Field(min_length=3, max_length=254)
+    display_name: str = Field(min_length=1, max_length=120, validation_alias=AliasChoices("displayName", "display_name"))
+    role: Literal["Administrator", "Auditor"] = "Auditor"
+    password: str = Field(min_length=8, max_length=256)
+
+    @field_validator("password")
+    @classmethod
+    def enforce_password_policy(cls, value: str) -> str:
+        return validate_password_policy(value)
+
+
+class AuditOperatorUpdate(APIModel):
+    role: Literal["Administrator", "Auditor"] | None = None
+    disabled: bool | None = None
+
+
+class AuditPasswordReset(APIModel):
+    password: str = Field(min_length=8, max_length=256)
+
+    @field_validator("password")
+    @classmethod
+    def enforce_password_policy(cls, value: str) -> str:
+        return validate_password_policy(value)
 
 
 class TestCaseGenerateRequest(APIModel):

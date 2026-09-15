@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs
 from uuid import uuid4
@@ -12,18 +13,32 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import String, cast, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
+from .audit_auth import (
+    AUDIT_ROLE_ADMINISTRATOR,
+    AUDIT_SESSION_COOKIE,
+    AuditPrincipal,
+    LoginRateLimiter,
+    hash_password,
+    issue_session_token,
+    normalize_username,
+    session_token_digest,
+    valid_role,
+    verify_password,
+)
 from .config import config_catalog, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
-from .db import AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, get_db
+from .db import AuditOperator, AuditOperatorEvent, AuditOperatorSession, AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
-from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
+from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
 
 # Uvicorn configures this logger at INFO for container output. Using it keeps
 # correlation records visible without changing the global logging policy.
 logger = logging.getLogger("uvicorn.error")
+_DUMMY_AUDIT_PASSWORD_HASH = hash_password("audit-console-invalid-password")
 
 
 def message_feedback_change(
@@ -79,6 +94,7 @@ def reader_identity_from_audit_payloads(payloads: list[Any]) -> dict[str, str]:
 
 def make_router(service: DSHService) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
+    audit_login_limiter = LoginRateLimiter()
 
     def raw_config_value(item: ConfigEntry) -> object:
         value = item.value
@@ -140,6 +156,192 @@ def make_router(service: DSHService) -> APIRouter:
     async def console_logout():
         response = JSONResponse({"authenticated": False})
         response.delete_cookie(key=CONSOLE_SESSION_COOKIE, path="/")
+        return response
+
+    def aware_utc(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+    def audit_remote_address(request: Request) -> str:
+        return (request.client.host if request.client else "")[:128]
+
+    def audit_operator_json(operator: AuditOperator) -> dict[str, object]:
+        return {
+            "id": operator.id,
+            "username": operator.username,
+            "displayName": operator.display_name,
+            "role": operator.role,
+            "disabled": operator.disabled,
+            "lockedUntil": operator.locked_until.isoformat() if operator.locked_until else None,
+            "lastLoginAt": operator.last_login_at.isoformat() if operator.last_login_at else None,
+            "createdAt": operator.created_at.isoformat() if operator.created_at else None,
+            "updatedAt": operator.updated_at.isoformat() if operator.updated_at else None,
+        }
+
+    async def resolve_audit_session(request: Request, db: AsyncSession) -> tuple[AuditPrincipal, AuditOperator] | None:
+        token = request.cookies.get(AUDIT_SESSION_COOKIE)
+        if not token:
+            return None
+        result = await db.execute(
+            select(AuditOperatorSession, AuditOperator)
+            .join(AuditOperator, AuditOperator.id == AuditOperatorSession.operator_id)
+            .where(AuditOperatorSession.token_digest == session_token_digest(token))
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        session, operator = row
+        now = datetime.now(timezone.utc)
+        idle_seconds = max(60, int(service.settings.audit_session_idle_seconds))
+        is_expired = (
+            session.revoked_at is not None
+            or aware_utc(session.expires_at) <= now
+            or aware_utc(session.last_seen_at) + timedelta(seconds=idle_seconds) <= now
+            or aware_utc(session.created_at) < aware_utc(operator.password_changed_at)
+        )
+        if operator.disabled or not valid_role(operator.role) or is_expired:
+            if session.revoked_at is None:
+                session.revoked_at = now
+                await db.commit()
+            return None
+        session.last_seen_at = now
+        await db.commit()
+        return AuditPrincipal(
+            operator_id=operator.id,
+            username=operator.username,
+            display_name=operator.display_name,
+            role=operator.role,
+            session_id=session.id,
+        ), operator
+
+    async def require_audit_session(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+    ) -> AuditPrincipal:
+        resolved = await resolve_audit_session(request, db)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="audit authentication required")
+        return resolved[0]
+
+    async def require_audit_administrator(
+        principal: AuditPrincipal = Depends(require_audit_session),
+    ) -> AuditPrincipal:
+        if not principal.is_administrator:
+            raise HTTPException(status_code=403, detail="administrator role required")
+        return principal
+
+    def ensure_not_last_administrator(
+        locked_operators: list[AuditOperator],
+        operator: AuditOperator,
+        *,
+        next_role: str,
+        next_disabled: bool,
+    ) -> None:
+        if operator.role != AUDIT_ROLE_ADMINISTRATOR or operator.disabled:
+            return
+        if next_role == AUDIT_ROLE_ADMINISTRATOR and not next_disabled:
+            return
+        active_administrator_ids = [
+            item.id
+            for item in locked_operators
+            if item.role == AUDIT_ROLE_ADMINISTRATOR and not item.disabled
+        ]
+        if not any(operator_id != operator.id for operator_id in active_administrator_ids):
+            raise HTTPException(status_code=409, detail="the last active Administrator cannot be disabled or demoted")
+
+    @router.post("/audit-auth/login", tags=["Audit console"])
+    async def audit_login(payload: AuditLogin, request: Request, db: AsyncSession = Depends(get_db)):
+        username = normalize_username(payload.username)
+        remote_address = audit_remote_address(request)
+        rate_key = f"{remote_address}\n{username}"
+        retry_after = audit_login_limiter.check(
+            rate_key,
+            limit=int(service.settings.audit_login_rate_max_attempts),
+            window_seconds=int(service.settings.audit_login_rate_window_seconds),
+        )
+        if retry_after is not None:
+            raise HTTPException(status_code=429, detail="too many login attempts", headers={"Retry-After": str(retry_after)})
+        operator = (await db.execute(
+            select(AuditOperator).where(AuditOperator.username == username).with_for_update()
+        )).scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        if operator is None:
+            await asyncio.to_thread(verify_password, payload.password, _DUMMY_AUDIT_PASSWORD_HASH)
+            db.add(AuditOperatorEvent(username=username, event_type="login.failed", remote_address=remote_address, detail={"reason": "invalid_credentials"}))
+            await db.commit()
+            raise HTTPException(status_code=401, detail="invalid username or password")
+        if operator.disabled:
+            await asyncio.to_thread(verify_password, payload.password, operator.password_hash)
+            db.add(AuditOperatorEvent(target_operator_id=operator.id, username=operator.username, event_type="login.failed", remote_address=remote_address, detail={"reason": "invalid_credentials"}))
+            await db.commit()
+            raise HTTPException(status_code=401, detail="invalid username or password")
+        if operator.locked_until and aware_utc(operator.locked_until) > now:
+            db.add(AuditOperatorEvent(target_operator_id=operator.id, username=operator.username, event_type="login.blocked", remote_address=remote_address, detail={}))
+            await db.commit()
+            raise HTTPException(status_code=429, detail="account temporarily locked")
+        if operator.locked_until:
+            operator.locked_until = None
+            operator.failed_login_attempts = 0
+        if not await asyncio.to_thread(verify_password, payload.password, operator.password_hash):
+            operator.failed_login_attempts += 1
+            locked = operator.failed_login_attempts >= max(1, int(service.settings.audit_login_max_failures))
+            if locked:
+                operator.locked_until = now + timedelta(seconds=max(1, int(service.settings.audit_login_lock_seconds)))
+            db.add(AuditOperatorEvent(target_operator_id=operator.id, username=operator.username, event_type="login.failed", remote_address=remote_address, detail={"locked": locked}))
+            await db.commit()
+            if locked:
+                raise HTTPException(status_code=429, detail="account temporarily locked")
+            raise HTTPException(status_code=401, detail="invalid username or password")
+
+        operator.failed_login_attempts = 0
+        operator.locked_until = None
+        operator.last_login_at = now
+        raw_token, token_digest = issue_session_token()
+        max_age = max(300, int(service.settings.audit_session_max_age_seconds))
+        db.add(AuditOperatorSession(
+            operator_id=operator.id,
+            token_digest=token_digest,
+            created_at=now,
+            last_seen_at=now,
+            expires_at=now + timedelta(seconds=max_age),
+        ))
+        db.add(AuditOperatorEvent(actor_operator_id=operator.id, target_operator_id=operator.id, username=operator.username, event_type="login.succeeded", remote_address=remote_address, detail={}))
+        await db.commit()
+        audit_login_limiter.reset(rate_key)
+        response = JSONResponse({"authenticated": True, "expiresInSeconds": max_age, "user": audit_operator_json(operator)})
+        response.set_cookie(
+            key=AUDIT_SESSION_COOKIE,
+            value=raw_token,
+            max_age=max_age,
+            httponly=True,
+            secure=bool(service.settings.audit_cookie_secure or request.url.scheme == "https"),
+            samesite="strict",
+            path="/",
+        )
+        return response
+
+    @router.get("/audit-auth/session", tags=["Audit console"])
+    async def audit_session(request: Request, db: AsyncSession = Depends(get_db)):
+        resolved = await resolve_audit_session(request, db)
+        if resolved is None:
+            return {"authenticated": False, "expiresInSeconds": 0, "user": None}
+        principal, operator = resolved
+        session_row = await db.get(AuditOperatorSession, principal.session_id)
+        now = datetime.now(timezone.utc)
+        expires_in = max(0, int((aware_utc(session_row.expires_at) - now).total_seconds())) if session_row else 0
+        return {"authenticated": True, "expiresInSeconds": expires_in, "user": audit_operator_json(operator)}
+
+    @router.post("/audit-auth/logout", tags=["Audit console"])
+    async def audit_logout(request: Request, db: AsyncSession = Depends(get_db)):
+        resolved = await resolve_audit_session(request, db)
+        if resolved is not None:
+            principal, operator = resolved
+            session_row = await db.get(AuditOperatorSession, principal.session_id)
+            if session_row:
+                session_row.revoked_at = datetime.now(timezone.utc)
+            db.add(AuditOperatorEvent(actor_operator_id=operator.id, target_operator_id=operator.id, username=operator.username, event_type="logout", remote_address=audit_remote_address(request), detail={}))
+            await db.commit()
+        response = JSONResponse({"authenticated": False})
+        response.delete_cookie(key=AUDIT_SESSION_COOKIE, path="/")
         return response
 
     @router.post("/conversations")
@@ -397,6 +599,286 @@ def make_router(service: DSHService) -> APIRouter:
             page_size=page_size,
             is_admin=True,
         )
+
+    @router.get("/audit/conversations", tags=["Audit console"])
+    async def list_audit_compat_conversations(
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        search: str | None = Query(default=None, max_length=160),
+        status: str | None = Query(default=None, max_length=32),
+        date_from: datetime | None = Query(default=None, alias="dateFrom"),
+        date_to: datetime | None = Query(default=None, alias="dateTo"),
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_session),
+    ):
+        """Customer audit-console conversation list with Admin pagination."""
+
+        if date_from and date_to:
+            left = date_from if date_from.tzinfo else date_from.replace(tzinfo=timezone.utc)
+            right = date_to if date_to.tzinfo else date_to.replace(tzinfo=timezone.utc)
+            if left > right:
+                raise HTTPException(status_code=422, detail="dateFrom must not be after dateTo")
+        query = select(Conversation)
+        if status and status.strip():
+            query = query.where(func.upper(Conversation.status) == status.strip().upper())
+        if date_from:
+            query = query.where(Conversation.last_activity_at >= (date_from if date_from.tzinfo else date_from.replace(tzinfo=timezone.utc)))
+        if date_to:
+            query = query.where(Conversation.last_activity_at <= (date_to if date_to.tzinfo else date_to.replace(tzinfo=timezone.utc)))
+        match = text_match(search, Conversation.conversation_id, Conversation.dsh_session_id, Conversation.user_id, Conversation.tenant_id)
+        if match is not None:
+            title_match = select(SessionEvent.id).where(
+                SessionEvent.conversation_id == Conversation.conversation_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(match, title_match))
+        query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
+        conversations, total = await paged_items(db, query, page=page, page_size=page_size)
+        return await audit_conversation_list(db, conversations, is_admin=True, total=total, page=page, page_size=page_size)
+
+    @router.get("/audit/conversations/{dsh_session_id}", tags=["Audit console"])
+    async def get_audit_compat_conversation(
+        dsh_session_id: str,
+        category: str | None = Query(default=None),
+        search: str | None = Query(default=None, max_length=160),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100, alias="pageSize"),
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_session),
+    ):
+        result = await db.execute(select(Conversation).where(Conversation.dsh_session_id == dsh_session_id))
+        conversation = result.scalar_one_or_none()
+        if conversation is None:
+            # Older callers may pass conversationId; accepting it keeps the
+            # compatibility endpoint stable across both Admin and Customer UI.
+            result = await db.execute(select(Conversation).where(Conversation.conversation_id == dsh_session_id))
+            conversation = result.scalar_one_or_none()
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        return await audit_conversation_detail(
+            db,
+            conversation,
+            category=category,
+            search=search,
+            page=page,
+            page_size=page_size,
+            is_admin=True,
+        )
+
+    @router.get("/audit/skills", tags=["Audit console"])
+    async def list_audit_compat_skills(
+        search: str | None = Query(default=None, max_length=160),
+        status: str | None = Query(default=None, max_length=32),
+        enabled: bool | None = Query(default=None),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        query = select(Skill).order_by(Skill.skill_id, Skill.version.desc())
+        match = text_match(search, Skill.skill_id, Skill.name, Skill.source, Skill.status, Skill.scope, Skill.content)
+        if match is not None:
+            query = query.where(match)
+        if status and status.strip():
+            query = query.where(func.upper(Skill.status) == status.strip().upper())
+        if enabled is not None:
+            query = query.where(Skill.enabled.is_(enabled))
+        skills, total = await paged_items(db, query, page=page, page_size=page_size)
+        items = [{
+            "skillId": item.skill_id,
+            "name": item.name,
+            "version": item.version,
+            "source": item.source,
+            "status": item.status,
+            "scope": item.scope,
+            "enabled": item.enabled,
+            "allowedTools": item.allowed_tools or [],
+            "dependencies": item.dependencies or [],
+            "contentConfigured": bool((item.content or "").strip()),
+            "updatedAt": item.updated_at.isoformat() if item.updated_at else None,
+        } for item in skills]
+        return {"items": items, "search": (search or "").strip() or None, **pagination_json(total, page, page_size)}
+
+    @router.get("/audit/tools", tags=["Audit console"])
+    async def list_audit_compat_tools(
+        search: str | None = Query(default=None, max_length=160),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        # Admin intentionally exposes only the two generic, read-only runtime
+        # capabilities. Keep this response paginated to match the Customer UI.
+        items = [
+            {"toolName": "knowledge.search", "displayName": "Knowledge search", "httpMethod": "GET", "httpPath": "knowledge.search", "sideEffect": "read", "enabled": True, "published": True, "source": "builtin"},
+            {"toolName": "admin.portal.read", "displayName": "Admin portal reader", "httpMethod": "GET", "httpPath": "admin.portal.read", "sideEffect": "read", "enabled": True, "published": True, "source": "builtin"},
+        ]
+        term = (search or "").strip().casefold()
+        if term:
+            items = [item for item in items if term in " ".join(str(value) for value in item.values()).casefold()]
+        total = len(items)
+        offset = (page - 1) * page_size
+        return {"items": items[offset:offset + page_size], "search": term or None, **pagination_json(total, page, page_size)}
+
+    @router.get("/audit/config", tags=["Audit console"])
+    async def get_audit_compat_config(
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        """Expose the existing masked configuration view to the audit UI.
+
+        The Customer console also renders a configuration tab, but Admin keeps
+        writes on the principal-protected ``/config`` endpoint. This alias is
+        deliberately GET-only.
+        """
+
+        result = await db.execute(select(ConfigEntry).where(ConfigEntry.scope == "system"))
+        entries = {item.key: item for item in result.scalars().all()}
+        settings = get_settings()
+        items: list[dict[str, object]] = []
+        for spec in config_catalog():
+            key = str(spec["key"])
+            entry = entries.get(key)
+            raw = raw_config_value(entry) if entry else getattr(settings, key, None)
+            configured = raw not in (None, "")
+            secret = bool(spec.get("secret"))
+            items.append({
+                "key": key,
+                "label": spec.get("label"),
+                "group": spec.get("group"),
+                "env": spec.get("env"),
+                "secret": secret,
+                "multiline": bool(spec.get("multiline")),
+                "options": list(spec.get("options", [])),
+                "description": spec.get("description"),
+                "restartRequired": bool(spec.get("restartRequired")),
+                "configured": configured,
+                "source": "database" if entry else "environment/default",
+                "version": entry.version if entry else 0,
+                "value": "••••••••" if secret and configured else ("" if secret else raw),
+                "readOnly": True,
+            })
+        return {"scope": "system", "items": items}
+
+    @router.get("/audit/users", tags=["Audit console"])
+    async def list_audit_users(
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        result = await db.execute(select(AuditOperator).order_by(AuditOperator.created_at.asc(), AuditOperator.id.asc()))
+        return {"users": [audit_operator_json(operator) for operator in result.scalars().all()]}
+
+    @router.post("/audit/users", tags=["Audit console"], status_code=201)
+    async def create_audit_user(
+        payload: AuditOperatorCreate,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        username = normalize_username(payload.username)
+        display_name = payload.display_name.strip()
+        if len(username) < 3 or not display_name:
+            raise HTTPException(status_code=422, detail="username and displayName must not be blank")
+        operator = AuditOperator(
+            username=username,
+            display_name=display_name,
+            password_hash=await asyncio.to_thread(hash_password, payload.password),
+            role=payload.role,
+        )
+        db.add(operator)
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="username already exists") from exc
+        db.add(AuditOperatorEvent(
+            actor_operator_id=principal.operator_id,
+            target_operator_id=operator.id,
+            username=operator.username,
+            event_type="account.created",
+            remote_address=audit_remote_address(request),
+            detail={"role": operator.role},
+        ))
+        await db.commit()
+        await db.refresh(operator)
+        return {"user": audit_operator_json(operator)}
+
+    @router.patch("/audit/users/{operator_id}", tags=["Audit console"])
+    async def update_audit_user(
+        operator_id: int,
+        payload: AuditOperatorUpdate,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        locked_operators = list((await db.execute(
+            select(AuditOperator).order_by(AuditOperator.id.asc()).with_for_update()
+        )).scalars().all())
+        operator = next((item for item in locked_operators if item.id == operator_id), None)
+        if operator is None:
+            raise HTTPException(status_code=404, detail="audit user not found")
+        next_role = payload.role if payload.role is not None else operator.role
+        next_disabled = payload.disabled if payload.disabled is not None else operator.disabled
+        ensure_not_last_administrator(locked_operators, operator, next_role=next_role, next_disabled=next_disabled)
+        changed: dict[str, object] = {}
+        if payload.role is not None and payload.role != operator.role:
+            changed["role"] = {"from": operator.role, "to": payload.role}
+            operator.role = payload.role
+        if payload.disabled is not None and payload.disabled != operator.disabled:
+            changed["disabled"] = {"from": operator.disabled, "to": payload.disabled}
+            operator.disabled = payload.disabled
+        if changed:
+            if operator.disabled or "role" in changed:
+                await db.execute(
+                    AuditOperatorSession.__table__.update()
+                    .where(AuditOperatorSession.operator_id == operator.id, AuditOperatorSession.revoked_at.is_(None))
+                    .values(revoked_at=datetime.now(timezone.utc))
+                )
+            db.add(AuditOperatorEvent(
+                actor_operator_id=principal.operator_id,
+                target_operator_id=operator.id,
+                username=operator.username,
+                event_type="account.updated",
+                remote_address=audit_remote_address(request),
+                detail=changed,
+            ))
+            await db.commit()
+            await db.refresh(operator)
+        return {"user": audit_operator_json(operator)}
+
+    @router.post("/audit/users/{operator_id}/password", tags=["Audit console"])
+    async def reset_audit_user_password(
+        operator_id: int,
+        payload: AuditPasswordReset,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        operator = (await db.execute(
+            select(AuditOperator).where(AuditOperator.id == operator_id).with_for_update()
+        )).scalar_one_or_none()
+        if operator is None:
+            raise HTTPException(status_code=404, detail="audit user not found")
+        now = datetime.now(timezone.utc)
+        operator.password_hash = await asyncio.to_thread(hash_password, payload.password)
+        operator.password_changed_at = now
+        operator.failed_login_attempts = 0
+        operator.locked_until = None
+        await db.execute(
+            AuditOperatorSession.__table__.update()
+            .where(AuditOperatorSession.operator_id == operator.id, AuditOperatorSession.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+        db.add(AuditOperatorEvent(
+            actor_operator_id=principal.operator_id,
+            target_operator_id=operator.id,
+            username=operator.username,
+            event_type="password.reset",
+            remote_address=audit_remote_address(request),
+            detail={},
+        ))
+        await db.commit()
+        return {"reset": True, "userId": operator.id}
 
     @router.get("/conversations/{conversation_id}")
     async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):

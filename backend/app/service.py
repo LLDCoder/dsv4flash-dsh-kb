@@ -12,7 +12,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill
+from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill, purge_expired_audit_data
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .knowledge import KnowledgeGatewayClient
@@ -1495,12 +1495,10 @@ class DSHService:
         await db.commit()
 
     async def purge_expired_audit(self) -> int:
-        retention_days = max(1, int(self.settings.audit_retention_days))
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         async with SessionLocal() as db:
-            result = await db.execute(delete(AuditRecord).where(AuditRecord.created_at < cutoff))
+            deleted = await purge_expired_audit_data(db, self.settings)
             await db.commit()
-            return int(result.rowcount or 0)
+            return sum(deleted.values())
 
     async def submit_message(
         self,

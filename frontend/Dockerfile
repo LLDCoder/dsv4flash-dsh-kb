@@ -1,3 +1,4 @@
 FROM public.ecr.aws/docker/library/nginx:latest
-COPY --chmod=644 index.html app.js styles.css /usr/share/nginx/html/
-COPY --chmod=644 nginx.conf /etc/nginx/conf.d/default.conf
+COPY index.html app.js audit-app.js styles.css audit-styles.css favicon.svg /usr/share/nginx/html/
+COPY assets /usr/share/nginx/html/assets/
+COPY nginx.conf /etc/nginx/conf.d/default.conf
