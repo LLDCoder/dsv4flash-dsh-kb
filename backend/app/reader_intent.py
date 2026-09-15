@@ -219,7 +219,9 @@ def resolve_literal_filter_followup(question: str, conversation_context: Any) ->
     prior = _previous_slots(conversation_context)
     slots = {name: ({'source': 'previous', 'value': prior[name], 'evidence': prior[name]}
                    if name in prior else {'source': 'unspecified', 'value': '', 'evidence': ''}) for name in SLOT_NAMES}
-    slots['answerShape'] = {'source': 'current', 'value': 'detail', 'evidence': match['command']}
+    returns_to_list = bool(re.search(r'\breturn\s+to\b', question, re.I))
+    slots['answerShape'] = {'source': 'current', 'value': 'list' if returns_to_list else 'detail',
+                            'evidence': re.search(r'return\s+to', question, re.I)[0] if returns_to_list else match['command']}
     return parse_intent_resolution({'relation': 'continue', 'slots': slots, 'clarificationOptions': []}, question, conversation_context)
 
 

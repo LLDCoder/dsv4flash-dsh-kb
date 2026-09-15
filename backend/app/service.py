@@ -93,6 +93,31 @@ def reader_evidence_only_response(
     assignment = assignment_answer(reader_result, language)
     if assignment is not None:
         return assignment
+    if reader_result.get('workflowState') in {'filter_return_verified', 'filter_return_unverified'}:
+        status = reader_result.get('result')
+        messages = {
+            'en': {
+                'success': 'The filter was cancelled and the same task list was verified in my read-only view. Here are the currently observed records (a bounded sample):',
+                'no_data': 'The filter was cancelled and the same task list was verified in my read-only view. This view currently shows no matching records.',
+                'not_confirmed': 'The filter was cancelled in my read-only view, but I could not verify that the same task list was restored. This does not mean there are no tasks.',
+            },
+            'zh': {
+                'success': '已在我的只读视图中取消筛选，并确认返回同一任务列表。以下是本次实际读取到的部分记录：',
+                'no_data': '已在我的只读视图中取消筛选，并确认返回同一任务列表。该视图当前没有匹配记录。',
+                'not_confirmed': '已在我的只读视图中取消筛选，但尚未能确认同一任务列表恢复。这不代表没有任务。',
+            },
+            'ar': {
+                'success': 'أُلغيت التصفية وتحققت من قائمة المهام نفسها في عرض القراءة فقط. هذه عينة من السجلات الحالية:',
+                'no_data': 'أُلغيت التصفية وتحققت من قائمة المهام نفسها في عرض القراءة فقط. لا توجد سجلات مطابقة في هذا العرض حاليًا.',
+                'not_confirmed': 'أُلغيت التصفية في عرض القراءة فقط، لكن تعذر التحقق من استعادة قائمة المهام نفسها. هذا لا يعني عدم وجود مهام.',
+            },
+        }
+        if status in messages['en']:
+            lead = messages.get(language, messages['en'])[status]
+            if status != 'success':
+                return lead
+            records = reader_evidence_only_response({**reader_result, 'workflowState': ''}, language, question=question)
+            return lead + '\n\n' + records
     if (reader_result.get('result') == 'no_permission' and not reader_result.get('facts')
             and reader_result.get('missing') == ['page_not_permitted']):
         return {
@@ -1610,6 +1635,8 @@ class DSHService:
             return fallback, False, "prior_answer_coverage"
         if evidence.get('workflowState') == 'assignment_rechecked':
             return fallback, False, 'deterministic_assignment_comparison'
+        if evidence.get('workflowState') in {'filter_return_verified', 'filter_return_unverified'}:
+            return fallback, False, 'deterministic_filter_return'
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
             return fallback, False, "status_guard"

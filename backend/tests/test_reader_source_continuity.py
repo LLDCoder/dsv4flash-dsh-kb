@@ -242,9 +242,13 @@ def test_filter_schema_needs_opened_healthy_overlay_and_actual_labels(healthy,ac
 def test_closed_fresh_page_alone_does_not_prove_cancel():
     outcome=ReaderOutcome(ReaderResult(status='not_confirmed',summary='',page='/work'),{'observation':{'readHealth':{'healthy':True},'dialogs':[]}})
     question='Cancel the filter and return to the list.'
-    assert _native_filter_outcome(outcome,question,[{'status':'passed','input':{'actionTypes':['observe']}}])==outcome
+    observed=_native_filter_outcome(outcome,question,[{'status':'passed','input':{'actionTypes':['observe']}}]).result
+    assert observed.status=='not_confirmed' and observed.missing==('filter_cancellation_unverified',)
     result=_native_filter_outcome(outcome,question,[{'status':'passed','input':{'actionTypes':['show_filter','dismiss_overlay']}}]).result
-    assert result.status=='success' and 'not a change to your browser session' in result.facts[0]
+    assert result.status=='not_confirmed' and result.workflow_state=='filter_return_unverified'
+    assert not result.facts  # A closed surface supplies no task-list evidence.
+    closed=_native_filter_outcome(outcome,'Cancel the filter.',[{'status':'passed','input':{'actionTypes':['show_filter','dismiss_overlay']}}]).result
+    assert closed.status=='success' and 'not a change to your browser session' in closed.facts[0]
 
 
 def test_failed_prior_request_establishes_neither_sample_nor_total():

@@ -437,7 +437,12 @@ def make_router(service: DSHService) -> APIRouter:
         related-record pages. Knowledge source hints persist for compatible follow-ups.
         Native filter field inventories come from the visible Filter overlay only;
         cancellation is verified by an open/dismiss sequence in the reader's fresh
-        context, not claimed as a change to the user's browser. Partially grounded
+        context, not claimed as a change to the user's browser. A request to return
+        to the list additionally verifies the same source page and selected view,
+        and returns its current bounded native records. Only a verified empty list
+        returns no_data; missing list evidence remains not_confirmed and loading
+        failures remain load_failed. Closing the overlay alone is not full success.
+        Partially grounded
         knowledge retains independently supported facts with unresolved scope limits
         without reading a restricted page. Documentation for another verified role
         does not establish the current role's layout or permissions. A related-record

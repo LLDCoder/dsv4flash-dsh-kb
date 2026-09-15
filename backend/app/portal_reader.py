@@ -3215,7 +3215,54 @@ def _documented_object_source(knowledge: dict[str, Any], question: str, context:
     return _resolve_documented_object_source(knowledge, question, context).page
 
 
-def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: list[dict[str, Any]]) -> ReaderOutcome:
+def _filter_return_requested(question: str) -> bool:
+    return bool(re.search(r'\b(?:cancel|close|dismiss)\b.*\bfilter\b.*\breturn\s+to\s+'
+                          r'(?:the\s+)?(?:(?:task|tickets?)\s+)?list\b|(?:取消|关闭).*筛选.*返回.*列表', question, re.I))
+
+
+def _filter_return_outcome(outcome: ReaderOutcome, observation: dict[str, Any],
+                           executions: list[dict[str, Any]], context: dict[str, Any]) -> ReaderOutcome:
+    """Closing an overlay proves neither list recovery nor an empty collection."""
+    previous = context.get('previousIntent') or {}
+    expected_page = semantic_source_hint(context).get('page') or outcome.result.page
+    expected_view = previous.get('selectedState') or _resolved_intent_values(context).get('view')
+    actual_page = executions[-1].get('input', {}).get('startPath')
+    tables = [n for n in _observation_semantic_nodes(observation)
+              if n.get('kind') in {'table', 'grid'} and n.get('columnHeaders')]
+    # Do not merge competing tables or mistake a dashboard's empty card for a list.
+    unique = {n.get('nodeId') or n.get('heading'): n for n in tables}
+    source = next(iter(unique.values())) if len(unique) == 1 else None
+    missing = 'filter_return_list_unverified'
+    result = None
+    if actual_page != expected_page:
+        missing = 'filter_return_source_mismatch'
+    elif source is not None:
+        selected = str(source.get('selectedState') or '')
+        if expected_view and not _state_control_label_matches(selected, expected_view):
+            missing = 'filter_return_view_mismatch'
+        elif source.get('rowFields') or source.get('rowSummaries') or _raw_observation_has_empty_state(source):
+            result = _result_from_structured_observation(observation, page=actual_page,
+                section_name=str(source.get('nodeId') or source.get('heading') or ''),
+                answer_shape='list', scope='unknown')
+    if result is None or result.status not in {'success', 'no_data'}:
+        result = replace(outcome.result, status='not_confirmed', answer_shape='list', facts=(),
+                         missing=(missing,), workflow_state='filter_return_unverified')
+    else:
+        result = replace(result, workflow_state='filter_return_verified',
+                         intent_context=outcome.result.intent_context, source_hint=outcome.result.source_hint)
+    evidence = {**outcome.audit_evidence, 'observation': observation,
+                'filterReturnEvidence': {'cancelVerified': True, 'expectedPage': expected_page,
+                    'expectedView': expected_view or '', 'listVerified': result.status in {'success', 'no_data'}},
+                'result': result.public_json()}
+    guarded = _guard_requested_team_scope(ReaderOutcome(result, evidence), outcome.result.intent_context)
+    if guarded.result.status == 'not_confirmed':
+        result = replace(guarded.result, workflow_state='filter_return_unverified')
+        return ReaderOutcome(result, {**guarded.audit_evidence, 'result': result.public_json()})
+    return guarded
+
+
+def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: list[dict[str, Any]],
+                           context: dict[str, Any] | None = None) -> ReaderOutcome:
     """Report only rendered filter schema or a verified open/dismiss sequence."""
     if (outcome.result.status in {'no_permission', 'load_failed'}
             or any(m in {'requested_queue_view_unverified', 'requested_team_scope_unverified',
@@ -3228,6 +3275,10 @@ def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: li
         observation = ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
     if (not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True
             or _observation_has_error_state(observation)):
+        if _filter_return_requested(question):
+            failed = replace(outcome.result, status='load_failed', facts=(),
+                             missing=('filter_return_read_failed',), workflow_state='')
+            return ReaderOutcome(failed, {**evidence, 'result': failed.public_json()})
         return outcome
     dialogs = observation.get('dialogs') or []
     fields = tuple(dict.fromkeys(str(label) for label in observation.get('filterDialogFields', []) if isinstance(label, str)))
@@ -3244,13 +3295,23 @@ def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: li
     elif re.search(r'\b(?:cancel|close|dismiss)\b.{0,50}\bfilter\b|(?:关闭|取消).{0,15}筛选', question, re.I):
         if (not dialogs and executions and executions[-1].get('status') == 'passed'
                 and filter_actions == ['show_filter', 'dismiss_overlay']):
+            if _filter_return_requested(question):
+                return _filter_return_outcome(outcome, observation, executions, context or {})
             facts = ('In a fresh read-only view, the Filter surface was opened and Cancel was selected; the surface is now closed. '
                      'This confirms the cancellation flow in that fresh view, not a change to your browser session or any business data.',)
     if not facts:
+        if _filter_return_requested(question):
+            unverified = replace(outcome.result, status='not_confirmed', facts=(),
+                                 missing=('filter_cancellation_unverified',), workflow_state='')
+            return ReaderOutcome(unverified, {**evidence, 'result': unverified.public_json()})
         return outcome
     result = replace(outcome.result, status='success', answer_shape='detail', facts=facts, missing=(),
                      page=outcome.result.page or str(executions[-1].get('input', {}).get('startPath') or ''),
                      completeness='bounded', source_section='filterControls', scope='unknown')
+    tables = [n for n in _observation_semantic_nodes(observation) if n.get('kind') in {'table', 'grid'}]
+    views = {str(n.get('selectedState')) for n in tables if n.get('selectedState')}
+    if len(views) == 1:
+        result = replace(result, selected_state=next(iter(views)))
     return ReaderOutcome(result, {**evidence, 'observation':observation, 'nativeFilterEvidence': {'fields': list(fields), 'dialogCount': len(dialogs)},
                                  'result': result.public_json()})
 
@@ -6409,7 +6470,7 @@ class AdminPortalReader:
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
         outcome = _native_identity_search_result(outcome, question, intent_state)
         executions = [entry for entry in trace.entries if entry.get("stage") == "portal_execution"]
-        outcome = _native_filter_outcome(outcome, question, executions)
+        outcome = _native_filter_outcome(outcome, question, executions, bounded_context)
         if (outcome.result.status in {"success", "no_data", "not_confirmed"} and executions
                 and executions[-1].get("status") == "passed"
                 and executions[-1].get("output", {}).get("searchClearVerified") is True
