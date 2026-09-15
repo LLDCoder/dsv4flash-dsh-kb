@@ -550,12 +550,12 @@ def _path_is_permitted(path: str, allowed_pages: tuple[str, ...]) -> bool:
     requested = urlsplit(path).path.rstrip("/") or "/"
     for candidate in allowed_pages:
         allowed = urlsplit(candidate).path.rstrip("/") or "/"
-        if requested == allowed:
+        if requested.casefold() == allowed.casefold():
             return True
         requested_parts = requested.strip("/").split("/")
         allowed_parts = allowed.strip("/").split("/")
         def segment_matches(actual: str, expected: str) -> bool:
-            if expected == actual:
+            if expected.casefold() == actual.casefold():
                 return True
             dynamic = expected == "*" or (expected.startswith(":") and len(expected) > 1) or (expected.startswith("{") and expected.endswith("}"))
             return dynamic and bool(re.fullmatch(r"[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*", actual))
@@ -1056,7 +1056,9 @@ def _reader_cell_detail_destination(action: PortalReadAction) -> str | None:
 
 
 def _reader_same_route(first: str, second: str) -> bool:
-    return (urlsplit(first).path.rstrip("/") or "/") == (urlsplit(second).path.rstrip("/") or "/")
+    return (urlsplit(first).path.rstrip("/") or "/").casefold() == (
+        urlsplit(second).path.rstrip("/") or "/"
+    ).casefold()
 
 
 def _reader_is_cell_detail_without_button(action: PortalReadAction) -> bool:
@@ -1442,9 +1444,10 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
         raise RuntimeError("action_not_read_only")
     if not descriptor.strip():
         raise RuntimeError("reader_click_target_unverifiable")
-    expected_descriptor = _reader_compact(action.name or action.label)
-    if not expected_descriptor or expected_descriptor not in _reader_compact(descriptor):
-        raise RuntimeError("reader_click_descriptor_mismatch")
+    if not _reader_is_cell_detail_without_button(action):
+        expected_descriptor = _reader_compact(action.name or action.label)
+        if not expected_descriptor or expected_descriptor not in _reader_compact(descriptor):
+            raise RuntimeError("reader_click_descriptor_mismatch")
     explicit_role = (await locator.get_attribute("role") or "").casefold()
     role = explicit_role or {"button": "button", "a": "link", "th": "columnheader", "td": "cell"}.get(tag_name, "")
     if role != str(action.role or "").casefold():

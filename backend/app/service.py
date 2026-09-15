@@ -43,6 +43,10 @@ from .skills import response_language_for
 from .tool_gateway import ToolGateway
 
 
+def runtime_error_payload(request_id: str, exc: Exception) -> dict[str, str]:
+    return {"requestId": request_id, "code": "runtime_failed", "error": type(exc).__name__}
+
+
 def _response_language_for(text: str) -> str:
     """Keep Chinese follow-ups in Chinese while retaining Arabic/English behavior."""
 
@@ -1909,7 +1913,7 @@ class DSHService:
                             db,
                             conversation,
                             "runtime.error",
-                            {"requestId": principal.request_id, "error": type(exc).__name__},
+                            runtime_error_payload(principal.request_id, exc),
                         )
                         await db.commit()
                     except Exception:

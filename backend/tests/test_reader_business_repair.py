@@ -7,7 +7,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from app.portal_reader import ReaderTimeoutBudget, _native_detail_observation_result, observation_result_from_plan
+from app.portal_reader import (
+    ReaderTimeoutBudget,
+    ReaderOutcome,
+    ReaderResult,
+    _compound_list_detail_result,
+    _documented_detail_destination,
+    _native_detail_observation_result,
+    _native_metric_overview,
+    _native_profile_type_count,
+    _native_queue_counts,
+    observation_result_from_plan,
+)
 from app.tool_gateway import ToolGateway
 from test_admin_portal_reader import Gateway, Planner, portal_plan_for, principal, run_reader, user_info_for_paths
 
@@ -22,6 +33,143 @@ def _observation(*, healthy=True, rows=()):
             "rowSummaries": list(rows),
         }],
     }
+
+
+def _metric_observation(values):
+    return {
+        "readHealth": {"healthy": True},
+        "sectionSummaries": [{
+            "nodeId": "observation-metrics-001", "kind": "metrics", "heading": "Summary",
+            "summaries": [f"{label} {value}" for label, value in values],
+        }],
+    }
+
+
+def test_metric_overview_keeps_one_rendered_status_region_and_repairs_partial_answer():
+    observation = _metric_observation([
+        ("Total", "85"), ("Active", "56"), ("Expire Soon", "2"),
+        ("Expired", "17"), ("Cancelled", "10"), ("Suspended", "0"),
+    ])
+    outcome = ReaderOutcome(
+        ReaderResult(status="success", summary="", page="/licensing/licenses", answer_shape="count", facts=("Total: 85",)),
+        {"observation": observation},
+    )
+    repaired = _native_metric_overview(outcome, "What is the current status breakdown of licenses?")
+    assert repaired.result.status == "success"
+    assert repaired.result.answer_shape == "overview"
+    assert "Total: 85" in repaired.result.facts
+    assert "Active: 56" in repaired.result.facts
+    assert "Expired: 17" in repaired.result.facts
+    assert repaired.result.source_section == "observation-metrics-001"
+
+
+def test_queue_count_repair_requires_both_requested_views():
+    observation = _metric_observation([("To Do", "70"), ("Completed", "664")])
+    outcome = ReaderOutcome(
+        ReaderResult(status="success", summary="", page="/licensing/applications", answer_shape="count", facts=("Completed: 664",)),
+        {"observation": observation},
+    )
+    repaired = _native_queue_counts(outcome, "How many pending and completed application tasks are there?")
+    assert repaired.result.facts == ("To Do: 70", "Completed: 664")
+    assert repaired.result.answer_shape == "count"
+
+
+def test_profile_type_count_does_not_return_total_profile_rows():
+    observation = _metric_observation([
+        ("Total", "31"), ("Individual", "0"), ("Commercial", "14"),
+        ("Free Zone", "8"), ("Talent Agency", "1"), ("Government", "1"),
+    ])
+    outcome = ReaderOutcome(
+        ReaderResult(status="success", summary="", page="/licensing/profile", answer_shape="count", facts=("Total: 31",)),
+        {"observation": observation},
+    )
+    repaired = _native_profile_type_count(outcome, "How many user types have profile verification?")
+    assert repaired.result.status == "success"
+    assert repaired.result.facts[0].startswith("5 user types")
+    assert "Total: 31" not in repaired.result.facts
+
+
+def test_documented_detail_destination_uses_the_exact_permitted_route():
+    knowledge = {"ok": True, "chunks": [{"content": """
+## Semantic node: License detail
+- **section:** License detail
+- **page:** `/licensing/license/licenseDatails`, entered from a permitted visible row on `/licensing/licenses`
+- **type:** read-only license detail
+"""}]}
+
+    destination = _documented_detail_destination(
+        knowledge,
+        "/licensing/licenses",
+        ("/licensing/licenses", "/licensing/license/LicenseDatails"),
+    )
+
+    assert destination == "/licensing/license/LicenseDatails"
+
+
+def test_native_license_detail_uses_the_matching_rendered_card():
+    observation = {
+        "sectionSummaries": [{
+            "nodeId": "license-card",
+            "kind": "cards",
+            "cardSummaries": [
+                "Media License | Active | License Number | 8929867 | Issuance Date | 03/09/2027 | "
+                "Effective Date | 03/09/2027 | Expiry Date | 02/09/2028 | Days Remaining | 722",
+            ],
+        }],
+    }
+
+    result = _native_detail_observation_result(
+        observation,
+        page="/licensing/license/LicenseDatails",
+        record_identity="8929867",
+        scope="unknown",
+    )
+
+    assert result is not None
+    assert result.status == "success"
+    assert result.answer_shape == "detail"
+    assert result.page == "/licensing/license/LicenseDatails"
+    assert result.public_json()["recordIdentity"] == "8929867"
+    assert json.loads(result.facts[0]) == {
+        "License Name": "Media License",
+        "Status": "Active",
+        "License Number": "8929867",
+        "Issuance Date": "03/09/2027",
+        "Effective Date": "03/09/2027",
+        "Expiry Date": "02/09/2028",
+        "Days Remaining": "722",
+    }
+
+
+def test_compound_list_detail_keeps_visible_rows_and_first_detail():
+    detail = ReaderResult(
+        status="success",
+        summary="",
+        page="/licensing/license/LicenseDatails",
+        answer_shape="detail",
+        facts=('{' + '"License Number":"8929867","Days Remaining":"722"' + '}',),
+    )
+    list_observation = {
+        "sectionSummaries": [{
+            "nodeId": "licenses",
+            "kind": "table",
+            "columnHeaders": ["License No.", "Status"],
+            "rowFields": [
+                {"License No.": "8929867", "Status": "Active"},
+                {"License No.": "4930086", "Status": "Active"},
+            ],
+        }],
+    }
+
+    combined = _compound_list_detail_result(detail, list_observation, "8929867")
+
+    assert len(combined.facts) == 4
+    assert combined.facts[0].startswith("First visible record details:")
+    assert "Days Remaining: 722" in combined.facts[0]
+    assert json.loads(combined.facts[1])["License No."] == "8929867"
+    assert json.loads(combined.facts[2])["License No."] == "4930086"
+    assert "not the complete collection" in combined.facts[3]
+    assert combined.record_identity == "8929867"
 
 
 def test_health_false_observation_keeps_loaded_rows_and_does_not_fallback_to_no_data() -> None:
@@ -509,6 +657,82 @@ def test_record_detail_missing_model_binding_fields_is_resolved_from_current_obs
     assert gateway.events.count("admin.portal.read") == 2
     assert gateway.calls[-1][1]["actions"] == [
         {"type": "show_detail", "role": "cell", "name": "APP-123", "value": "APP-123"},
+    ]
+
+
+def test_compound_list_then_first_detail_binds_first_native_row_before_click():
+    initial = portal_plan_for("/records", [
+        {"type": "query", "role": "row", "name": "Record No."},
+        {"type": "show_detail", "role": "cell", "name": "first one"},
+    ])
+    detail_result = {
+        "mode": "observation_result", "result": "success", "sourceSection": "detail-region",
+        "answerShape": "detail", "facts": ["REC-100 Status Active"], "missing": [],
+    }
+    planner = Planner(initial, detail_result)
+    list_observation = {
+        "readHealth": {"healthy": True},
+        "sectionSummaries": [{
+            "nodeId": "records", "kind": "table", "columnHeaders": ["Record No.", "Status"],
+            "rowFields": [{"Record No.": "REC-100", "Status": "Active"},
+                          {"Record No.": "REC-200", "Status": "Expired"}],
+            "rowSummaries": ["REC-100 Active", "REC-200 Expired"],
+        }],
+    }
+    detail_observation = {
+        "readHealth": {"healthy": True},
+        "regionSummaries": [{"nodeId": "detail-region", "kind": "region",
+                              "heading": "Record Details", "cardSummaries": ["REC-100 Status Active"]}],
+    }
+    gateway = SequencedGateway([
+        {"result": "not_confirmed", "observation": list_observation},
+        {"result": "not_confirmed", "observation": detail_observation},
+    ], info={"ok": True, "result": user_info_for_paths("/records", "/records/detail")})
+
+    outcome = run_reader(gateway, planner, question="List several records. View details of the first one.")
+
+    assert outcome.result.status == "success"
+    assert gateway.calls[-1][1]["actions"] == [
+        {"type": "show_detail", "role": "cell", "name": "REC-100", "value": "REC-100"},
+    ]
+
+
+def test_compound_first_detail_overrides_a_list_only_post_observe_result():
+    list_result = {
+        "mode": "observation_result", "result": "success", "sourceSection": "records",
+        "answerShape": "list", "facts": [json.dumps({"Record No.": "REC-100", "Status": "Active"})],
+        "missing": [],
+    }
+    detail_result = {
+        "mode": "observation_result", "result": "success", "sourceSection": "detail-region",
+        "answerShape": "detail", "facts": ["REC-100 Issuance Date 01/09/2026"], "missing": [],
+    }
+    planner = Planner(portal_plan_for("/records", [{"type": "observe"}]), list_result, detail_result)
+    list_observation = {
+        "readHealth": {"healthy": True},
+        "sectionSummaries": [{
+            "nodeId": "records", "kind": "table", "columnHeaders": ["Record No.", "Status"],
+            "rowFields": [{"Record No.": "REC-100", "Status": "Active"}],
+            "rowSummaries": ["REC-100 Active"],
+        }],
+    }
+    detail_observation = {
+        "readHealth": {"healthy": True},
+        "regionSummaries": [{"nodeId": "detail-region", "kind": "region",
+                              "heading": "Record Details", "cardSummaries": ["REC-100 Issuance Date 01/09/2026"]}],
+    }
+    gateway = SequencedGateway([
+        {"result": "not_confirmed", "observation": list_observation},
+        {"result": "not_confirmed", "observation": detail_observation},
+    ], info={"ok": True, "result": user_info_for_paths("/records", "/records/detail")})
+
+    outcome = run_reader(gateway, planner, question="List several records. View details of the first one.")
+
+    assert outcome.result.status == "success"
+    assert outcome.result.answer_shape == "detail"
+    assert "Issuance Date" in outcome.result.facts[0]
+    assert gateway.calls[-1][1]["actions"] == [
+        {"type": "show_detail", "role": "cell", "name": "REC-100", "value": "REC-100"},
     ]
 
 

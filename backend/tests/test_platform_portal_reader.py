@@ -1657,6 +1657,13 @@ def test_gateway_accepts_observation_bound_cell_detail_without_a_model_destinati
     gateway._validate_reader_request(read_request([cell_detail_action(path=None)]))
 
 
+def test_gateway_permission_route_matching_accepts_frontend_case_variants() -> None:
+    assert gateway._path_is_permitted(
+        "/licensing/license/licenseDatails",
+        ("/licensing/license/LicenseDatails",),
+    )
+
+
 def test_runtime_cell_detail_requires_visible_native_cell_and_row_with_exact_identity() -> None:
     action = gateway.PortalReadAction.model_validate(cell_detail_action())
     valid = FakeDetailCell()
@@ -1674,6 +1681,18 @@ def test_runtime_cell_detail_requires_visible_native_cell_and_row_with_exact_ide
     ):
         with pytest.raises(RuntimeError, match=expected):
             asyncio.run(gateway._safe_click(FakePage(locator), action))
+
+
+def test_runtime_cell_detail_accepts_an_exact_numeric_identity() -> None:
+    action = gateway.PortalReadAction.model_validate(cell_detail_action(
+        name="8929867",
+        value="8929867",
+    ))
+    target = FakeDetailCell(descriptor="8929867")
+
+    asyncio.run(gateway._safe_click(FakePage(target), action))
+
+    assert target.clicked
 
 
 def test_runtime_cell_detail_rechecks_destination_and_identity_after_click() -> None:

@@ -70,6 +70,39 @@ def test_first_turn_does_not_pay_for_history_resolution():
     assert planner.intent_calls == []
 
 
+def test_literal_completed_followup_bypasses_unavailable_model_intent_resolution():
+    history = {"previousIntent": {
+        "question": "Show application tasks in To Do", "businessObject": "application tasks",
+        "view": "To Do", "page": "/licensing/applications", "answerShape": "list",
+    }}
+    completed_intent = resolution("refine", businessObject=slot("application tasks", source="previous"),
+                                  view=slot("Completed"), answerShape=slot("list", source="previous"))
+    observation = {"readHealth": {"healthy": True}, "tabControls": [
+        {"name": "To Do", "selected": True}, {"name": "Completed", "selected": False},
+    ], "sectionSummaries": [{"nodeId": "tasks", "kind": "table", "selectedState": "To Do",
+                               "columnHeaders": ["Application No.", "Status"],
+                               "rowFields": [{"Application No.": "APP-1", "Status": "Pending"}],
+                               "rowSummaries": ["APP-1 Pending"]}]}
+    planner = IntentPlanner(completed_intent, portal_plan_for("/licensing/applications", [{"type": "observe"}]))
+    gateway = Gateway(info={"ok": True, "result": user_info_for_paths("/licensing/applications")},
+                      portal_result={"ok": True, "result": {"result": "success", "observation": observation}})
+    run_reader(gateway, planner, question="How about the completed application tasks?", conversation_context=history)
+    assert planner.intent_calls == []
+
+
+def test_literal_record_field_followup_keeps_verified_identity_without_model_resolution():
+    history = {"previousIntent": {
+        "question": "View details for license LIC-100", "businessObject": "license",
+        "recordIdentity": "LIC-100", "page": "/licensing/license/details", "answerShape": "detail",
+    }}
+    planner = IntentPlanner(None, portal_plan_for("/licensing/license/details"))
+    gateway = Gateway(info={"ok": True, "result": user_info_for_paths("/licensing/license/details")})
+    runnym = "What are the issuance, effective date, expiration date, and remaining days?"
+    run_reader(gateway, planner, question=runnym, conversation_context=history)
+    assert planner.intent_calls == []
+    assert planner.contexts[0]["resolvedIntent"]["slots"]["recordIdentity"]["value"] == "LIC-100"
+
+
 @pytest.mark.parametrize("destination", ["/work/overview", "/work/review"])
 def test_attention_to_list_keeps_focus_and_candidate_source_without_requiring_that_route(destination):
     history = {"previousIntent": {

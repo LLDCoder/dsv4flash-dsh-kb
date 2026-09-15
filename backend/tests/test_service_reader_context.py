@@ -28,6 +28,24 @@ def test_reader_context_preserves_semantic_anchors_without_facts() -> None:
     assert "private record" not in str(context)
 
 
+def test_reader_context_keeps_an_explicitly_verified_detail_identity_with_multiple_facts() -> None:
+    previous = event(1, "user.message", {"content": "List licenses and show the first one's details"})
+    result = event(2, "reader.result", ReaderResult(
+        status="success",
+        summary="ok",
+        page="/licensing/license/LicenseDatails",
+        answer_shape="detail",
+        facts=("First visible record details", "Another visible list row"),
+        record_identity="8929867",
+    ).public_json())
+    current = event(3, "user.message", {"content": "What are its dates?"})
+
+    context = _reader_conversation_context([previous, result, current], current)
+
+    assert context["previousIntent"]["recordIdentity"] == "8929867"
+    assert "First visible record details" not in str(context)
+
+
 def test_runtime_prompt_makes_language_and_permission_precedence_explicit() -> None:
     prompt = DSHService._runtime_system_prompt("admin_portal_reader", "zh", "", "")
     assert "current user's language takes precedence" in prompt

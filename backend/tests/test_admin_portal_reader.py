@@ -723,6 +723,7 @@ def test_permission_fingerprint_normalizes_scope_and_permission_order() -> None:
         ("/licensing/tasks/123", "/licensing/tasks/:id", True),
         ("/licensing/tasks/abc", "/licensing/tasks/:id", False),
         ("/licensing/tasks/record-9", "/licensing/tasks/{id}", True),
+        ("/licensing/license/licenseDatails", "/licensing/license/LicenseDatails", True),
         ("/licensing/reports", "/licensing/tasks", False),
     ],
 )

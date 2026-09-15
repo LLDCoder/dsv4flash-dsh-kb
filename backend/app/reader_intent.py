@@ -263,7 +263,7 @@ def resolve_literal_same_record_reference(question: str, conversation_context: A
 def resolve_literal_view_followup(question: str, conversation_context: Any) -> IntentResolution | None:
     """Resolve a simple named queue change while retaining only known prior slots."""
     match = re.fullmatch(r"\s*(?:how|what)\s+about\s+(?:the\s+)?(?P<view>completed|to do|queued)\s+"
-                         r"(?P<object>applications?|tasks?|records?|items?)\s*[?.]?\s*", question, re.I)
+                         r"(?P<object>(?:applications?|records?|items?)(?:\s+tasks?)?|tasks?)\s*[?.]?\s*", question, re.I)
     same_team = re.fullmatch(
         r"\s*(?:now\s+)?show\s+(?P<view>completed|to do|queued)\s+for\s+(?:that|the)\s+same\s+team[.!?]?\s*",
         question, re.I,
@@ -293,6 +293,22 @@ def resolve_literal_view_followup(question: str, conversation_context: Any) -> I
                    if name in prior else {'source': 'unspecified', 'value': '', 'evidence': ''}) for name in SLOT_NAMES}
     slots['view'] = {'source': 'current', 'value': match['view'], 'evidence': match['view']}
     return parse_intent_resolution({'relation': 'refine', 'slots': slots, 'clarificationOptions': []}, question, conversation_context)
+
+
+def resolve_literal_record_field_followup(question: str, conversation_context: Any) -> IntentResolution | None:
+    """Keep a verified record target for an unambiguous field-only follow-up."""
+    prior = _previous_slots(conversation_context)
+    if not prior.get("recordIdentity"):
+        return None
+    normalized = re.sub(r"\s+", " ", question).strip()
+    if (not re.fullmatch(r"(?:what|which)\s+(?:are|is)\s+(?:the\s+)?[a-z][a-z ,/&-]{2,180}[?.]?", normalized, re.I)
+            or not re.search(r"\b(?:date|time|status|type|category|name|number|no\.?|days?|remaining|effective|expiry|expiration|issuance|issued|submission|sla)\b", normalized, re.I)
+            or re.search(r"\b(?:another|other|different|all|every|list|records?|applications?|licenses?|tasks?)\b", normalized, re.I)):
+        return None
+    slots = {name: ({'source': 'previous', 'value': prior[name], 'evidence': prior[name]}
+                   if name in prior else {'source': 'unspecified', 'value': '', 'evidence': ''}) for name in SLOT_NAMES}
+    slots['answerShape'] = {'source': 'current', 'value': 'detail', 'evidence': normalized}
+    return parse_intent_resolution({'relation': 'continue', 'slots': slots, 'clarificationOptions': []}, question, conversation_context)
 
 
 def bind_literal_intent_quotes(payload: Any, question: str, context: Any) -> Any:

@@ -24,7 +24,14 @@ import httpx
 
 from .principal import Principal
 from .inspection_assignment import TASK_NUMBER, is_assignment_followup, classify_assignment
-from .reader_intent import parse_intent_resolution, semantic_source_hint
+from .reader_intent import (
+    parse_intent_resolution,
+    resolve_literal_filter_followup,
+    resolve_literal_record_field_followup,
+    resolve_literal_same_record_reference,
+    resolve_literal_view_followup,
+    semantic_source_hint,
+)
 from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOUT_SECONDS, bounded_reader_total_timeout, requested_record_limit
 
 
@@ -255,6 +262,7 @@ class ReaderResult:
     intent_context: dict[str, Any] = field(default_factory=dict)
     clarification_options: tuple[str, ...] = ()
     source_hint: dict[str, str] = field(default_factory=dict)
+    record_identity: str = ""
 
     def public_json(self) -> dict[str, Any]:
         result = {
@@ -275,6 +283,8 @@ class ReaderResult:
         if self.source_hint:
             result["sourceHint"] = {key: _sanitize_untrusted_text(value, max_length=500)
                                     for key, value in self.source_hint.items() if key in {"page", "section"}}
+        if self.record_identity:
+            result["recordIdentity"] = _sanitize_untrusted_text(self.record_identity, max_length=300)
         if self.clarification_options:
             result["clarificationOptions"] = [
                 _sanitize_untrusted_text(option, max_length=120) for option in self.clarification_options[:2]
@@ -597,7 +607,7 @@ def _native_detail_observation_result(
     record_identity: str,
     scope: Literal["personal", "team", "global", "unknown"],
 ) -> ReaderResult | None:
-    """Deliver one already-loaded application detail without replaying its click.
+    """Deliver one already-loaded record detail without replaying its click.
 
     The portal can return a detail page as the result of the preceding
     ``show_detail`` action. A planner may still ask for the same click again
@@ -607,6 +617,50 @@ def _native_detail_observation_result(
     identity = _detail_identity(record_identity)
     if not identity or not isinstance(observation, dict):
         return None
+
+    license_labels = {
+        "licensenumber": "License Number",
+        "issuancedate": "Issuance Date",
+        "effectivedate": "Effective Date",
+        "expirydate": "Expiry Date",
+        "daysremaining": "Days Remaining",
+    }
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") != "cards":
+            continue
+        for summary in _bounded_observation_field(node, "cardSummaries", limit=20):
+            parts = [part.strip() for part in str(summary).split("|") if part.strip()]
+            positions = {_key(part): index for index, part in enumerate(parts)}
+            identity_index = positions.get("licensenumber")
+            if identity_index is None or identity_index + 1 >= len(parts):
+                continue
+            if _detail_identity(parts[identity_index + 1]).casefold() != identity.casefold():
+                continue
+            fields: dict[str, str] = {}
+            for normalized, label in license_labels.items():
+                index = positions.get(normalized)
+                if index is not None and index + 1 < len(parts):
+                    fields[label] = _sanitize_untrusted_text(parts[index + 1], max_length=300)
+            if identity_index >= 2:
+                fields = {
+                    "License Name": _sanitize_untrusted_text(parts[0], max_length=300),
+                    "Status": _sanitize_untrusted_text(parts[identity_index - 1], max_length=100),
+                    **fields,
+                }
+            if fields.get("License Number", "").casefold() != identity.casefold():
+                continue
+            return ReaderResult(
+                status="success",
+                summary="The requested license detail was already present in the fresh portal read.",
+                page=str(page)[:500],
+                section="License Details",
+                source_section=str(node.get("nodeId") or "license-detail-card"),
+                answer_shape="detail",
+                completeness="bounded",
+                scope=scope,
+                facts=(json.dumps(fields, ensure_ascii=False, separators=(",", ":")),),
+                record_identity=identity,
+            )
 
     operation_keys = (
         "GET /api/Application/MyReviewDetail/{taskId}",
@@ -686,6 +740,54 @@ def _native_detail_observation_result(
         completeness="bounded",
         scope=scope,
         facts=(json.dumps(fields, ensure_ascii=False, separators=(",", ":")),),
+        record_identity=identity,
+    )
+
+
+def _compound_list_detail_result(
+    detail_result: ReaderResult,
+    list_observation: Any,
+    record_identity: str,
+) -> ReaderResult:
+    """Retain the bounded list evidence that selected a compound detail target."""
+
+    tables = [
+        node for node in _observation_semantic_nodes(list_observation)
+        if node.get("kind") in {"table", "grid"} and node.get("rowFields")
+    ]
+    if len(tables) != 1:
+        return detail_result
+    table = tables[0]
+    headers = table.get("columnHeaders") or []
+    rows = table.get("rowFields") or []
+    if not headers or not rows or not isinstance(rows[0], dict):
+        return detail_result
+    if _detail_identity(rows[0].get(str(headers[0]))).casefold() != _detail_identity(record_identity).casefold():
+        return detail_result
+    list_facts = _bounded_native_row_facts(table, limit=4)
+    if not list_facts:
+        return detail_result
+    detail_payload: Any = detail_result.facts[0] if detail_result.facts else ""
+    try:
+        detail_payload = json.loads(detail_payload)
+    except (TypeError, ValueError):
+        pass
+    if isinstance(detail_payload, dict):
+        first_detail = "First visible record details: " + "; ".join(
+            f"{key}: {value}" for key, value in detail_payload.items()
+        )
+    else:
+        first_detail = f"First visible record details: {detail_payload}"
+    return replace(
+        detail_result,
+        summary="A bounded list sample and the first visible record's details were read from the portal.",
+        section="Licenses and First License Details",
+        facts=(
+            first_detail,
+            *list_facts,
+            f"The list portion contains {len(list_facts)} visible records from the current page; it is not the complete collection.",
+        ),
+        record_identity=_detail_identity(record_identity),
     )
 
 
@@ -944,7 +1046,12 @@ def _row_contains_record_identity(row: object, identity: str) -> bool:
     ))
 
 
-def _observed_cell_detail_action(observation: Any, record_identity: str) -> dict[str, Any] | None:
+def _observed_cell_detail_action(
+    observation: Any,
+    record_identity: str,
+    *,
+    destination: str = "",
+) -> dict[str, Any] | None:
     """Bind one stable identity to exactly one currently observed table row."""
 
     identity = _detail_identity(record_identity)
@@ -976,7 +1083,32 @@ def _observed_cell_detail_action(observation: Any, record_identity: str) -> dict
             for candidate in candidates[:32]
         ):
             return None
-    return {"type": "show_detail", "role": "cell", "name": identity, "value": identity}
+    action = {"type": "show_detail", "role": "cell", "name": identity, "value": identity}
+    if destination:
+        action["path"] = destination
+    return action
+
+
+def _first_observed_record_identity(observation: Any) -> str:
+    """Return the first row identity only from one unambiguous native table."""
+    tables = [
+        node for node in _observation_semantic_nodes(observation)
+        if node.get("kind") in {"table", "grid"} and node.get("rowFields")
+    ]
+    if len(tables) != 1:
+        return ""
+    table = tables[0]
+    headers = table.get("columnHeaders") or []
+    rows = table.get("rowFields") or []
+    if not headers or not rows or not isinstance(rows[0], dict):
+        return ""
+    identity_header = str(headers[0])
+    if not re.search(r"(?:^|\s)(?:no\.?|number|id)$", identity_header, re.I):
+        return ""
+    identity = _detail_identity(rows[0].get(identity_header))
+    if not identity or not any(char.isdigit() for char in identity):
+        return ""
+    return identity
 
 
 def _detail_action_can_use_observed_identity(action: dict[str, Any], record_identity: str) -> bool:
@@ -1097,7 +1229,11 @@ def _bind_observed_actions(
                 and not _detail_action_can_use_observed_identity(action, identity)
             ):
                 return None, "detail_identity_conflict"
-            bound = _observed_cell_detail_action(observation, identity)
+            bound = _observed_cell_detail_action(
+                observation,
+                identity,
+                destination=_cell_detail_destination(action) or "",
+            )
             if bound is None:
                 return None, "detail_target_not_unique"
             bound_actions.append(bound)
@@ -1522,14 +1658,14 @@ def permission_path_matches(requested_path: str, allowed_path: str) -> bool:
 
     requested = urlsplit(requested_path).path.rstrip("/") or "/"
     allowed = urlsplit(allowed_path).path.rstrip("/") or "/"
-    if requested == allowed:
+    if requested.casefold() == allowed.casefold():
         return True
     requested_parts = requested.strip("/").split("/")
     allowed_parts = allowed.strip("/").split("/")
     if len(requested_parts) != len(allowed_parts):
         return False
     def segment_matches(actual: str, expected: str) -> bool:
-        if expected == actual:
+        if expected.casefold() == actual.casefold():
             return True
         dynamic = expected == "*" or (expected.startswith(":") and len(expected) > 1) or (expected.startswith("{") and expected.endswith("}"))
         return dynamic and bool(re.fullmatch(r"[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*", actual))
@@ -1572,7 +1708,9 @@ def _cell_detail_destination(action: dict[str, Any]) -> str | None:
 
 
 def _same_route(first: str, second: str) -> bool:
-    return (urlsplit(first).path.rstrip("/") or "/") == (urlsplit(second).path.rstrip("/") or "/")
+    return (urlsplit(first).path.rstrip("/") or "/").casefold() == (
+        urlsplit(second).path.rstrip("/") or "/"
+    ).casefold()
 
 
 def bounded_json(value: Any, *, max_depth: int = 5, max_items: int = 100, max_string: int = 1_000) -> Any:
@@ -3259,6 +3397,44 @@ def _filter_return_outcome(outcome: ReaderOutcome, observation: dict[str, Any],
         result = replace(guarded.result, workflow_state='filter_return_unverified')
         return ReaderOutcome(result, {**guarded.audit_evidence, 'result': result.public_json()})
     return guarded
+
+
+def _documented_detail_destination(
+    knowledge: dict[str, Any],
+    source_page: str,
+    permitted_paths: tuple[str, ...],
+) -> str:
+    """Resolve one documented, permitted detail route for the current list."""
+
+    source = urlsplit(source_page).path.rstrip("/").casefold() or "/"
+    candidates: set[str] = set()
+    for content in _knowledge_evidence_strings(knowledge):
+        for passage in _knowledge_semantic_passages(content):
+            fields = _knowledge_content_fields(passage, include_metadata=True)
+            page_routes = re.findall(
+                r"`(/[A-Za-z][A-Za-z0-9_/-]*)`",
+                fields.get("page", ""),
+            )
+            if not page_routes or not _documented_source_is_detail(
+                passage, fields, page_routes[0],
+            ):
+                continue
+            documented_routes = {
+                route.rstrip("/").casefold() or "/"
+                for route in re.findall(r"`(/[A-Za-z][A-Za-z0-9_/-]*)`", passage)
+            }
+            if source not in documented_routes:
+                continue
+            detail_routes = {
+                route.rstrip("/").casefold() or "/"
+                for route in page_routes
+                if (route.rstrip("/").casefold() or "/") != source
+            }
+            for permitted in permitted_paths:
+                permitted_path = urlsplit(permitted).path.rstrip("/") or "/"
+                if permitted_path.casefold() in detail_routes:
+                    candidates.add(permitted_path)
+    return next(iter(candidates)) if len(candidates) == 1 else ""
 
 
 def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: list[dict[str, Any]],
@@ -5115,10 +5291,8 @@ def _native_metric_count_fallback(
     if not isinstance(observation, dict) or _observation_has_error_state(observation):
         return None
     metrics = [
-        metric for metric in observation.get("metrics", [])
-        if isinstance(metric, dict)
-        and str(metric.get("label") or "").strip()
-        and re.fullmatch(r"\s*\d+(?:[.,]\d+)?\s*", str(metric.get("value") or ""))
+        {"label": label, "value": value}
+        for label, value, _source in _observed_metric_pairs(observation)
     ]
     if not metrics:
         return None
@@ -5155,6 +5329,113 @@ def _native_metric_count_fallback(
         scope=scope,
         facts=(f"{str(metric['label']).strip()}: {str(metric['value']).strip()}",),
     )
+
+
+def _observed_metric_pairs(observation: Any) -> tuple[tuple[str, str, str], ...]:
+    """Extract conservative label/value pairs from rendered metric regions."""
+    if not isinstance(observation, dict):
+        return ()
+    sources: list[tuple[str, Any]] = [("metrics", observation.get("metrics")),
+                                      ("summaries", observation.get("summaries"))]
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") not in {"metrics", "cards", "region"}:
+            continue
+        node_id = str(node.get("nodeId") or node.get("heading") or "")
+        sources.extend((node_id, node.get(key)) for key in ("summaries", "cardSummaries", "controls"))
+    pairs: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for source, values in sources:
+        if isinstance(values, dict):
+            values = [values]
+        if not isinstance(values, (list, tuple)):
+            continue
+        for item in values[:30]:
+            if isinstance(item, dict):
+                label = str(item.get("label") or "").strip()
+                value = str(item.get("value") or "").strip()
+            else:
+                text = re.sub(r"\s+", " ", str(item or "")).strip(" |")
+                match = re.fullmatch(r"(.+?)\s+([+-]?\d[\d,.]*(?:%|[kmbKMB])?)", text)
+                if not match:
+                    continue
+                label, value = match.group(1).strip(" :|-"), match.group(2)
+            if (not label or len(label) > 120
+                    or not re.fullmatch(r"[+-]?\d[\d,.]*(?:%|[kmbKMB])?", value)
+                    or re.search(r"@|password|token|secret", label, re.I)):
+                continue
+            key = (label.casefold(), value, source)
+            if key not in seen:
+                seen.add(key)
+                pairs.append((label, value, source))
+    return tuple(pairs)
+
+
+def _native_metric_overview(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Repair a partial answer when a requested metric breakdown is visible."""
+    if (outcome.result.status in {"no_permission", "load_failed"} or not outcome.result.page
+            or not re.search(r"\b(?:breakdown|distribution|status\s+(?:overview|counts?)|by\s+status)\b|状态(?:分布|概览|统计)", question, re.I)):
+        return outcome
+    pairs = _observed_metric_pairs(outcome.audit_evidence.get("observation"))
+    if len(pairs) < 2:
+        return outcome
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    for label, value, source in pairs:
+        grouped.setdefault(source, []).append((label, value))
+    source, selected = max(grouped.items(), key=lambda item: len(item[1]))
+    if len(selected) < 2:
+        return outcome
+    status_words = re.compile(r"active|expire|expired|cancel|suspend|pending|completed|issued|to do|review|状态|激活|过期|取消|暂停|待处理|完成", re.I)
+    status_selected = [(label, value) for label, value in selected if status_words.search(label)]
+    if len(status_selected) >= 2:
+        totals = [(label, value) for label, value in selected if label.casefold() == "total"]
+        selected = totals + status_selected
+    result = replace(outcome.result, status="success", answer_shape="overview", completeness="bounded",
+                     source_section=source, facts=tuple(f"{label}: {value}" for label, value in selected[:12]) +
+                     ("This is the bounded set of status metrics rendered in one current portal region; it is not a historical trend.",), missing=())
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativeMetricOverview": {
+        "source": source, "metricCount": len(selected),
+    }, "result": result.public_json()})
+
+
+def _native_queue_counts(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Return both queue counts when a question explicitly asks for them."""
+    if (outcome.result.status in {"no_permission", "load_failed"} or not outcome.result.page
+            or not re.search(r"\b(?:pending|to\s+do)\b.*\bcompleted\b|\bcompleted\b.*\b(?:pending|to\s+do)\b", question, re.I)):
+        return outcome
+    pairs = _observed_metric_pairs(outcome.audit_evidence.get("observation"))
+    found: dict[str, tuple[str, str]] = {}
+    for label, value, _source in pairs:
+        normalized = re.sub(r"\s+", " ", label.casefold()).strip()
+        if normalized in {"to do", "pending", "completed"}:
+            found[normalized] = (label, value)
+    todo = found.get("to do") or found.get("pending")
+    completed = found.get("completed")
+    if not todo or not completed:
+        return outcome
+    result = replace(outcome.result, status="success", answer_shape="count", completeness="bounded",
+                     facts=(f"{todo[0]}: {todo[1]}", f"{completed[0]}: {completed[1]}"), missing=(), source_section="metrics")
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativeQueueCounts": {
+        "pending": todo[1], "completed": completed[1],
+    }, "result": result.public_json()})
+
+
+def _native_profile_type_count(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Count visible profile-verification type categories, not profile rows."""
+    if (outcome.result.status in {"no_permission", "load_failed"} or not outcome.result.page
+            or not re.search(r"\bhow many\b.*\b(?:user|profile)\s+types?\b|多少.*(?:用户|档案).{0,8}类型", question, re.I)):
+        return outcome
+    pairs = _observed_metric_pairs(outcome.audit_evidence.get("observation"))
+    labels = list(dict.fromkeys(label for label, _value, _source in pairs
+                               if label.casefold() not in {"total", "count", "records"}
+                               and not re.search(r"rate|average|processing|revenue|satisfaction", label, re.I)))
+    if len(labels) < 2:
+        return outcome
+    result = replace(outcome.result, status="success", answer_shape="count", completeness="bounded",
+                     facts=(f"{len(labels)} user types are shown in the current Profile Verification summary: "
+                            + "; ".join(labels[:12]) + ".",), missing=(), source_section="metrics")
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativeProfileTypeCount": {
+        "count": len(labels), "labels": labels[:12],
+    }, "result": result.public_json()})
 
 
 def _raw_observation_has_empty_state(observation: Any) -> bool:
@@ -6465,6 +6746,9 @@ class AdminPortalReader:
         outcome = _native_bounded_summary(outcome, question)
         outcome = _native_empty_queue_count(outcome, question)
         outcome = _native_catalogue_outcome(outcome, question)
+        outcome = _native_metric_overview(outcome, question)
+        outcome = _native_queue_counts(outcome, question)
+        outcome = _native_profile_type_count(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
@@ -6530,6 +6814,11 @@ class AdminPortalReader:
         last_portal_page = ''
         last_portal_observation: dict[str, Any] = {}
         last_portal_changed_tabs = False
+        compound_first_detail = bool(
+            re.search(r"\b(?:first|1st)\s+(?:one|record|license|application|item)\b", question, re.I)
+            and re.search(r"\b(?:list|show|several|multiple|some|few)\b", question, re.I)
+            and re.search(r"\b(?:detail|details)\b", question, re.I)
+        )
 
         def plan_reader(knowledge_or_observation: dict[str, Any]):
             if bounded_conversation_context:
@@ -6543,6 +6832,22 @@ class AdminPortalReader:
                 question,
                 permission_context.prompt_json(),
                 knowledge_or_observation,
+            )
+
+        def observed_detail_action(
+            observation: Any,
+            record_identity: str,
+            source_page: str,
+        ) -> dict[str, Any] | None:
+            destination = _documented_detail_destination(
+                knowledge_context,
+                source_page,
+                (*permission_context.pages, *permission_context.subpages),
+            )
+            return _observed_cell_detail_action(
+                observation,
+                record_identity,
+                destination=destination,
             )
 
         def plan_summary(plan: Any) -> dict[str, Any]:
@@ -6596,6 +6901,34 @@ class AdminPortalReader:
                     return clear_plan
             started_at = time.perf_counter()
             observation = knowledge_or_observation.get("portalObservation")
+            if compound_first_detail and isinstance(observation, dict):
+                first_identity = _first_observed_record_identity(observation)
+                current_page = str(
+                    (knowledge_or_observation.get("priorPortalRead") or {}).get("startPath") or ""
+                )
+                first_detail_action = observed_detail_action(
+                    observation, first_identity, current_page,
+                ) if first_identity and current_page else None
+                if first_detail_action is not None and current_page:
+                    resolved_values["recordIdentity"] = first_identity
+                    trace.record(
+                        "planning",
+                        "passed",
+                        started_at=started_at,
+                        input_summary={"reason": reason},
+                        output_summary={
+                            "strategy": "observed_first_record_detail",
+                            "recordIdentity": first_identity,
+                        },
+                    )
+                    return {
+                        "mode": "portal_read",
+                        "portalRequest": {
+                            "startPath": current_page,
+                            "actions": [first_detail_action],
+                            "expectedFields": [],
+                        },
+                    }
             if _requested_schema_fields(question) and observation is None:
                 page = semantic_source_hint(bounded_conversation_context).get('page', '')
                 if page:
@@ -7777,8 +8110,22 @@ class AdminPortalReader:
                 facts=('The preceding request did not verify a record identifier. Current permissions still do not '
                        'authorize the requested source page, so no identifier was guessed or searched.',))
             return ReaderOutcome(result, {'stage':'prior_denied_record','permission':permission_audit,'result':result.public_json()})
+        literal_followup = (
+            resolve_literal_filter_followup(question, bounded_conversation_context or {})
+            or resolve_literal_same_record_reference(question, bounded_conversation_context or {})
+            or resolve_literal_view_followup(question, bounded_conversation_context or {})
+            or resolve_literal_record_field_followup(question, bounded_conversation_context or {})
+        ) if bounded_conversation_context else None
         resolver = getattr(self.planner, "resolve_admin_portal_intent", None)
-        if bounded_conversation_context and callable(resolver):
+        if literal_followup is not None:
+            intent_state.update(literal_followup.public_json())
+            bounded_conversation_context = literal_followup.planner_context(bounded_conversation_context)
+            trace.record(
+                "intent_resolution", "passed", output_summary={"relation": intent_state["relation"], "sources": {
+                    name: slot["source"] for name, slot in intent_state["slots"].items()
+                }, "strategy": "literal_followup"},
+            )
+        elif bounded_conversation_context and callable(resolver):
             intent_started_at = time.perf_counter()
             try:
                 candidate = await _await_reader_stage(
@@ -7851,8 +8198,22 @@ class AdminPortalReader:
                 )
                 knowledge_trace_recorded = True
         all_knowledge = project_knowledge_result(knowledge_result, max_chunks=self.knowledge_top_k)
-        from .reader_intent import resolve_literal_filter_followup
-        filter_followup = resolve_literal_filter_followup(question, conversation_context or {})
+        # Resolve a small set of unambiguous follow-ups locally. These are
+        # purely textual continuations of an already verified source/identity
+        # and avoid making a transient model failure erase a valid business
+        # workflow context.
+        literal_followup = (
+            resolve_literal_filter_followup(question, conversation_context or {})
+            or resolve_literal_same_record_reference(question, conversation_context or {})
+            or resolve_literal_view_followup(question, conversation_context or {})
+            or resolve_literal_record_field_followup(question, conversation_context or {})
+        )
+        filter_followup = literal_followup if literal_followup and re.search(
+            r"\b(?:filter|list)\b|筛选|列表", question, re.I
+        ) else None
+        if literal_followup is not None:
+            intent_state.update(literal_followup.public_json())
+            bounded_conversation_context = literal_followup.planner_context(bounded_conversation_context)
         filter_source = semantic_source_hint(conversation_context or {}).get('page', '') if filter_followup else ''
         if filter_source:
             bounded_conversation_context['sourceHint'] = {'page': filter_source}
@@ -8134,6 +8495,7 @@ class AdminPortalReader:
                 }
         invalid_plan_error: str | None = None
         deferred_detail_identity = ""
+        deferred_first_detail = False
         deferred_detail_prerequisite_actions: tuple[dict[str, Any], ...] = ()
         deferred_state_action: dict[str, Any] | None = None
         request = portal_read_request_from_plan(plan)
@@ -8187,15 +8549,28 @@ class AdminPortalReader:
                     and _detail_action_can_use_observed_identity(cell_detail_actions[0], detail_identity)
                 )
             )
-            if can_defer_detail:
+            can_defer_first_detail = bool(
+                not can_defer_detail
+                and len(cell_detail_actions) == 1
+                and not detail_identity
+                and raw_policy_error == "detail_identity_required"
+                and other_policy_error is None
+                and all(str(action.get("type") or "").casefold().replace("-", "_") in {"observe", "query"}
+                        for action in other_actions)
+                and re.search(r"\b(?:first|1st)\s+(?:one|record|license|application|item)\b", question, re.I)
+                and re.search(r"\b(?:list|show|several|multiple|some|few)\b", question, re.I)
+                and _detail_action_can_use_observed_identity(cell_detail_actions[0], "FIRST-ROW-1")
+            )
+            if can_defer_detail or can_defer_first_detail:
                 # Resolve the model's semantic request against the page's fresh,
                 # bounded observation before allowing any record click.
-                deferred_detail_identity = detail_identity
+                deferred_detail_identity = detail_identity if can_defer_detail else ""
+                deferred_first_detail = can_defer_first_detail
                 deferred_detail_prerequisite_actions = tuple(
                     action for action in other_actions
                     if str(action.get("type") or "").casefold().replace("-", "_") != "observe"
                 )
-                if not resolved_record_identity:
+                if detail_identity and not resolved_record_identity:
                     resolved_values["recordIdentity"] = detail_identity
                 request = PortalReadRequest(
                     start_path=request.start_path,
@@ -8503,9 +8878,38 @@ class AdminPortalReader:
                         "expectedFields": list(bound_state_request.expected_fields),
                     },
                 }
+            elif deferred_first_detail:
+                first_identity = _first_observed_record_identity(observed_context["portalObservation"])
+                bound_detail = observed_detail_action(
+                    observed_context["portalObservation"], first_identity, request.start_path,
+                ) if first_identity else None
+                if bound_detail is None:
+                    result = ReaderResult(
+                        status="not_confirmed",
+                        summary="The first visible record did not have one stable detail identity.",
+                        page=request.start_path,
+                        answer_shape="detail",
+                        scope=verified_scope,
+                        missing=("first_record_identity_not_unique",),
+                    )
+                    return ReaderOutcome(result, {
+                        "stage": "first_detail_target_binding",
+                        "permission": permission_audit,
+                        "observation": observed_context["portalObservation"],
+                    })
+                resolved_values["recordIdentity"] = first_identity
+                deferred_detail_identity = first_identity
+                deferred_plan = {
+                    "mode": "portal_read",
+                    "portalRequest": {
+                        "startPath": request.start_path,
+                        "actions": [bound_detail],
+                        "expectedFields": [],
+                    },
+                }
             elif deferred_detail_identity:
-                bound_detail = _observed_cell_detail_action(
-                    observed_context["portalObservation"], deferred_detail_identity,
+                bound_detail = observed_detail_action(
+                    observed_context["portalObservation"], deferred_detail_identity, request.start_path,
                 )
                 if bound_detail is None and deferred_detail_prerequisite_actions:
                     deferred_plan = {
@@ -8544,8 +8948,8 @@ class AdminPortalReader:
                 and _detail_identity(resolved_values.get("recordIdentity"))
             ):
                 resolved_detail_identity = _detail_identity(resolved_values.get("recordIdentity"))
-                bound_detail = _observed_cell_detail_action(
-                    observed_context["portalObservation"], resolved_detail_identity,
+                bound_detail = observed_detail_action(
+                    observed_context["portalObservation"], resolved_detail_identity, request.start_path,
                 )
                 if bound_detail is not None:
                     # A unique current record target is a deterministic business
@@ -8866,6 +9270,22 @@ class AdminPortalReader:
                         },
                     )
                 planned_result = _observation_plan_result_from_plan(next_plan)
+            if compound_first_detail and not deferred_first_detail and not deferred_detail_identity:
+                first_identity = _first_observed_record_identity(observed_context["portalObservation"])
+                first_detail_action = observed_detail_action(
+                    observed_context["portalObservation"], first_identity, request.start_path,
+                ) if first_identity else None
+                if first_detail_action is not None:
+                    resolved_values["recordIdentity"] = first_identity
+                    if _observation_plan_result_from_plan(next_plan) is not None:
+                        next_plan = {
+                            "mode": "portal_read",
+                            "portalRequest": {
+                                "startPath": request.start_path,
+                                "actions": [first_detail_action],
+                                "expectedFields": [],
+                            },
+                        }
             observed_result = observation_result_from_plan(
                 next_plan,
                 observed_context["portalObservation"],
@@ -9216,16 +9636,33 @@ class AdminPortalReader:
             )
             if follow_up_observation is not None:
                 bounded_follow_up_observation = bounded_portal_observation(follow_up_observation)
-                follow_up_shape = reader_answer_shape(question, bounded_conversation_context)
+                follow_up_shape = "detail" if compound_first_detail else reader_answer_shape(
+                    question, bounded_conversation_context,
+                )
                 resolved_detail_identity = _detail_identity(resolved_values.get("recordIdentity"))
                 if follow_up_shape == "detail" and resolved_detail_identity:
+                    detail_page = next(
+                        (
+                            _cell_detail_destination(action)
+                            for action in next_request.actions
+                            if str(action.get("type") or "").casefold().replace("-", "_") == "show_detail"
+                            and _cell_detail_destination(action)
+                        ),
+                        next_request.start_path,
+                    )
                     detail_result = _native_detail_observation_result(
                         bounded_follow_up_observation,
-                        page=next_request.start_path,
+                        page=detail_page,
                         record_identity=resolved_detail_identity,
                         scope=verified_scope,
                     )
                     if detail_result is not None:
+                        if compound_first_detail:
+                            detail_result = _compound_list_detail_result(
+                                detail_result,
+                                observed_context.get("portalObservation"),
+                                resolved_detail_identity,
+                            )
                         semantic_resolution = record_semantic_resolution(
                             decision="fallback",
                             reason="detail_already_loaded",
@@ -9265,8 +9702,8 @@ class AdminPortalReader:
                 post_action_plan: Any = None
                 post_action_error = ""
                 bound_post_action_detail = (
-                    _observed_cell_detail_action(
-                        bounded_follow_up_observation, resolved_detail_identity,
+                    observed_detail_action(
+                        bounded_follow_up_observation, resolved_detail_identity, next_request.start_path,
                     )
                     if follow_up_shape == "detail" and resolved_detail_identity
                     else None
