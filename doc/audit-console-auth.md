@@ -4,7 +4,7 @@
 
 | 角色 | 审计会话 | 账号管理 |
 | --- | --- | --- |
-| `Administrator` | 全部，只读；Skill/Tool 诊断只读；管理 Customer-safe 运行配置 | 查看、新建、改角色、停用、重置密码 |
+| `Administrator` | 全部，只读；Skill/Tool 诊断只读；管理 Customer 运行配置 | 查看、新建、改角色、停用、重置密码 |
 | `Auditor` | 全部，只读；不可读取 Skill/Tool 诊断 | 无 |
 
 ## 初始化首个管理员
@@ -63,4 +63,4 @@ AUDIT_SECURITY_EVENT_RETENTION_DAYS=90
 
 Skill 诊断只返回版本、状态、作用域、业务域、Tool 绑定、缺失 Tool、依赖和是否已配置正文/工作流；不返回正文、工作流内容或正负样例。Tool 诊断只返回启用/发布状态、方法、去掉主机及查询串的路径、副作用、确认要求，以及认证/脱敏/Profile 范围是否已配置的布尔摘要；不返回请求参数、响应 Schema、认证策略原值、RBAC 策略、Swagger 来源、接口键或 Profile 范围配置。
 
-运行配置接口复用现有 `config_entry` 数据，但使用独立的审计账号鉴权。Customer Portal 选择器、Customer Portal 地址、Document 地址以及 Database/Redis 连接只读；Admin/Public Portal 地址完全不返回。API Key、Database URL、Redis URL 和管理员 User ID 等敏感项只返回配置状态和掩码。每次成功修改会写入 `audit_operator_event.configuration.updated`，事件只记录作用域和变更键名，不记录配置值。
+运行配置接口复用现有 `config_entry` 数据，但使用独立的审计账号鉴权。Customer Portal 选择器固定为 `customer`，Admin/Public Portal 地址完全不返回；Customer Portal 地址、Document 地址以及 Database/Redis 连接可由 Administrator 更新，其中 Database/Redis 变更需要重启服务后生效。API Key、Database URL、Redis URL 和管理员 User ID 等敏感项只返回配置状态和掩码。每次成功修改会写入 `audit_operator_event.configuration.updated`，事件只记录作用域和变更键名，不记录配置值。

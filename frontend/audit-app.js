@@ -73,7 +73,7 @@ const copy = {
     diagnosticsHint: "Read-only runtime configuration for audit diagnosis.",
     configuration: "Configuration",
     configurationManagement: "Runtime configuration",
-    configurationHint: "Manage customer-safe DSH runtime settings. Protected infrastructure and customer routing remain read-only.",
+    configurationHint: "Manage DSH runtime settings. The portal remains fixed to Customer; Database and Redis changes require a restart.",
     saveChanges: "Save changes",
     noChanges: "No configuration changes to save.",
     configSaved: "Configuration saved and applied.",
@@ -267,7 +267,7 @@ const copy = {
     diagnosticsHint: "إعدادات وقت التشغيل للعرض فقط لأغراض التشخيص.",
     configuration: "الإعدادات",
     configurationManagement: "إعدادات وقت التشغيل",
-    configurationHint: "إدارة إعدادات DSH الآمنة لبيئة العميل. تظل البنية التحتية المحمية ومسارات العميل للقراءة فقط.",
+    configurationHint: "إدارة إعدادات تشغيل DSH. تظل البوابة مثبتة على بوابة العميل، وتتطلب تغييرات قاعدة البيانات وRedis إعادة التشغيل.",
     saveChanges: "حفظ التغييرات",
     noChanges: "لا توجد تغييرات لحفظها.",
     configSaved: "تم حفظ الإعدادات وتطبيقها.",
@@ -510,6 +510,46 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function paginationItems(currentPage, totalPages, compact = false) {
+  if (compact) {
+    if (totalPages <= 5) return Array.from({ length: totalPages }, (_, index) => index + 1);
+    if (currentPage <= 3) return [1, 2, 3, "end-ellipsis", totalPages];
+    if (currentPage >= totalPages - 2) return [1, "start-ellipsis", totalPages - 2, totalPages - 1, totalPages];
+    return [1, "start-ellipsis", currentPage, "end-ellipsis", totalPages];
+  }
+  const visiblePages = 5;
+  if (totalPages <= visiblePages + 2) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+  if (currentPage <= visiblePages - 1) {
+    return [...Array.from({ length: visiblePages }, (_, index) => index + 1), "end-ellipsis", totalPages];
+  }
+  if (currentPage >= totalPages - visiblePages + 2) {
+    return [1, "start-ellipsis", ...Array.from({ length: visiblePages }, (_, index) => totalPages - visiblePages + index + 1)];
+  }
+  return [
+    1,
+    "start-ellipsis",
+    currentPage - 1,
+    currentPage,
+    currentPage + 1,
+    "end-ellipsis",
+    totalPages,
+  ];
+}
+
+function paginationMarkup(currentPage, totalPages, dataAttribute, compact = false) {
+  const pages = paginationItems(currentPage, totalPages, compact);
+  const previousIcon = auditState.language === "ar" ? "right" : "left";
+  const nextIcon = auditState.language === "ar" ? "left" : "right";
+  const pageButtons = pages.map((item) => {
+    if (typeof item !== "number") return `<span class="audit-pagination-ellipsis" aria-hidden="true">•••</span>`;
+    const active = item === currentPage;
+    return `<button class="audit-pagination-button ${active ? "is-active" : ""}" type="button" ${dataAttribute}="${item}" aria-label="${escapeHtml(`${t("page")} ${item}`)}" ${active ? 'aria-current="page"' : ""}>${item}</button>`;
+  }).join("");
+  return `<button class="audit-pagination-button audit-pagination-arrow" type="button" ${dataAttribute}="${currentPage - 1}" aria-label="${escapeHtml(t("prev"))}" ${currentPage <= 1 ? "disabled" : ""}>${icon(previousIcon)}</button>${pageButtons}<button class="audit-pagination-button audit-pagination-arrow" type="button" ${dataAttribute}="${currentPage + 1}" aria-label="${escapeHtml(t("next"))}" ${currentPage >= totalPages ? "disabled" : ""}>${icon(nextIcon)}</button>`;
 }
 
 const iconPaths = {
@@ -852,7 +892,7 @@ function renderApplication() {
   document.body.innerHTML = `
     <div class="audit-application">
       <aside id="auditSidebar" class="audit-sidebar">
-        <div class="audit-sidebar-brand"><span class="audit-brand-mark">${icon("audit")}</span><strong>DSH</strong></div>
+        <div class="audit-sidebar-brand"><img class="audit-sidebar-logo" src="${escapeHtml(auditAssetUrl("assets/logo.svg"))}" alt="${escapeHtml(t("authority"))}"></div>
         <nav aria-label="${escapeHtml(t("auditNavigation"))}">
           <button class="audit-nav-item ${auditState.view === "conversations" ? "is-active" : ""}" data-audit-view="conversations" type="button">${icon("conversations")}<span>${escapeHtml(t("conversations"))}</span></button>
           ${isAdministrator() ? `<button class="audit-nav-item ${auditState.view === "skills" ? "is-active" : ""}" data-audit-view="skills" type="button">${icon("llm")}<span>${escapeHtml(t("skills"))}</span></button>
@@ -1170,7 +1210,7 @@ function renderConversationPager() {
   if (!pager) return;
   const totalPages = Math.max(1, Math.ceil(auditState.conversationTotal / auditState.conversationPageSize));
   if (totalPages <= 1) { pager.innerHTML = ""; return; }
-  pager.innerHTML = `<button class="audit-icon-button" type="button" data-page="${auditState.conversationPage - 1}" aria-label="${escapeHtml(t("prev"))}" ${auditState.conversationPage <= 1 ? "disabled" : ""}>${icon(auditState.language === "ar" ? "right" : "left")}</button><span>${escapeHtml(t("page"))} ${auditState.conversationPage} ${escapeHtml(t("of"))} ${totalPages}</span><button class="audit-icon-button" type="button" data-page="${auditState.conversationPage + 1}" aria-label="${escapeHtml(t("next"))}" ${auditState.conversationPage >= totalPages ? "disabled" : ""}>${icon(auditState.language === "ar" ? "left" : "right")}</button>`;
+  pager.innerHTML = paginationMarkup(auditState.conversationPage, totalPages, "data-page", true);
   pager.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => void loadConversations(Number(button.dataset.page))));
 }
 
@@ -1420,7 +1460,9 @@ function renderDiagnosticsView(kind) {
   const headings = isSkills
     ? [t("name"), "ID", t("version"), t("source"), t("status"), t("tools")]
     : [t("name"), t("endpoint"), t("effect"), t("source"), t("status")];
-  byId("auditContent").innerHTML = `
+  const content = byId("auditContent");
+  content.classList.add("is-diagnostics-view");
+  content.innerHTML = `
     <section class="audit-diagnostics-panel">
       <header><div><h2>${escapeHtml(t(isSkills ? "skillsDiagnostics" : "toolsDiagnostics"))}</h2><p>${escapeHtml(t("diagnosticsHint"))}</p></div><button id="auditDiagnosticsRefresh" class="audit-icon-button" type="button" title="${escapeHtml(t("refresh"))}" aria-label="${escapeHtml(t("refresh"))}">${icon("refresh")}</button></header>
       <form id="auditDiagnosticsControls" class="audit-diagnostics-controls">
@@ -1481,10 +1523,10 @@ function renderDiagnosticsPager(kind) {
   const meta = auditState.diagnosticMeta[kind];
   const count = byId("auditDiagnosticsCount");
   const pager = byId("auditDiagnosticsPager");
-  if (count) count.textContent = `${t("total")} ${meta.total}`;
-  if (!pager) return;
   const totalPages = Math.max(1, Math.ceil(meta.total / meta.pageSize));
-  pager.innerHTML = `<span class="audit-page-position">${meta.page}/${totalPages}</span><button class="audit-icon-button" type="button" data-diagnostic-page="${meta.page - 1}" aria-label="${escapeHtml(t("prev"))}" ${meta.page <= 1 ? "disabled" : ""}>${icon(auditState.language === "ar" ? "right" : "left")}</button><button class="audit-icon-button" type="button" data-diagnostic-page="${meta.page + 1}" aria-label="${escapeHtml(t("next"))}" ${meta.page >= totalPages ? "disabled" : ""}>${icon(auditState.language === "ar" ? "left" : "right")}</button>`;
+  if (count) count.textContent = `${t("total")} ${meta.total}  ${meta.page}/${totalPages}`;
+  if (!pager) return;
+  pager.innerHTML = paginationMarkup(meta.page, totalPages, "data-diagnostic-page");
   pager.querySelectorAll("[data-diagnostic-page]").forEach((button) => button.addEventListener("click", () => void loadDiagnostics(kind, Number(button.dataset.diagnosticPage))));
 }
 

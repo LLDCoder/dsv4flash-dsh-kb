@@ -378,29 +378,48 @@ class AuditConsoleApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("umc_public_base_url", items)
         self.assertEqual(items["umc_portal"]["value"], "customer")
         self.assertTrue(items["umc_portal"]["readOnly"])
-        self.assertTrue(items["database_url"]["readOnly"])
+        self.assertFalse(items["database_url"]["readOnly"])
+        self.assertFalse(items["redis_url"]["readOnly"])
+        self.assertFalse(items["umc_customer_base_url"]["readOnly"])
+        self.assertFalse(items["umc_document_base_url"]["readOnly"])
         self.assertEqual(items["database_url"]["value"], "••••••••")
         self.assertEqual(items["llm_api_key"]["value"], "••••••••")
         self.assertNotIn("test-secret-key", response.text)
 
         protected = await self.client.patch(
             "/api/v1/audit/config",
-            json={"scope": "system", "patch": {"umc_portal": "admin", "database_url": "secret"}},
+            json={"scope": "system", "patch": {"umc_portal": "admin"}},
         )
         self.assertEqual(protected.status_code, 422)
         self.assertEqual(
             protected.json()["detail"],
-            {"code": "read_only_or_unsupported_config", "keys": ["database_url", "umc_portal"]},
+            {"code": "read_only_or_unsupported_config", "keys": ["umc_portal"]},
         )
 
         updated = await self.client.patch(
             "/api/v1/audit/config",
-            json={"scope": "system", "patch": {"llm_model": "updated-model"}},
+            json={"scope": "system", "patch": {
+                "llm_model": "updated-model",
+                "database_url": "postgresql+asyncpg://updated-database/dsh",
+                "redis_url": "redis://updated-redis:6379/0",
+                "umc_customer_base_url": "https://customer.example.test",
+                "umc_document_base_url": "https://documents.example.test",
+            }},
         )
         self.assertEqual(updated.status_code, 200, updated.text)
         updated_items = {item["key"]: item for item in updated.json()["items"]}
         self.assertEqual(updated_items["llm_model"]["value"], "updated-model")
-        self.assertEqual(self.service.applied_config_keys, ["llm_model"])
+        self.assertEqual(updated_items["database_url"]["value"], "••••••••")
+        self.assertEqual(updated_items["redis_url"]["value"], "••••••••")
+        self.assertEqual(updated_items["umc_customer_base_url"]["value"], "https://customer.example.test")
+        self.assertEqual(updated_items["umc_document_base_url"]["value"], "https://documents.example.test")
+        self.assertEqual(self.service.applied_config_keys, [
+            "database_url",
+            "llm_model",
+            "redis_url",
+            "umc_customer_base_url",
+            "umc_document_base_url",
+        ])
 
         async with self.sessions() as db:
             entry = (await db.execute(select(ConfigEntry).where(ConfigEntry.key == "llm_model"))).scalar_one()
@@ -408,8 +427,15 @@ class AuditConsoleApiTests(unittest.IsolatedAsyncioTestCase):
                 AuditOperatorEvent.event_type == "configuration.updated"
             ))).scalar_one()
             self.assertEqual(entry.updated_by, "audit:1")
-            self.assertEqual(event.detail, {"scope": "system", "keys": ["llm_model"]})
+            self.assertEqual(event.detail, {"scope": "system", "keys": [
+                "database_url",
+                "llm_model",
+                "redis_url",
+                "umc_customer_base_url",
+                "umc_document_base_url",
+            ]})
             self.assertNotIn("updated-model", str(event.detail))
+            self.assertNotIn("updated-database", str(event.detail))
 
     async def test_configured_retention_cleans_expired_security_data(self):
         now = datetime.now(timezone.utc)

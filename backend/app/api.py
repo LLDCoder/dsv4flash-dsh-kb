@@ -49,16 +49,10 @@ logger = logging.getLogger("uvicorn.error")
 # the timing difference between missing and existing audit-console accounts.
 _DUMMY_AUDIT_PASSWORD_HASH = hash_password("audit-console-invalid-password")
 
-# The customer audit console exposes operational DSH settings without allowing
-# it to redirect infrastructure or traffic to another UMC environment.
+# The customer audit console exposes operational DSH settings while keeping the
+# deployment pinned to the Customer Portal environment.
 _AUDIT_CONFIG_HIDDEN_KEYS = {"umc_admin_base_url", "umc_public_base_url"}
-_AUDIT_CONFIG_READ_ONLY_KEYS = {
-    "database_url",
-    "redis_url",
-    "umc_portal",
-    "umc_customer_base_url",
-    "umc_document_base_url",
-}
+_AUDIT_CONFIG_READ_ONLY_KEYS = {"umc_portal"}
 
 
 def message_feedback_change(
