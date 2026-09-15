@@ -2462,13 +2462,32 @@ _KNOWLEDGE_PROSE_TERMS = frozenset(
 )
 
 
+def _question_is_assistant_capability_overview(question: str) -> bool:
+    """Match a generic request about the assistant, not live portal state."""
+
+    normalized = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
+    return bool(re.fullmatch(
+        r"(?:please\s+)?(?:"
+        r"what can (?:you|(?:the\s+)?nma ai assistant) do(?: for me)?"
+        r"|how can (?:you|(?:the\s+)?nma ai assistant) help(?: me)?"
+        r"|what (?:are you|is (?:the\s+)?nma ai assistant) (?:able to do|capable of)"
+        r")\s*[?.!]?"
+        r"|(?:请)?(?:你|nma ai assistant)(?:能|可以)(?:为我|帮我)?(?:做什么|怎么帮助我|如何帮助我|提供什么帮助|提供哪些帮助|有哪些功能|有哪些能力)\s*[？。！]?"
+        r"|ماذا (?:يمكنك|يستطيع مساعد nma) أن (?:تفعل|تقدم)(?: لي)?\s*[؟?!]?",
+        normalized,
+        re.IGNORECASE,
+    ))
+
+
 def _question_is_capability_catalogue(question: str) -> bool:
-    return bool(re.search(
+    return _question_is_assistant_capability_overview(question) or bool(re.search(
         r'\b(?:what|which)\b.*\b(?:criteria|filters?|fields?|columns?)\b.*\b(?:available|supported|present|can i use)\b'
         r'|\bwhat is\b.*\b(?:entry|entry point)\b', question, re.I))
 
 
 def question_is_conceptual(question: str) -> bool:
+    if _question_is_assistant_capability_overview(question):
+        return True
     normalized = question.casefold()
     return bool(re.search(
         r"\b(?:explain|describe|define|meaning|definition|difference|distinction|manual)\b"
@@ -2535,6 +2554,8 @@ def question_requires_live_portal(question: str) -> bool:
     """Identify generic freshness/personalization language without module routing."""
 
     normalized = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
+    if _question_is_assistant_capability_overview(question):
+        return False
     if re.search(r'\bgive me\s+(?:one|a|an|[1-9][0-9]?)\s+(?:[a-z]+\s+){0,3}(?:no\.?|number|id|record|task|item)\b', normalized):
         return True
     if re.match(r'(?:please\s+)?(?:open|visit|navigate to|go to)\s+/[a-z0-9_/-]+', normalized):

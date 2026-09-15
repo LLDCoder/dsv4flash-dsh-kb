@@ -125,6 +125,43 @@ def test_documented_capability_questions_are_not_live_access_requests(question):
 
 
 @pytest.mark.parametrize('question', [
+    'What can you do for me?',
+    'How can you help me?',
+    '你能为我做什么？',
+    '你可以提供哪些帮助？',
+    'ماذا يمكنك أن تفعل لي؟',
+])
+def test_generic_assistant_capability_questions_are_not_live_access_requests(question):
+    assert question_is_conceptual(question)
+    assert not question_requires_live_portal(question)
+
+
+@pytest.mark.parametrize('question', [
+    'What can you do for me with my current tasks?',
+    'How can you help me on this current page?',
+    '你能帮我查看当前有哪些任务？',
+])
+def test_capability_wording_with_live_portal_scope_still_requires_a_read(question):
+    assert question_requires_live_portal(question)
+
+
+def test_generic_assistant_capability_question_uses_knowledge_without_portal_read():
+    fact = 'The assistant can explain portal pages and summarize current work.'
+    gateway = Gateway(knowledge_result={'ok': True, 'result': {'chunks': [{'content': fact}]}})
+    planner = Planner(
+        portal_plan_for('/licensing', [{'type': 'observe'}]),
+        {'mode': 'knowledge_only', 'result': 'success', 'facts': [fact], 'missing': []},
+    )
+
+    outcome = run_reader(gateway, planner, question='What can you do for me?')
+
+    assert outcome.result.status == 'success'
+    assert outcome.result.missing == ()
+    assert gateway.events == ['GetUserInfo', 'knowledge.search']
+    assert planner.calls[1][2]['planningDirective']['knowledgeExplanationOnly'] is True
+
+
+@pytest.mark.parametrize('question', [
     'Open the filter and inspect the available fields.',
     'Which filters are currently selected?',
     'Show the current Team Members.',
