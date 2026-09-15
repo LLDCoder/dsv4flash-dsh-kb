@@ -858,6 +858,22 @@ def _replay_observed_tab_path(request: PortalReadRequest, observation: Any) -> P
     return replace(request, actions=(*prefix, *request.actions)) if prefix else request
 
 
+def _pending_initial_tab_actions(actions: list[dict[str, Any]], observation: Any) -> list[dict[str, Any]]:
+    """Skip a verified default selection without clicking its changing badge."""
+    if not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True:
+        return actions
+    tabs = observation.get('tabControls') or []
+    matched = [[t for t in tabs if isinstance(t, dict) and _state_control_label_matches(t.get('name'), a.get('name'))]
+               for a in actions]
+    # A hidden/ambiguous child may still require the parent transition.
+    if any(len(m) != 1 for m in matched):
+        return actions
+    offset = 0
+    while offset < len(matched) and matched[offset][0].get('selected') is True:
+        offset += 1
+    return actions[offset:]
+
+
 def _observed_switch_tab_action(action: dict[str, Any], observation: Any) -> dict[str, Any] | None:
     """Bind a requested state label to one currently observed tab control."""
 
@@ -8244,6 +8260,9 @@ class AdminPortalReader:
                 }}
             deferred_plan: dict[str, Any] | None = None
             if deferred_state_action is not None:
+                state_actions = _pending_initial_tab_actions(state_actions, observed_context['portalObservation'])
+                deferred_state_action = dict(state_actions[0]) if state_actions else None
+            if deferred_state_action is not None:
                 native_tabs = observed_context["portalObservation"].get("tabControls") or []
                 matching_tabs = [tab for tab in native_tabs if isinstance(tab, dict)
                     and _state_control_label_matches(tab.get("name"), deferred_state_action.get("name"))]
@@ -9613,6 +9632,10 @@ class AdminPortalReader:
                                     "semanticResolution": semantic_resolution,
                                 },
                             )
+        if not result.page:
+            # Preserve the permission-checked navigation target after a failed
+            # control read, so a follow-up cannot drift to a sibling module.
+            result = replace(result, page=request.start_path, source_hint={'page': request.start_path})
         return ReaderOutcome(
             result,
             {

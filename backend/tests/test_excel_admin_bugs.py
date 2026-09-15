@@ -6,7 +6,7 @@ import pytest
 from app.portal_reader import (
     PortalReadRequest, ReaderOutcome, ReaderResult, _native_filter_outcome,
     _native_list_fallback_result, _replay_observed_tab_path, _minimal_identity_plan, _selected_view_list_fallback,
-    previous_sample_explanation, reader_absence_limit_explanation,
+    previous_sample_explanation, reader_absence_limit_explanation, _pending_initial_tab_actions,
 )
 from app.reader_intent import resolve_literal_view_followup
 from app.service import reader_evidence_only_response, reader_natural_answer_is_grounded
@@ -38,6 +38,18 @@ def test_new_browser_read_replays_native_parent_before_completed():
     replay = _replay_observed_tab_path(request, observation())
     assert [a['name'] for a in replay.actions] == ['Team Tasks','To Do','Completed']
     assert request.actions[0]['name'] == 'Completed'
+
+
+def test_default_parent_and_child_are_not_reclicked_but_completed_is_preserved():
+    o=observation()
+    actions=[{'type':'switch_tab','name':'Team Tasks'},{'type':'switch_tab','name':'To Do'}]
+    assert _pending_initial_tab_actions(actions,o)==[]
+    actions[1]['name']='Completed'
+    assert _pending_initial_tab_actions(actions,o)==[actions[1]]
+    o['tabControls']=o['tabControls'][:2]
+    assert _pending_initial_tab_actions(actions,o)==actions
+    o['readHealth']['healthy']=False
+    assert _pending_initial_tab_actions(actions,o)==actions
 
 
 def test_initial_parent_child_plan_is_executed_together_after_observation():
