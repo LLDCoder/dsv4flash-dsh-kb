@@ -13,7 +13,7 @@ import httpx
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import String, cast, delete, func, not_, or_, select
+from sqlalchemy import String, and_, cast, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -48,6 +48,17 @@ logger = logging.getLogger("uvicorn.error")
 # An unknown username still performs one real password derivation, reducing
 # the timing difference between missing and existing audit-console accounts.
 _DUMMY_AUDIT_PASSWORD_HASH = hash_password("audit-console-invalid-password")
+
+# The customer audit console exposes operational DSH settings without allowing
+# it to redirect infrastructure or traffic to another UMC environment.
+_AUDIT_CONFIG_HIDDEN_KEYS = {"umc_admin_base_url", "umc_public_base_url"}
+_AUDIT_CONFIG_READ_ONLY_KEYS = {
+    "database_url",
+    "redis_url",
+    "umc_portal",
+    "umc_customer_base_url",
+    "umc_document_base_url",
+}
 
 
 def message_feedback_change(
@@ -151,19 +162,20 @@ def audit_identity_from_user_info(payload: Any) -> dict[str, str]:
 def audit_identity_from_payloads(payloads: list[Any]) -> dict[str, str]:
     """Project the latest available customer identity into the audit overview."""
 
+    result = {"account": "", "currentRole": ""}
     for payload in payloads:
         identity = payload.get("auditIdentity") if isinstance(payload, dict) else None
         if not isinstance(identity, dict):
             continue
         account = identity.get("account")
         current_role = identity.get("currentRole")
-        result = {
-            "account": str(account).strip()[:300] if isinstance(account, (str, int)) else "",
-            "currentRole": str(current_role).strip()[:300] if isinstance(current_role, (str, int)) else "",
-        }
-        if result["account"] or result["currentRole"]:
-            return result
-    return {"account": "", "currentRole": ""}
+        if not result["account"] and isinstance(account, (str, int)):
+            result["account"] = str(account).strip()[:300]
+        if not result["currentRole"] and isinstance(current_role, (str, int)):
+            result["currentRole"] = str(current_role).strip()[:300]
+        if result["account"] and result["currentRole"]:
+            break
+    return result
 
 
 def make_router(service: DSHService) -> APIRouter:
@@ -899,6 +911,8 @@ def make_router(service: DSHService) -> APIRouter:
     ) -> dict[str, object]:
         conversation_ids = [conversation.dsh_session_id for conversation in conversations]
         title_by_conversation: dict[str, str] = {}
+        identity_by_conversation: dict[str, dict[str, str]] = {}
+        identity_by_owner: dict[tuple[str, str], dict[str, str]] = {}
         if conversation_ids:
             ranked_events = (
                 select(
@@ -922,10 +936,81 @@ def make_router(service: DSHService) -> APIRouter:
                 str(conversation_id): str((event_json or {}).get("content", "")).strip()[:160]
                 for conversation_id, event_json in title_result.all()
             }
+            recent_identity_events = (
+                select(
+                    SessionEvent.dsh_session_id.label("conversation_id"),
+                    SessionEvent.event_json.label("event_json"),
+                    func.row_number().over(
+                        partition_by=SessionEvent.dsh_session_id,
+                        order_by=(SessionEvent.created_at.desc(), SessionEvent.id.desc()),
+                    ).label("row_number"),
+                )
+                .where(
+                    SessionEvent.dsh_session_id.in_(conversation_ids),
+                    SessionEvent.event_type == "user.message",
+                )
+                .subquery()
+            )
+            identity_result = await db.execute(
+                select(recent_identity_events.c.conversation_id, recent_identity_events.c.event_json)
+                .where(recent_identity_events.c.row_number <= 25)
+                .order_by(recent_identity_events.c.conversation_id, recent_identity_events.c.row_number)
+            )
+            identity_payloads: dict[str, list[Any]] = {}
+            for conversation_id, event_json in identity_result.all():
+                identity_payloads.setdefault(str(conversation_id), []).append(event_json or {})
+            identity_by_conversation = {
+                conversation_id: audit_identity_from_payloads(payloads)
+                for conversation_id, payloads in identity_payloads.items()
+            }
+            owner_keys = {(conversation.tenant_id, conversation.user_id) for conversation in conversations}
+            recent_owner_identity_events = (
+                select(
+                    SessionEvent.tenant_id,
+                    SessionEvent.user_id,
+                    SessionEvent.event_json,
+                    func.row_number().over(
+                        partition_by=(SessionEvent.tenant_id, SessionEvent.user_id),
+                        order_by=(SessionEvent.created_at.desc(), SessionEvent.id.desc()),
+                    ).label("row_number"),
+                )
+                .where(
+                    or_(*(
+                        and_(SessionEvent.tenant_id == tenant_id, SessionEvent.user_id == user_id)
+                        for tenant_id, user_id in owner_keys
+                    )),
+                    SessionEvent.event_type == "user.message",
+                )
+                .subquery()
+            )
+            owner_identity_result = await db.execute(
+                select(
+                    recent_owner_identity_events.c.tenant_id,
+                    recent_owner_identity_events.c.user_id,
+                    recent_owner_identity_events.c.event_json,
+                )
+                .where(recent_owner_identity_events.c.row_number <= 25)
+                .order_by(
+                    recent_owner_identity_events.c.tenant_id,
+                    recent_owner_identity_events.c.user_id,
+                    recent_owner_identity_events.c.row_number,
+                )
+            )
+            owner_identity_payloads: dict[tuple[str, str], list[Any]] = {}
+            for tenant_id, user_id, event_json in owner_identity_result.all():
+                owner_identity_payloads.setdefault((str(tenant_id), str(user_id)), []).append(event_json or {})
+            identity_by_owner = {
+                owner_key: audit_identity_from_payloads(payloads)
+                for owner_key, payloads in owner_identity_payloads.items()
+            }
         items: list[dict] = []
         for conversation in conversations:
             item = {**service.conversation_json(conversation), "title": title_by_conversation.get(conversation.dsh_session_id, "")}
             if is_admin:
+                event_identity = identity_by_conversation.get(conversation.dsh_session_id, {})
+                owner_identity = identity_by_owner.get((conversation.tenant_id, conversation.user_id), {})
+                item["ownerAccount"] = conversation.owner_account or event_identity.get("account") or owner_identity.get("account") or ""
+                item["ownerCurrentRole"] = event_identity.get("currentRole") or owner_identity.get("currentRole") or ""
                 item["ownerUserId"] = conversation.user_id
                 item["ownerTenantId"] = conversation.tenant_id
             items.append(item)
@@ -949,12 +1034,25 @@ def make_router(service: DSHService) -> APIRouter:
                 AuditRecord.user_id == principal.user_id,
             ))
         has_audit_records = (await db.execute(select(AuditRecord.id).where(*base_conditions).limit(1))).scalar_one_or_none() is not None
-        identity_payloads = list((await db.execute(
+        identity_payloads: list[Any] = []
+        if conversation.owner_account:
+            identity_payloads.append({"auditIdentity": {"account": conversation.owner_account}})
+        identity_payloads.extend(list((await db.execute(
             select(AuditRecord.payload)
             .where(*base_conditions, AuditRecord.record_type == "user.message")
             .order_by(AuditRecord.created_at.desc(), AuditRecord.id.desc())
             .limit(25)
+        )).scalars().all()))
+        event_identity_payloads = list((await db.execute(
+            select(SessionEvent.event_json)
+            .where(
+                SessionEvent.dsh_session_id == conversation.dsh_session_id,
+                SessionEvent.event_type == "user.message",
+            )
+            .order_by(SessionEvent.created_at.desc(), SessionEvent.id.desc())
+            .limit(25)
         )).scalars().all())
+        identity_payloads.extend(event_identity_payloads)
         query = select(AuditRecord).where(*base_conditions)
         if category:
             query = query.where(AuditRecord.category == category.strip().lower())
@@ -1076,6 +1174,133 @@ def make_router(service: DSHService) -> APIRouter:
             "updatedAt": values.get("updatedAt"),
         }
 
+    async def audit_config_json(db: AsyncSession) -> dict[str, object]:
+        result = await db.execute(select(ConfigEntry).where(ConfigEntry.scope == "system"))
+        entries = {item.key: item for item in result.scalars().all()}
+        fallback_options = await knowledge_fallback_options(db)
+        default_settings = get_settings()
+        items: list[dict[str, object]] = []
+        for spec in config_catalog():
+            key = str(spec["key"])
+            if key in _AUDIT_CONFIG_HIDDEN_KEYS:
+                continue
+            entry = entries.get(key)
+            raw = raw_config_value(entry) if entry else getattr(
+                service.settings,
+                key,
+                getattr(default_settings, key, None),
+            )
+            configured = raw not in (None, "")
+            secret = bool(spec.get("secret"))
+            read_only = key in _AUDIT_CONFIG_READ_ONLY_KEYS
+            options = (
+                fallback_options
+                if spec.get("dynamicOptions") == "knowledge_fallback_skills"
+                else list(spec.get("options", []))
+            )
+            if key == "umc_portal":
+                options = [str(raw or "customer")]
+            items.append({
+                "key": key,
+                "group": spec.get("group"),
+                "env": spec.get("env"),
+                "secret": secret,
+                "multiline": bool(spec.get("multiline")),
+                "options": options,
+                "restartRequired": bool(spec.get("restartRequired")),
+                "configured": configured,
+                "source": "database" if entry else "environment/default",
+                "version": entry.version if entry else 0,
+                "value": "••••••••" if secret and configured else ("" if secret else raw),
+                "readOnly": read_only,
+                "readOnlyReason": (
+                    "protected_infrastructure"
+                    if key in {"database_url", "redis_url"}
+                    else "customer_environment"
+                    if read_only
+                    else None
+                ),
+                "updatedBy": entry.updated_by if entry else None,
+                "updatedAt": entry.updated_at.isoformat() if entry and entry.updated_at else None,
+            })
+        return {"scope": "system", "items": items}
+
+    @router.get("/audit/config", tags=["Audit console"])
+    async def get_audit_config(
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        return await audit_config_json(db)
+
+    @router.patch("/audit/config", tags=["Audit console"])
+    async def patch_audit_config(
+        payload: ConfigPatch,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        if payload.scope != "system":
+            raise HTTPException(status_code=422, detail="audit configuration scope must be system")
+        catalog = {str(item["key"]): item for item in config_catalog()}
+        editable = set(catalog) - _AUDIT_CONFIG_HIDDEN_KEYS - _AUDIT_CONFIG_READ_ONLY_KEYS
+        unsupported = sorted(set(payload.patch) - editable)
+        if unsupported:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "read_only_or_unsupported_config", "keys": unsupported},
+            )
+        if "skill_router_fallback_skill_id" in payload.patch:
+            valid_ids = {item["value"] for item in await knowledge_fallback_options(db)}
+            fallback = payload.patch["skill_router_fallback_skill_id"]
+            if not isinstance(fallback, str) or fallback not in valid_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "invalid_knowledge_fallback",
+                        "message": "fallback Skill must be published, enabled, and only bind knowledge.search",
+                    },
+                )
+
+        changed_keys: list[str] = []
+        for key, value in payload.patch.items():
+            spec = catalog[key]
+            if bool(spec.get("secret")) and value in (None, "", "••••••••"):
+                continue
+            result = await db.execute(
+                select(ConfigEntry).where(ConfigEntry.scope == "system", ConfigEntry.key == key)
+            )
+            entry = result.scalar_one_or_none()
+            if entry:
+                if payload.version is not None and entry.version != payload.version:
+                    raise HTTPException(status_code=409, detail=f"config version conflict for {key}")
+                if raw_config_value(entry) == value:
+                    continue
+                entry.version += 1
+                entry.value = value if isinstance(value, dict) else {"value": value}
+                entry.updated_by = f"audit:{principal.operator_id}"
+            else:
+                db.add(ConfigEntry(
+                    scope="system",
+                    key=key,
+                    version=1,
+                    value=value if isinstance(value, dict) else {"value": value},
+                    updated_by=f"audit:{principal.operator_id}",
+                ))
+            changed_keys.append(key)
+
+        if changed_keys:
+            db.add(AuditOperatorEvent(
+                actor_operator_id=principal.operator_id,
+                username=principal.username,
+                event_type="configuration.updated",
+                remote_address=audit_remote_address(request),
+                detail={"scope": "system", "keys": sorted(changed_keys)},
+            ))
+            await db.commit()
+            effective = await db.execute(select(ConfigEntry).where(ConfigEntry.scope == "system"))
+            await service.apply_config_entries(list(effective.scalars().all()))
+        return await audit_config_json(db)
+
     @router.get("/audit/skills", tags=["Audit console"])
     async def list_audit_skill_diagnostics(
         search: str | None = Query(default=None, max_length=160),
@@ -1166,14 +1391,20 @@ def make_router(service: DSHService) -> APIRouter:
         query = select(Conversation)
         if not is_admin:
             query = query.where(Conversation.tenant_id == principal.tenant_id, Conversation.user_id == principal.user_id)
-        conversation_match = text_match(search, Conversation.conversation_id, Conversation.user_id, Conversation.tenant_id)
+        conversation_match = text_match(search, Conversation.conversation_id, Conversation.owner_account, Conversation.user_id, Conversation.tenant_id)
         if conversation_match is not None:
             title_match = select(SessionEvent.id).where(
                 SessionEvent.dsh_session_id == Conversation.dsh_session_id,
                 SessionEvent.event_type == "user.message",
                 cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
             ).exists()
-            query = query.where(or_(conversation_match, title_match))
+            owner_identity_match = select(SessionEvent.id).where(
+                SessionEvent.tenant_id == Conversation.tenant_id,
+                SessionEvent.user_id == Conversation.user_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(conversation_match, title_match, owner_identity_match))
         query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
         conversations, total = await paged_items(db, query, page=page, page_size=page_size)
         return await audit_conversation_list(db, conversations, is_admin=is_admin, total=total, page=page, page_size=page_size)
@@ -1198,14 +1429,20 @@ def make_router(service: DSHService) -> APIRouter:
             query = query.where(Conversation.last_activity_at >= aware_utc(date_from))
         if date_to:
             query = query.where(Conversation.last_activity_at <= aware_utc(date_to))
-        conversation_match = text_match(search, Conversation.conversation_id, Conversation.dsh_session_id, Conversation.user_id, Conversation.tenant_id)
+        conversation_match = text_match(search, Conversation.conversation_id, Conversation.dsh_session_id, Conversation.owner_account, Conversation.user_id, Conversation.tenant_id)
         if conversation_match is not None:
             title_match = select(SessionEvent.id).where(
                 SessionEvent.dsh_session_id == Conversation.dsh_session_id,
                 SessionEvent.event_type == "user.message",
                 cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
             ).exists()
-            query = query.where(or_(conversation_match, title_match))
+            owner_identity_match = select(SessionEvent.id).where(
+                SessionEvent.tenant_id == Conversation.tenant_id,
+                SessionEvent.user_id == Conversation.user_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(conversation_match, title_match, owner_identity_match))
         query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
         conversations, total = await paged_items(db, query, page=page, page_size=page_size)
         return await audit_conversation_list(db, conversations, is_admin=True, total=total, page=page, page_size=page_size)
@@ -1244,14 +1481,20 @@ def make_router(service: DSHService) -> APIRouter:
         _: None = Depends(require_console_session),
     ):
         query = select(Conversation)
-        conversation_match = text_match(search, Conversation.conversation_id, Conversation.user_id, Conversation.tenant_id)
+        conversation_match = text_match(search, Conversation.conversation_id, Conversation.owner_account, Conversation.user_id, Conversation.tenant_id)
         if conversation_match is not None:
             title_match = select(SessionEvent.id).where(
                 SessionEvent.dsh_session_id == Conversation.dsh_session_id,
                 SessionEvent.event_type == "user.message",
                 cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
             ).exists()
-            query = query.where(or_(conversation_match, title_match))
+            owner_identity_match = select(SessionEvent.id).where(
+                SessionEvent.tenant_id == Conversation.tenant_id,
+                SessionEvent.user_id == Conversation.user_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(conversation_match, title_match, owner_identity_match))
         query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
         conversations, total = await paged_items(db, query, page=page, page_size=page_size)
         return await audit_conversation_list(db, conversations, is_admin=True, total=total, page=page, page_size=page_size)

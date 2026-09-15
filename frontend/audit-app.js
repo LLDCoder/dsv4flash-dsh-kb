@@ -16,6 +16,16 @@ const auditState = {
   usersLoaded: false,
   diagnostics: { skills: [], tools: [] },
   diagnosticsLoaded: { skills: false, tools: false },
+  diagnosticMeta: {
+    skills: { page: 1, pageSize: 25, total: 0, search: "" },
+    tools: { page: 1, pageSize: 25, total: 0, search: "" },
+  },
+  diagnosticRequests: { skills: 0, tools: 0 },
+  configuration: [],
+  configurationLoaded: false,
+  configurationSection: "model",
+  configurationDraft: {},
+  configurationSecretsOpen: new Set(),
   filters: { search: "", dateRange: "", status: "", category: "" },
   expandedSummaries: new Set(),
   openPayloads: new Set(),
@@ -23,22 +33,29 @@ const auditState = {
   accountOutsideHandler: null,
   accountEscapeHandler: null,
   workspaceResizeObserver: null,
+  loginMotionCleanup: null,
   listRequest: 0,
   detailRequest: 0,
 };
 
+const auditAssetBaseUrl = new URL(".", import.meta.url);
+
+function auditAssetUrl(name) {
+  return new URL(name, auditAssetBaseUrl).href;
+}
+
 const copy = {
   en: {
-    product: "DSH Audit",
+    product: "NMA Chatbot Audit Console",
     authority: "National Media Authority",
-    signIn: "Sign in to audit",
-    signInHint: "Use your assigned audit account.",
+    signIn: "Login",
+    signInHint: "Sign in with your assigned audit account.",
     username: "Username",
     usernamePlaceholder: "Enter username",
     password: "Password",
     passwordPlaceholder: "Enter password",
-    signInAction: "Sign in",
-    signingIn: "Signing in...",
+    signInAction: "Login",
+    signingIn: "Logging in...",
     authorizedOnly: "Authorized personnel only",
     loginAuditNote: "Sign-in activity is recorded for security.",
     invalidLogin: "Unable to sign in. Check your username and password.",
@@ -54,6 +71,39 @@ const copy = {
     skillsDiagnostics: "Skills diagnostics",
     toolsDiagnostics: "Tools diagnostics",
     diagnosticsHint: "Read-only runtime configuration for audit diagnosis.",
+    configuration: "Configuration",
+    configurationManagement: "Runtime configuration",
+    configurationHint: "Manage customer-safe DSH runtime settings. Protected infrastructure and customer routing remain read-only.",
+    saveChanges: "Save changes",
+    noChanges: "No configuration changes to save.",
+    configSaved: "Configuration saved and applied.",
+    configLoadFailed: "Unable to load configuration.",
+    configSaveFailed: "Unable to save configuration.",
+    configured: "Configured",
+    notConfigured: "Not configured",
+    readOnly: "Read-only",
+    liveUpdate: "Live update",
+    restartRequired: "Restart required",
+    environmentDefault: "Environment / default",
+    databaseOverride: "Database override",
+    protectedInfrastructure: "Protected infrastructure",
+    customerEnvironment: "Customer environment",
+    secretConfigured: "Configured; enter a new value to replace it",
+    secretNotConfigured: "Enter a value to configure",
+    configGroupModel: "Model",
+    configGroupDsh: "Routing",
+    configGroupInfrastructure: "Infrastructure",
+    configGroupExternal: "External tools",
+    configGroupCustomer: "Customer environment",
+    configGroupEnvironment: "Environment",
+    configGroupAudit: "Audit",
+    replaceKey: "Replace key",
+    setKey: "Set key",
+    cancel: "Cancel",
+    discardChanges: "Discard",
+    unsavedChange: "1 unsaved change",
+    unsavedChanges: "{count} unsaved changes",
+    search: "Search",
     searchPlaceholder: "Search conversation, request, account or tenant",
     dateRange: "Date range",
     allTime: "All time",
@@ -82,6 +132,8 @@ const copy = {
     clear: "Clear",
     refresh: "Refresh",
     records: "records",
+    total: "Total",
+    perPage: "/ page",
     result: "Result",
     loading: "Loading...",
     noConversations: "No conversations match these filters.",
@@ -144,6 +196,10 @@ const copy = {
     published: "Published",
     draft: "Draft",
     noDiagnostics: "No diagnostic records found.",
+    searchSkills: "Search skill name, ID, source, status or domain",
+    searchTools: "Search tool name, operation or endpoint",
+    rowsPerPage: "Rows per page",
+    userId: "User ID",
     resizePanels: "Resize conversation list and detail panels",
     accountMenu: "Account menu",
     auditNavigation: "Audit navigation",
@@ -184,10 +240,10 @@ const copy = {
     notRecorded: "Not recorded",
   },
   ar: {
-    product: "تدقيق DSH",
+    product: "وحدة تدقيق روبوت المحادثة - NMA",
     authority: "الهيئة الوطنية للإعلام",
-    signIn: "تسجيل الدخول إلى التدقيق",
-    signInHint: "استخدم حساب التدقيق المخصص لك.",
+    signIn: "تسجيل الدخول",
+    signInHint: "سجّل الدخول باستخدام حساب التدقيق المخصص لك.",
     username: "اسم المستخدم",
     usernamePlaceholder: "أدخل اسم المستخدم",
     password: "كلمة المرور",
@@ -209,6 +265,39 @@ const copy = {
     skillsDiagnostics: "تشخيص المهارات",
     toolsDiagnostics: "تشخيص الأدوات",
     diagnosticsHint: "إعدادات وقت التشغيل للعرض فقط لأغراض التشخيص.",
+    configuration: "الإعدادات",
+    configurationManagement: "إعدادات وقت التشغيل",
+    configurationHint: "إدارة إعدادات DSH الآمنة لبيئة العميل. تظل البنية التحتية المحمية ومسارات العميل للقراءة فقط.",
+    saveChanges: "حفظ التغييرات",
+    noChanges: "لا توجد تغييرات لحفظها.",
+    configSaved: "تم حفظ الإعدادات وتطبيقها.",
+    configLoadFailed: "تعذر تحميل الإعدادات.",
+    configSaveFailed: "تعذر حفظ الإعدادات.",
+    configured: "تم الإعداد",
+    notConfigured: "غير معدّ",
+    readOnly: "للقراءة فقط",
+    liveUpdate: "تحديث مباشر",
+    restartRequired: "يتطلب إعادة التشغيل",
+    environmentDefault: "البيئة / القيمة الافتراضية",
+    databaseOverride: "تجاوز من قاعدة البيانات",
+    protectedInfrastructure: "بنية تحتية محمية",
+    customerEnvironment: "بيئة العميل",
+    secretConfigured: "تم الإعداد؛ أدخل قيمة جديدة لاستبدالها",
+    secretNotConfigured: "أدخل قيمة لإعدادها",
+    configGroupModel: "النموذج",
+    configGroupDsh: "التوجيه",
+    configGroupInfrastructure: "البنية التحتية",
+    configGroupExternal: "الأدوات الخارجية",
+    configGroupCustomer: "بيئة العميل",
+    configGroupEnvironment: "البيئة",
+    configGroupAudit: "التدقيق",
+    replaceKey: "استبدال المفتاح",
+    setKey: "تعيين المفتاح",
+    cancel: "إلغاء",
+    discardChanges: "تجاهل",
+    unsavedChange: "تغيير واحد غير محفوظ",
+    unsavedChanges: "{count} تغييرات غير محفوظة",
+    search: "بحث",
     searchPlaceholder: "البحث بالمحادثة أو الطلب أو الحساب أو الجهة",
     dateRange: "الفترة الزمنية",
     allTime: "كل الوقت",
@@ -237,6 +326,8 @@ const copy = {
     clear: "مسح",
     refresh: "تحديث",
     records: "سجلاً",
+    total: "الإجمالي",
+    perPage: "/ صفحة",
     result: "النتيجة",
     loading: "جارٍ التحميل...",
     noConversations: "لا توجد محادثات تطابق هذه المرشحات.",
@@ -299,6 +390,10 @@ const copy = {
     published: "منشور",
     draft: "مسودة",
     noDiagnostics: "لا توجد سجلات تشخيص.",
+    searchSkills: "البحث باسم المهارة أو المعرف أو المصدر أو الحالة أو المجال",
+    searchTools: "البحث باسم الأداة أو العملية أو نقطة النهاية",
+    rowsPerPage: "صفوف في الصفحة",
+    userId: "معرف المستخدم",
     resizePanels: "تغيير حجم قائمة المحادثات ولوحة التفاصيل",
     accountMenu: "قائمة الحساب",
     auditNavigation: "التنقل في التدقيق",
@@ -340,6 +435,71 @@ const copy = {
   },
 };
 
+const configFieldLabels = {
+  en: {
+    llm_base_url: "LLM base URL",
+    llm_api_key: "LLM API key",
+    llm_model: "Model name",
+    llm_timeout_seconds: "LLM timeout (seconds)",
+    skill_router_mode: "Skill routing mode",
+    skill_router_timeout_seconds: "Skill routing timeout (seconds)",
+    skill_router_fallback_skill_id: "Default knowledge fallback skill",
+    system_prompt: "Additional system prompt",
+    database_url: "Database URL",
+    redis_url: "Redis URL",
+    knowledge_gateway_url: "Knowledge tool URL",
+    knowledge_default_folder_id: "Default knowledge folder ID",
+    knowledge_top_k: "Knowledge top K",
+    knowledge_timeout_seconds: "Knowledge timeout (seconds)",
+    platform_timeout_seconds: "Business tool timeout (seconds)",
+    ocr_gateway_url: "OCR tool URL",
+    umc_portal: "UMC portal",
+    umc_customer_base_url: "Customer Portal base URL",
+    umc_document_base_url: "UMC document URL",
+    external_tools_enabled: "Enable external tools",
+    audit_retention_days: "Execution audit retention (days)",
+    audit_cleanup_interval_seconds: "Audit cleanup interval (seconds)",
+    audit_admin_enabled: "Enable global audit administrator scope",
+    audit_admin_user_ids: "Audit administrator UMC user IDs",
+  },
+  ar: {
+    llm_base_url: "عنوان النموذج اللغوي",
+    llm_api_key: "مفتاح API للنموذج اللغوي",
+    llm_model: "اسم النموذج",
+    llm_timeout_seconds: "مهلة النموذج اللغوي (ثانية)",
+    skill_router_mode: "وضع توجيه المهارات",
+    skill_router_timeout_seconds: "مهلة توجيه المهارات (ثانية)",
+    skill_router_fallback_skill_id: "مهارة المعرفة الاحتياطية",
+    system_prompt: "تعليمات النظام الإضافية",
+    database_url: "عنوان قاعدة البيانات",
+    redis_url: "عنوان Redis",
+    knowledge_gateway_url: "عنوان أداة المعرفة",
+    knowledge_default_folder_id: "معرف مجلد المعرفة الافتراضي",
+    knowledge_top_k: "عدد نتائج المعرفة",
+    knowledge_timeout_seconds: "مهلة المعرفة (ثانية)",
+    platform_timeout_seconds: "مهلة أداة الأعمال (ثانية)",
+    ocr_gateway_url: "عنوان أداة OCR",
+    umc_portal: "بوابة UMC",
+    umc_customer_base_url: "عنوان بوابة العميل",
+    umc_document_base_url: "عنوان مستندات UMC",
+    external_tools_enabled: "تفعيل الأدوات الخارجية",
+    audit_retention_days: "مدة الاحتفاظ بتدقيق التنفيذ (يوم)",
+    audit_cleanup_interval_seconds: "فاصل تنظيف التدقيق (ثانية)",
+    audit_admin_enabled: "تفعيل نطاق مسؤول التدقيق العام",
+    audit_admin_user_ids: "معرفات مستخدمي مسؤولي التدقيق",
+  },
+};
+
+const configSections = [
+  { id: "model", labelKey: "configGroupModel" },
+  { id: "routing", labelKey: "configGroupDsh" },
+  { id: "tools", labelKey: "configGroupExternal" },
+  { id: "environment", labelKey: "configGroupEnvironment" },
+  { id: "audit", labelKey: "configGroupAudit" },
+];
+
+const booleanConfigKeys = new Set(["external_tools_enabled", "audit_admin_enabled"]);
+
 const t = (key) => copy[auditState.language][key] || copy.en[key] || key;
 const byId = (id) => document.getElementById(id);
 
@@ -354,7 +514,7 @@ function escapeHtml(value) {
 
 const iconPaths = {
   audit: '<path d="M12 3 4.5 6v5.2c0 4.8 3.2 8.3 7.5 9.8 4.3-1.5 7.5-5 7.5-9.8V6L12 3Z"/><path d="m9 12 2 2 4-4"/>',
-  conversations: '<path d="M7 8h10M7 12h7"/><path d="M5 19h10l4 2v-4a3 3 0 0 0 2-3V6a3 3 0 0 0-3-3H6a3 3 0 0 0-3 3v8a3 3 0 0 0 2 3v2Z"/>',
+  conversations: '<g transform="scale(.0234375)" fill="currentColor" stroke="none"><path d="M171.6 391.272v351.712c0 25.336 25.704 45.872 57.376 45.872h114.768v76.456c0 8.456 11.832 16.88 22.408 16.88.376 0 .512.016.576.048 6.136.712 15.104-2.832 19.728-6.504l108.656-86.888h269.424c31.68 0 57.384-20.536 57.384-45.872V391.272c0-25.336-25.704-45.872-57.384-45.872H228.976c-31.672 0-57.376 20.536-57.376 45.872zm38.256 15.296c0-16.872 17.128-30.576 38.24-30.576h497.312c21.112 0 38.24 13.696 38.24 30.576v321.128c0 16.88-17.128 30.576-38.24 30.576h-265.68c-1.552.68-5.232 3.824-6.544 4.856l-91.176 72.912v-62.48c0-8.448-8.552-15.296-19.136-15.296H248.104c-21.112 0-38.24-13.696-38.24-30.576v-321.12z"/><path d="M872.528 217.048H336.976c-31.672 0-57.376 20.536-57.376 45.872v44.72a67.896 67.896 0 0 1 16.088-1.992h22.168v-27.432c0-16.872 17.128-30.576 38.24-30.576h497.312c21.112 0 38.24 13.696 38.24 30.576v321.128c0 16.816-17 30.456-38 30.56v30.592h18.872c31.68 0 57.384-20.536 57.384-45.872V262.92c.008-25.336-25.696-45.872-57.376-45.872z"/><circle cx="361.208" cy="565.336" r="33.88"/><circle cx="496.768" cy="565.336" r="33.88"/><circle cx="632.296" cy="565.336" r="33.88"/></g>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6m3-3h-6"/>',
   logout: '<path d="M10 17l5-5-5-5m5 5H3"/><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
@@ -364,7 +524,7 @@ const iconPaths = {
   left: '<path d="m15 18-6-6 6-6"/>',
   right: '<path d="m9 18 6-6-6-6"/>',
   message: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v8Z"/>',
-  tool: '<path d="M14.7 6.3a4 4 0 0 0-5-5L12 3.6 8.6 7 6.3 4.7a4 4 0 0 0 5 5L4 17l3 3 7.7-7.7a4 4 0 0 0 5-5L17.4 9.6 14 6.2l.7.1Z"/>',
+  tool: '<path transform="scale(.0234375)" fill="currentColor" stroke="none" d="M810.666 942.933c-34.133 0-68.266-12.8-93.866-38.4L482.133 669.866c-140.8 51.2-302.933-12.8-371.2-153.6-38.4-81.066-38.4-174.933 0-256 4.266-12.8 17.066-21.333 29.866-25.6s25.6 0 38.4 12.8L315.733 384H384v-68.266L247.466 179.2c-8.533-8.533-12.8-21.333-12.8-38.4 4.266-12.8 12.8-25.6 25.6-29.866 72.533-34.133 153.6-38.4 230.4-12.8s136.533 81.066 170.666 153.6c34.133 72.533 38.4 153.6 12.8 230.4L908.8 716.8c51.2 51.2 51.2 136.533 0 187.733-29.866 25.6-64 38.4-98.133 38.4zM490.666 576c12.8 0 21.333 4.266 29.866 12.8l256 256c17.066 17.066 51.2 17.066 68.266 0 8.533-8.533 12.8-21.333 12.8-34.133s-4.266-25.6-12.8-34.133l-256-256c-12.8-12.8-17.066-34.133-8.533-46.933 29.866-59.733 29.866-123.733 0-183.466-25.6-51.2-68.266-93.866-119.466-110.933-34.133-12.8-68.266-17.066-102.4-8.533l98.133 98.133c8.533 8.533 12.8 17.066 12.8 29.866v128c0 25.6-17.066 42.666-42.666 42.666H298.666c-12.8 0-21.333-4.266-29.866-12.8L170.666 358.4c-4.266 42.666 0 85.333 17.066 123.733 51.2 106.666 179.2 149.333 285.866 102.4 4.266-8.533 12.8-8.533 17.066-8.533z"/>',
   llm: '<path d="m12 3-1.7 4.3L6 9l4.3 1.7L12 15l1.7-4.3L18 9l-4.3-1.7L12 3Z"/><path d="m5 14-.8 2.2L2 17l2.2.8L5 20l.8-2.2L8 17l-2.2-.8L5 14Zm14-1-1 2.5-2.5 1L18 17.5l1 2.5 1-2.5 2.5-1-2.5-1L19 13Z"/>',
   runtime: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
@@ -373,6 +533,10 @@ const iconPaths = {
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/>',
   database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>',
+  settings: '<path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3"/><path d="M14 2v4M8 10v4M16 18v4"/>',
+  save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/>',
+  lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+  bot: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M8 12h.01M16 12h.01M8 16h8"/>',
 };
 
 function icon(name, label = "") {
@@ -424,7 +588,7 @@ function setDirection() {
   const isArabic = auditState.language === "ar";
   document.documentElement.lang = isArabic ? "ar" : "en";
   document.documentElement.dir = isArabic ? "rtl" : "ltr";
-  document.title = t("product");
+  document.title = "NMA Chatbot Audit Console";
 }
 
 function toggleLanguage() {
@@ -434,7 +598,169 @@ function toggleLanguage() {
   else renderLogin();
 }
 
+function revealAuditApp() {
+  document.documentElement.classList.remove("dsh-audit-boot");
+}
+
+function bindLoginStarlightMotion() {
+  const stage = byId("auditLoginBrand");
+  const canvas = byId("auditStarlightCanvas");
+  if (!stage || !(canvas instanceof HTMLCanvasElement)) return;
+
+  const context = canvas.getContext("2d");
+  if (!context) return;
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const pointer = { x: 0, y: 0, previousX: 0, previousY: 0, active: false };
+  const stars = [];
+  let width = 0;
+  let height = 0;
+  let frame = 0;
+  let previousTime = performance.now();
+
+  function resetStars() {
+    const count = Math.max(42, Math.min(86, Math.round((width * height) / 8500)));
+    stars.length = 0;
+    for (let index = 0; index < count; index += 1) {
+      const anchorX = Math.random() * width;
+      const anchorY = Math.random() * height;
+      stars.push({
+        anchorX,
+        anchorY,
+        x: anchorX,
+        y: anchorY,
+        previousX: anchorX,
+        previousY: anchorY,
+        velocityX: 0,
+        velocityY: 0,
+        radius: 0.65 + Math.random() * 1.45,
+        opacity: 0.22 + Math.random() * 0.56,
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+
+  function resize() {
+    const bounds = stage.getBoundingClientRect();
+    const nextWidth = Math.max(1, Math.round(bounds.width));
+    const nextHeight = Math.max(1, Math.round(bounds.height));
+    if (nextWidth === width && nextHeight === height) return;
+    width = nextWidth;
+    height = nextHeight;
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(width * pixelRatio);
+    canvas.height = Math.round(height * pixelRatio);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    pointer.x = width / 2;
+    pointer.y = height / 2;
+    pointer.previousX = pointer.x;
+    pointer.previousY = pointer.y;
+    resetStars();
+  }
+
+  function draw(time) {
+    const elapsed = Math.min(2, (time - previousTime) / 16.67);
+    previousTime = time;
+    context.clearRect(0, 0, width, height);
+
+    const pointerVelocityX = pointer.x - pointer.previousX;
+    const pointerVelocityY = pointer.y - pointer.previousY;
+    const influenceRadius = Math.min(190, Math.max(130, width * 0.24));
+
+    for (const star of stars) {
+      star.previousX = star.x;
+      star.previousY = star.y;
+
+      if (!reduceMotion) {
+        const deltaX = pointer.x - star.x;
+        const deltaY = pointer.y - star.y;
+        const distance = Math.hypot(deltaX, deltaY);
+        if (pointer.active && distance < influenceRadius) {
+          const pull = Math.pow(1 - distance / influenceRadius, 2);
+          star.velocityX += (deltaX * 0.012 + pointerVelocityX * 0.16) * pull * elapsed;
+          star.velocityY += (deltaY * 0.012 + pointerVelocityY * 0.16) * pull * elapsed;
+        }
+
+        star.velocityX += (star.anchorX - star.x) * 0.005 * elapsed;
+        star.velocityY += (star.anchorY - star.y) * 0.005 * elapsed;
+        const damping = Math.pow(0.9, elapsed);
+        star.velocityX *= damping;
+        star.velocityY *= damping;
+        star.x += star.velocityX * elapsed;
+        star.y += star.velocityY * elapsed;
+      }
+
+      const speed = Math.hypot(star.velocityX, star.velocityY);
+      const twinkle = 0.72 + Math.sin(time * 0.0018 + star.phase) * 0.28;
+      const opacity = Math.min(0.95, star.opacity * twinkle + speed * 0.018);
+      const trailScale = Math.min(5.5, 1.8 + speed * 0.35);
+
+      if (speed > 0.4) {
+        const trail = context.createLinearGradient(
+          star.x - star.velocityX * trailScale,
+          star.y - star.velocityY * trailScale,
+          star.x,
+          star.y,
+        );
+        trail.addColorStop(0, "rgba(255, 225, 145, 0)");
+        trail.addColorStop(1, `rgba(255, 238, 190, ${opacity * 0.72})`);
+        context.beginPath();
+        context.moveTo(star.x - star.velocityX * trailScale, star.y - star.velocityY * trailScale);
+        context.lineTo(star.x, star.y);
+        context.strokeStyle = trail;
+        context.lineWidth = Math.max(0.7, star.radius * 0.8);
+        context.stroke();
+      }
+
+      context.beginPath();
+      context.arc(star.x, star.y, star.radius + Math.min(1.4, speed * 0.04), 0, Math.PI * 2);
+      context.fillStyle = `rgba(255, 241, 202, ${opacity})`;
+      context.shadowColor = "rgba(255, 215, 112, 0.9)";
+      context.shadowBlur = 7 + Math.min(11, speed * 0.24);
+      context.fill();
+      context.shadowBlur = 0;
+    }
+
+    pointer.previousX += (pointer.x - pointer.previousX) * 0.7;
+    pointer.previousY += (pointer.y - pointer.previousY) * 0.7;
+    if (!reduceMotion) frame = requestAnimationFrame(draw);
+  }
+
+  function movePointer(event) {
+    const bounds = stage.getBoundingClientRect();
+    pointer.x = event.clientX - bounds.left;
+    pointer.y = event.clientY - bounds.top;
+    if (!pointer.active) {
+      pointer.previousX = pointer.x;
+      pointer.previousY = pointer.y;
+    }
+    pointer.active = true;
+  }
+
+  function leavePointer() {
+    pointer.active = false;
+  }
+
+  resize();
+  stage.addEventListener("pointermove", movePointer);
+  stage.addEventListener("pointerleave", leavePointer);
+  const resizeObserver = new ResizeObserver(resize);
+  resizeObserver.observe(stage);
+  draw(previousTime);
+
+  auditState.loginMotionCleanup = () => {
+    cancelAnimationFrame(frame);
+    resizeObserver.disconnect();
+    stage.removeEventListener("pointermove", movePointer);
+    stage.removeEventListener("pointerleave", leavePointer);
+    auditState.loginMotionCleanup = null;
+  };
+}
+
 function renderLogin(message = "") {
+  auditState.loginMotionCleanup?.();
   if (auditState.accountOutsideHandler) document.removeEventListener("click", auditState.accountOutsideHandler);
   if (auditState.accountEscapeHandler) document.removeEventListener("keydown", auditState.accountEscapeHandler);
   auditState.accountOutsideHandler = null;
@@ -445,24 +771,30 @@ function renderLogin(message = "") {
   document.body.className = "audit-app-body audit-login-body";
   document.body.innerHTML = `
     <main class="audit-login-page">
-      <section class="audit-login-brand" aria-label="${escapeHtml(t("authority"))}">
-        <div class="audit-brand-lockup"><span class="audit-brand-mark">${icon("audit")}</span><span>${escapeHtml(t("authority"))}</span></div>
-        <div class="audit-login-brand-copy"><p>${escapeHtml(t("product"))}</p><h1>${escapeHtml(t("conversationAudit"))}</h1><span>${escapeHtml(t("authorizedOnly"))}</span></div>
-        <small>${escapeHtml(t("auditConsole"))}</small>
+      <section id="auditLoginBrand" class="audit-login-brand" aria-label="${escapeHtml(t("authority"))}">
+        <canvas id="auditStarlightCanvas" class="audit-starlight-canvas" aria-hidden="true"></canvas>
+        <img class="audit-login-brand-logo" src="${escapeHtml(auditAssetUrl("assets/login-logo.png"))}" alt="${escapeHtml(t("authority"))}">
+        <div class="audit-login-brand-copy">
+          <h1>${escapeHtml(t("product"))}</h1>
+        </div>
       </section>
       <section class="audit-login-panel">
         <button id="auditLanguageBtn" class="audit-language-button" type="button">${auditState.language === "en" ? "العربية" : "English"}</button>
         <form id="auditLoginForm" class="audit-login-form">
-          <span class="audit-login-symbol">${icon("audit")}</span>
           <div><h2>${escapeHtml(t("signIn"))}</h2><p>${escapeHtml(t("signInHint"))}</p></div>
           <label><span>${escapeHtml(t("username"))}</span><input id="auditUsername" type="text" autocomplete="username" placeholder="${escapeHtml(t("usernamePlaceholder"))}" required autofocus></label>
           <label><span>${escapeHtml(t("password"))}</span><span class="audit-password-field"><input id="auditPassword" type="password" autocomplete="current-password" placeholder="${escapeHtml(t("passwordPlaceholder"))}" required><button id="auditPasswordToggle" type="button" aria-label="${escapeHtml(t("showPassword"))}">${icon("eye")}</button></span></label>
           <p id="auditLoginError" class="audit-form-error" role="alert">${escapeHtml(message)}</p>
           <button id="auditLoginSubmit" class="audit-primary-button" type="submit">${escapeHtml(t("signInAction"))}</button>
-          <p class="audit-login-note">${icon("audit")}<span>${escapeHtml(t("loginAuditNote"))}</span></p>
         </form>
       </section>
     </main>`;
+  byId("auditLoginBrand").style.setProperty(
+    "--audit-login-background",
+    `url("${auditAssetUrl("assets/login-bg.png")}")`,
+  );
+  revealAuditApp();
+  bindLoginStarlightMotion();
   byId("auditLanguageBtn").addEventListener("click", toggleLanguage);
   byId("auditPasswordToggle").addEventListener("click", () => {
     const input = byId("auditPassword");
@@ -508,10 +840,12 @@ function currentViewTitle() {
     users: t("accountManagement"),
     skills: t("skillsDiagnostics"),
     tools: t("toolsDiagnostics"),
+    configuration: t("configurationManagement"),
   }[auditState.view] || t("conversationAudit");
 }
 
 function renderApplication() {
+  auditState.loginMotionCleanup?.();
   setDirection();
   document.body.className = "audit-app-body";
   const session = auditState.session;
@@ -523,6 +857,7 @@ function renderApplication() {
           <button class="audit-nav-item ${auditState.view === "conversations" ? "is-active" : ""}" data-audit-view="conversations" type="button">${icon("conversations")}<span>${escapeHtml(t("conversations"))}</span></button>
           ${isAdministrator() ? `<button class="audit-nav-item ${auditState.view === "skills" ? "is-active" : ""}" data-audit-view="skills" type="button">${icon("llm")}<span>${escapeHtml(t("skills"))}</span></button>
           <button class="audit-nav-item ${auditState.view === "tools" ? "is-active" : ""}" data-audit-view="tools" type="button">${icon("tool")}<span>${escapeHtml(t("tools"))}</span></button>
+          <button class="audit-nav-item ${auditState.view === "configuration" ? "is-active" : ""}" data-audit-view="configuration" type="button">${icon("settings")}<span>${escapeHtml(t("configuration"))}</span></button>
           <button class="audit-nav-item ${auditState.view === "users" ? "is-active" : ""}" data-audit-view="users" type="button">${icon("users")}<span>${escapeHtml(t("accounts"))}</span></button>` : ""}
         </nav>
       </aside>
@@ -548,20 +883,23 @@ function renderApplication() {
   byId("auditMenuBtn").addEventListener("click", () => byId("auditSidebar").classList.toggle("is-open"));
   document.querySelectorAll("[data-audit-view]").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.auditView)));
   renderCurrentView();
+  revealAuditApp();
 }
 
 function renderCurrentView() {
   if (auditState.view === "users" && isAdministrator()) renderUsersView();
   else if (["skills", "tools"].includes(auditState.view) && isAdministrator()) renderDiagnosticsView(auditState.view);
+  else if (auditState.view === "configuration" && isAdministrator()) renderConfigurationView();
   else renderConversationsView();
 }
 
 function switchView(view) {
-  if (["users", "skills", "tools"].includes(view) && !isAdministrator()) return;
+  if (["users", "skills", "tools", "configuration"].includes(view) && !isAdministrator()) return;
   auditState.view = view;
   renderApplication();
   if (view === "users" && !auditState.usersLoaded) void loadUsers();
   if (["skills", "tools"].includes(view) && !auditState.diagnosticsLoaded[view]) void loadDiagnostics(view);
+  if (view === "configuration" && !auditState.configurationLoaded) void loadConfiguration();
 }
 
 function bindAccountMenu() {
@@ -597,6 +935,15 @@ async function handleLogout() {
   auditState.usersLoaded = false;
   auditState.diagnostics = { skills: [], tools: [] };
   auditState.diagnosticsLoaded = { skills: false, tools: false };
+  auditState.diagnosticMeta = {
+    skills: { page: 1, pageSize: 25, total: 0, search: "" },
+    tools: { page: 1, pageSize: 25, total: 0, search: "" },
+  };
+  auditState.configuration = [];
+  auditState.configurationLoaded = false;
+  auditState.configurationSection = "model";
+  auditState.configurationDraft = {};
+  auditState.configurationSecretsOpen.clear();
   auditState.expandedSummaries.clear();
   auditState.openPayloads.clear();
   renderLogin();
@@ -766,6 +1113,18 @@ function conversationTitle(item) {
   return item?.title || item?.firstMessage || item?.first_message || conversationKey(item) || t("untitledConversation");
 }
 
+function compactIdentifier(value) {
+  const text = String(value || "");
+  return text.length > 22 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text;
+}
+
+function conversationAccount(item) {
+  const account = item?.ownerAccount || item?.owner_account || item?.auditIdentity?.account || item?.audit_identity?.account || item?.account;
+  if (account) return String(account);
+  const userId = item?.ownerUserId || item?.owner_user_id || item?.owner?.userId || item?.owner?.user_id || "";
+  return userId ? `${t("userId")}: ${compactIdentifier(userId)}` : t("notRecorded");
+}
+
 function statusInfo(value) {
   const normalized = String(value || "").toUpperCase();
   if (["READY", "COMPLETED", "SUCCESS"].includes(normalized)) return { className: "success", label: t("completed") };
@@ -795,10 +1154,9 @@ function renderConversationList() {
     list.innerHTML = auditState.conversations.map((item) => {
       const id = conversationKey(item);
       const status = statusInfo(item.status);
-      const owner = item.ownerUserId || item.owner_user_id || item.owner?.userId || item.account || "";
       const tenant = item.ownerTenantId || item.owner_tenant_id || item.owner?.tenantId || item.tenant || "";
       return `<button class="audit-conversation-row ${id === auditState.selectedConversationId ? "is-selected" : ""}" type="button" data-conversation-id="${escapeHtml(id)}">
-        <span><strong>${escapeHtml(conversationTitle(item))}</strong><code dir="ltr">${escapeHtml(displayConversationId(item))}</code><small dir="auto">${escapeHtml([owner, tenant, formatDate(item.lastActivityAt || item.last_activity_at || item.createdAt)].filter(Boolean).join(" · "))}</small></span>
+        <span><strong dir="auto" title="${escapeHtml(conversationAccount(item))}">${escapeHtml(conversationAccount(item))}</strong><span class="audit-conversation-preview" dir="auto" title="${escapeHtml(conversationTitle(item))}">${escapeHtml(conversationTitle(item))}</span><small dir="auto">${escapeHtml([tenant, formatDate(item.lastActivityAt || item.last_activity_at || item.createdAt)].filter(Boolean).join(" · "))}</small></span>
         <span class="audit-status ${status.className}">${escapeHtml(status.label)}</span>
       </button>`;
     }).join("");
@@ -878,24 +1236,27 @@ function renderConversationDetail() {
   const status = statusInfo(detail.status);
   const owner = detail.owner || {};
   const identity = detail.auditIdentity || detail.audit_identity || {};
-  const account = detailField(identity, "account") !== "-" ? detailField(identity, "account") : detailField(owner, "userId", "user_id");
+  const account = detailField(identity, "account") !== "-"
+    ? detailField(identity, "account")
+    : conversationAccount({ ...listItem, ...detail, owner });
   const recordedRole = detailField(identity, "currentRole", "current_role", "role");
   const currentRole = recordedRole === "-" ? t("notRecorded") : recordedRole;
   const facts = [
-    [t("account"), account],
     [t("role"), currentRole],
+    [t("tenant"), detailField(detail, "ownerTenantId", "owner_tenant_id") !== "-" ? detailField(detail, "ownerTenantId", "owner_tenant_id") : detailField(owner, "tenantId", "tenant_id")],
     [t("runtime"), detailField(detail, "runtimeId", "runtime_id")],
     [t("lastActivity"), formatDate(detailField(detail, "lastActivityAt", "last_activity_at"))],
   ];
   const additionalFacts = [
-    [t("tenant"), detailField(detail, "ownerTenantId", "owner_tenant_id") !== "-" ? detailField(detail, "ownerTenantId", "owner_tenant_id") : detailField(owner, "tenantId", "tenant_id")],
+    [t("userId"), detailField(owner, "userId", "user_id")],
+    [t("conversationId"), detailField(detail, "conversationId", "conversation_id")],
     [t("events"), detailField(detail, "lastSeq", "last_seq")],
     [t("created"), formatDate(detailField(detail, "createdAt", "created_at"))],
     [t("dshSession"), detailField(detail, "dshSessionId", "dsh_session_id")],
     [t("skillProfile"), detailField(detail, "skillProfile", "skill_profile")],
   ];
   panel.innerHTML = `
-    <header class="audit-detail-head"><div><span class="audit-status ${status.className}">${escapeHtml(status.label)}</span><h2>${escapeHtml(conversationTitle(listItem))}</h2><code dir="ltr">${escapeHtml(displayConversationId(detail))}</code></div></header>
+    <header class="audit-detail-head"><div><span class="audit-status ${status.className}">${escapeHtml(status.label)}</span><h2 dir="auto" title="${escapeHtml(account)}">${escapeHtml(account)}</h2><p dir="auto" title="${escapeHtml(conversationTitle(listItem))}">${escapeHtml(conversationTitle(listItem))}</p></div></header>
     <dl class="audit-detail-facts">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd dir="auto" title="${escapeHtml(value)}">${escapeHtml(value)}</dd></div>`).join("")}</dl>
     <details class="audit-session-details"><summary><span>${escapeHtml(t("sessionDetails"))}</span>${icon("chevron")}</summary><dl>${additionalFacts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd dir="auto" title="${escapeHtml(value)}">${escapeHtml(value)}</dd></div>`).join("")}</dl></details>
     ${detail.lastError || detail.last_error ? `<p class="audit-detail-error">${escapeHtml(detail.lastError || detail.last_error)}</p>` : ""}
@@ -1055,16 +1416,43 @@ function bindTimelineActions(panel) {
 function renderDiagnosticsView(kind) {
   const isSkills = kind === "skills";
   const items = auditState.diagnostics[kind] || [];
+  const meta = auditState.diagnosticMeta[kind];
   const headings = isSkills
     ? [t("name"), "ID", t("version"), t("source"), t("status"), t("tools")]
     : [t("name"), t("endpoint"), t("effect"), t("source"), t("status")];
   byId("auditContent").innerHTML = `
     <section class="audit-diagnostics-panel">
       <header><div><h2>${escapeHtml(t(isSkills ? "skillsDiagnostics" : "toolsDiagnostics"))}</h2><p>${escapeHtml(t("diagnosticsHint"))}</p></div><button id="auditDiagnosticsRefresh" class="audit-icon-button" type="button" title="${escapeHtml(t("refresh"))}" aria-label="${escapeHtml(t("refresh"))}">${icon("refresh")}</button></header>
+      <form id="auditDiagnosticsControls" class="audit-diagnostics-controls">
+        <label class="audit-search-field"><span class="audit-visually-hidden">${escapeHtml(t("search"))}</span>${icon("search")}<input id="auditDiagnosticsSearch" type="search" value="${escapeHtml(meta.search)}" placeholder="${escapeHtml(t(isSkills ? "searchSkills" : "searchTools"))}" autocomplete="off"></label>
+      </form>
       <div class="audit-diagnostics-table-wrap"><table class="audit-diagnostics-table"><thead><tr>${headings.map((heading) => `<th>${escapeHtml(heading)}</th>`).join("")}</tr></thead><tbody id="auditDiagnosticsBody"></tbody></table></div>
+      <footer class="audit-diagnostics-footer">
+        <div class="audit-diagnostics-footer-controls">
+          <span id="auditDiagnosticsCount" class="audit-diagnostics-count">${escapeHtml(t("total"))} ${meta.total}</span>
+          <div id="auditDiagnosticsPager" class="audit-pagination"></div>
+          <label class="audit-page-size"><span class="audit-visually-hidden">${escapeHtml(t("rowsPerPage"))}</span><select id="auditDiagnosticsPageSize">${[25, 50, 100].map((size) => `<option value="${size}" ${size === meta.pageSize ? "selected" : ""}>${size} ${escapeHtml(t("perPage"))}</option>`).join("")}</select></label>
+        </div>
+      </footer>
     </section>`;
-  byId("auditDiagnosticsRefresh").addEventListener("click", () => void loadDiagnostics(kind));
+  byId("auditDiagnosticsRefresh").addEventListener("click", () => void loadDiagnostics(kind, meta.page));
+  byId("auditDiagnosticsControls").addEventListener("submit", (event) => {
+    event.preventDefault();
+    meta.search = byId("auditDiagnosticsSearch").value.trim();
+    void loadDiagnostics(kind, 1);
+  });
+  let searchTimer;
+  byId("auditDiagnosticsSearch").addEventListener("input", (event) => {
+    meta.search = event.currentTarget.value.trim();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => void loadDiagnostics(kind, 1), 300);
+  });
+  byId("auditDiagnosticsPageSize").addEventListener("change", (event) => {
+    meta.pageSize = Number(event.currentTarget.value) || 25;
+    void loadDiagnostics(kind, 1);
+  });
   renderDiagnosticsRows(kind, items);
+  renderDiagnosticsPager(kind);
 }
 
 function renderDiagnosticsRows(kind, items = auditState.diagnostics[kind] || []) {
@@ -1089,30 +1477,250 @@ function renderDiagnosticsRows(kind, items = auditState.diagnostics[kind] || [])
   }).join("");
 }
 
-async function loadDiagnostics(kind) {
+function renderDiagnosticsPager(kind) {
+  const meta = auditState.diagnosticMeta[kind];
+  const count = byId("auditDiagnosticsCount");
+  const pager = byId("auditDiagnosticsPager");
+  if (count) count.textContent = `${t("total")} ${meta.total}`;
+  if (!pager) return;
+  const totalPages = Math.max(1, Math.ceil(meta.total / meta.pageSize));
+  pager.innerHTML = `<span class="audit-page-position">${meta.page}/${totalPages}</span><button class="audit-icon-button" type="button" data-diagnostic-page="${meta.page - 1}" aria-label="${escapeHtml(t("prev"))}" ${meta.page <= 1 ? "disabled" : ""}>${icon(auditState.language === "ar" ? "right" : "left")}</button><button class="audit-icon-button" type="button" data-diagnostic-page="${meta.page + 1}" aria-label="${escapeHtml(t("next"))}" ${meta.page >= totalPages ? "disabled" : ""}>${icon(auditState.language === "ar" ? "left" : "right")}</button>`;
+  pager.querySelectorAll("[data-diagnostic-page]").forEach((button) => button.addEventListener("click", () => void loadDiagnostics(kind, Number(button.dataset.diagnosticPage))));
+}
+
+async function loadDiagnostics(kind, page = auditState.diagnosticMeta[kind].page) {
   const body = byId("auditDiagnosticsBody");
   const columns = kind === "skills" ? 6 : 5;
+  const meta = auditState.diagnosticMeta[kind];
+  const request = ++auditState.diagnosticRequests[kind];
   if (body) body.innerHTML = `<tr><td colspan="${columns}"><div class="audit-empty-state audit-loading-state"><span class="audit-spinner"></span>${escapeHtml(t("loading"))}</div></td></tr>`;
   try {
-    const pageSize = 100;
-    let page = 1;
-    let total = Number.POSITIVE_INFINITY;
-    const items = [];
-    while (items.length < total) {
-      const data = await auditApi(`/api/v1/audit/${kind}?page=${page}&pageSize=${pageSize}`);
-      const pageItems = data.items || data[kind] || (Array.isArray(data) ? data : []);
-      items.push(...pageItems);
-      total = Number(data.total ?? items.length);
-      if (!pageItems.length || pageItems.length < pageSize) break;
-      page += 1;
-    }
-    auditState.diagnostics[kind] = items;
+    const params = new URLSearchParams({ page: String(page), pageSize: String(meta.pageSize) });
+    if (meta.search) params.set("search", meta.search);
+    const data = await auditApi(`/api/v1/audit/${kind}?${params}`);
+    if (request !== auditState.diagnosticRequests[kind]) return;
+    auditState.diagnostics[kind] = data.items || data[kind] || (Array.isArray(data) ? data : []);
+    meta.page = Number(data.page || page);
+    meta.pageSize = Number(data.pageSize || data.page_size || meta.pageSize);
+    meta.total = Number(data.total ?? auditState.diagnostics[kind].length);
     auditState.diagnosticsLoaded[kind] = true;
-    if (auditState.view === kind) renderDiagnosticsRows(kind);
+    if (auditState.view === kind) {
+      renderDiagnosticsRows(kind);
+      renderDiagnosticsPager(kind);
+    }
+  } catch (error) {
+    if (error.message === "AUTH_REQUIRED" || request !== auditState.diagnosticRequests[kind]) return;
+    if (body) body.innerHTML = `<tr><td colspan="${columns}"><div class="audit-empty-state audit-error-state"><p>${escapeHtml(t("loadFailed"))}</p><button id="auditDiagnosticsRetry" class="audit-secondary-button" type="button">${escapeHtml(t("retry"))}</button></div></td></tr>`;
+    byId("auditDiagnosticsRetry")?.addEventListener("click", () => void loadDiagnostics(kind, page));
+  }
+}
+
+function configurationLabel(item) {
+  return configFieldLabels[auditState.language]?.[item.key]
+    || configFieldLabels.en[item.key]
+    || item.env
+    || item.key;
+}
+
+function configurationValue(item) {
+  if (item.secret) return "";
+  if (item.value === null || item.value === undefined) return "";
+  return String(item.value);
+}
+
+function configurationSectionForItem(item) {
+  if (["基础设施", "UMC Portal"].includes(item.group) || item.key === "umc_document_base_url") return "environment";
+  if (item.group === "模型") return "model";
+  if (item.group === "外部 Tool") return "tools";
+  if (item.group === "链路审计") return "audit";
+  return "routing";
+}
+
+function configurationDraftValue(item) {
+  return Object.prototype.hasOwnProperty.call(auditState.configurationDraft, item.key)
+    ? auditState.configurationDraft[item.key]
+    : configurationValue(item);
+}
+
+function configurationIsModified(item) {
+  return Object.prototype.hasOwnProperty.call(auditState.configurationDraft, item.key);
+}
+
+function configurationFieldId(item) {
+  return `audit-config-${String(item.key).replace(/[^a-z0-9_-]/gi, "-")}`;
+}
+
+function configurationControl(item) {
+  const value = configurationDraftValue(item);
+  const fieldId = configurationFieldId(item);
+  if (item.readOnly) {
+    const displayValue = item.secret ? t(item.configured ? "configured" : "notConfigured") : value || t("notConfigured");
+    return `<div id="${escapeHtml(fieldId)}" class="audit-config-readonly-value">${icon("lock")}<span>${escapeHtml(displayValue)}</span></div>`;
+  }
+  const attributes = `id="${escapeHtml(fieldId)}" data-config-key="${escapeHtml(item.key)}"`;
+  if (booleanConfigKeys.has(item.key)) {
+    return `<span class="audit-config-switch"><input type="checkbox" ${String(value) === "true" ? "checked" : ""} ${attributes}><span aria-hidden="true"></span></span>`;
+  }
+  if (item.multiline) {
+    return `<textarea rows="6" ${attributes}>${escapeHtml(value)}</textarea>`;
+  }
+  const options = Array.isArray(item.options) ? item.options : [];
+  if (options.length) {
+    return `<select ${attributes}>${options.map((option) => {
+      const optionValue = typeof option === "object" ? option.value : option;
+      const optionLabel = typeof option === "object" ? option.label : option;
+      return `<option value="${escapeHtml(optionValue)}" ${String(optionValue) === value ? "selected" : ""}>${escapeHtml(optionLabel)}</option>`;
+    }).join("")}</select>`;
+  }
+  const numeric = /(?:timeout|seconds|days|top_k)$/.test(item.key);
+  const minimum = item.key === "audit_cleanup_interval_seconds" ? "60" : item.key === "audit_retention_days" || item.key === "knowledge_top_k" ? "1" : "0";
+  if (item.secret && !auditState.configurationSecretsOpen.has(item.key)) {
+    return `<div id="${escapeHtml(fieldId)}" class="audit-config-secret-state"><span>${escapeHtml(t(item.configured ? "configured" : "notConfigured"))}</span><button class="audit-secondary-button" type="button" data-config-secret-open="${escapeHtml(item.key)}">${escapeHtml(t(item.configured ? "replaceKey" : "setKey"))}</button></div>`;
+  }
+  if (item.secret) {
+    return `<div class="audit-config-secret-editor"><input type="password" value="${escapeHtml(value)}" placeholder="${escapeHtml(t(item.configured ? "secretConfigured" : "secretNotConfigured"))}" autocomplete="new-password" ${attributes}><button class="audit-secondary-button" type="button" data-config-secret-cancel="${escapeHtml(item.key)}">${escapeHtml(t("cancel"))}</button></div>`;
+  }
+  return `<input type="${numeric ? "number" : "text"}" value="${escapeHtml(value)}" ${numeric ? `min="${minimum}" step="1" required` : ""} ${attributes}>`;
+}
+
+function renderConfigurationView() {
+  const sectionCounts = Object.fromEntries(configSections.map((section) => [section.id, 0]));
+  auditState.configuration.forEach((item) => { sectionCounts[configurationSectionForItem(item)] += 1; });
+  if (!configSections.some((section) => section.id === auditState.configurationSection)) auditState.configurationSection = "model";
+  const items = auditState.configuration.filter((item) => configurationSectionForItem(item) === auditState.configurationSection);
+  const tabs = configSections.map((section) => `<button id="audit-config-tab-${section.id}" class="audit-config-tab" role="tab" type="button" data-config-section="${section.id}" aria-selected="${section.id === auditState.configurationSection}" aria-controls="auditConfigForm">${escapeHtml(t(section.labelKey))}<span>${sectionCounts[section.id]}</span></button>`).join("");
+  const rows = items.map((item) => {
+    const source = item.source === "database" ? t("databaseOverride") : t("environmentDefault");
+    const mode = item.readOnly ? t("readOnly") : t(item.restartRequired ? "restartRequired" : "liveUpdate");
+    const reason = item.readOnly
+      ? t(item.readOnlyReason === "protected_infrastructure" ? "protectedInfrastructure" : "customerEnvironment")
+      : mode;
+    return `<div class="audit-config-row ${configurationIsModified(item) ? "is-modified" : ""} ${item.multiline ? "is-multiline" : ""}" data-config-row="${escapeHtml(item.key)}">
+      <div class="audit-config-identity"><label for="${escapeHtml(configurationFieldId(item))}">${escapeHtml(configurationLabel(item))}</label><code>${escapeHtml(item.env || item.key)}</code></div>
+      <div class="audit-config-control">${configurationControl(item)}</div>
+      <div class="audit-config-badges"><span>${escapeHtml(item.configured ? t("configured") : t("notConfigured"))}</span><span>${escapeHtml(source)}</span><span title="${escapeHtml(reason)}">${escapeHtml(mode)}</span></div>
+    </div>`;
+  }).join("");
+
+  byId("auditContent").innerHTML = `
+    <section class="audit-config-panel">
+      <header><div><h2>${escapeHtml(t("configurationManagement"))}</h2><p>${escapeHtml(t("configurationHint"))}</p></div><button id="auditConfigRefresh" class="audit-icon-button" type="button" title="${escapeHtml(t("refresh"))}" aria-label="${escapeHtml(t("refresh"))}">${icon("refresh")}</button></header>
+      <div class="audit-config-tabs" role="tablist" aria-label="${escapeHtml(t("configuration"))}">${tabs}</div>
+      <p id="auditConfigStatus" class="audit-config-status" role="status" aria-live="polite"></p>
+      <form id="auditConfigForm" role="tabpanel" aria-labelledby="audit-config-tab-${escapeHtml(auditState.configurationSection)}">${rows || `<div class="audit-empty-state audit-loading-state"><span class="audit-spinner"></span>${escapeHtml(t("loading"))}</div>`}</form>
+      <div id="auditConfigSavebar" class="audit-config-savebar" hidden><strong id="auditConfigChangeCount"></strong><div><button id="auditConfigDiscard" class="audit-secondary-button" type="button">${escapeHtml(t("discardChanges"))}</button><button id="auditConfigSave" class="audit-primary-button" type="button">${icon("save")}<span>${escapeHtml(t("saveChanges"))}</span></button></div></div>
+    </section>`;
+  byId("auditConfigRefresh").addEventListener("click", () => void loadConfiguration());
+  byId("auditConfigSave").addEventListener("click", () => void saveConfiguration());
+  byId("auditConfigDiscard").addEventListener("click", () => {
+    auditState.configurationDraft = {};
+    auditState.configurationSecretsOpen.clear();
+    renderConfigurationView();
+  });
+  document.querySelectorAll("[data-config-section]").forEach((tab) => tab.addEventListener("click", () => {
+    auditState.configurationSection = tab.dataset.configSection;
+    renderConfigurationView();
+  }));
+  document.querySelectorAll("[data-config-secret-open]").forEach((button) => button.addEventListener("click", () => {
+    auditState.configurationSecretsOpen.add(button.dataset.configSecretOpen);
+    renderConfigurationView();
+    byId(configurationFieldId({ key: button.dataset.configSecretOpen }))?.focus();
+  }));
+  document.querySelectorAll("[data-config-secret-cancel]").forEach((button) => button.addEventListener("click", () => {
+    delete auditState.configurationDraft[button.dataset.configSecretCancel];
+    auditState.configurationSecretsOpen.delete(button.dataset.configSecretCancel);
+    renderConfigurationView();
+  }));
+  byId("auditConfigForm").addEventListener("submit", (event) => { event.preventDefault(); void saveConfiguration(); });
+  byId("auditConfigForm").querySelectorAll("[data-config-key]").forEach((control) => {
+    control.addEventListener("input", updateConfigurationDraft);
+    control.addEventListener("change", updateConfigurationDraft);
+  });
+  updateConfigurationSaveState();
+}
+
+function updateConfigurationDraft(event) {
+  const control = event.currentTarget;
+  const item = auditState.configuration.find((candidate) => candidate.key === control.dataset.configKey);
+  if (!item) return;
+  const value = control.type === "checkbox" ? control.checked : control.value;
+  if (String(value) === configurationValue(item)) delete auditState.configurationDraft[item.key];
+  else auditState.configurationDraft[item.key] = value;
+  document.querySelector(`[data-config-row="${CSS.escape(item.key)}"]`)?.classList.toggle("is-modified", configurationIsModified(item));
+  updateConfigurationSaveState();
+}
+
+function updateConfigurationSaveState() {
+  const save = byId("auditConfigSave");
+  const savebar = byId("auditConfigSavebar");
+  const countLabel = byId("auditConfigChangeCount");
+  if (!save || !savebar || !countLabel) return;
+  const count = Object.keys(auditState.configurationDraft).length;
+  savebar.hidden = count === 0;
+  save.disabled = count === 0;
+  countLabel.textContent = count === 1 ? t("unsavedChange") : t("unsavedChanges").replace("{count}", String(count));
+}
+
+async function loadConfiguration() {
+  const form = byId("auditConfigForm");
+  if (form) form.innerHTML = `<div class="audit-empty-state audit-loading-state"><span class="audit-spinner"></span>${escapeHtml(t("loading"))}</div>`;
+  try {
+    const data = await auditApi("/api/v1/audit/config");
+    auditState.configuration = data.items || [];
+    auditState.configurationLoaded = true;
+    auditState.configurationDraft = {};
+    auditState.configurationSecretsOpen.clear();
+    if (auditState.view === "configuration") renderConfigurationView();
   } catch (error) {
     if (error.message === "AUTH_REQUIRED") return;
-    if (body) body.innerHTML = `<tr><td colspan="${columns}"><div class="audit-empty-state audit-error-state"><p>${escapeHtml(t("loadFailed"))}</p><button id="auditDiagnosticsRetry" class="audit-secondary-button" type="button">${escapeHtml(t("retry"))}</button></div></td></tr>`;
-    byId("auditDiagnosticsRetry")?.addEventListener("click", () => void loadDiagnostics(kind));
+    if (auditState.view === "configuration") {
+      renderConfigurationView();
+      const status = byId("auditConfigStatus");
+      if (status) status.textContent = t("configLoadFailed");
+    }
+  }
+}
+
+async function saveConfiguration() {
+  const patch = {};
+  for (const [key, value] of Object.entries(auditState.configurationDraft)) {
+    const item = auditState.configuration.find((candidate) => candidate.key === key);
+    if (!item || item.readOnly || (item.secret && !value)) continue;
+    const numeric = /(?:timeout|seconds|days|top_k)$/.test(item.key);
+    if (numeric) {
+      const minimum = item.key === "audit_cleanup_interval_seconds" ? 60 : item.key === "audit_retention_days" || item.key === "knowledge_top_k" ? 1 : 0;
+      if (value === "" || !Number.isFinite(Number(value)) || Number(value) < minimum) {
+        auditState.configurationSection = configurationSectionForItem(item);
+        renderConfigurationView();
+        byId(configurationFieldId(item))?.reportValidity();
+        return;
+      }
+    }
+    patch[key] = booleanConfigKeys.has(key) ? String(value) === "true" : numeric ? Number(value) : value;
+  }
+  const status = byId("auditConfigStatus");
+  if (!Object.keys(patch).length) {
+    if (status) status.textContent = t("noChanges");
+    updateConfigurationSaveState();
+    return;
+  }
+  const save = byId("auditConfigSave");
+  save.disabled = true;
+  try {
+    const data = await auditApi("/api/v1/audit/config", {
+      method: "PATCH",
+      body: JSON.stringify({ scope: "system", patch }),
+    });
+    auditState.configuration = data.items || [];
+    auditState.configurationLoaded = true;
+    auditState.configurationDraft = {};
+    auditState.configurationSecretsOpen.clear();
+    renderConfigurationView();
+    byId("auditConfigStatus").textContent = t("configSaved");
+  } catch (error) {
+    if (error.message === "AUTH_REQUIRED") return;
+    save.disabled = false;
+    if (status) status.textContent = t("configSaveFailed");
   }
 }
 
@@ -1244,11 +1852,14 @@ function showToast(message, isError = false) {
 
 async function bootstrapAudit() {
   setDirection();
-  renderLogin();
+  if (!document.documentElement.classList.contains("dsh-audit-boot")) renderLogin();
   try {
     const data = await auditApi("/api/v1/audit-auth/session");
     const session = normalizeSession(data);
-    if (!session.authenticated) return;
+    if (!session.authenticated) {
+      renderLogin();
+      return;
+    }
     auditState.session = session;
     renderApplication();
     await loadConversations(1);

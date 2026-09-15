@@ -32,6 +32,7 @@ class Conversation(Base):
     conversation_id: Mapped[str] = mapped_column(String(64), index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
+    owner_account: Mapped[str | None] = mapped_column(String(300), nullable=True, index=True)
     dsh_session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     runtime_profile: Mapped[str] = mapped_column(String(128), default="default")
     runtime_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -340,6 +341,8 @@ async def init_db() -> None:
             await connection.execute(text("ALTER TABLE skill ADD COLUMN IF NOT EXISTS workflow JSONB NOT NULL DEFAULT '{}'::jsonb"))
             await connection.execute(text("ALTER TABLE tool_registry ADD COLUMN IF NOT EXISTS profile_scope JSONB NOT NULL DEFAULT '{}'::jsonb"))
             await connection.execute(text("ALTER TABLE message_feedback ADD COLUMN IF NOT EXISTS reason VARCHAR(64)"))
+            await connection.execute(text("ALTER TABLE conversation_session ADD COLUMN IF NOT EXISTS owner_account VARCHAR(300)"))
+            await connection.execute(text("CREATE INDEX IF NOT EXISTS ix_conversation_session_owner_account ON conversation_session (owner_account)"))
 
     # Seed the routing skills once so the Skill API and the runtime share the
     # same guardrails. Existing operator-managed versions are preserved.

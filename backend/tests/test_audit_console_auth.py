@@ -33,6 +33,7 @@ from app.db import (
     AuditOperatorSession,
     AuditRecord,
     Base,
+    ConfigEntry,
     Conversation,
     SessionEvent,
     Skill,
@@ -47,6 +48,7 @@ from app.service import DSHService
 class FakeService:
     def __init__(self):
         self.console_password = "legacy-console-password"
+        self.applied_config_keys: list[str] = []
         self.settings = SimpleNamespace(
             audit_session_idle_seconds=1800,
             audit_session_max_age_seconds=28800,
@@ -55,11 +57,21 @@ class FakeService:
             audit_login_lock_seconds=900,
             audit_login_rate_max_attempts=3,
             audit_login_rate_window_seconds=60,
+            llm_model="test-model",
+            llm_api_key="test-secret-key",
+            umc_portal="customer",
+            umc_customer_base_url="https://umc-customerportal.sol.daypop.ai",
+            umc_document_base_url="",
+            database_url="sqlite+aiosqlite://",
+            redis_url="redis://redis:6379/0",
         )
 
     audit_payload = staticmethod(DSHService.audit_payload)
     audit_category = staticmethod(DSHService.audit_category)
     conversation_json = staticmethod(DSHService.conversation_json)
+
+    async def apply_config_entries(self, entries: list[ConfigEntry]) -> None:
+        self.applied_config_keys = sorted(item.key for item in entries)
 
 
 class AuditAuthPrimitiveTests(unittest.TestCase):
@@ -343,6 +355,62 @@ class AuditConsoleApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await auditor.aclose()
 
+    async def test_only_administrator_can_manage_customer_safe_configuration(self):
+        await self.add_operator("config-admin", "AdminPass123", AUDIT_ROLE_ADMINISTRATOR)
+        await self.add_operator("config-reader", "ReaderPass123", AUDIT_ROLE_AUDITOR)
+
+        reader = AsyncClient(transport=ASGITransport(app=self.app), base_url="http://test")
+        try:
+            self.assertEqual((await self.login("config-reader", "ReaderPass123", client=reader)).status_code, 200)
+            self.assertEqual((await reader.get("/api/v1/audit/config")).status_code, 403)
+            self.assertEqual((await reader.patch(
+                "/api/v1/audit/config",
+                json={"scope": "system", "patch": {"llm_model": "forbidden"}},
+            )).status_code, 403)
+        finally:
+            await reader.aclose()
+
+        self.assertEqual((await self.login("config-admin", "AdminPass123")).status_code, 200)
+        response = await self.client.get("/api/v1/audit/config")
+        self.assertEqual(response.status_code, 200, response.text)
+        items = {item["key"]: item for item in response.json()["items"]}
+        self.assertNotIn("umc_admin_base_url", items)
+        self.assertNotIn("umc_public_base_url", items)
+        self.assertEqual(items["umc_portal"]["value"], "customer")
+        self.assertTrue(items["umc_portal"]["readOnly"])
+        self.assertTrue(items["database_url"]["readOnly"])
+        self.assertEqual(items["database_url"]["value"], "••••••••")
+        self.assertEqual(items["llm_api_key"]["value"], "••••••••")
+        self.assertNotIn("test-secret-key", response.text)
+
+        protected = await self.client.patch(
+            "/api/v1/audit/config",
+            json={"scope": "system", "patch": {"umc_portal": "admin", "database_url": "secret"}},
+        )
+        self.assertEqual(protected.status_code, 422)
+        self.assertEqual(
+            protected.json()["detail"],
+            {"code": "read_only_or_unsupported_config", "keys": ["database_url", "umc_portal"]},
+        )
+
+        updated = await self.client.patch(
+            "/api/v1/audit/config",
+            json={"scope": "system", "patch": {"llm_model": "updated-model"}},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        updated_items = {item["key"]: item for item in updated.json()["items"]}
+        self.assertEqual(updated_items["llm_model"]["value"], "updated-model")
+        self.assertEqual(self.service.applied_config_keys, ["llm_model"])
+
+        async with self.sessions() as db:
+            entry = (await db.execute(select(ConfigEntry).where(ConfigEntry.key == "llm_model"))).scalar_one()
+            event = (await db.execute(select(AuditOperatorEvent).where(
+                AuditOperatorEvent.event_type == "configuration.updated"
+            ))).scalar_one()
+            self.assertEqual(entry.updated_by, "audit:1")
+            self.assertEqual(event.detail, {"scope": "system", "keys": ["llm_model"]})
+            self.assertNotIn("updated-model", str(event.detail))
+
     async def test_configured_retention_cleans_expired_security_data(self):
         now = datetime.now(timezone.utc)
         old = now - timedelta(days=100)
@@ -414,10 +482,18 @@ class AuditConsoleApiTests(unittest.IsolatedAsyncioTestCase):
                 conversation_id="shared-browser-id",
                 tenant_id="tenant-2",
                 user_id="user-2",
+                owner_account="second.owner@example.test",
                 dsh_session_id="dsh-session-2",
                 last_activity_at=now,
             )
-            db.add_all((first, second))
+            legacy = Conversation(
+                conversation_id="legacy-browser-id",
+                tenant_id="tenant-1",
+                user_id="user-1",
+                dsh_session_id="dsh-session-legacy",
+                last_activity_at=now - timedelta(minutes=1),
+            )
+            db.add_all((first, second, legacy))
             db.add_all((
                 AuditRecord(
                     tenant_id="tenant-1", user_id="user-1", conversation_id="shared-browser-id",
@@ -432,12 +508,23 @@ class AuditConsoleApiTests(unittest.IsolatedAsyncioTestCase):
                 SessionEvent(
                     tenant_id="tenant-1", user_id="user-1", conversation_id="shared-browser-id",
                     dsh_session_id="dsh-session-1", seq=1, event_type="user.message",
-                    event_json={"content": "first title"},
+                    event_json={
+                        "content": "first title",
+                        "auditIdentity": {
+                            "account": "first.owner@example.test",
+                            "currentRole": "Customer Account Owner",
+                        },
+                    },
                 ),
                 SessionEvent(
                     tenant_id="tenant-2", user_id="user-2", conversation_id="shared-browser-id",
                     dsh_session_id="dsh-session-2", seq=2, event_type="user.message",
                     event_json={"content": "second title"},
+                ),
+                SessionEvent(
+                    tenant_id="tenant-1", user_id="user-1", conversation_id="legacy-browser-id",
+                    dsh_session_id="dsh-session-legacy", seq=1, event_type="user.message",
+                    event_json={"content": "legacy title"},
                 ),
             ))
             await db.commit()
@@ -446,12 +533,33 @@ class AuditConsoleApiTests(unittest.IsolatedAsyncioTestCase):
         listing = await self.client.get("/api/v1/audit/conversations")
         self.assertEqual(listing.status_code, 200)
         titles = {item["dshSessionId"]: item["title"] for item in listing.json()["conversations"]}
-        self.assertEqual(titles, {"dsh-session-1": "first title", "dsh-session-2": "second title"})
+        self.assertEqual(titles, {
+            "dsh-session-1": "first title",
+            "dsh-session-2": "second title",
+            "dsh-session-legacy": "legacy title",
+        })
+        accounts = {item["dshSessionId"]: item["ownerAccount"] for item in listing.json()["conversations"]}
+        self.assertEqual(accounts, {
+            "dsh-session-1": "first.owner@example.test",
+            "dsh-session-2": "second.owner@example.test",
+            "dsh-session-legacy": "first.owner@example.test",
+        })
+
+        account_search = await self.client.get("/api/v1/audit/conversations?search=first.owner@example.test")
+        self.assertEqual(account_search.status_code, 200)
+        self.assertEqual(
+            {item["dshSessionId"] for item in account_search.json()["conversations"]},
+            {"dsh-session-1", "dsh-session-legacy"},
+        )
 
         detail = await self.client.get("/api/v1/audit/conversations/dsh-session-1")
         self.assertEqual(detail.status_code, 200, detail.text)
         self.assertEqual([item["payload"]["content"] for item in detail.json()["items"]], ["first tenant"])
         self.assertEqual(detail.json()["items"][0]["payload"]["accessToken"], "[redacted]")
+        self.assertEqual(detail.json()["conversation"]["auditIdentity"], {
+            "account": "first.owner@example.test",
+            "currentRole": "Customer Account Owner",
+        })
 
 
 if __name__ == "__main__":

@@ -750,6 +750,7 @@ class DSHService:
             conversation_id=f"conv_{uuid4().hex[:20]}",
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
+            owner_account=principal.audit_account.strip()[:300] or None,
             dsh_session_id=f"dsh_{uuid4().hex[:20]}",
             runtime_profile=runtime_profile,
             workspace=workspace,
@@ -861,6 +862,7 @@ class DSHService:
         return {
             "conversationId": conversation.conversation_id,
             "dshSessionId": conversation.dsh_session_id,
+            "ownerAccount": conversation.owner_account,
             "workspace": conversation.workspace,
             "skillProfile": conversation.skill_profile,
             "runtimeProfile": conversation.runtime_profile,
@@ -1071,6 +1073,8 @@ class DSHService:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
+                if principal.audit_account.strip():
+                    conversation.owner_account = principal.audit_account.strip()[:300]
                 existing = await db.execute(select(MessageIdempotency).where(MessageIdempotency.conversation_id == conversation_id, MessageIdempotency.client_message_id == client_message_id))
                 idem = existing.scalar_one_or_none()
                 if idem:
