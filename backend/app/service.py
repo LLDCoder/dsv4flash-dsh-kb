@@ -576,6 +576,9 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
     )):
         return False
     support = f"{verified_text}\n{question}".casefold()
+    advice = r"\b(?:prioriti[sz]e|start with|you (?:should|may want to|might want to))\b"
+    if re.search(advice, lowered) and not re.search(advice, verified_text, re.I):
+        return False
     # A visible sample cannot establish the size of the whole queue. The
     # question itself (e.g. "show all") is never proof of completeness.
     if completeness != 'complete' and re.search(

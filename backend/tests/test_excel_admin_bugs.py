@@ -20,6 +20,14 @@ def test_bounded_sample_cannot_be_presented_as_full_queue():
         'Four records share the same status. Partial view.','Show records.',completeness='bounded')
     assert reader_natural_answer_is_grounded('This is the full set.',
         'This is the full set.','Show records.',completeness='complete')
+
+
+def test_record_presentation_cannot_add_unsupported_priority_advice():
+    evidence='Three tasks are Urgent. One is Open, two are Processing.'
+    assert not reader_natural_answer_is_grounded(
+        'Three tasks are Urgent. You may want to start with the Open task.',evidence,'Show three tasks.')
+    assert reader_natural_answer_is_grounded(
+        'Three tasks are Urgent; one is Open and two are Processing.',evidence,'Show three tasks.')
 from test_admin_portal_reader import Gateway, Planner, run_reader, user_info_for_paths, portal_plan_for
 
 
