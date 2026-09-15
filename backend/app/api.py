@@ -447,6 +447,10 @@ def make_router(service: DSHService) -> APIRouter:
         matching record identities. Explicit requested sample sizes bound returned
         rows while retaining independently verified totals. Blank assignee fields
         do not establish non-assignment; role restrictions cannot be overridden.
+        Inspection assignment follow-ups retain only previously shown task numbers,
+        re-read those tasks and use explicit assignmentState. Assigned tasks require
+        current detail InspectorId values compared with GetUserInfo.id, never names.
+        Missing, inaccessible or contradictory assignment evidence remains unconfirmed.
         Exact knowledge excerpts retain their unique semantic subject when passed
         to the answer formatter. Native column and filter UI requests retain
         rendered evidence instead of being answered by unrelated list APIs.

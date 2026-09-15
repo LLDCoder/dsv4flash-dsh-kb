@@ -23,6 +23,7 @@ from urllib.parse import unquote, urlsplit
 import httpx
 
 from .principal import Principal
+from .inspection_assignment import TASK_NUMBER, is_assignment_followup, classify_assignment
 from .reader_intent import parse_intent_resolution, semantic_source_hint
 from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOUT_SECONDS, bounded_reader_total_timeout, requested_record_limit
 
@@ -1351,6 +1352,12 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
         )
     if isinstance(previous.get("intentContext"), dict):
         bounded["intentContext"] = bounded_json(previous["intentContext"], max_depth=4, max_items=10, max_string=500)
+    source = previous.get('assignmentSource')
+    if isinstance(source, dict) and source.get('page') == '/inspection/tasks':
+        refs = source.get('taskNumbers')
+        if isinstance(refs, list) and 0 < len(refs) <= 20 and all(isinstance(r, str) and TASK_NUMBER.fullmatch(r) for r in refs):
+            bounded['assignmentSource'] = {'page': source['page'], 'taskNumbers': list(dict.fromkeys(refs)),
+                'selectedState': _sanitize_untrusted_text(source.get('selectedState') or '', max_length=100)}
     if isinstance(previous.get("sourceHint"), dict):
         bounded["sourceHint"] = {key: _sanitize_untrusted_text(item, max_length=500)
                                  for key, item in previous["sourceHint"].items()
@@ -1672,6 +1679,9 @@ def bounded_portal_observation(value: Any) -> Any:
                 max_string=1_000,
             )
             candidate["responseEvidenceTruncated"] = raw_candidate.get("responseEvidenceTruncated") is True
+            if isinstance(raw_candidate.get('assignmentEvidence'), list):
+                candidate['assignmentEvidence'] = _bounded_api_json(raw_candidate['assignmentEvidence'],
+                    max_depth=8, max_items=20, max_string=120)
     return projected
 
 
@@ -2241,19 +2251,38 @@ def reader_absence_limit_explanation(question: str) -> str | None:
     return None
 
 
+def _inspection_assignment_rows(observation: Any) -> dict[str, dict[str, Any]]:
+    """Read only healthy, exact task-API assignment projections, not names or
+    foreign task references from Dashboard/violations/lookup responses.
+    """
+    if not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True:
+        return {}
+    valid = {c['operationKey']: c for c in _selectable_api_candidates(observation)
+             if c['method'] == 'GET' and re.fullmatch(
+                 r'/api/admin/inspection/tasks(?:/(?:\d+|\{id\}))?', c['path'])}
+    rows = {}
+    # Detail evidence takes precedence over the list loaded before the click.
+    candidates = (observation.get('apiDiscovery') or {}).get('candidates') or []
+    for candidate in sorted((c for c in candidates if isinstance(c, dict)),
+                            key=lambda c: len(str(c.get('path') or ''))):
+        if candidate.get('operationKey') not in valid:
+            continue
+        projected = candidate.get('assignmentEvidence')
+        if not isinstance(projected, list):
+            continue
+        seen = set()
+        for row in projected[:20]:
+            if not isinstance(row, dict) or not TASK_NUMBER.fullmatch(str(row.get('taskNo') or '')):
+                continue
+            number = row['taskNo'].upper()
+            rows[number] = {} if number in seen else row
+            seen.add(number)
+    return rows
+
+
 def previous_sample_explanation(question: str, context: dict[str, Any]) -> str | None:
     """Explain prior answer coverage without reusing old records or totals."""
     previous = _bounded_conversation_context(context).get("previousIntent", {})
-    if re.fullmatch(r'\s*are (?:these|those) tasks assigned to me,? or are they (?:simply |just )?'
-                    r'in the (?:inspection )?queue[?.]?\s*', question, re.I):
-        if previous.get('resultStatus') not in {'success', 'no_data'}:
-            return ('The previous request did not establish a verified task list. Personal assignment therefore '
-                    'cannot be confirmed from that answer. Queue membership alone would not prove assignment to you.')
-        view = str(previous.get('selectedState') or '')
-        return (f'The previous answer described the {view} view. ' if view else 'The previous answer described a task view. ') + (
-            'Being shown in that queue does not establish that the tasks are assigned to you personally. '
-            'Personal assignment requires a verified assignee identity matching the signed-in user; '
-            'that comparison was not established by the queue summary.')
     if previous.get('resultStatus') in {'not_confirmed', 'load_failed'} and re.search(
         r'\b(?:total|all)\b.*\b(?:sample|listed|shown)\b|\b(?:full set|complete list)\b', question, re.I,
     ):
@@ -7588,6 +7617,74 @@ class AdminPortalReader:
                 {'stage': 'read_evidence_boundary', 'permission': permission_audit,
                  'source': 'reader_contract_no_history_inference'},
             )
+        if is_assignment_followup(question):
+            previous = bounded_conversation_context.get('previousIntent') or {}
+            source = previous.get('assignmentSource') or {}
+            numbers = source.get('taskNumbers') or []
+            if not numbers or source.get('page') != '/inspection/tasks' or previous.get('resultStatus') != 'success':
+                return ReaderOutcome(ReaderResult(status='not_confirmed', answer_shape='detail',
+                    summary='The tasks to compare have not been identified.',
+                    facts=('Please first list the inspection tasks in this conversation, then ask which are assigned to you. '
+                           'I need their task numbers to check the same records, rather than a different queue.',),
+                    missing=('assignment_task_references_missing',)), {'stage':'assignment_context','permission':permission_audit})
+            request = PortalReadRequest(start_path=source['page'], actions=({'type':'observe'},))
+            error = validate_policy(request, reason='fresh_assignment_read')
+            if error:
+                return ReaderOutcome(ReaderResult(status='no_permission', page=request.start_path,
+                    summary='The current permissions do not allow checking these task assignments.',
+                    missing=(error,)), {'stage':'assignment_permission','permission':permission_audit})
+            # Retrieve the manual, but derive live ownership only from task data.
+            if self.knowledge_folder_id:
+                try:
+                    await _await_reader_stage(self.gateway.invoke(principal, 'knowledge.search',
+                        {'query':'Inspection Task Management assignment inspectors task details',
+                         'folder_id':self.knowledge_folder_id,'top_k':4}, allowed_tools=self.allowed_tools),
+                        stage='assignment_knowledge', cap_seconds=budget.knowledge_search_seconds, deadline=deadline)
+                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError):
+                    trace.record('knowledge_retrieval','degraded',failure_code='assignment_manual_unavailable')
+            async def read_assignment(req, attempt):
+                if validate_policy(req, reason=attempt):
+                    return {}
+                try:
+                    tool = await portal_read_stage(req, timeout_stage='assignment_read', attempt=attempt)
+                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError):
+                    return {}
+                payload = tool.get('result') if tool.get('ok') else None
+                if not isinstance(payload, dict) or payload.get('result', payload.get('status')) in {'load_failed','no_permission'}:
+                    return {}
+                return payload.get('observation') or {}
+            observation = await read_assignment(request, 'assignment_list')
+            view_actions = ()
+            selected = source.get('selectedState')
+            tabs = observation.get('tabControls') or []
+            if selected in {'To Do','Completed'} and not any(
+                    isinstance(t,dict) and t.get('selected') is True and _state_control_label_matches(t.get('name'),selected)
+                    for t in tabs):
+                parent = _observed_switch_tab_action({'name':'Team Tasks'}, observation)
+                if parent:
+                    view_actions = (parent, {'type':'switch_tab','role':'tab','name':selected})
+                    observation = await read_assignment(replace(request,actions=view_actions),'assignment_source_view')
+            current = _inspection_assignment_rows(observation)
+            classifications = {}
+            for number in numbers:
+                row = current.get(number.upper())
+                classification = classify_assignment(row, permission_context.user_id)
+                if classification == 'unknown' and row:
+                    action = _observed_cell_detail_action(observation,number)
+                    if action:
+                        detail = await read_assignment(replace(request,actions=(*view_actions,action)), 'assignment_detail')
+                        detail_row = _inspection_assignment_rows(detail).get(number.upper())
+                        classification = classify_assignment(detail_row,permission_context.user_id)
+                classifications[number] = classification
+            unresolved = any(value == 'unknown' for value in classifications.values())
+            facts = tuple(json.dumps({'Task No':number,'Assignment':value}) for number,value in classifications.items())
+            result = ReaderResult(status='not_confirmed' if unresolved else 'success', page=request.start_path,
+                source_section='verified-task-assignment', answer_shape='list', completeness='bounded',
+                workflow_state='assignment_rechecked', summary='Current assignments checked against the signed-in user.',
+                facts=facts, missing=('assignment_unverified',) if unresolved else ())
+            return ReaderOutcome(result, {'stage':'assignment_recheck','permission':permission_audit,
+                'comparison':'GetUserInfo.id versus task.inspectors[].inspectorId; explicit assignmentState',
+                'result':result.public_json()})
         sample_explanation = previous_sample_explanation(question, bounded_conversation_context)
         if sample_explanation is not None:
             return ReaderOutcome(

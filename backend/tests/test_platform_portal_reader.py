@@ -2316,6 +2316,7 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/admin/inspection/lookup/emirates",
         "/api/admin/inspection/lookup/priorities",
         "/api/admin/inspection/tasks",
+        "/api/admin/inspection/tasks/:id",
         "/api/admin/inspection/tasks/created-by-users",
         "/api/admin/inspection/tasks/stats",
         "/api/admin/inspection/violations",
@@ -2381,7 +2382,7 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
 
 @pytest.mark.parametrize("path", sorted(gateway.READER_READ_ONLY_GET_PATHS))
 def test_guard_allows_configured_read_only_gets(path) -> None:
-    concrete_path = path.replace(":taskId", "task-42").replace(":id", "record-42")
+    concrete_path = path.replace(":taskId", "task-42").replace(":id", "record-42").replace("{id}", "42")
     assert guard("GET", concrete_path, resource_type="fetch") == ("continue", None)
 
 
@@ -2555,7 +2556,7 @@ def test_guard_keeps_inspection_task_creation_and_exports_blocked() -> None:
 def test_health_reports_fixed_allowlist_counts() -> None:
     health = asyncio.run(gateway.healthz())
 
-    assert health["readOnlyGetPathCount"] == 88
+    assert health["readOnlyGetPathCount"] == 89
     assert health["readOnlyPostPathCount"] == 8
 
 

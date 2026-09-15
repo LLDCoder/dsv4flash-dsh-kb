@@ -30,6 +30,7 @@
       "/api/admin/inspection/lookup/emirates",
       "/api/admin/inspection/lookup/priorities",
       "/api/admin/inspection/tasks",
+      "/api/admin/inspection/tasks/:id",
       "/api/admin/inspection/tasks/created-by-users",
       "/api/admin/inspection/tasks/stats",
       "/api/admin/inspection/violations",

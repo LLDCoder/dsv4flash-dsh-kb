@@ -141,8 +141,7 @@ def test_same_team_completed_retains_module_hint_without_granting_permissions():
 def test_assignment_explanation_does_not_query_different_tasks(status):
     answer=previous_sample_explanation('Are these tasks assigned to me, or are they simply in the inspection queue?',
         {'previousIntent':{'resultStatus':status,'selectedState':'Queued Tasks'}})
-    assert answer and 'personal' in answer.lower()
-    assert ('previous request did not establish' in answer.lower()) == (status!='success')
+    assert answer is None  # Assignment now requires a fresh read, not a coverage disclaimer.
 
 
 def test_risk_aggregates_do_not_prove_record_level_finality():

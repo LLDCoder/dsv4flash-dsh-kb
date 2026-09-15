@@ -29,6 +29,7 @@ from .portal_reader import (
 from .reader_intent import format_clarification_options, semantic_source_hint
 from .reader_limits import requested_record_limit
 from .principal import Principal
+from .inspection_assignment import assignment_references, assignment_answer
 from .reader_limits import (
     MAX_PLATFORM_TIMEOUT_SECONDS,
     MAX_READER_TOTAL_TIMEOUT_SECONDS,
@@ -89,6 +90,9 @@ def reader_evidence_only_response(
     question: str = "",
 ) -> str:
     """Render the bounded Reader result without another source of business facts."""
+    assignment = assignment_answer(reader_result, language)
+    if assignment is not None:
+        return assignment
     if (reader_result.get('result') == 'no_permission' and not reader_result.get('facts')
             and reader_result.get('missing') == ['page_not_permitted']):
         return {
@@ -740,12 +744,12 @@ def _reader_select_requested_records(result: dict[str, Any], question: str) -> d
     return {**result, 'facts': facts, 'completeness': 'bounded'} if count > limit else result
 
 
-def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, str]:
+def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, Any]:
     completeness = result.get("completeness")
     shape = result.get("answerShape")
     if completeness not in {"bounded", "complete", "unknown"} or shape not in {"overview", "count", "list", "attention", "due", "detail"}:
         return {}
-    return {"deliveredAnswerShape": shape, "completeness": completeness}
+    return {"deliveredAnswerShape": shape, "completeness": completeness, **assignment_references(result)}
 
 
 def _reader_conversation_context(
@@ -1604,6 +1608,8 @@ class DSHService:
         )
         if prior_answer_coverage:
             return fallback, False, "prior_answer_coverage"
+        if evidence.get('workflowState') == 'assignment_rechecked':
+            return fallback, False, 'deterministic_assignment_comparison'
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
             return fallback, False, "status_guard"

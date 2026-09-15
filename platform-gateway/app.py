@@ -940,6 +940,43 @@ async def _reader_capture_api_response_evidence(
         return
     candidate["responseEvidence"] = evidence
     candidate["responseEvidenceTruncated"] = truncated
+    assignment = _inspection_assignment_evidence(payload, operation_key)
+    if assignment:
+        candidate['assignmentEvidence'] = assignment
+    else:
+        candidate.pop('assignmentEvidence', None)
+
+
+def _inspection_assignment_evidence(payload: Any, operation_key: str) -> list[dict[str, Any]]:
+    """Keep the exact assignment fields before unrelated detail fields exhaust
+    the generic response budget. This adds no request or business operation.
+    InspectorId is compared with GetUserInfo only inside the backend.
+    """
+    if not re.fullmatch(r'GET /api/admin/inspection/tasks(?:/(?:\d+|\{id\}))?', operation_key):
+        return []
+    data = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return []
+    rows = data.get('items') if 'items' in data else [data]
+    if not isinstance(rows, list):
+        return []
+    result = []
+    for row in rows[:20]:
+        if not isinstance(row, dict) or not re.fullmatch(r'IN-\d{4}-\d+', str(row.get('taskNo') or ''), re.I):
+            continue
+        projected = {k: row[k] for k in ('taskNo','assignmentState') if isinstance(row.get(k), str)}
+        # A display name is only a consistency check, never an identity key.
+        if row.get('inspectorName'):
+            projected['inspectorName'] = _sanitize_reader_text(row['inspectorName'], max_chars=120)
+        inspectors = row.get('inspectors')
+        if isinstance(inspectors, list) and len(inspectors) <= 20:
+            projected['inspectors'] = [{
+                'inspectorId': item['inspectorId'] if isinstance(item.get('inspectorId'), str) and len(item['inspectorId']) <= 120 else ''
+            } if isinstance(item, dict) else {} for item in inspectors]
+        elif inspectors:
+            projected['inspectors'] = [{}]  # Incomplete/malformed assignments cannot prove non-assignment.
+        result.append(projected)
+    return result
 
 
 async def _reader_wait_for_api_response_evidence(page: Page) -> None:
