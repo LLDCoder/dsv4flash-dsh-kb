@@ -142,6 +142,8 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-18080}:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
 
 volumes:
   postgres_data:

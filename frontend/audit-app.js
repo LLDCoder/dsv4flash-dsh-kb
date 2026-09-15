@@ -46,7 +46,9 @@ function auditAssetUrl(name) {
 
 const copy = {
   en: {
-    product: "NMA Chatbot Audit Console",
+    product: "NMA Chatbot Audit",
+    portalSubtitle: "Customer Portal",
+    pageTitle: "NMA Audit · Customer Portal",
     authority: "National Media Authority",
     signIn: "Login",
     signInHint: "Sign in with your assigned audit account.",
@@ -241,6 +243,8 @@ const copy = {
   },
   ar: {
     product: "وحدة تدقيق روبوت المحادثة - NMA",
+    portalSubtitle: "بوابة العميل",
+    pageTitle: "تدقيق NMA · بوابة العميل",
     authority: "الهيئة الوطنية للإعلام",
     signIn: "تسجيل الدخول",
     signInHint: "سجّل الدخول باستخدام حساب التدقيق المخصص لك.",
@@ -628,7 +632,7 @@ function setDirection() {
   const isArabic = auditState.language === "ar";
   document.documentElement.lang = isArabic ? "ar" : "en";
   document.documentElement.dir = isArabic ? "rtl" : "ltr";
-  document.title = "NMA Chatbot Audit Console";
+  document.title = t("pageTitle");
 }
 
 function toggleLanguage() {
@@ -816,6 +820,7 @@ function renderLogin(message = "") {
         <img class="audit-login-brand-logo" src="${escapeHtml(auditAssetUrl("assets/login-logo.png"))}" alt="${escapeHtml(t("authority"))}">
         <div class="audit-login-brand-copy">
           <h1>${escapeHtml(t("product"))}</h1>
+          <p>${escapeHtml(t("portalSubtitle"))}</p>
         </div>
       </section>
       <section class="audit-login-panel">
@@ -903,7 +908,7 @@ function renderApplication() {
       </aside>
       <main class="audit-main">
         <header class="audit-topbar">
-          <div class="audit-title-group"><button id="auditMenuBtn" class="audit-icon-button audit-menu-button" type="button" aria-label="${escapeHtml(t("menuLabel"))}">${icon("menu")}</button><div><span>${escapeHtml(t("product"))}</span><h1>${escapeHtml(currentViewTitle())}</h1></div></div>
+          <div class="audit-title-group"><button id="auditMenuBtn" class="audit-icon-button audit-menu-button" type="button" aria-label="${escapeHtml(t("menuLabel"))}">${icon("menu")}</button><div><span>${escapeHtml(t("portalSubtitle"))}</span><h1>${escapeHtml(currentViewTitle())}</h1></div></div>
           <div class="audit-account-area">
             <button id="auditLanguageBtn" class="audit-language-button" type="button">${auditState.language === "en" ? "AR" : "EN"}</button>
             <div class="audit-account-menu">

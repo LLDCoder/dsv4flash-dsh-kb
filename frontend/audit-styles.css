@@ -37,8 +37,9 @@
 .audit-login-brand-logo { position: relative; z-index: 2; width: min(280px, 100%); height: auto; object-fit: contain; object-position: left center; }
 [dir="rtl"] .audit-login-brand-logo { object-position: right center; }
 .audit-brand-mark { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 6px; color: var(--audit-gold); background: #fbf8f1; }
-.audit-login-brand-copy { position: relative; z-index: 2; display: grid; width: 100%; max-width: 680px; gap: 34px; margin: auto 0; }
+.audit-login-brand-copy { position: relative; z-index: 2; display: grid; width: 100%; max-width: 680px; gap: 12px; margin: auto 0; }
 .audit-login-brand-copy h1 { max-width: 620px; margin: 0; color: #fff; font-size: 52px; font-weight: 540; line-height: 1.08; }
+.audit-login-brand-copy p { margin: 0; color: #e0d5b8; font-size: 20px; font-weight: 560; line-height: 1.4; }
 .audit-login-panel { position: relative; display: grid; min-width: 0; place-items: center; padding: 70px 32px; background: #fff; }
 .audit-language-button { min-width: 38px; min-height: 36px; padding: 7px 9px; border: 1px solid var(--audit-border) !important; border-radius: 6px; color: var(--audit-text); background: transparent; font-weight: 650; cursor: pointer; }
 .audit-login-panel > .audit-language-button { position: absolute; inset-block-start: 25px; inset-inline-end: 30px; }

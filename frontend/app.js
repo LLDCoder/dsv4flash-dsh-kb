@@ -1716,7 +1716,7 @@ $("messageForm").addEventListener("submit", async (event) => {
 // Unlock the console before obtaining the configured account's UMC session;
 // operators should never need to paste a token before uploading or connecting.
 if (window.__DSH_AUDIT_MODE__) {
-  void import(new URL("./audit-app.js?v=20260914-audit-ux12", import.meta.url));
+  void import(new URL("./audit-app.js?v=20260915-customer-title3", import.meta.url));
 } else {
   void bootstrapConsole();
 }
