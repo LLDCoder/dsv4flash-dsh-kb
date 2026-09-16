@@ -7,9 +7,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.profile_scope import (
     bind_active_profile,
     profile_context_from_payload,
+    requested_profile,
     requires_profile_switch,
 )
-from app.skills import SkillRoute, build_system_prompt
+from app.service import DSHService
+from app.skill_workflow import build_configured_tool_request
+from app.skills import DEFAULT_SKILL_DEFINITIONS, SkillRoute, build_system_prompt, merged_skill_workflow
 
 
 class ProfileScopeSemanticsTests(unittest.TestCase):
@@ -60,6 +63,99 @@ class ProfileScopeSemanticsTests(unittest.TestCase):
                 definition,
                 self.concrete_context,
                 "Show Individual Peter's applications",
+            )
+        )
+
+    def test_profile_type_prefix_can_be_omitted_when_name_is_unambiguous(self) -> None:
+        target = requested_profile("Show Peter's applications", self.concrete_context)
+
+        self.assertIsNotNone(target)
+        self.assertEqual(target.profile_id, "11")
+        self.assertEqual(target.name, "Individual Peter")
+        self.assertIsNone(requested_profile("Show government applications", self.concrete_context))
+
+        short_name_context = profile_context_from_payload(
+            {
+                "activeProfileId": "1",
+                "activeProfileName": "Ali",
+                "profiles": [{"id": "1", "name": "Ali"}],
+            },
+            trusted_profile_id="1",
+        )
+        self.assertEqual(requested_profile("Show Ali's applications", short_name_context).name, "Ali")
+
+    def test_other_authorized_profile_returns_deterministic_menu_action(self) -> None:
+        guard = DSHService.profile_scope_guard(
+            "Show Peter's applications",
+            "en",
+            self.concrete_context,
+        )
+
+        self.assertEqual(guard["code"], "requested_profile_not_active")
+        self.assertEqual(
+            guard["profileAction"],
+            {"type": "open_profile_menu", "code": "profile_selection_required"},
+        )
+        self.assertNotIn("Peter", guard["content"])
+
+    def test_global_view_queries_authorized_profile_without_switch_action(self) -> None:
+        self.assertIsNone(
+            DSHService.profile_scope_guard(
+                "Show Peter's applications",
+                "en",
+                self.global_context,
+            )
+        )
+        filters = DSHService.application_profile_filters(
+            "application_status",
+            "Show Peter's applications",
+            self.global_context,
+            None,
+        )
+        self.assertEqual(filters, {"keyword": "Individual Peter"})
+
+        definition = next(
+            item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "application_status"
+        )
+        request = build_configured_tool_request(
+            merged_skill_workflow("application_status", definition["workflow"]),
+            definition["allowed_tools"],
+            "Show Peter's applications",
+            [],
+            filters=filters,
+        )
+        self.assertEqual(request[0], "umc.applications")
+        self.assertEqual(request[1]["keyword"], "Individual Peter")
+
+    def test_unknown_account_record_queries_have_identical_local_refusal(self) -> None:
+        known_shape = DSHService.profile_scope_guard(
+            "查询 rui.wang 的许可证、罚单和待办事项。",
+            "en",
+            self.global_context,
+        )
+        nonexistent_shape = DSHService.profile_scope_guard(
+            "查询 umc-nonexistent-9f3a72 的许可证、罚单和待办事项。",
+            "en",
+            self.global_context,
+        )
+
+        self.assertEqual(known_shape, nonexistent_shape)
+        self.assertEqual(known_shape["code"], "external_account_lookup")
+        self.assertNotIn("rui.wang", known_shape["content"])
+        self.assertNotIn("profileAction", known_shape)
+        self.assertEqual(
+            DSHService.profile_scope_guard(
+                "Show alice@example.com's applications",
+                "en",
+                self.global_context,
+            )["code"],
+            "external_account_lookup",
+        )
+        self.assertIsNone(
+            DSHService.profile_scope_guard(
+                "Show my applications",
+                "en",
+                self.global_context,
             )
         )
 

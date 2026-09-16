@@ -122,6 +122,37 @@ def _contains_profile_name(text: str, name: str) -> bool:
     return any(text_words[index:index + width] == name_words for index in range(len(text_words) - width + 1))
 
 
+def _profile_name_forms(name: str) -> set[str]:
+    """Return bounded display-name forms used only for UX intent matching.
+
+    Portal display names commonly prefix the user's recognizable name with a
+    Profile type (for example ``Individual Peter``).  Accept the recognizable
+    suffix only when the full authorized Profile collection resolves it to one
+    Profile; ``requested_profile`` retains that ambiguity check below.
+    """
+
+    words = re.findall(r"[\w]+", name, flags=re.UNICODE)
+    forms = {" ".join(words)} if words else set()
+    type_prefixes = {
+        "business", "company", "establishment", "government", "individual",
+        "organisation", "organization",
+    }
+    type_suffixes = {"profile", "umc"}
+    if len(words) > 1 and words[0].casefold() in type_prefixes:
+        without_prefix = " ".join(words[1:])
+        if len(_compact(without_prefix)) >= 4:
+            forms.add(without_prefix)
+    if len(words) > 1 and words[-1].casefold() in type_suffixes:
+        without_suffix = words[:-1]
+        suffix_alias = " ".join(without_suffix)
+        if (
+            len(_compact(suffix_alias)) >= 4
+            and not (len(without_suffix) == 1 and without_suffix[0].casefold() in type_prefixes)
+        ):
+            forms.add(suffix_alias)
+    return forms
+
+
 def requested_profile(text: str, context: ProfileContext | None) -> ProfileReference | None:
     """Resolve only an unambiguous profile already known to the portal."""
 
@@ -132,7 +163,7 @@ def requested_profile(text: str, context: ProfileContext | None) -> ProfileRefer
     matches: dict[str, ProfileReference] = {}
     for profile in context.profiles:
         aliases = _profile_aliases(profile.name)
-        exact_match = _contains_profile_name(text, profile.name)
+        exact_match = any(_contains_profile_name(text, form) for form in _profile_name_forms(profile.name))
         contextual_match = False
         for index in profile_word_indexes:
             if index == 0:

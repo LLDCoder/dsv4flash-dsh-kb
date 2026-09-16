@@ -20,7 +20,7 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
-from .profile_scope import ProfileContext, profile_context_from_payload
+from .profile_scope import ProfileContext, profile_context_from_payload, requested_profile
 from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
@@ -71,6 +71,90 @@ class EventBroker:
 
 
 class DSHService:
+    @staticmethod
+    def is_cross_account_record_request(content: str, profile_context: ProfileContext | None) -> bool:
+        """Detect a record lookup explicitly scoped to an unknown account name.
+
+        This is intentionally deterministic and runs before routing, tools, and
+        LLM calls.  It does not test whether the supplied identifier exists.
+        A name already present in the portal's Profile context is handled by
+        the separate Profile-scope guard instead.
+        """
+
+        if requested_profile(content, profile_context):
+            return False
+        text = " ".join(str(content or "").casefold().split())
+        record_categories = (
+            ("license", "licence", "permit", "许可证", "执照", "牌照", "رخصة", "ترخيص"),
+            ("fine", "violation", "罚单", "罚款", "违规", "مخالفة", "غرامة"),
+            ("pending action", "pending task", "to-do", "todo", "待办", "待处理", "إجراء معلق"),
+            ("application", "request", "申请", "请求", "طلب"),
+        )
+        if not any(any(term in text for term in category) for category in record_categories):
+            return False
+
+        target_patterns = (
+            r"(?:查询|查找|查看|搜索)\s*([^\s，,。！？?]{1,80})\s*的",
+            r"\b(?:show|find|query|list|check|search)\s+([\w.@+-]{1,80})(?:'s|’s)\b",
+            r"\b(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?)\s+(?:for|of)\s+([\w.@+-]{1,80})\b",
+        )
+        self_targets = {"i", "me", "my", "mine", "our", "ours", "我", "我的", "本人", "当前账号", "当前账户"}
+        for pattern in target_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and match.group(1).strip().casefold() not in self_targets:
+                return True
+        return False
+
+    @staticmethod
+    def profile_scope_guard(
+        content: str,
+        response_language: str,
+        profile_context: ProfileContext | None,
+    ) -> dict[str, Any] | None:
+        """Return a deterministic response for cross-scope record requests."""
+
+        target_profile = requested_profile(content, profile_context)
+        if (
+            target_profile
+            and profile_context
+            and not profile_context.is_global_view
+            and target_profile.profile_id != profile_context.active_profile_id
+        ):
+            content_text = (
+                "نطاق الاستعلام الحالي مرتبط بملف آخر. اختر ملفاً مخولاً من القائمة ثم أعد الاستعلام."
+                if response_language == "ar"
+                else "The current query scope is tied to a different Profile. Choose an authorized Profile from the list, then run the query again."
+            )
+            return {
+                "code": "requested_profile_not_active",
+                "content": content_text,
+                "profileAction": {"type": "open_profile_menu", "code": "profile_selection_required"},
+            }
+        if DSHService.is_cross_account_record_request(content, profile_context):
+            content_text = (
+                "يمكنني المساعدة فقط في البيانات الواقعة ضمن نطاق الحساب المخول حالياً."
+                if response_language == "ar"
+                else "I can only help with data in your currently authorized account scope."
+            )
+            return {"code": "external_account_lookup", "content": content_text}
+        return None
+
+    @staticmethod
+    def application_profile_filters(
+        skill_id: str,
+        content: str,
+        profile_context: ProfileContext | None,
+        filters: object,
+    ) -> dict[str, Any] | None:
+        """Bind an explicitly requested authorized Profile to application search."""
+
+        existing = dict(filters) if isinstance(filters, dict) else {}
+        target_profile = requested_profile(content, profile_context)
+        if skill_id != "application_status" or not target_profile:
+            return existing or None
+        existing.setdefault("keyword", target_profile.name)
+        return existing
+
     @staticmethod
     def is_profile_sensitive_data_request(content: str) -> bool:
         """Detect direct requests to reveal Profile identifiers or credentials."""
@@ -1265,6 +1349,51 @@ class DSHService:
                         response_language,
                         request_id=principal.request_id,
                     )
+                    scope_guard = self.profile_scope_guard(
+                        latest_content,
+                        response_language,
+                        profile_context,
+                    )
+                    if scope_guard:
+                        await self.append_audit(
+                            db,
+                            conversation,
+                            "profile.scope.guard",
+                            {
+                                "requestId": principal.request_id,
+                                "runtimeId": conversation.runtime_id,
+                                "code": scope_guard["code"],
+                            },
+                            request_id=principal.request_id,
+                            runtime_id=conversation.runtime_id,
+                        )
+                        await self.append_event(
+                            db,
+                            conversation,
+                            "assistant.message",
+                            {
+                                "content": scope_guard["content"],
+                                "requestId": principal.request_id,
+                                **(
+                                    {"profileAction": scope_guard["profileAction"]}
+                                    if scope_guard.get("profileAction")
+                                    else {}
+                                ),
+                            },
+                        )
+                        await self.append_event(
+                            db,
+                            conversation,
+                            "turn.completed",
+                            {"requestId": principal.request_id, "runtimeId": conversation.runtime_id},
+                        )
+                        conversation.status = "READY"
+                        conversation.last_activity_at = datetime.now(timezone.utc)
+                        await db.commit()
+                        lease = self.runtime_manager.get(conversation_id)
+                        if lease:
+                            lease.state = "READY"
+                        return
                     # Published Skill workflow is authoritative for deterministic
                     # routing. Built-in definitions are only a cold-start fallback.
                     route_catalog = await self.skill_catalog.load(db)
@@ -1337,6 +1466,12 @@ class DSHService:
                         cross_skill_handoff = None
                     route, route_metadata = await self.choose_skill_route(
                         db, latest_content, keyword_route, conversation, principal.request_id, route_context
+                    )
+                    route_metadata["filters"] = self.application_profile_filters(
+                        route.skill_id,
+                        latest_content,
+                        profile_context,
+                        route_metadata.get("filters"),
                     )
                     if attachment_ocr_route:
                         route_metadata["attachmentOcrForced"] = True
