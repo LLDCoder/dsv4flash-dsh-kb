@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID
@@ -20,7 +20,7 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
-from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requires_profile_switch
+from .profile_scope import ProfileContext, profile_context_from_payload
 from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
@@ -40,6 +40,13 @@ from .skills import (
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, system_default_tool_definitions
 from .tool_gateway import ToolGateway, parse_tool_request
 from .umc_auth import UMCAuthClient
+
+
+UMC_CONVERSATION_TENANT_PREFIXES = (
+    "umc:global:",
+    "umc:profile:",
+    "umc:establishment:",
+)
 
 
 class EventBroker:
@@ -431,11 +438,20 @@ class DSHService:
         """
 
         masked = mask_tool_result(tool_result, masking_policy)
+        # Treat credential/personal-data names as sensitive, but do not use a
+        # blanket ``"document" in key`` check. License APIs legitimately use
+        # documentName/documentStatus/documentId for customer-visible records;
+        # dropping those fields makes an exact read-only lookup impossible.
         blocked_fragments = (
-            "address", "attachment", "authorization", "base64", "binary",
-            "blob", "document", "email", "emirates", "identity",
-            "mobile", "password", "passport", "phone", "secret", "token",
+            "address", "authorization", "base64", "binary", "blob", "email",
+            "emirates", "identity", "mobile", "password", "passport", "phone",
+            "secret", "token",
         )
+        blocked_exact_keys = {
+            "attachment", "attachments", "filecontent", "filedata", "ocrtext",
+            "rawdocument", "documentbody", "documentbytes", "documentcontent",
+            "documentdata", "documenttext",
+        }
 
         def compact(value: Any, depth: int = 0) -> Any:
             if depth > 6:
@@ -444,7 +460,7 @@ class DSHService:
                 result: dict[str, Any] = {}
                 for key, nested in value.items():
                     normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
-                    if any(fragment in normalized for fragment in blocked_fragments):
+                    if normalized in blocked_exact_keys or any(fragment in normalized for fragment in blocked_fragments):
                         continue
                     safe = compact(nested, depth + 1)
                     if safe not in (None, "", [], {}):
@@ -455,8 +471,11 @@ class DSHService:
             if isinstance(value, list):
                 return [safe for item in value[:20] if (safe := compact(item, depth + 1)) not in (None, "", [], {})]
             if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped.startswith(("{", "[")):
+                    return " ".join(value.split())[:1_000]
                 try:
-                    decoded = json.loads(value)
+                    decoded = json.loads(stripped)
                 except (TypeError, ValueError):
                     return " ".join(value.split())[:1_000]
                 return compact(decoded, depth + 1)
@@ -643,6 +662,48 @@ class DSHService:
             return decoded if isinstance(decoded, dict) else None
         return None
 
+    @classmethod
+    def profile_action_for_tool_result(
+        cls,
+        tool_result: dict[str, Any],
+        profile_context: ProfileContext | None,
+        workflow: dict[str, Any] | None,
+    ) -> dict[str, str] | None:
+        """Return an explicit, target-free Profile menu action when justified.
+
+        Profile-selection errors are authoritative Tool codes. An empty-result
+        hint is allowed only when the selected Skill declares the exact list
+        path and the trusted token identifies a concrete Profile. This never
+        inspects generated prose or infers that another Profile contains data.
+        """
+
+        code = str(tool_result.get("code") or "")
+        if code in {"profile_selection_required", "selected_profile_not_available"}:
+            return {"type": "open_profile_menu", "code": code}
+        if (
+            not tool_result.get("ok")
+            or profile_context is None
+            or profile_context.is_global_view
+        ):
+            return None
+        configuration = (workflow or {}).get("profileAction")
+        if not isinstance(configuration, dict):
+            return None
+        items_path = configuration.get("emptyResultItemsPath")
+        if not isinstance(items_path, str) or not items_path.strip():
+            return None
+        result: Any = tool_result.get("result")
+        for _ in range(2):
+            if not isinstance(result, str):
+                break
+            try:
+                result = json.loads(result)
+            except (TypeError, ValueError):
+                return None
+        if cls._nested_value(result, items_path) != []:
+            return None
+        return {"type": "open_profile_menu", "code": "no_results_current_profile"}
+
     def configured_cross_skill_handoff(
         self,
         active_skill: Skill,
@@ -765,6 +826,8 @@ class DSHService:
         return conversation
 
     async def get_owned_conversation(self, db: AsyncSession, principal: Principal, conversation_id: str) -> Conversation:
+        """Resolve a conversation in the principal's exact mutable scope."""
+
         result = await db.execute(
             select(Conversation).where(
                 Conversation.conversation_id == conversation_id,
@@ -777,13 +840,56 @@ class DSHService:
             raise LookupError("conversation not found")
         return conversation
 
+    @staticmethod
+    def is_global_conversation_principal(principal: Principal) -> bool:
+        """Only a token-selected Global Profile gets aggregate reads."""
+
+        return (
+            principal.umc_identity_verified
+            and principal.profile_id == "0"
+            and principal.tenant_id == f"umc:global:{principal.user_id}"
+        )
+
+    @classmethod
+    def readable_conversation_condition(cls, principal: Principal):
+        """Build the owner condition for list/read operations.
+
+        A Global principal may read this user's conversations across persisted
+        UMC scopes. Non-UMC tenants and other users remain outside that view.
+        Concrete Profile principals retain the original exact-tenant boundary.
+        """
+
+        if cls.is_global_conversation_principal(principal):
+            return and_(
+                Conversation.user_id == principal.user_id,
+                or_(*(Conversation.tenant_id.startswith(prefix) for prefix in UMC_CONVERSATION_TENANT_PREFIXES)),
+            )
+        return and_(
+            Conversation.tenant_id == principal.tenant_id,
+            Conversation.user_id == principal.user_id,
+        )
+
+    async def get_readable_conversation(
+        self,
+        db: AsyncSession,
+        principal: Principal,
+        conversation_id: str,
+    ) -> Conversation:
+        result = await db.execute(
+            select(Conversation).where(
+                Conversation.conversation_id == conversation_id,
+                self.readable_conversation_condition(principal),
+            )
+        )
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            raise LookupError("conversation not found")
+        return conversation
+
     async def list_owned_conversations(self, db: AsyncSession, principal: Principal) -> list[Conversation]:
         result = await db.execute(
             select(Conversation)
-            .where(
-                Conversation.tenant_id == principal.tenant_id,
-                Conversation.user_id == principal.user_id,
-            )
+            .where(self.readable_conversation_condition(principal))
             .order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
         )
         return list(result.scalars().all())
@@ -858,11 +964,37 @@ class DSHService:
         await db.commit()
 
     @staticmethod
-    def conversation_json(conversation: Conversation, runtime_state: str | None = None) -> dict[str, Any]:
+    def conversation_scope_metadata(conversation: Conversation) -> tuple[str, str]:
+        for scope_type in ("global", "profile", "establishment"):
+            prefix = f"umc:{scope_type}:"
+            if conversation.tenant_id.startswith(prefix):
+                return scope_type, conversation.tenant_id.removeprefix(prefix)
+        return "tenant", conversation.tenant_id
+
+    @classmethod
+    def conversation_json(
+        cls,
+        conversation: Conversation,
+        runtime_state: str | None = None,
+        *,
+        principal: Principal | None = None,
+    ) -> dict[str, Any]:
+        scope_type, scope_id = cls.conversation_scope_metadata(conversation)
+        read_only = bool(
+            principal
+            and (
+                conversation.tenant_id != principal.tenant_id
+                or conversation.user_id != principal.user_id
+            )
+        )
         return {
             "conversationId": conversation.conversation_id,
             "dshSessionId": conversation.dsh_session_id,
             "ownerAccount": conversation.owner_account,
+            "sourceTenantId": conversation.tenant_id,
+            "sourceScopeType": scope_type,
+            "sourceScopeId": scope_id,
+            "readOnly": read_only,
             "workspace": conversation.workspace,
             "skillProfile": conversation.skill_profile,
             "runtimeProfile": conversation.runtime_profile,
@@ -1228,6 +1360,11 @@ class DSHService:
                         .order_by(Skill.version.desc())
                     )
                     selected_skill = selected_skill_result.scalars().first()
+                    selected_workflow = (
+                        merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow)
+                        if selected_skill
+                        else {}
+                    )
                     profile_sensitive_request = (
                         route.skill_id == "profile_status"
                         and self.is_profile_sensitive_data_request(latest_content)
@@ -1280,7 +1417,7 @@ class DSHService:
                         )
                     elif not tool_request and not handoff_missing_message:
                         tool_request = build_configured_tool_request(
-                            merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow) if selected_skill else {},
+                            selected_workflow,
                             allowed_tool_names,
                             latest_content,
                             history,
@@ -1431,38 +1568,10 @@ class DSHService:
                     attachment_local_response: str | None = None
                     attachment_handoff_skill_id: str | None = None
                     attachment_handoff_result: dict[str, Any] | None = None
+                    profile_action: dict[str, str] | None = None
                     if tool_request:
                         tool_name, arguments = tool_request
                         tool_definition = tool_definition_by_name.get(tool_name) or {}
-                        target_profile = requires_profile_switch(
-                            tool_definition,
-                            profile_context,
-                            latest_content,
-                        )
-                        requires_selection = (
-                            profile_scope_for_definition(tool_definition).get("mode") == "bind_parameter"
-                            and (not profile_context or profile_context.is_global_view)
-                        )
-                        if target_profile or requires_selection:
-                            switch_message = (
-                                f"يرجى التبديل إلى ملف {target_profile.name} في البوابة أولاً، ثم أرسل الطلب مرة أخرى."
-                                if target_profile and response_language == "ar"
-                                else "يرجى اختيار ملف شخصي في البوابة أولاً، ثم أرسل الطلب مرة أخرى."
-                                if response_language == "ar"
-                                else f"Please switch to the {target_profile.name} profile in the portal, then ask again."
-                                if target_profile
-                                else "Please select a profile in the portal, then ask again."
-                            )
-                            await self.append_event(db, conversation, "profile.scope", {"outcome": "switch_required" if target_profile else "selection_required", "targetProfileId": target_profile.profile_id if target_profile else None, "requestId": principal.request_id})
-                            await self.append_event(db, conversation, "assistant.message", {"content": switch_message, "requestId": principal.request_id})
-                            await self.append_event(db, conversation, "turn.completed", {"requestId": principal.request_id, "runtimeId": conversation.runtime_id})
-                            conversation.status = "READY"
-                            conversation.last_activity_at = datetime.now(timezone.utc)
-                            await db.commit()
-                            lease = self.runtime_manager.get(conversation_id)
-                            if lease:
-                                lease.state = "READY"
-                            return
                         attachment_argument = arguments.get("attachment")
                         parameter_schema = (tool_definition_by_name.get(tool_name) or {}).get("parameters") or {}
                         declared_parameters = parameter_schema.get("properties", {}) if isinstance(parameter_schema, dict) else {}
@@ -1526,6 +1635,11 @@ class DSHService:
                                 tool_definition=tool_definition_by_name.get(tool_name),
                                 profile_context=profile_context,
                             )
+                        profile_action = self.profile_action_for_tool_result(
+                            tool_result,
+                            profile_context,
+                            selected_workflow,
+                        )
                         masking_policy = str((tool_definition_by_name.get(tool_name) or {}).get("maskingPolicy") or "default")
                         masked_tool_result = mask_tool_result(tool_result, masking_policy)
                         # OCR text is sensitive customer data.  Keep the OCR
@@ -1692,66 +1806,57 @@ class DSHService:
                                 ):
                                     handoff_tool_name, handoff_arguments = handoff_request
                                     handoff_definition = handoff_definitions[handoff_tool_name]
-                                    target_profile = requires_profile_switch(
-                                        handoff_definition, profile_context, latest_content
+                                    await self.append_event(
+                                        db,
+                                        conversation,
+                                        "skill.route",
+                                        {
+                                            "skillId": handoff_route.skill_id,
+                                            "category": handoff_route.category,
+                                            "toolName": handoff_tool_name,
+                                            "mode": handoff_route.mode,
+                                            "requestId": principal.request_id,
+                                            "routingLocked": True,
+                                            "attachmentOcrHandoff": True,
+                                        },
                                     )
-                                    requires_selection = (
-                                        profile_scope_for_definition(handoff_definition).get("mode")
-                                        == "bind_parameter"
-                                        and (not profile_context or profile_context.is_global_view)
-                                    )
-                                    if not target_profile and not requires_selection:
-                                        await self.append_event(
-                                            db,
-                                            conversation,
-                                            "skill.route",
-                                            {
-                                                "skillId": handoff_route.skill_id,
-                                                "category": handoff_route.category,
-                                                "toolName": handoff_tool_name,
-                                                "mode": handoff_route.mode,
-                                                "requestId": principal.request_id,
-                                                "routingLocked": True,
+                                    await self.append_event(
+                                        db,
+                                        conversation,
+                                        "tool.call",
+                                        {
+                                            "toolName": handoff_tool_name,
+                                            "arguments": {
                                                 "attachmentOcrHandoff": True,
+                                                "parameterKeys": sorted(handoff_arguments),
                                             },
-                                        )
-                                        await self.append_event(
-                                            db,
-                                            conversation,
-                                            "tool.call",
-                                            {
-                                                "toolName": handoff_tool_name,
-                                                "arguments": {
-                                                    "attachmentOcrHandoff": True,
-                                                    "parameterKeys": sorted(handoff_arguments),
-                                                },
-                                                "requestId": principal.request_id,
-                                            },
-                                        )
-                                        handoff_result = await self.tool_gateway.invoke(
-                                            principal,
-                                            handoff_tool_name,
-                                            handoff_arguments,
-                                            allowed_tools=handoff_allowed,
-                                            tool_definition=handoff_definition,
-                                            profile_context=profile_context,
-                                        )
-                                        handoff_masked_result = mask_tool_result(
-                                            handoff_result,
-                                            str(handoff_definition.get("maskingPolicy") or "default"),
-                                        )
-                                        handoff_event_result = dict(handoff_masked_result)
-                                        if isinstance(handoff_event_result.get("result"), dict):
-                                            handoff_event_result["result"] = json.dumps(
-                                                handoff_event_result["result"], ensure_ascii=False
-                                            )[:20_000]
-                                        await self.append_event(
-                                            db, conversation, "tool.result", handoff_event_result
-                                        )
-                                        attachment_handoff_skill_id = handoff_route.skill_id
-                                        attachment_handoff_result = handoff_result
-                                        route = handoff_route
-                                        selected_skill = handoff_skill
+                                            "requestId": principal.request_id,
+                                        },
+                                    )
+                                    handoff_result = await self.tool_gateway.invoke(
+                                        principal,
+                                        handoff_tool_name,
+                                        handoff_arguments,
+                                        allowed_tools=handoff_allowed,
+                                        tool_definition=handoff_definition,
+                                        profile_context=profile_context,
+                                    )
+                                    handoff_masked_result = mask_tool_result(
+                                        handoff_result,
+                                        str(handoff_definition.get("maskingPolicy") or "default"),
+                                    )
+                                    handoff_event_result = dict(handoff_masked_result)
+                                    if isinstance(handoff_event_result.get("result"), dict):
+                                        handoff_event_result["result"] = json.dumps(
+                                            handoff_event_result["result"], ensure_ascii=False
+                                        )[:20_000]
+                                    await self.append_event(
+                                        db, conversation, "tool.result", handoff_event_result
+                                    )
+                                    attachment_handoff_skill_id = handoff_route.skill_id
+                                    attachment_handoff_result = handoff_result
+                                    route = handoff_route
+                                    selected_skill = handoff_skill
                         if latest_attachment and not tool_result.get("ok"):
                             forced_response_message = (
                                 "تعذر علي قراءة الملف المرفق لأن خدمة تحليل المستندات غير متاحة حالياً. "
@@ -1771,7 +1876,16 @@ class DSHService:
                                 handoff_result=attachment_handoff_result,
                             )
                     if forced_response_message:
-                        await self.append_event(db, conversation, "assistant.message", {"content": forced_response_message, "requestId": principal.request_id})
+                        await self.append_event(
+                            db,
+                            conversation,
+                            "assistant.message",
+                            {
+                                "content": forced_response_message,
+                                "requestId": principal.request_id,
+                                **({"profileAction": profile_action} if profile_action else {}),
+                            },
+                        )
                     elif attachment_local_response:
                         await self.append_audit(
                             db,
@@ -1800,7 +1914,11 @@ class DSHService:
                             db,
                             conversation,
                             "assistant.message",
-                            {"content": attachment_local_response, "requestId": principal.request_id},
+                            {
+                                "content": attachment_local_response,
+                                "requestId": principal.request_id,
+                                **({"profileAction": profile_action} if profile_action else {}),
+                            },
                         )
                     else:
                         await self.append_status(
@@ -1908,7 +2026,16 @@ class DSHService:
                                 request_id=principal.request_id,
                                 runtime_id=conversation.runtime_id,
                             )
-                        await self.append_event(db, conversation, "assistant.message", {"content": content, "requestId": principal.request_id})
+                        await self.append_event(
+                            db,
+                            conversation,
+                            "assistant.message",
+                            {
+                                "content": content,
+                                "requestId": principal.request_id,
+                                **({"profileAction": profile_action} if profile_action else {}),
+                            },
+                        )
                     await self.append_event(db, conversation, "turn.completed", {"requestId": principal.request_id, "runtimeId": conversation.runtime_id})
                     conversation.status = "READY"
                     conversation.last_activity_at = datetime.now(timezone.utc)
@@ -1928,6 +2055,10 @@ class DSHService:
                         pass
 
     async def cancel(self, principal: Principal, conversation_id: str) -> None:
+        # Authorize before touching the in-memory task. A Global reader may see
+        # another Profile's history but must never be able to interrupt its turn.
+        async with SessionLocal() as db:
+            await self.get_owned_conversation(db, principal, conversation_id)
         task = self._turn_tasks.get(conversation_id)
         if task and not task.done():
             task.cancel()

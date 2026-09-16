@@ -1,4 +1,6 @@
+import base64
 import hashlib
+import json
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -17,6 +19,7 @@ class Principal:
     # The caller's UMC token is kept in memory for the lifetime of one
     # request/turn only. It is never serialized into session events or logs.
     umc_token: str | None = None
+    umc_identity_verified: bool = False
     audit_account: str = ""
     audit_current_role: str = ""
 
@@ -37,6 +40,21 @@ def _bearer_token(raw_token: str | None) -> str | None:
     if scheme.lower() != "bearer" or not value.strip():
         return None
     return value.strip()
+
+
+def _token_profile_id(token: str | None) -> str | None:
+    """Read the selected UMC Profile claim; authorization happens separately."""
+
+    if not token:
+        return None
+    try:
+        part = token.split(".")[1]
+        part += "=" * (-len(part) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(part).decode("utf-8"))
+        value = claims.get("UserProFileId")
+        return str(value).strip() if isinstance(value, (str, int)) and str(value).strip() else None
+    except (ValueError, KeyError, IndexError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
 
 
 async def get_principal(
@@ -64,5 +82,6 @@ async def get_principal(
         tenant_id=tenant_id,
         request_id=request_id,
         token_ref=_token_reference(authorization),
+        profile_id=_token_profile_id(umc_token),
         umc_token=umc_token,
     )

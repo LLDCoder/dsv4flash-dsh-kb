@@ -147,11 +147,14 @@ def requested_profile(text: str, context: ProfileContext | None) -> ProfileRefer
 
 
 def requires_profile_switch(definition: dict[str, Any], context: ProfileContext | None, user_text: str) -> ProfileReference | None:
-    if profile_scope_for_definition(definition).get("mode") == "not_applicable":
-        return None
-    target = requested_profile(user_text, context)
-    if target and context and (context.is_global_view or target.profile_id != context.active_profile_id):
-        return target
+    """Never infer an authorization decision from a name in user text.
+
+    The bearer token is the profile trust boundary.  Global tokens cover the
+    account's authorized aggregate scope, while a concrete token covers only
+    its active Profile.  A name match in client-supplied display metadata
+    cannot prove that data exists elsewhere or that a switch is required.
+    """
+
     return None
 
 
@@ -161,10 +164,20 @@ def bind_active_profile(definition: dict[str, Any], arguments: dict[str, Any], c
     scope = profile_scope_for_definition(definition)
     if scope.get("mode") != "bind_parameter":
         return dict(arguments), None
-    if not context or context.is_global_view or not context.active_profile_id:
+    if not context or not context.active_profile_id:
         return None, "profile_selection_required"
     bound = dict(arguments)
     parameter = str(scope["parameter"])
+    if context.is_global_view:
+        # A Global token is already the authorization scope. Never forward a
+        # model/client-selected Profile ID. Optional selectors are omitted so
+        # the upstream endpoint can aggregate; endpoints that require a
+        # concrete selector retain their explicit selection error.
+        bound.pop(parameter, None)
+        required = definition.get("parameters", {}).get("required", []) if isinstance(definition.get("parameters"), dict) else []
+        if parameter in required:
+            return None, "profile_selection_required"
+        return bound, None
     properties = definition.get("parameters", {}).get("properties", {}) if isinstance(definition.get("parameters"), dict) else {}
     specification = properties.get(parameter) if isinstance(properties, dict) else None
     if isinstance(specification, dict) and specification.get("type") == "integer" and context.active_profile_id.isdigit():

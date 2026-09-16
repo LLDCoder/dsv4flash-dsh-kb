@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -33,7 +34,7 @@ from .config import config_catalog, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
 from .customer_documents import CustomerDocumentNotConfigured
 from .db import AuditOperator, AuditOperatorEvent, AuditOperatorSession, AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, Tool, get_db
-from .principal import Principal, _bearer_token, _token_reference, get_principal
+from .principal import Principal, _bearer_token, _token_profile_id, _token_reference, get_principal
 from .profile_scope import normalize_profile_scope
 from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
 from .service import DSHService
@@ -153,6 +154,41 @@ def audit_identity_from_user_info(payload: Any) -> dict[str, str]:
     return {"account": account, "currentRole": current_role}
 
 
+def umc_user_id_from_user_info(payload: Any) -> str | None:
+    """Extract the authenticated UMC user id from GetUserInfo."""
+
+    if isinstance(payload, dict):
+        for key in ("UserID", "UserId", "userId", "userID", "id"):
+            candidate = payload.get(key)
+            if isinstance(candidate, (str, int)) and str(candidate).strip():
+                return str(candidate).strip()
+        for child in payload.values():
+            found = umc_user_id_from_user_info(child)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for child in payload:
+            found = umc_user_id_from_user_info(child)
+            if found:
+                return found
+    return None
+
+
+async def verified_umc_user_info(token: str) -> Any:
+    """Validate a live UMC token through the customer GetUserInfo endpoint."""
+
+    settings = get_settings()
+    base_url = settings.umc_document_service_base_url.rstrip("/")
+    async with httpx.AsyncClient(timeout=settings.umc_login_timeout_seconds) as client:
+        response = await client.post(
+            f"{base_url}/api/User/GetUserInfo",
+            headers={"Authorization": f"Bearer {token}"},
+            json={},
+        )
+    response.raise_for_status()
+    return response.json()
+
+
 def audit_identity_from_payloads(payloads: list[Any]) -> dict[str, str]:
     """Project the latest available customer identity into the audit overview."""
 
@@ -177,16 +213,7 @@ def make_router(service: DSHService) -> APIRouter:
     audit_login_limiter = LoginRateLimiter()
 
     def token_profile_id(token: str | None) -> str | None:
-        if not token:
-            return None
-        try:
-            part = token.split(".")[1]
-            part += "=" * (-len(part) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(part).decode("utf-8"))
-            value = claims.get("UserProFileId")
-            return str(value).strip() if isinstance(value, (str, int)) and str(value).strip() else None
-        except (ValueError, KeyError, IndexError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
+        return _token_profile_id(token)
 
     def raw_config_value(item: ConfigEntry) -> object:
         value = item.value
@@ -220,13 +247,54 @@ def make_router(service: DSHService) -> APIRouter:
                 user_id = None
         if not user_id:
             raise HTTPException(status_code=401, detail="missing chatbot session token")
+        profile_id = token_profile_id(raw)
+        default_tenant = (
+            f"umc:global:{user_id}"
+            if profile_id == "0"
+            else f"umc:profile:{profile_id}"
+            if profile_id
+            else "default"
+        )
         return Principal(
             user_id=str(user_id),
-            tenant_id=x_tenant_id or f"umc:global:{user_id}",
+            tenant_id=x_tenant_id or default_tenant,
             request_id=x_request_id or str(uuid4()),
             token_ref=_token_reference(authorization),
             umc_token=raw,
             profile_id=token_profile_id(raw),
+        )
+
+    async def conversation_read_principal(
+        principal: Principal = Depends(get_principal),
+    ) -> Principal:
+        """Grant aggregate reads only after live UMC identity verification."""
+
+        is_global_tenant = principal.tenant_id == f"umc:global:{principal.user_id}"
+        if not is_global_tenant:
+            return principal
+        if not principal.umc_token:
+            raise HTTPException(status_code=401, detail="UMC authentication is required for Global conversation history")
+        if principal.profile_id != "0":
+            raise HTTPException(status_code=403, detail="The current UMC token is not authorized for Global conversation history")
+        try:
+            payload = await verified_umc_user_info(principal.umc_token)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {401, 403}:
+                raise HTTPException(status_code=exc.response.status_code, detail="UMC identity verification failed") from exc
+            raise HTTPException(status_code=503, detail="UMC identity verification is unavailable") from exc
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=503, detail="UMC identity verification is unavailable") from exc
+        verified_user_id = umc_user_id_from_user_info(payload)
+        if not verified_user_id:
+            raise HTTPException(status_code=401, detail="UMC identity verification failed")
+        if verified_user_id != str(principal.user_id):
+            raise HTTPException(status_code=403, detail="UMC identity does not match the conversation principal")
+        identity = audit_identity_from_user_info(payload)
+        return replace(
+            principal,
+            umc_identity_verified=True,
+            audit_account=identity["account"],
+            audit_current_role=identity["currentRole"],
         )
 
     async def stored_console_password(db: AsyncSession) -> str:
@@ -661,8 +729,20 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.get("/ai-chat/conversations", tags=["Chatbot compatibility"])
     async def ai_chat_conversations(db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
-        result = await db.execute(select(Conversation).where(Conversation.tenant_id == principal.tenant_id, Conversation.user_id == principal.user_id).order_by(Conversation.last_activity_at.desc()))
-        return {"conversations": [service.conversation_json(item) for item in result.scalars().all()]}
+        result = await db.execute(
+            select(Conversation)
+            .where(
+                Conversation.tenant_id == principal.tenant_id,
+                Conversation.user_id == principal.user_id,
+            )
+            .order_by(Conversation.last_activity_at.desc())
+        )
+        return {
+            "conversations": [
+                service.conversation_json(item, principal=principal)
+                for item in result.scalars().all()
+            ]
+        }
 
     @router.get("/ai-chat/conversations/{conversation_id}/messages", tags=["Chatbot compatibility"])
     async def ai_chat_messages(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
@@ -673,10 +753,18 @@ def make_router(service: DSHService) -> APIRouter:
         events = await service.list_events(db, conversation, after_seq=0)
         messages = []
         for event in events:
-            if event.event_type not in {"user.message", "assistant.message"}:
+            if event.event_type not in {"user.message", "assistant.message", "assistant.welcome"}:
                 continue
             messages.append({"id": f"{conversation_id}:{event.seq}", "role": "user" if event.event_type == "user.message" else "assistant", "content": event.event_json.get("content", ""), "created_at": event.created_at.isoformat() if event.created_at else None})
-        return {"conversation_id": conversation_id, "messages": messages}
+        scope_type, scope_id = service.conversation_scope_metadata(conversation)
+        return {
+            "conversation_id": conversation_id,
+            "sourceTenantId": conversation.tenant_id,
+            "sourceScopeType": scope_type,
+            "sourceScopeId": scope_id,
+            "readOnly": conversation.tenant_id != principal.tenant_id,
+            "messages": messages,
+        }
 
     @router.delete("/ai-chat/conversations/{conversation_id}", tags=["Chatbot compatibility"])
     async def ai_chat_delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
@@ -752,7 +840,7 @@ def make_router(service: DSHService) -> APIRouter:
     @router.post("/conversations")
     async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
         conversation = await service.create_conversation(db, principal, payload.workspace, payload.skill_profile, payload.runtime_profile)
-        return service.conversation_json(conversation)
+        return service.conversation_json(conversation, principal=principal)
 
     @router.post("/umc/session")
     async def get_umc_session(refresh: bool = Query(default=False), principal: Principal = Depends(get_principal)):
@@ -902,6 +990,7 @@ def make_router(service: DSHService) -> APIRouter:
         total: int,
         page: int,
         page_size: int,
+        principal: Principal | None = None,
     ) -> dict[str, object]:
         conversation_ids = [conversation.dsh_session_id for conversation in conversations]
         title_by_conversation: dict[str, str] = {}
@@ -999,7 +1088,10 @@ def make_router(service: DSHService) -> APIRouter:
             }
         items: list[dict] = []
         for conversation in conversations:
-            item = {**service.conversation_json(conversation), "title": title_by_conversation.get(conversation.dsh_session_id, "")}
+            item = {
+                **service.conversation_json(conversation, principal=principal),
+                "title": title_by_conversation.get(conversation.dsh_session_id, ""),
+            }
             if is_admin:
                 event_identity = identity_by_conversation.get(conversation.dsh_session_id, {})
                 owner_identity = identity_by_owner.get((conversation.tenant_id, conversation.user_id), {})
@@ -1379,12 +1471,9 @@ def make_router(service: DSHService) -> APIRouter:
         page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
         search: str | None = Query(default=None, max_length=160),
         db: AsyncSession = Depends(get_db),
-        principal: Principal = Depends(get_principal),
+        principal: Principal = Depends(conversation_read_principal),
     ):
-        is_admin = service.can_view_all_audit(principal)
-        query = select(Conversation)
-        if not is_admin:
-            query = query.where(Conversation.tenant_id == principal.tenant_id, Conversation.user_id == principal.user_id)
+        query = select(Conversation).where(service.readable_conversation_condition(principal))
         conversation_match = text_match(search, Conversation.conversation_id, Conversation.owner_account, Conversation.user_id, Conversation.tenant_id)
         if conversation_match is not None:
             title_match = select(SessionEvent.id).where(
@@ -1401,7 +1490,15 @@ def make_router(service: DSHService) -> APIRouter:
             query = query.where(or_(conversation_match, title_match, owner_identity_match))
         query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
         conversations, total = await paged_items(db, query, page=page, page_size=page_size)
-        return await audit_conversation_list(db, conversations, is_admin=is_admin, total=total, page=page, page_size=page_size)
+        return await audit_conversation_list(
+            db,
+            conversations,
+            is_admin=False,
+            total=total,
+            page=page,
+            page_size=page_size,
+            principal=principal,
+        )
 
     @router.get("/audit/conversations", tags=["Audit console"])
     async def list_audit_conversations(
@@ -1518,13 +1615,17 @@ def make_router(service: DSHService) -> APIRouter:
         )
 
     @router.get("/conversations/{conversation_id}")
-    async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_read_principal)):
         try:
-            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+            conversation = await service.get_readable_conversation(db, principal, conversation_id)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         lease = service.runtime_manager.get(conversation_id)
-        return service.conversation_json(conversation, lease.state if lease else None)
+        return service.conversation_json(
+            conversation,
+            lease.state if lease else None,
+            principal=principal,
+        )
 
     @router.delete("/conversations/{conversation_id}")
     async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
@@ -1575,26 +1676,40 @@ def make_router(service: DSHService) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get("/conversations/{conversation_id}/history")
-    async def get_conversation_history(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    async def get_conversation_history(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_read_principal)):
         try:
-            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+            conversation = await service.get_readable_conversation(db, principal, conversation_id)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         events = await service.list_events(db, conversation)
+        read_only = (
+            conversation.tenant_id != principal.tenant_id
+            or conversation.user_id != principal.user_id
+        )
+        if read_only:
+            events = [
+                event
+                for event in events
+                if event.event_type in {"user.message", "assistant.message", "assistant.welcome"}
+            ]
         feedback_by_seq = {
             item.assistant_event_seq: item.rating
             for item in (
                 await db.execute(
                     select(MessageFeedback).where(
                         MessageFeedback.conversation_id == conversation_id,
-                        MessageFeedback.tenant_id == principal.tenant_id,
-                        MessageFeedback.user_id == principal.user_id,
+                        MessageFeedback.tenant_id == conversation.tenant_id,
+                        MessageFeedback.user_id == conversation.user_id,
                     )
                 )
             ).scalars().all()
         }
         return {
             "conversationId": conversation_id,
+            "sourceTenantId": conversation.tenant_id,
+            "sourceScopeType": service.conversation_scope_metadata(conversation)[0],
+            "sourceScopeId": service.conversation_scope_metadata(conversation)[1],
+            "readOnly": read_only,
             "events": [
                 {
                     "seq": event.seq,
@@ -2126,36 +2241,13 @@ def make_router(service: DSHService) -> APIRouter:
                     if not token:
                         await send({"type": "error", "code": "umc_token_required"})
                         continue
-                    claims_user_id = None
-                    if not claims_user_id:
-                        settings = get_settings()
-                        # Use the portal-aware derived URL. It honors an explicit
-                        # document-service override and otherwise falls back to
-                        # the selected customer/admin portal base URL.
-                        base_url = settings.umc_document_service_base_url.rstrip("/")
-                        try:
-                            async with httpx.AsyncClient(timeout=settings.umc_login_timeout_seconds) as client:
-                                response = await client.post(f"{base_url}/api/User/GetUserInfo", headers={"Authorization": f"Bearer {token}"}, json={})
-                            payload = response.json()
-                            def find_user_id(value):
-                                if isinstance(value, dict):
-                                    for key in ("UserID", "UserId", "userId", "userID", "id"):
-                                        candidate = value.get(key)
-                                        if isinstance(candidate, (str, int)) and str(candidate).strip():
-                                            return str(candidate)
-                                    for child in value.values():
-                                        found = find_user_id(child)
-                                        if found: return found
-                                elif isinstance(value, list):
-                                    for child in value:
-                                        found = find_user_id(child)
-                                        if found: return found
-                                return None
-                            identity = audit_identity_from_user_info(payload)
-                            claims_user_id = find_user_id(payload)
-                        except (httpx.HTTPError, ValueError, TypeError):
-                            claims_user_id = None
-                            identity = {"account": "", "currentRole": ""}
+                    try:
+                        payload = await verified_umc_user_info(token)
+                        identity = audit_identity_from_user_info(payload)
+                        claims_user_id = umc_user_id_from_user_info(payload)
+                    except (httpx.HTTPError, ValueError, TypeError):
+                        claims_user_id = None
+                        identity = {"account": "", "currentRole": ""}
                     if not claims_user_id:
                         await send({"type": "error", "code": "missing_user_identity"})
                         continue
@@ -2174,6 +2266,7 @@ def make_router(service: DSHService) -> APIRouter:
                         token_ref=_token_reference(f"Bearer {token}"),
                         umc_token=token,
                         profile_id=token_profile_id(token),
+                        umc_identity_verified=True,
                         audit_account=identity["account"],
                         audit_current_role=identity["currentRole"],
                     )
@@ -2214,7 +2307,10 @@ def make_router(service: DSHService) -> APIRouter:
                     else:
                         await send({"type": "accepted", **result})
                 elif message.type == "cancel" and message.conversation_id:
-                    await service.cancel(principal, message.conversation_id)
+                    try:
+                        await service.cancel(principal, message.conversation_id)
+                    except LookupError:
+                        await send({"type": "error", "code": "conversation_not_found"})
                 elif message.type == "ack":
                     await send({"type": "ack", "seq": message.seq})
         except WebSocketDisconnect:

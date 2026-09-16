@@ -37,7 +37,14 @@ class SkillCatalogCache:
 
     @staticmethod
     def _summary(item: Any) -> dict[str, Any]:
+        # Operator-managed Skill versions may predate deterministic routing.
+        # Use the same backwards-compatible merge as execution so the router
+        # sees canonical rules that are absent from (but never overwrite rules
+        # explicitly present in) the published workflow.
+        from .skills import merged_skill_workflow
+
         content = str(item.content or "").strip()
+        workflow = merged_skill_workflow(str(item.skill_id), dict(getattr(item, "workflow", None) or {}))
         return {
             "skillId": item.skill_id,
             "name": item.name,
@@ -48,10 +55,10 @@ class SkillCatalogCache:
             "aliases": list(getattr(item, "aliases", None) or []),
             "positiveExamples": list(getattr(item, "positive_examples", None) or []),
             "negativeExamples": list(getattr(item, "negative_examples", None) or []),
-            "routing": routing_contract(dict(getattr(item, "workflow", None) or {})),
+            "routing": routing_contract(workflow),
             # The full routing rule is intentionally included for runtime
             # evaluation. The shorter `routing` field remains the LLM contract.
-            "deterministicRouting": list((getattr(item, "workflow", None) or {}).get("deterministicRouting") or []),
+            "deterministicRouting": list(workflow.get("deterministicRouting") or []),
             "version": item.version,
             "status": item.status,
             "enabled": bool(item.enabled),

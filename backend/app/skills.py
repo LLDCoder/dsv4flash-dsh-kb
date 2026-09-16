@@ -168,7 +168,7 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks about their own issued License/Permit list, count, status, validity, expiry, number, or available portal actions, including a named document such as 'How about my Social Media Advertiser Permit?'.",
         "the user explicitly asks for renewal process/requirements, My Requests application status, pending payment, a new-license application, or administrative records.",
         "a current UMC bearer token and live License/Permit APIs; query the current account's issued-record list and never substitute application records.",
-        "for a named permit, match it against the returned issued records and report its actual status, effective date, expiry date, number, and available actions. Do not say account access is unavailable when the live lookup succeeds. Do not use public verification or knowledge-base guidance as a substitute for the account result. This Skill is read-only and never renews, modifies, cancels, transfers, or submits.",
+        "for a named or numbered permit, retrieve the issued-record list and require one exact match against documentId, licensePermitNo, showLicenseNumber, mediaLicenseNumber, or documentName before reporting its actual status, effective date, expiry date, public number, and available actions. Never invent an unsupported list filter, expose sourceLicenseId as the public document number, or guess when no unique record matches. Do not say account access is unavailable when the live lookup succeeds. Do not use public verification or knowledge-base guidance as a substitute for the account result. This Skill is read-only and never renews, modifies, cancels, transfers, or submits.",
     ),
     "license_permit_modification_knowledge": _knowledge_guidance(
         "the user asks whether a current License/Permit can be modified, why its Modify action is unavailable, or asks the general modification scope, requirements, documents, fees, or process.",
@@ -393,7 +393,10 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Service eligibility",
         "allowed_tools": ["umc.services.eligible", "umc.service-categories"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
-        "workflow": {"defaultToolRequest": {"toolName": "umc.services.eligible", "arguments": {}}},
+        "workflow": {
+            "defaultToolRequest": {"toolName": "umc.services.eligible", "arguments": {}},
+            "profileAction": {"emptyResultItemsPath": "services"},
+        },
         "content": SKILL_GUIDANCE["service_eligibility"],
     },
     {
@@ -401,7 +404,10 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "name": "Media Licensing services for my Profile",
         "allowed_tools": ["umc.media-licensing.eligible-services"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
-        "workflow": {"defaultToolRequest": {"toolName": "umc.media-licensing.eligible-services", "arguments": {}}},
+        "workflow": {
+            "defaultToolRequest": {"toolName": "umc.media-licensing.eligible-services", "arguments": {}},
+            "profileAction": {"emptyResultItemsPath": "services"},
+        },
         "content": SKILL_GUIDANCE["media_licensing_account_services"],
     },
     {
@@ -476,6 +482,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "allowed_tools": ["umc.applications", "umc.application_detail"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
         "workflow": {
+            "profileAction": {"emptyResultItemsPath": "data.applicationPage.items"},
             "routing": {
                 "defaultIntentId": "list",
                 "intents": [
@@ -550,6 +557,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "allowed_tools": ["umc.licenses.list", "umc.licenses.statistics", "umc.licenses.action_needed", "umc.licenses.detail"],
         "dependencies": ["trusted_principal", "umc_customer_api"],
         "workflow": {
+            "profileAction": {"emptyResultItemsPath": "data.items"},
             "routing": {
                 "defaultIntentId": "list",
                 "intents": [
@@ -561,19 +569,37 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                     {"id": "detail", "description": "Show a selected record from the preceding license or permit list."},
                 ],
                 "filters": {
+                    "keyword": {"type": "string", "description": "A public license or permit number explicitly supplied by the user."},
                     "record": {"type": "selection", "description": "A record from the latest license list, by ordinal or identifier."},
                 },
             },
+            "textFilterBindings": [
+                {
+                    "filter": "keyword",
+                    "pattern": r"(?:license|licence|permit|许可证|牌照|许可|الرخصة|رخصة|الترخيص|ترخيص|التصريح|تصريح)\s*(?:number|no\.?|#|编号|号码|رقم)?\s*[:#-]?\s*((?=[A-Z0-9/-]*\d)[A-Z0-9][A-Z0-9/-]{3,})",
+                    "group": 1,
+                },
+                {
+                    # Once this Skill is selected, a long standalone number is a safe public
+                    # identifier candidate. Requiring at least five digits avoids treating a
+                    # year such as 2026 as a license lookup.
+                    "filter": "keyword",
+                    "pattern": r"(?<![A-Z0-9-])(\d{5,})(?![A-Z0-9-])",
+                    "group": 1,
+                },
+            ],
             "requests": [
                 {
                     "intentId": "list",
                     "toolName": "umc.licenses.list",
                     "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
+                    "bindings": [{"filter": "keyword", "argument": "keyword"}],
                 },
                 {
                     "intentId": "named_permit",
                     "toolName": "umc.licenses.list",
                     "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
+                    "bindings": [{"filter": "keyword", "argument": "keyword"}],
                 },
                 {
                     "intentId": "expired",
@@ -586,17 +612,20 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                         "sortBy": "expireDate",
                         "sortDirection": 1,
                     },
+                    "bindings": [{"filter": "keyword", "argument": "keyword"}],
                 },
                 {
                     "intentId": "expiring_soon",
                     "toolName": "umc.licenses.list",
                     "arguments": {"statuses": ["EXPIRE_SOON", "205"], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortBy": "expireDate", "sortDirection": 1},
+                    "bindings": [{"filter": "keyword", "argument": "keyword"}],
                 },
                 {"intentId": "action_needed", "toolName": "umc.licenses.action_needed", "arguments": {}},
             ],
             "defaultToolRequest": {
                 "toolName": "umc.licenses.list",
                 "arguments": {"statuses": [], "documentTypes": [], "pageIndex": 1, "pageSize": 100, "sortDirection": 1},
+                "bindings": [{"filter": "keyword", "argument": "keyword"}],
             },
             "selection": {
                 "intentId": "detail",
@@ -796,22 +825,30 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
     ],
     "my_requests_pending_actions": [{"priority": 850, "anyTerms": ["pending actions", "what needs attention", "outstanding actions", "my requests pending", "my pending actions", "待处理事项", "待办申请", "我的待办", "我的待处理", "需要处理"], "noneTerms": ["license", "licence", "permit", "许可证", "牌照", "许可", "رخصة", "تصريح"], "route": {"category": "data_query"}}],
     "license_renewal": [
-        {"priority": 850, "anyTerms": ["expire", "expiring", "expiry", "到期", "ستنتهي", "منتهية"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "noneTerms": ["which licenses", "which licences", "which permits", "how many", "number of licenses", "number of licences", "哪些许可证", "多少许可证"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "fields": ["license_or_permit_type"], "routingLocked": True}},
-        {"priority": 860, "anyTerms": ["action needed", "actions needed", "needs renewal", "renewal due", "需要续期", "待处理"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"]}},
-        {"priority": 855, "anyTerms": ["renew", "renewal", "extend an existing permit", "续期", "延期", "تجديد", "تمديد"], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["license_or_permit_type", "license_number"], "choices": ["Renew licence", "Extend permit"]}},
+        {"priority": 920, "anyTerms": ["action needed", "actions needed", "need action", "needs action", "needs renewal", "renewal due", "need renewal", "需要续期", "待处理", "بحاجة إلى تجديد", "يحتاج إلى تجديد", "تحتاج إلى تجديد", "مطلوب تجديدها"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
+        {"priority": 910, "anyTerms": ["renew", "renewal", "how should i", "what should i do", "renewal process", "renewal requirements", "extend an existing permit", "续期", "延期", "怎么办", "如何处理", "تجديد", "تمديد", "أجدد", "يجب أن أفعل", "ماذا أفعل", "كيفية التجديد", "متطلبات التجديد", "إجراءات التجديد"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "route": {"category": "knowledge", "toolName": "knowledge.search", "fields": ["license_or_permit_type", "license_number"], "choices": ["Renew licence", "Extend permit"], "routingLocked": True}},
+        {"priority": 880, "anyTerms": ["expire", "expires", "expiring", "expiry", "validity", "到期", "有效期", "تنتهي", "ستنتهي", "انتهاء", "منتهية", "الصلاحية"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "fields": ["license_or_permit_type"], "routingLocked": True}},
     ],
     "license_permit_modification_knowledge": [{"priority": 850, "anyTerms": ["modify", "modification", "change license", "change permit", "update license", "update permit", "修改", "变更"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "route": {"category": "api_call", "fields": ["license_or_permit_type"]}}],
     "permit_download": [{"priority": 835, "anyTerms": ["download", "issued permit", "下载", "许可证", "تنزيل", "تحميل", "تصريح صادر"], "anyTermGroups": [["permit"], ["license"], ["许可"], ["تصريح"], ["رخصة"]], "route": {"category": "data_query"}}],
     "license_permit_status": [
-        {"priority": 845, "anyTerms": ["my", "我的", "رخصتي", "تصريحي"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب", "download", "下载", "تنزيل", "تحميل"], "route": {"category": "data_query", "fields": ["license_or_permit_type"]}},
-        {"priority": 830, "anyTerms": ["expire", "expiring", "expiry", "到期", "ستنتهي", "منتهية"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخصة"], ["تصريح"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب"], "route": {"category": "data_query", "fields": ["license_or_permit_type"]}},
-        {"priority": 830, "anyTerms": ["how many license", "how many licence", "number of licenses", "number of licences", "license status", "licence status", "permit status", "license expiry", "licence expiry", "expiring licenses", "expiring licences", "expiring permits", "my license", "my permit", "my licence", "my licenses", "my permits", "我的许可证", "我的牌照", "我的许可", "许可证数量", "牌照数量", "许可证状态", "牌照状态", "حالة رخصتي", "حالة تصريحي", "رخصتي", "تصريحي", "عدد الرخص", "عدد التصاريح"], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب"], "route": {"category": "data_query", "fields": ["license_or_permit_type"]}},
+        {"priority": 905, "patterns": ["(?<!\\d)\\d{5,}(?!\\d)"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "noneTerms": ["application", "申请", "申请状态", "حالة الطلب", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد", "modify", "modification", "修改", "变更"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
+        {"priority": 900, "anyTerms": ["my", "mine", "i have", "do i have", "我的", "我有", "رخصتي", "رخصي", "تصريحي", "تصاريحي", "لدي", "الخاصة بي", "حسابي"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب", "download", "下载", "تنزيل", "تحميل", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد", "modify", "modification", "修改", "变更"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
+        {"priority": 898, "anyTerms": ["number", "no.", "编号", "号码", "رقم"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "patterns": ["(?<!\\d)\\d{5,}(?!\\d)"], "noneTerms": ["application", "申请", "申请状态", "حالة الطلب", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
+        {"priority": 895, "anyTerms": ["valid until", "license status", "licence status", "permit status", "how many license", "how many licence", "number of licenses", "number of licences", "which licenses", "which licences", "which permits", "expiring licenses", "expiring licences", "expiring permits", "哪些许可证", "许可证数量", "牌照数量", "许可证状态", "牌照状态", "ما هي الرخص", "أي الرخص", "الرخص التي", "حالة الرخص", "حالة التصاريح", "عدد الرخص", "عدد التصاريح"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
     ],
     "admin_inspection": [{"priority": 820, "anyTerms": ["inspection summary", "high risk", "inspection", "检查摘要", "高风险"], "route": {"category": "data_query"}}],
     "admin_analytics": [{"priority": 820, "anyTerms": ["dimension pivot", "process time", "按省", "按酋长国", "اتجاه وقت معالجة", "قسّمه حسب الإمارة"], "route": {"category": "data_query"}}],
     "admin_finance": [{"priority": 820, "anyTerms": ["revenue", "fine collection", "last 7 days", "finance trend", "收入", "罚款回收", "الإيرادات", "تحصيل الغرامات"], "route": {"category": "data_query"}}],
     "admin_audit": [{"priority": 820, "anyTerms": ["audit", "low-confidence", "full user details", "permissions", "审计", "低置信度", "用户详情"], "route": {"category": "data_query"}}],
     "application_status": [
+        {
+            "priority": 990,
+            "patterns": [
+                r"(?:\b(?:show|list|find|query|search|check)\b.{0,80}\bapplications?\b|\bapplications?\b.{0,80}\bprofiles?\b|查询.{0,40}申请|(?:اعرض|ابحث|استعلم).{0,80}(?:طلب|طلبات))",
+            ],
+            "route": {"category": "data_query", "routingLocked": True},
+        },
         {"priority": 940, "patterns": [r"\b[A-Z]{2,6}(?:-\d{1,8}){3,}\b"], "route": {"category": "data_query", "routingLocked": True}},
         {"priority": 950, "patterns": ["application_number"], "route": {"category": "data_query", "routingLocked": True}},
         {"priority": 810, "anyTerms": ["latest status", "application status", "application history", "application histories", "status of my application", "what's the status of my application", "open applications", "summarize my open", "my requests", "我的申请", "我的请求", "申请状态", "申请进度", "申请历史", "حالة الطلب", "حالة طلبي", "آخر حالة"], "route": {"category": "data_query"}},
@@ -939,6 +976,17 @@ def merged_skill_workflow(skill_id: str, published_workflow: dict[str, Any] | No
         }
 
     canonical_id = canonical_skill_id(skill_id)
+    published = dict(published_workflow or {})
+    if canonical_id == "profile_status":
+        # This legacy rule treated text such as "applications for my other
+        # profile" as proof that a Profile switch was required. Profile names
+        # are display metadata, not an authorization signal; the active token
+        # and the requested data-domain Skill must decide the result instead.
+        published["deterministicRouting"] = [
+            rule
+            for rule in published.get("deterministicRouting", [])
+            if not isinstance(rule, dict) or rule.get("id") != "profile-switch-context-v2"
+        ]
     default = next(
         (
             definition
@@ -947,7 +995,7 @@ def merged_skill_workflow(skill_id: str, published_workflow: dict[str, Any] | No
         ),
         None,
     )
-    return merge_defaults(dict((default or {}).get("workflow") or {}), dict(published_workflow or {}))
+    return merge_defaults(dict((default or {}).get("workflow") or {}), published)
 
 
 def resolve_skill(text: str) -> SkillRoute:
@@ -1036,12 +1084,22 @@ def build_system_prompt(
         "Never expose internal Tool names, request arguments, serialized JSON, API envelopes, or internal evidence instructions. Convert verified evidence into a concise user-facing answer.",
         "Payments, appeals, complaints, downloads, and all other side effects require a preview and the user's explicit confirmation.",
         "Candidate services are not eligibility decisions. Treat renewal and extension as distinct operations.",
-        "PROFILE SCOPE: Account data is limited to the profile currently selected in the portal. Never claim to query, filter, or aggregate another profile. When the user names a different profile, ask them to switch it in the portal before continuing.",
+        "PROFILE SCOPE: The trusted bearer token is the sole authorization boundary. Never use a Profile name in the question or client display metadata to infer that another Profile exists, contains data, or requires a switch.",
     ]
     if route.skill_id == "latest_regulations" and route.mode == "exact_quote":
         guardrails.append("A verbatim quotation requires the regulation title/number/date and a specific article or clause. If the source is ambiguous, ask a follow-up question and never select a document only because it ranked first.")
     if profile_context is not None and bool(getattr(profile_context, "is_global_view", False)):
-        guardrails.append("The portal is in Global View. Do not represent profile-bound data as available until the user selects a concrete profile.")
+        guardrails.append(
+            "The portal is in Global View. Its token covers the authorized aggregate scope, so query the selected live Tool directly and never ask for a Profile switch merely because the user mentions a Profile. "
+            "Apply a Profile-name or keyword filter only when the published Tool schema or configured workflow declares that filter; never invent one. "
+            "An empty result means only that no matching record was found in the authorized Global View scope and must not reveal whether an external account or Profile exists."
+        )
+    elif profile_context is not None:
+        guardrails.append(
+            "The portal is using a concrete Profile token, so live account data is limited to the current Profile. Do not preflight or infer another Profile from a name in the question. "
+            "When a live query returns no match, say only that no matching record was found in the current Profile scope. You may generically tell the user to use the Profile menu in the page header and ask again for other Profile data, "
+            "but never name a target Profile or claim that matching data exists elsewhere."
+        )
     if route.category == "knowledge" and not evidence_available:
         guardrails.append("When knowledge-base evidence is unavailable, do not present general knowledge as a verified UMC rule.")
 

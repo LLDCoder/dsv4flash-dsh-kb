@@ -115,7 +115,7 @@ DEFAULT_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "operation_id": "licenses_permits_query",
         "http_method": "POST",
         "http_path": "/api/licenses-permits/query",
-        "parameters": {"type": "object", "properties": {"statuses": {"type": "array"}, "documentTypes": {"type": "array"}, "pageIndex": {"type": "integer"}, "pageSize": {"type": "integer"}, "sortBy": {"type": "string"}, "sortDirection": {"type": "integer"}}},
+        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}, "statuses": {"type": "array"}, "documentTypes": {"type": "array"}, "pageIndex": {"type": "integer"}, "pageSize": {"type": "integer"}, "sortBy": {"type": "string"}, "sortDirection": {"type": "integer"}}},
         "auth_strategy": "current_umc_bearer_token",
         "source": "swagger",
     },

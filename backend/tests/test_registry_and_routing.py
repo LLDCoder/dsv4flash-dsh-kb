@@ -2,17 +2,18 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.skills import CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY, LEGACY_SKILL_ID_MIGRATIONS, SKILL_GUIDANCE, build_system_prompt, canonical_skill_id, merged_skill_workflow, resolve_configured_skill, resolve_skill
+from app.skills import CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY, LEGACY_SKILL_ID_MIGRATIONS, SKILL_GUIDANCE, build_system_prompt, canonical_skill_id, merged_skill_workflow, resolve_configured_skill, resolve_skill, response_language_for
 from app.skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
 from app.principal import Principal
 from app.profile_scope import profile_context_from_payload, requires_profile_switch
 from app.response_safety import is_internal_tool_protocol
-from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
+from app.skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 
 
 class RegistryAndRoutingTests(unittest.TestCase):
@@ -21,11 +22,193 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(resolve_skill("What's my license status?").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("How about my Social Media Advertiser Permit?").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("Which licenses are expiring?").skill_id, "license_permit_status")
+        self.assertEqual(resolve_skill("Show license 2649427 and when it expires").skill_id, "license_permit_status")
+        self.assertEqual(resolve_skill("متى تنتهي الرخصة 2649427؟").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("Please show my application status").skill_id, "application_status")
         self.assertEqual(resolve_skill("How do I renew my license?").skill_id, "license_renewal")
         self.assertEqual(resolve_skill("Can I modify my Media License?").skill_id, "license_permit_modification_knowledge")
         self.assertEqual(resolve_skill("Do I have any applications waiting for payment?").skill_id, "application_payment_details")
         self.assertEqual(resolve_skill("Which application payments are pending?").skill_id, "application_payment_details")
+
+    def test_license_account_facts_use_live_data_in_english_and_arabic(self):
+        questions = (
+            ("What licenses do I have and when do they expire?", "en"),
+            ("ما هي التراخيص الخاصة بي ومتى تنتهي؟", "ar"),
+            ("When does my Media License number 2649427 expire?", "en"),
+            ("متى تنتهي صلاحية رخصة الإعلام الخاصة بي رقم 2649427؟", "ar"),
+        )
+        for question, language in questions:
+            with self.subTest(question=question):
+                route = resolve_skill(question)
+                self.assertEqual(
+                    (route.skill_id, route.category, route.tool_name, route.routing_locked),
+                    ("license_permit_status", "data_query", None, True),
+                )
+                self.assertEqual(response_language_for(question), language)
+
+    def test_license_renewal_process_uses_knowledge_in_english_and_arabic(self):
+        questions = (
+            ("How do I renew my license?", "en"),
+            ("What documents are required to renew a media license?", "en"),
+            ("What happens when a media license expires?", "en"),
+            ("كيف أجدد رخصتي؟", "ar"),
+            ("ما هي المستندات المطلوبة لتجديد رخصة إعلامية؟", "ar"),
+            ("ماذا يحدث عند انتهاء رخصة إعلامية؟", "ar"),
+        )
+        for question, language in questions:
+            with self.subTest(question=question):
+                route = resolve_skill(question)
+                self.assertEqual(
+                    (route.skill_id, route.category, route.tool_name, route.routing_locked),
+                    ("license_renewal", "knowledge", "knowledge.search", True),
+                )
+                self.assertEqual(response_language_for(question), language)
+
+    def test_license_number_lookup_uses_declared_list_and_identifier_aliases(self):
+        from app.skills import DEFAULT_SKILL_DEFINITIONS
+
+        skill = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "license_permit_status")
+        request = build_configured_tool_request(
+            skill["workflow"],
+            skill["allowed_tools"],
+            "When does my Media License number 2649427 expire?",
+            [],
+        )
+        self.assertEqual(request[0], "umc.licenses.list")
+        self.assertEqual(request[1]["keyword"], "2649427")
+
+        arabic_request = build_configured_tool_request(
+            skill["workflow"],
+            skill["allowed_tools"],
+            "متى تنتهي الرخصة 2649427؟",
+            [],
+        )
+        self.assertEqual(arabic_request[1]["keyword"], "2649427")
+
+        unfiltered_request = build_configured_tool_request(
+            skill["workflow"],
+            skill["allowed_tools"],
+            "Show all my licenses",
+            [],
+        )
+        self.assertNotIn("keyword", unfiltered_request[1])
+
+        year_request = build_configured_tool_request(
+            skill["workflow"],
+            skill["allowed_tools"],
+            "Which licenses expire in 2026?",
+            [],
+        )
+        self.assertNotIn("keyword", year_request[1])
+
+        application_reference_request = build_configured_tool_request(
+            skill["workflow"],
+            skill["allowed_tools"],
+            "Show license application ML-2-2026-12345",
+            [],
+        )
+        self.assertNotIn("keyword", application_reference_request[1])
+
+        aliases = {
+            "documentId": "DOC-2649427",
+            "licensePermitNo": "LP-2649427",
+            "showLicenseNumber": "2649427",
+            "mediaLicenseNumber": "ML-2649427",
+            "documentName": "Media Production License",
+        }
+        for field, identifier in aliases.items():
+            with self.subTest(field=field):
+                list_event = type("Event", (), {
+                    "event_type": "tool.result",
+                    "event_json": {
+                        "toolName": "umc.licenses.list",
+                        "ok": True,
+                        "result": json.dumps({"data": {"items": [{"sourceLicenseId": "752", field: identifier}]}}),
+                    },
+                })()
+                detail_request = build_configured_tool_request(
+                    skill["workflow"],
+                    skill["allowed_tools"],
+                    f"show {identifier}",
+                    [list_event],
+                )
+                self.assertEqual(detail_request, ("umc.licenses.detail", {"id": "752"}))
+
+        list_definition = next(
+            item for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS if item["tool_name"] == "umc.licenses.list"
+        )
+        self.assertEqual(list_definition["parameters"]["properties"]["keyword"], {"type": "string"})
+
+    def test_published_license_skill_inherits_missing_canonical_routing(self):
+        published = SimpleNamespace(
+            skill_id="license_permit_status",
+            name="Operator-managed license status",
+            content="Published instructions",
+            allowed_tools=["umc.licenses.list", "umc.licenses.detail"],
+            dependencies=[],
+            domain="licenses_permits",
+            aliases=[],
+            positive_examples=[],
+            negative_examples=[],
+            workflow={"routing": {"defaultIntentId": "list", "intents": [{"id": "list"}]}},
+            version=3,
+            status="PUBLISHED",
+            enabled=True,
+        )
+        summary = SkillCatalogCache._summary(published)
+        route = resolve_configured_skill(
+            "متى تنتهي صلاحية رخصة الإعلام الخاصة بي رقم 2649427؟",
+            [summary],
+            canonicalize=False,
+        )
+        self.assertIsNotNone(route)
+        self.assertEqual(
+            (route.skill_id, route.category, route.routing_locked),
+            ("license_permit_status", "data_query", True),
+        )
+
+    def test_legacy_profile_switch_rule_cannot_capture_application_queries(self):
+        published = SimpleNamespace(
+            skill_id="profile_status",
+            name="Operator-managed profile status",
+            content="Published instructions",
+            allowed_tools=["umc.profile.summary"],
+            dependencies=[],
+            domain="profile",
+            aliases=[],
+            positive_examples=[],
+            negative_examples=[],
+            workflow={
+                "deterministicRouting": [
+                    {
+                        "id": "profile-switch-context-v2",
+                        "priority": 1060,
+                        "anyTerms": ["show applications for my other profile"],
+                        "route": {
+                            "category": "data_query",
+                            "routingLocked": True,
+                        },
+                    }
+                ]
+            },
+            version=1,
+            status="PUBLISHED",
+            enabled=True,
+        )
+
+        summary = SkillCatalogCache._summary(published)
+        self.assertIsNone(
+            resolve_configured_skill(
+                "Show applications for my other profile",
+                [summary],
+                canonicalize=False,
+            )
+        )
+        route = resolve_skill("Show applications for my other profile")
+        self.assertEqual(
+            (route.skill_id, route.category, route.routing_locked),
+            ("application_status", "data_query", True),
+        )
 
     def test_read_only_customer_portal_routes(self):
         self.assertEqual(resolve_skill("Show my My Requests").skill_id, "application_status")
@@ -216,7 +399,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         operation = extract_operations(document, "http://example.test/openapi.json")[0]
         self.assertEqual(operation["profileScope"], {"mode": "bind_parameter", "parameter": "UserProfileId"})
 
-    def test_profile_scope_blocks_known_cross_profile_and_binds_active_parameter(self):
+    def test_profile_scope_never_infers_switch_and_binds_active_parameter(self):
         class Platform:
             def __init__(self):
                 self.calls = []
@@ -241,7 +424,13 @@ class RegistryAndRoutingTests(unittest.TestCase):
             "parameters": {"type": "object", "properties": {"UserProfileId": {"type": "integer"}, "pageSize": {"type": "integer"}}, "required": ["UserProfileId"]},
             "profileScope": {"mode": "bind_parameter", "parameter": "UserProfileId"},
         }
-        self.assertEqual(requires_profile_switch(definition, context, "Show requests for Gover profile").profile_id, "22")
+        self.assertIsNone(
+            requires_profile_switch(
+                definition,
+                context,
+                "Show requests for Gover profile",
+            )
+        )
         platform = Platform()
         gateway = ToolGateway(None, None, platform)
         principal = Principal(user_id="u1", tenant_id="t1", request_id="r1", umc_token="token")
@@ -279,7 +468,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(blocked["code"], "profile_selection_required")
         self.assertEqual(len(platform.calls), 1)
 
-    def test_profile_scope_does_not_match_profile_name_inside_regular_word(self):
+    def test_global_profile_names_never_trigger_a_switch(self):
         context = profile_context_from_payload({
             "activeProfileId": "0",
             "isGlobalView": True,
@@ -298,9 +487,12 @@ class RegistryAndRoutingTests(unittest.TestCase):
                 "What's my latest application, and when was it submitted?",
             )
         )
-        self.assertEqual(
-            requires_profile_switch(definition, context, "Show requests for Test profile").profile_id,
-            "22",
+        self.assertIsNone(
+            requires_profile_switch(
+                definition,
+                context,
+                "Show requests for Test profile",
+            )
         )
 
     def test_every_published_skill_tool_has_a_registry_definition(self):
