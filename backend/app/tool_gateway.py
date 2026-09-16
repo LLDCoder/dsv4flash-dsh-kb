@@ -72,6 +72,7 @@ class ToolGateway:
                 expected_fields=tuple(str(value)[:120] for value in arguments.get("expectedFields", [])[:30])
                 if isinstance(arguments.get("expectedFields"), list)
                 else (),
+                completion_period=arguments.get('completionPeriod'),
             )
             policy = ReadOnlyPortalPolicy(self.platform.portal_base_url)
             policy_error = policy.validate(request, UserPermissionContext(), require_permission_context=False)

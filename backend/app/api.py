@@ -915,7 +915,15 @@ def make_router(service: DSHService) -> APIRouter:
         Completion-period counts require evidence for both personal completion
         scope and the requested period. Unfiltered totals, effective dates and
         submission dates are not substitutes; unavailable evidence returns
-        not_confirmed with completion_period_not_verified. Bounded lists remain
+        not_confirmed with completion_period_not_verified. Personal Completed
+        calendar counts can use the observed allowlisted MyComplatedPage source:
+        current-user assignee plus taskApprovalAt, distinct application IDs, two
+        complete stable pagination passes (maximum 3000 records), no LastUpdatedTime
+        date filter. Counts explicitly state Dubai time, Monday-start calendar
+        weeks and inclusive/exclusive dates; they are personal review completions,
+        not issued-license totals. Missing dates, changed snapshots, ambiguous
+        source, denied permissions or incomplete pages never produce a guessed zero.
+        Bounded lists remain
         explicitly partial in the final answer.
 
         Successful count answers may retain countSource metadata (page, view,

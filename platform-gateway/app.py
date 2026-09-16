@@ -6,9 +6,9 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, unquote, urljoin, urlsplit
 
 import httpx
@@ -221,6 +221,8 @@ class AdminPortalReadRequest(BaseModel):
     max_pages: int = Field(default=READER_MAX_PAGES, alias="maxPages", ge=1, le=READER_MAX_PAGES)
     timeout_seconds: int = Field(default=READER_TIMEOUT_SECONDS, alias="timeoutSeconds", ge=1, le=READER_TIMEOUT_SECONDS)
     max_output_items: int = Field(default=READER_MAX_OUTPUT_ITEMS, alias="maxOutputItems", ge=1, le=READER_MAX_OUTPUT_ITEMS)
+    completion_period: Literal['this week', 'last week', 'this month', 'last month', 'this year', 'last year'] | None = Field(
+        default=None, alias='completionPeriod', description='Optional personal Completed-view count by taskApprovalAt. Requires a verified native Completed view and its observed, allowlisted personal list operation. Reads at most 3000 distinct applications twice, rejecting missing dates, foreign assignees, incomplete/changing pagination. Returns only bounded aggregate evidence, never full rows. Calendar periods use Asia/Dubai, Monday-start weeks; explicit dates are returned.')
 
 
 def _token_ref(authorization: str | None) -> str | None:
@@ -2663,6 +2665,113 @@ async def _execute_reader_actions(
     return facts[: request.max_output_items], visited[: request.max_pages], observed_fields, confirmed_empty, observation
 
 
+def _completion_window(period: str, now: datetime | None = None) -> tuple[datetime, datetime]:
+    # Admin DateTimeHelper/UmcClock stores Dubai wall-clock timestamps.
+    local = (now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=4)))
+    today = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period.endswith('week'):
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=7)
+        if period.startswith('last'):
+            start, end = start - timedelta(days=7), start
+    elif period.endswith('month'):
+        start = today.replace(day=1)
+        end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        if period.startswith('last'):
+            start, end = (start - timedelta(days=1)).replace(day=1), start
+    elif period.endswith('year'):
+        start = today.replace(month=1, day=1)
+        end = start.replace(year=start.year + 1)
+        if period.startswith('last'):
+            start, end = start.replace(year=start.year - 1), start
+    else:
+        raise ValueError('completion_period_invalid')
+    return start, end
+
+
+def _completion_rows(payload: Any, user_id: str) -> tuple[int, dict[int, str]]:
+    """Reduce each personal page before it can enter an LLM/audit payload."""
+    if not isinstance(payload, dict) or payload.get('success') is False:
+        raise ValueError('completion_response_invalid')
+    page = (payload.get('data') or {}).get('page')
+    if not isinstance(page, dict) or type(page.get('total')) is not int or not 0 <= page['total'] <= 3000:
+        raise ValueError('completion_total_unverified')
+    rows = page.get('items')
+    if not isinstance(rows, list) or len(rows) > 100:
+        raise ValueError('completion_page_invalid')
+    projected = {}
+    for row in rows:
+        if not isinstance(row, dict) or type(row.get('id')) is not int or row['id'] <= 0:
+            raise ValueError('completion_identity_missing')
+        if row.get('assignee') != user_id:
+            raise ValueError('completion_actor_mismatch')
+        value = row.get('taskApprovalAt')
+        if not isinstance(value, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?', value):
+            raise ValueError('completion_date_missing')
+        stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if stamp.year < 2000:
+            raise ValueError('completion_date_invalid')
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone(timedelta(hours=4)))
+        if row['id'] in projected:
+            raise ValueError('completion_duplicate_record')
+        projected[row['id']] = stamp.isoformat()
+    return page['total'], projected
+
+
+async def _completed_period_aggregate(request: AdminPortalReadRequest, observation: dict,
+                                      user_id: str, authorization: str, request_id: str | None) -> dict:
+    # No arbitrary endpoint, actor, date field, request body, or enlarged access
+    # can be supplied by a model. These are the existing personal queue reads.
+    sources = {'/licensing/applications': '/api/Application/MyComplatedPage',
+               '/content/ContentApplications': '/api/Content/MyComplatedPage'}
+    path = sources.get(request.start_path)
+    if not path or path not in READER_READ_ONLY_POST_PATHS or path in READER_BLOCKED_EXACT_PATHS:
+        raise ValueError('completion_source_not_permitted')
+    if (observation.get('readHealth') or {}).get('healthy') is not True:
+        raise ValueError('completion_view_unhealthy')
+    if not any(t.get('selected') is True and str(t.get('name', '')).casefold() == 'completed'
+               for t in observation.get('tabControls', []) if isinstance(t, dict)):
+        raise ValueError('completion_view_unverified')
+    key = 'POST ' + path
+    if not any(c.get('operationKey') == key and c.get('status') == 200 and c.get('policyState') == 'allowed'
+               for c in (observation.get('apiDiscovery') or {}).get('candidates', []) if isinstance(c, dict)):
+        raise ValueError('completion_operation_unobserved')
+    start, end = _completion_window(request.completion_period)
+    scans = []
+    pages_read = 0
+    for _ in range(2):
+        records, total = {}, None
+        for index in range(1, 31):
+            # Dates deliberately NOT sent: that API filters LastUpdatedTime.
+            payload = await _umc_request('POST', path, json={'pageIndex': index, 'pageSize': 100},
+                                         authorization=authorization, request_id=request_id)
+            pages_read += 1
+            count, rows = _completion_rows(payload, user_id)
+            if total is not None and total != count:
+                raise ValueError('completion_snapshot_changed')
+            total = count
+            if records.keys() & rows.keys():
+                raise ValueError('completion_pagination_overlap')
+            records.update(rows)
+            if len(records) == total:
+                break
+            if not rows or len(records) > total:
+                raise ValueError('completion_pagination_incomplete')
+        if len(records) != total:
+            raise ValueError('completion_pagination_incomplete')
+        scans.append(records)
+    if scans[0] != scans[1]:
+        raise ValueError('completion_snapshot_changed')
+    count = sum(start <= datetime.fromisoformat(value) < end for value in scans[0].values())
+    return {'verified': True, 'period': request.completion_period, 'count': count,
+            'startInclusive': start.isoformat(), 'endExclusive': end.isoformat(),
+            'timeZone': 'Asia/Dubai', 'weekStartsOn': 'Monday', 'scope': 'personal',
+            'dateField': 'taskApprovalAt', 'identityField': 'id', 'operationKey': key,
+            'recordsScanned': len(scans[0]), 'pagesRead': pages_read, 'stablePasses': 2,
+            'measure': 'Distinct applications in your current Completed view, by your task approval date; not licenses issued or final application completion.'}
+
+
 @app.post("/admin/portal/read")
 async def admin_portal_read(
     request: AdminPortalReadRequest,
@@ -2783,12 +2892,21 @@ async def admin_portal_read(
                 await _settle_page(page)
                 if urlsplit(page.url).path.casefold().rstrip("/").endswith("/login"):
                     raise PermissionError("portal_login_required")
-                return await _execute_reader_actions(
+                result = await _execute_reader_actions(
                     page,
                     request,
                     portal_origin,
                     (*permission_context["pages"], *permission_context["subpages"]),
                 )
+                if request.completion_period:
+                    observation = result[4] or {}
+                    try:
+                        observation['completionAggregate'] = await _completed_period_aggregate(
+                            request, observation, permission_context['userId'], forwarded, x_request_id)
+                    except (ValueError, HTTPException, httpx.HTTPError) as exc:
+                        observation['completionAggregate'] = {'verified': False,
+                            'reason': str(exc)[:120] if isinstance(exc, ValueError) else 'completion_source_unavailable'}
+                return result
             finally:
                 await browser.close()
 

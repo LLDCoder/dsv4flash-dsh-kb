@@ -797,6 +797,13 @@ def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, Any]:
     if completeness not in {"bounded", "complete", "unknown"} or shape not in {"overview", "count", "list", "attention", "due", "detail"}:
         return {}
     metadata = {"deliveredAnswerShape": shape, "completeness": completeness, **assignment_references(result)}
+    source = result.get('countSource') or {}
+    if (result.get('result') == 'success' and shape == 'count' and result.get('scope') == 'personal'
+            and source.get('page') == result.get('page') and source.get('view') == 'Completed'
+            and source.get('labels') == ['Personal Completed applications by task approval time']):
+        # Only the measure/source survives; every follow-up recomputes live dates and counts.
+        metadata['countSource'] = {k: source[k] for k in ('page', 'view', 'labels')}
+        return metadata
     if result.get('result') == 'success' and shape == 'count':
         labels = [m[1].strip() for fact in result.get('facts', []) if isinstance(fact, str)
                   and (m := re.fullmatch(r'([^:\d]{1,80})\s*:?\s+[\d,.]+', fact))]

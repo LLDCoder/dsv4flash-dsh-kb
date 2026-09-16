@@ -232,6 +232,7 @@ class PortalReadRequest:
     start_path: str
     actions: tuple[dict[str, Any], ...]
     expected_fields: tuple[str, ...] = ()
+    completion_period: str | None = None
 
     def as_payload(self) -> dict[str, Any]:
         return {
@@ -242,6 +243,7 @@ class PortalReadRequest:
             "maxPages": 3,
             "timeoutSeconds": int(PORTAL_EXECUTION_TIMEOUT_SECONDS),
             "maxOutputItems": 20,
+            **({'completionPeriod': self.completion_period} if self.completion_period else {}),
         }
 
 
@@ -287,7 +289,7 @@ class ReaderResult:
         if self.record_identity:
             result["recordIdentity"] = _sanitize_untrusted_text(self.record_identity, max_length=300)
         if self.count_source:
-            result['countSource'] = bounded_json(self.count_source, max_depth=2, max_items=5, max_string=160)
+            result['countSource'] = bounded_json(self.count_source, max_depth=3, max_items=5, max_string=160)
         if self.clarification_options:
             result["clarificationOptions"] = [
                 _sanitize_untrusted_text(option, max_length=120) for option in self.clarification_options[:2]
@@ -3545,7 +3547,33 @@ def _requested_completion_period(question: str, context: dict[str, Any] | None =
     subject = question
     if re.match(r'\s*(?:what|how) about\b', question, re.I):
         subject += ' ' + str(((context or {}).get('previousIntent') or {}).get('question') or '')
-    return match[0].casefold() if re.search(r'\bcomplet(?:e|ed|ion)\b', subject, re.I) else ''
+        if _prior_personal_completion_measure(context or {}):
+            subject += ' completed'
+    value = match[0].casefold().replace('previous ', 'last ').replace('current ', 'this ')
+    return value if re.search(r'\bcomplet(?:e|ed|ion)\b', subject, re.I) else ''
+
+
+def _prior_personal_completion_measure(context: dict[str, Any]) -> bool:
+    prior = context.get('previousIntent') or {}
+    source = prior.get('countSource') or {}
+    return (prior.get('resultStatus') == 'success' and source.get('view') == 'Completed'
+            and source.get('page') in {'/licensing/applications', '/content/ContentApplications'}
+            and source.get('labels') == ['Personal Completed applications by task approval time'])
+
+
+def _personal_completion_query(question: str, context: dict[str, Any]) -> str:
+    """A narrow count intent; never silently drop service/actor/status filters."""
+    period = _requested_completion_period(question, context)
+    if not period:
+        return ''
+    direct = r'\s*how many (?:licenses|applications|service applications)(?: did I complete| have I completed) (?:this|last|previous|current) (?:week|month|year)[?.!]?\s*'
+    if re.fullmatch(direct, question, re.I):
+        return period
+    if re.fullmatch(r'\s*(?:what|how) about (?:this|last|previous|current) (?:week|month|year)[?.!]?\s*', question, re.I):
+        previous = (context.get('previousIntent') or {}).get('question', '')
+        if re.fullmatch(direct, previous, re.I) or _prior_personal_completion_measure(context):
+            return period
+    return ''
 
 
 def _guard_completion_period_count(outcome: ReaderOutcome, question: str, context: dict[str, Any]) -> ReaderOutcome:
@@ -3557,6 +3585,13 @@ def _guard_completion_period_count(outcome: ReaderOutcome, question: str, contex
     evidence = outcome.audit_evidence
     observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation') or {}
     metrics = observation.get('metrics') or []
+    aggregate = observation.get('completionAggregate') or {}
+    if (aggregate.get('verified') is True and aggregate.get('period') == period
+            and aggregate.get('scope') == 'personal' and aggregate.get('dateField') == 'taskApprovalAt'
+            and aggregate.get('stablePasses') == 2 and type(aggregate.get('count')) is int
+            and aggregate['count'] >= 0 and outcome.result.scope == 'personal'
+            and outcome.result.status == 'success'):
+        return outcome
     supported = []
     for metric in metrics:
         if not isinstance(metric, dict):
@@ -8256,6 +8291,67 @@ class AdminPortalReader:
                 {'stage': 'read_evidence_boundary', 'permission': permission_audit,
                  'source': 'reader_contract_no_history_inference'},
             )
+        completion_period = _personal_completion_query(question, bounded_conversation_context)
+        if completion_period:
+            prior_page = semantic_source_hint(bounded_conversation_context).get('page') or (
+                (bounded_conversation_context.get('previousIntent') or {}).get('countSource') or {}).get('page')
+            routes = ('/licensing/applications', '/content/ContentApplications')
+            permitted = [p for p in routes if not self.policy.validate(
+                PortalReadRequest(start_path=p, actions=({'type': 'observe'},)), permission_context)]
+            page = prior_page if prior_page in permitted else permitted[0] if len(permitted) == 1 else ''
+            if not page:
+                return ReaderOutcome(ReaderResult(status='not_confirmed' if permitted else 'no_permission',
+                    summary='A single permitted personal Completed view is required.',
+                    missing=('completion_source_ambiguous' if permitted else 'page_not_permitted',)),
+                    {'stage': 'completion_permission', 'permission': permission_audit})
+            if self.knowledge_folder_id:
+                try:
+                    await _await_reader_stage(self.gateway.invoke(principal, 'knowledge.search',
+                        {'query': 'My Application Tasks Completed personal review completion date',
+                         'folder_id': self.knowledge_folder_id, 'top_k': 4}, allowed_tools=self.allowed_tools),
+                        stage='completion_knowledge', cap_seconds=budget.knowledge_search_seconds, deadline=deadline)
+                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError):
+                    trace.record('knowledge_retrieval', 'degraded', failure_code='completion_manual_unavailable')
+            request = PortalReadRequest(start_path=page, actions=({'type': 'observe'},))
+            try:
+                initial = await portal_read_stage(request, timeout_stage='completion_view', attempt='completion_view')
+                obs = (initial.get('result') or {}).get('observation') or {}
+                action = _observed_switch_tab_action({'name': 'Completed'}, obs)
+                selected = any(t.get('selected') is True and str(t.get('name', '')).casefold() == 'completed'
+                               for t in obs.get('tabControls', []) if isinstance(t, dict))
+                if not initial.get('ok') or (not action and not selected):
+                    raise ValueError('completion_view_unverified')
+                request = replace(request, actions=(action,) if action else ({'type': 'observe'},),
+                                  completion_period=completion_period)
+                if validate_policy(request, reason='personal_completion_count'):
+                    raise ValueError('completion_view_not_permitted')
+                tool = await portal_read_stage(request, timeout_stage='completion_count', attempt='completion_count')
+                obs = (tool.get('result') or {}).get('observation') or {}
+                aggregate = obs.get('completionAggregate') or {}
+                if not tool.get('ok') or aggregate.get('verified') is not True or aggregate.get('period') != completion_period:
+                    raise ValueError(str(aggregate.get('reason') or 'completion_period_not_verified'))
+                count = aggregate.get('count')
+                if type(count) is not int or count < 0 or aggregate.get('stablePasses') != 2:
+                    raise ValueError('completion_count_invalid')
+                facts = (f'Your Completed applications {completion_period}: {count}.',
+                         f'Task approval time: {aggregate["startInclusive"]} (inclusive) to '
+                         f'{aggregate["endExclusive"]} (exclusive), Asia/Dubai; weeks start Monday.',
+                         'Each application in your personal Completed view is counted once by your review completion time, '
+                         'not by license issuance or final application approval.')
+                result = ReaderResult(status='success', summary='Personal completion-period count verified.',
+                    page=page, section='My Application Tasks', selected_state='Completed', scope='personal',
+                    answer_shape='count', completeness='complete', facts=facts,
+                    source_hint={'page': page}, count_source={'page': page, 'view': 'Completed',
+                    'labels': ['Personal Completed applications by task approval time']})
+                return ReaderOutcome(result, {'stage': 'completion_period_count', 'permission': permission_audit,
+                    'observation': {'readHealth': {'healthy': True}, 'completionAggregate': aggregate},
+                    'result': result.public_json()})
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, KeyError) as exc:
+                return ReaderOutcome(ReaderResult(status='not_confirmed', answer_shape='count', page=page,
+                    summary='The complete personal completion-period count could not be verified.',
+                    missing=('completion_period_not_verified',)),
+                    {'stage': 'completion_period_count', 'permission': permission_audit,
+                     'reason': str(exc)[:120] if isinstance(exc, ValueError) else type(exc).__name__})
         if is_assignment_followup(question):
             previous = bounded_conversation_context.get('previousIntent') or {}
             source = previous.get('assignmentSource') or {}
