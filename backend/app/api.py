@@ -909,6 +909,21 @@ def make_router(service: DSHService) -> APIRouter:
         personal assignment. Knowledge answers require retrieved supporting text.
         Planner schema repair is bounded and does not relax access or evidence checks.
         Same-topic explanations retain their source module for knowledge retrieval.
+        Named application identifiers and queue follow-ups retain their business
+        module while each read is re-authorized. Pending-review counts are verified
+        against their dedicated queue counter, never substituted by a page total.
+        Completion-period counts require evidence for both personal completion
+        scope and the requested period. Unfiltered totals, effective dates and
+        submission dates are not substitutes; unavailable evidence returns
+        not_confirmed with completion_period_not_verified. Bounded lists remain
+        explicitly partial in the final answer.
+
+        Successful count answers may retain countSource metadata (page, view,
+        metric labels only, no historical numeric values) for coverage/location
+        follow-ups. Automated verification does not represent human bug acceptance.
+        When full application/profile values cannot be verified, an exact matched
+        application and observed detail controls may provide bounded self-service
+        navigation. Such answers explicitly disclose that field values were not read.
         Basic field comparisons use supported manual meanings and layout distinctions;
         unrequested business-event or date-boundary rules are not prerequisites for
         that explanation. Requested unsupported rules remain unconfirmed. Explanations

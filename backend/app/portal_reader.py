@@ -263,6 +263,7 @@ class ReaderResult:
     clarification_options: tuple[str, ...] = ()
     source_hint: dict[str, str] = field(default_factory=dict)
     record_identity: str = ""
+    count_source: dict[str, Any] = field(default_factory=dict)
 
     def public_json(self) -> dict[str, Any]:
         result = {
@@ -285,6 +286,8 @@ class ReaderResult:
                                     for key, value in self.source_hint.items() if key in {"page", "section"}}
         if self.record_identity:
             result["recordIdentity"] = _sanitize_untrusted_text(self.record_identity, max_length=300)
+        if self.count_source:
+            result['countSource'] = bounded_json(self.count_source, max_depth=2, max_items=5, max_string=160)
         if self.clarification_options:
             result["clarificationOptions"] = [
                 _sanitize_untrusted_text(option, max_length=120) for option in self.clarification_options[:2]
@@ -606,6 +609,7 @@ def _native_detail_observation_result(
     page: str,
     record_identity: str,
     scope: Literal["personal", "team", "global", "unknown"],
+    question: str = "",
 ) -> ReaderResult | None:
     """Deliver one already-loaded record detail without replaying its click.
 
@@ -691,7 +695,10 @@ def _native_detail_observation_result(
 
     for operation_key in operation_keys:
         evidence = _api_response_evidence_for_operation(observation, operation_key)
-        if evidence is not None:
+        candidates = (_api_discovery(observation) or {}).get("candidates") or []
+        verified = any(isinstance(c, dict) and c.get('operationKey') == operation_key
+                       and c.get('status') == 200 for c in candidates)
+        if evidence is not None and verified:
             detail = find_detail(evidence.get("data"))
             if detail is not None:
                 break
@@ -703,6 +710,8 @@ def _native_detail_observation_result(
         for candidate in (discovery.get("candidates") or [])[:40]:
             if not isinstance(candidate, dict) or "responseEvidence" not in candidate:
                 continue
+            if candidate.get("status") != 200:
+                continue
             if "detail" not in str(candidate.get("operationKey") or "").casefold():
                 continue
             detail = find_detail(candidate.get("responseEvidence"))
@@ -710,6 +719,34 @@ def _native_detail_observation_result(
                 break
     if detail is None:
         return None
+
+    profile_requested = bool(re.search(r'\b(?:profile|individual overview|basic information)\b', question, re.I))
+    full_requested = bool(re.search(r'\b(?:all available details|full application|complete application)\b', question, re.I))
+    if profile_requested or full_requested:
+        # A visible detail navigation control proves an entry point, not that
+        # its fields loaded. Guide self-service without reading extra APIs or
+        # claiming that a partial application header is a complete profile.
+        controls = observation.get('controls') or []
+        names = {str(c.get('name') or '') if isinstance(c, dict) else str(c) for c in controls}
+        target = 'Applicant Overview' if profile_requested else 'Application Overview'
+        if target in names:
+            guidance = (f'Open the application list at {page}, select Application No. {identity}, '
+                        f'then use the visible {target} entry in that application detail.')
+            if profile_requested and 'Profile Overview' in names:
+                guidance += ' The same detail also shows a Profile Overview entry.'
+            return ReaderResult(status='success', summary='Verified self-service entry points for the requested application.',
+                page=page, section=target, source_section='observed:application-detail-navigation',
+                answer_shape='detail', completeness='bounded', scope=scope,
+                facts=(f'Application No. {identity} was located.', guidance,
+                       'This is navigation guidance only. The requested full profile or application form values '
+                       'were not verified in this read; open the entry to inspect them yourself.'))
+
+    if profile_requested:
+        return ReaderResult(status='not_confirmed', summary='Application header evidence does not establish an applicant profile.',
+            page=page,section='Applicant Profile',answer_shape='detail',completeness='unknown',
+            facts=('The application was located, but its applicant profile was not verified in this read. '
+                   'Application header fields and pagination totals cannot substitute for applicant information.',),
+            missing=('applicant_profile_not_verified',))
 
     field_aliases = (
         ("Application No.", ("applicationnumber", "applicationno")),
@@ -731,7 +768,7 @@ def _native_detail_observation_result(
     if fields.get("Application No.", "").casefold() != identity.casefold():
         return None
     return ReaderResult(
-        status="success",
+        status="not_confirmed" if full_requested else "success",
         summary="The requested application detail was already present in the fresh portal read.",
         page=str(page)[:500],
         section="Application Details",
@@ -739,7 +776,9 @@ def _native_detail_observation_result(
         answer_shape="detail",
         completeness="bounded",
         scope=scope,
-        facts=(json.dumps(fields, ensure_ascii=False, separators=(",", ":")),),
+        facts=(json.dumps(fields, ensure_ascii=False, separators=(",", ":")),
+               *(("Only the application header was verified; the complete application review fields have not been established.",) if full_requested else ())),
+        missing=('full_application_detail_not_verified',) if full_requested else (),
         record_identity=identity,
     )
 
@@ -1475,6 +1514,7 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
         "requestedScope": 40,
         "resultStatus": 40,
         "workflowState": 300,
+        "countSource": 160,
     }
     bounded: dict[str, Any] = {}
     for name, max_length in limits.items():
@@ -1522,6 +1562,8 @@ def reader_answer_shape(
 ) -> Literal["overview", "count", "list", "attention", "due", "detail", "unspecified"]:
     """Classify a generic answer shape without selecting a business destination."""
 
+    if re.search(r'\b(?:view|show)\b.*\b(?:the )?data in\b', question, re.I):
+        return 'list'
     resolved = _resolved_intent_values(conversation_context).get("answerShape")
     if resolved in {"overview", "count", "list", "attention", "due", "detail", "unspecified"}:
         return resolved  # type: ignore[return-value]
@@ -2556,6 +2598,8 @@ def question_requires_live_portal(question: str) -> bool:
     normalized = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
     if _question_is_assistant_capability_overview(question):
         return False
+    if re.search(r'\b(?:inquire|query|show|find|check)\b.*\b(?:mc-2|ml-[12])-\d+-\d+\b', normalized):
+        return True
     if re.search(r'\bgive me\s+(?:one|a|an|[1-9][0-9]?)\s+(?:[a-z]+\s+){0,3}(?:no\.?|number|id|record|task|item)\b', normalized):
         return True
     if re.match(r'(?:please\s+)?(?:open|visit|navigate to|go to)\s+/[a-z0-9_/-]+', normalized):
@@ -3053,6 +3097,37 @@ def _native_schema_outcome(outcome: ReaderOutcome, question: str) -> ReaderOutco
                                   'result': result.public_json()})
 
 
+def _observed_application_lookup(question: str, observation: Any, page: str) -> ReaderResult | None:
+    """A query for a visible application row does not require opening its detail page."""
+    ids = re.findall(r'\b(?:MC-2|ML-[12])-\d+-\d+\b', question, re.I)
+    if (len(set(ids)) != 1 or not re.search(r'\b(?:query|inquire)\b', question, re.I)
+            or re.search(r'\b(?:details?|profile|full|all|open)\b', question, re.I)
+            or not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True):
+        return None
+    tables = [n for n in _observation_semantic_nodes(observation) if n.get('kind') in {'table','grid'}
+              and any(_key(h) in {'applicationno','applicationnumber'} for h in n.get('columnHeaders', []))]
+    matches = []
+    for table in tables:
+        selected = str(table.get('selectedState') or '')
+        for view in ('Completed','To Do'):
+            if re.search(r'\b'+view.replace(' ',r'[ -]')+r'\b',question,re.I) and not _state_control_label_matches(selected,view):
+                return None
+        for row in table.get('rowFields', []):
+            if not isinstance(row, dict):
+                continue
+            identities = [v for k,v in row.items() if _key(k) in {'applicationno','applicationnumber'}]
+            if identities == [ids[0]]:
+                fields = {k:v for k,v in row.items() if k in table['columnHeaders']}
+                matches.append((table, fields))
+    if len(matches) != 1:
+        return None
+    table, fields = matches[0]
+    return ReaderResult(status='success', summary='The exact application was matched in the current native table.',
+        page=page,section='My Application Tasks',source_section=str(table.get('nodeId') or ''),
+        selected_state=str(table.get('selectedState') or ''),answer_shape='detail',completeness='bounded',
+        facts=(json.dumps(fields,ensure_ascii=False,separators=(',',':')),))
+
+
 def _native_identity_search_result(outcome: ReaderOutcome, question: str, intent: dict[str, Any]) -> ReaderOutcome:
     """Present the matched native row instead of accompanying API lookup lists."""
     identity = str(_resolved_intent_values({'resolvedIntent': intent}).get('recordIdentity') or '')
@@ -3096,7 +3171,7 @@ def _native_optional_record_fields(outcome: ReaderOutcome, question: str) -> Rea
     optional_fields = bool(re.search(r'\bshow\b.*\b(?:with|including)\b.*\bwhere (?:available|those fields exist)\b', question, re.I))
     optional_fields = optional_fields or bool(re.search(
         r'\bshow\b.*\binclude\b.*\bonly if (?:it|they) exists?\b', question, re.I))
-    native_description = bool(re.search(r'\bshow\b.*(?:\bincluding their statuses\b|\binformation (?:used to identify|identifies)\b)', question, re.I))
+    native_description = bool(re.search(r'\bshow\b.*(?:\bincluding their statuses\b|\binformation (?:that )?(?:used to identify|identifies)\b|\bstatuses and identifying information\b)', question, re.I))
     failed_bounded_list = (outcome.result.status=='not_confirmed' and requested_record_limit(question) is not None
                           and any(m in {'planner_error','invalid_observation_schema','invalid_follow_up_plan'} for m in outcome.result.missing))
     if (not (optional_fields or native_description or failed_bounded_list)
@@ -3106,6 +3181,8 @@ def _native_optional_record_fields(outcome: ReaderOutcome, question: str) -> Rea
     observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
     if (not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True
             or _observation_has_error_state(observation)):
+        return outcome
+    if _category_control_requiring_children(question, observation, None, 'list', current_page=outcome.result.page):
         return outcome
     tables = [s for s in observation.get('sectionSummaries', []) if isinstance(s, dict)
               and s.get('kind') in {'table','grid'} and s.get('columnHeaders') and s.get('rowFields')]
@@ -3330,8 +3407,8 @@ def _resolve_documented_object_source(
                 name = tokens(fields.get('name','')) - {'tab','switcher','control'}
                 specific = name - {'task','record','item','list','queue'}
                 paths = set(re.findall(r'`(/[A-Za-z][A-Za-z0-9_/-]*)`',fields.get('destination','')))
-                if explicit_module:
-                    paths = {p for p in paths if p.strip('/').split('/')[0] == explicit_module}
+                if explicit_module or module_hint:
+                    paths = {p for p in paths if p.strip('/').split('/')[0] == (explicit_module or module_hint)}
                 if name and specific and name <= tokens(question) and len(paths)==1:
                     candidates.update(paths)
             raw_page = fields.get('page', '')
@@ -3346,6 +3423,8 @@ def _resolve_documented_object_source(
                 continue
             module = page.strip('/').split('/')[0]
             if explicit_module and module != explicit_module:
+                continue
+            if module_hint and not explicit_module and module != module_hint:
                 continue
             section_words = tokens(fields.get('section', '')) - {'task', 'record', 'list', 'view', 'item'}
             # A preposition such as 'to' in 'To Do' cannot name that queue.
@@ -3456,6 +3535,100 @@ def _documented_detail_destination(
                 if permitted_path.casefold() in detail_routes:
                     candidates.add(permitted_path)
     return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _requested_completion_period(question: str, context: dict[str, Any] | None = None) -> str:
+    """Keep an explicit calendar qualifier attached to its completion measure."""
+    match = re.search(r'\b(?:this|last|previous|current)\s+(?:week|month|year)\b', question, re.I)
+    if not match:
+        return ''
+    subject = question
+    if re.match(r'\s*(?:what|how) about\b', question, re.I):
+        subject += ' ' + str(((context or {}).get('previousIntent') or {}).get('question') or '')
+    return match[0].casefold() if re.search(r'\bcomplet(?:e|ed|ion)\b', subject, re.I) else ''
+
+
+def _guard_completion_period_count(outcome: ReaderOutcome, question: str, context: dict[str, Any]) -> ReaderOutcome:
+    """A list total or an effective/submission date cannot prove a completion-period count."""
+    period = _requested_completion_period(question, context)
+    if (not period or reader_answer_shape(question, context) != 'count'
+            or outcome.result.status not in {'success', 'no_data', 'not_confirmed'}):
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation') or {}
+    metrics = observation.get('metrics') or []
+    supported = []
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        label, value = str(metric.get('label') or ''), metric.get('value')
+        personal = outcome.result.scope == 'personal' or bool(re.search(r'\b(?:my|your)\b', label, re.I))
+        if (period in label.casefold() and re.search(r'\bcomplet(?:e|ed|ion)\b', label, re.I)
+                and personal and re.fullmatch(r'\d[\d,]*', str(value))):
+            supported.append(f'{label}: {value}')
+    if len(supported) == 1 and (observation.get('readHealth') or {}).get('healthy') is True:
+        result = replace(outcome.result, status='success', facts=tuple(supported), missing=())
+    else:
+        result = replace(outcome.result, status='not_confirmed', facts=(), completeness='unknown',
+                         missing=('completion_period_not_verified',))
+    return ReaderOutcome(result, {**evidence, 'completionPeriod': period, 'result': result.public_json()})
+
+
+def _native_queue_followup(outcome: ReaderOutcome, question: str, context: dict[str, Any]) -> ReaderOutcome:
+    from .reader_intent import resolve_literal_view_followup
+    resolved = resolve_literal_view_followup(question, context)
+    if not resolved or outcome.result.status not in {'success','not_confirmed'}:
+        return outcome
+    if semantic_source_hint(context).get('page') != outcome.result.page:
+        return outcome
+    requested = _resolved_intent_values(resolved.planner_context(context)).get('view', '')
+    evidence = outcome.audit_evidence
+    observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    if not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True:
+        return outcome
+    tables = [n for n in _observation_semantic_nodes(observation) if n.get('kind') in {'table','grid'}
+              and n.get('columnHeaders') and _state_control_label_matches(n.get('selectedState'), requested)]
+    if len(tables) != 1:
+        return outcome
+    result = _result_from_structured_observation(observation, page=outcome.result.page,
+        section_name=str(tables[0].get('nodeId') or ''), answer_shape='list', scope=outcome.result.scope)
+    if result is None or result.status not in {'success','no_data'}:
+        return outcome
+    result = replace(result, intent_context=outcome.result.intent_context,source_hint={'page':outcome.result.page})
+    return ReaderOutcome(result,{**evidence,'verifiedQueueView':requested,'result':result.public_json()})
+
+
+def _native_status_filter_rows(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Recover a failed planner only after a literal status selection and rows agree."""
+    if (outcome.result.status not in {'success','not_confirmed'}
+            or not re.search(r'\b(?:view|show)\b.*\bdata in\b', question, re.I)):
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    if not isinstance(observation, dict) or (observation.get('readHealth') or {}).get('healthy') is not True:
+        return outcome
+    target = _explicit_observed_filter(question, observation)
+    selected_controls = [c for c in observation.get('filterControls', []) if isinstance(c, dict)
+        and c.get('role') == 'combobox'
+        and (re.search(r'status', str(c.get('label') or ''), re.I)
+             or str(c.get('label') or '').casefold() == target.casefold())
+        and target and {str(v).casefold() for v in c.get('selected', [])} == {target.casefold()}]
+    tables = [n for n in _observation_semantic_nodes(observation) if n.get('kind') in {'table','grid'}
+              and 'Status' in n.get('columnHeaders', [])]
+    if len(selected_controls) != 1 or len(tables) != 1:
+        return outcome
+    source = tables[0]
+    rows = source.get('rowFields') or []
+    if rows and not all(isinstance(row,dict) and str(row.get('Status') or '').casefold() == target.casefold() for row in rows):
+        return outcome
+    result = _result_from_structured_observation(observation, page=outcome.result.page,
+        section_name=str(source.get('nodeId') or ''), answer_shape='list', scope=outcome.result.scope,
+        question=question)
+    if result is None or result.status not in {'success','no_data'}:
+        return outcome
+    result = replace(result, facts=(*result.facts, f'The selected Status filter is {target}. This is a bounded view of matching records.'),
+                     intent_context=outcome.result.intent_context, source_hint=outcome.result.source_hint)
+    return ReaderOutcome(result, {**evidence, 'verifiedStatusFilter':target,'result':result.public_json()})
 
 
 def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: list[dict[str, Any]],
@@ -5300,6 +5473,46 @@ def _result_from_structured_observation(
     return None
 
 
+def _application_pending_count(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """A personal review counter must come from its own settled queue response."""
+    if (outcome.result.page not in {'/licensing/applications', '/content/ContentApplications'}
+            or outcome.result.status not in {'success', 'not_confirmed'}
+            or not re.search(r'\b(?:how many|number of)\b.*\b(?:waiting|pending)\b.*\breview\b', question, re.I)):
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get('observation') or ((evidence.get('portalEvidence') or {}).get('result') or {}).get('observation')
+    if not isinstance(observation, dict):
+        return outcome
+    operation = 'POST /api/Content/MyTodoPage' if outcome.result.page.startswith('/content/') else 'POST /api/Application/MyTodoPage'
+    candidates = (observation.get('apiDiscovery') or {}).get('candidates') or []
+    matches = [c for c in candidates if isinstance(c, dict) and c.get('operationKey') == operation
+               and c.get('status') == 200 and isinstance(c.get('responseEvidence'), dict)]
+    values = []
+    def visit(value: Any, depth: int = 0) -> None:
+        if depth > 6 or not isinstance(value, dict):
+            return
+        for key, child in value.items():
+            if _key(key) == 'pendingreviewcount' and type(child) is int and child >= 0:
+                values.append(child)
+            elif isinstance(child, dict):
+                visit(child, depth + 1)
+    for candidate in matches:
+        payload = candidate['responseEvidence']
+        if payload.get('isSuccess') is not False:
+            visit(payload)
+    selected = [t.get('name') for t in observation.get('tabControls', [])
+                if isinstance(t, dict) and t.get('selected') is True]
+    if len(set(values)) == 1 and selected == ['To Do']:
+        result = replace(outcome.result, status='success', answer_shape='count', section='My Application Tasks',
+            source_section='api:personal-application-pending-review', selected_state='To Do', completeness='bounded',
+            facts=(f'Pending Review: {values[0]}',), missing=())
+        return ReaderOutcome(result, {**evidence, 'verifiedCounter':operation, 'result':result.public_json()})
+    # The formatter cannot repair a wrongly selected total without evidence.
+    result = replace(outcome.result, status='not_confirmed', answer_shape='count', facts=(),
+                     missing=('pending_review_counter_not_verified',))
+    return ReaderOutcome(result, {**evidence, 'result':result.public_json()})
+
+
 def _native_metric_count_fallback(
     observation: Any,
     *,
@@ -5579,7 +5792,7 @@ def _explicit_collection_field_request(question: str) -> bool:
     ):
         return False
     return bool(re.search(
-        r"\b(?:detail|details|information|status|type|category|sla|date|assigned|fields?)\b"
+        r"\b(?:detail|details|information|status(?:es)?|type|category|sla|date|assigned|fields?)\b"
         r"|详情|明细|信息|状态|类型|类别|日期",
         fields,
     ))
@@ -6748,7 +6961,7 @@ class AdminPortalReader:
         if intent_state:
             hint = parse_intent_resolution(intent_state, question, bounded_context).planner_context(bounded_context).get("sourceHint", {})
             result = replace(outcome.result, intent_context=intent_state, source_hint=outcome.result.source_hint or hint)
-            expected_shape = _resolved_intent_values({"resolvedIntent": intent_state}).get("answerShape")
+            expected_shape = reader_answer_shape(question, {"resolvedIntent": intent_state})
             if result.status in {"success", "no_data"} and expected_shape not in {None, "unspecified", result.answer_shape}:
                 result = _reconcile_verified_answer_shape(result, expected_shape, question)
             outcome = ReaderOutcome(result, {
@@ -6762,6 +6975,7 @@ class AdminPortalReader:
         outcome = _observed_tab_catalogue(outcome, question)
         outcome = _native_schema_outcome(outcome, question)
         outcome = _native_date_comparison_outcome(outcome, question)
+        outcome = _application_pending_count(outcome, question)
         outcome = _native_optional_record_fields(outcome, question)
         outcome = _native_status_values(outcome, question)
         outcome = _native_bounded_summary(outcome, question)
@@ -6774,6 +6988,8 @@ class AdminPortalReader:
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
         outcome = _native_identity_search_result(outcome, question, intent_state)
+        outcome = _native_queue_followup(outcome, question, bounded_context)
+        outcome = _native_status_filter_rows(outcome, question)
         executions = [entry for entry in trace.entries if entry.get("stage") == "portal_execution"]
         outcome = _native_filter_outcome(outcome, question, executions, bounded_context)
         if (outcome.result.status in {"success", "no_data", "not_confirmed"} and executions
@@ -6785,6 +7001,14 @@ class AdminPortalReader:
                 "The Search input was explicitly cleared and verified empty in the freshly read view. "
                 "Only the current view is confirmed; no claim is made about every prior filter or all records."
             )), outcome.audit_evidence)
+        outcome = _guard_completion_period_count(outcome, question, bounded_context)
+        if outcome.result.status == 'success' and outcome.result.answer_shape == 'count' and not outcome.result.selected_state:
+            observation = outcome.audit_evidence.get('observation') or ((outcome.audit_evidence.get('portalEvidence') or {}).get('result') or {}).get('observation') or {}
+            selected = [str(t.get('name')) for t in observation.get('tabControls', [])
+                        if isinstance(t, dict) and t.get('selected') is True and t.get('name')]
+            if selected:
+                result = replace(outcome.result, selected_state=' / '.join(dict.fromkeys(selected)))
+                outcome = ReaderOutcome(result, {**outcome.audit_evidence, 'result': result.public_json()})
         result_status = "passed" if outcome.result.status in {"success", "no_data"} else "failed"
         failure_code = outcome.result.missing[0] if outcome.result.missing else ""
         trace.record(
@@ -8100,6 +8324,25 @@ class AdminPortalReader:
             return ReaderOutcome(result, {'stage':'assignment_recheck','permission':permission_audit,
                 'comparison':'GetUserInfo.id versus task.inspectors[].inspectorId; explicit assignmentState',
                 'result':result.public_json()})
+        previous_count = (bounded_conversation_context.get('previousIntent') or {}).get('countSource')
+        if isinstance(previous_count, dict):
+            count_page = _canonical_documented_page(previous_count.get('page'))
+            labels = previous_count.get('labels') or []
+            coverage = bool(re.search(r'\bis (?:that|this|it|the number)\b.*\btotal\b', question, re.I))
+            location = bool(re.search(r'\bwhere\b.*\b(?:find|see|view)\b.*\b(?:count|results?|numbers?)\b', question, re.I))
+            if (count_page and labels and (coverage or location)
+                    and self.policy.validate(PortalReadRequest(start_path=count_page, actions=({'type':'observe'},)), permission_context) is None):
+                view = str(previous_count.get('view') or '')
+                label = ', '.join(str(s) for s in labels[:5])
+                fact = (f'The previous confirmed count came from {count_page}, view {view or "the current view"}, '
+                        f'metric {label}. ')
+                explanation = (f'Open that page, select {view}, and look for {label} in the summary or pagination area.' if location else
+                         'It is the displayed count for that metric and authorized view, not the number of sample rows in the answer. '
+                         'It does not establish an all-status or all-user total. A fresh query is needed for an updated number.')
+                result = ReaderResult(status='success', summary='The prior count source and coverage are explained.',
+                    page=count_page, answer_shape='detail', completeness='bounded', facts=(fact, explanation),
+                    count_source=previous_count, source_hint={'page':count_page})
+                return ReaderOutcome(result, {'stage':'prior_count_source','permission':permission_audit,'result':result.public_json()})
         sample_explanation = previous_sample_explanation(question, bounded_conversation_context)
         if sample_explanation is not None:
             return ReaderOutcome(
@@ -8236,6 +8479,11 @@ class AdminPortalReader:
             intent_state.update(literal_followup.public_json())
             bounded_conversation_context = literal_followup.planner_context(bounded_conversation_context)
         filter_source = semantic_source_hint(conversation_context or {}).get('page', '') if filter_followup else ''
+        view_followup = resolve_literal_view_followup(question, conversation_context or {})
+        if view_followup:
+            view_source = semantic_source_hint(conversation_context or {}).get('page', '')
+            if view_source:
+                bounded_conversation_context['sourceHint'] = {'page':view_source}
         if filter_source:
             bounded_conversation_context['sourceHint'] = {'page': filter_source}
             if self.policy.validate(PortalReadRequest(start_path=filter_source, actions=({'type':'observe'},)), permission_context) == 'page_not_permitted':
@@ -8246,6 +8494,13 @@ class AdminPortalReader:
             all_knowledge, question, bounded_conversation_context,
         )
         object_source = source_resolution.page
+        # Application number prefixes identify the business module, never access.
+        # Always run the normal page policy below, including for denied accounts.
+        application_ids = re.findall(r'\b(?:MC-2|ML-1|ML-2)-\d+-\d+\b', question, re.I)
+        if len(set(application_ids)) == 1:
+            object_source = '/content/ContentApplications' if application_ids[0].upper().startswith('MC-2-') else '/licensing/applications'
+            knowledge_context_hint = {'page': object_source}
+            bounded_conversation_context['sourceHint'] = knowledge_context_hint
         if source_resolution.invalid_path_count or source_resolution.detail_candidate_count:
             failure_code = (
                 "invalid_documented_path"
@@ -8314,6 +8569,18 @@ class AdminPortalReader:
         if column_contrast is not None:
             return ReaderOutcome(column_contrast, {'stage':'knowledge_column_contrast','permission':permission_audit,
                 'knowledge':knowledge_context,'result':column_contrast.public_json()})
+        # Verified against the deployed Admin ApplicationAppService on 2026-09-15.
+        # This explains this specific queue counter, not every field named Pending Review.
+        if (question_is_conceptual(question) and re.search(r'\bpending review\b', question, re.I)
+                and re.search(r'\bservice applications?\b', question, re.I)
+                and self.policy.validate(PortalReadRequest(start_path='/licensing/applications', actions=({'type':'observe'},)), permission_context) is None):
+            result = ReaderResult(status='success', summary='The application queue counter definition is verified.',
+                page='/licensing/applications', section='My Application Tasks', answer_shape='detail', completeness='bounded',
+                facts=('In Service Applications / My Application Tasks, Pending Review counts the current user\'s To Do workflow tasks excluding Pending Modification and External Approval.',
+                       'Pending Review does not mean the application has been approved. It is a pending-work counter, not a final approval decision. Check the individual application status and decision for its actual outcome.'))
+            return ReaderOutcome(result, {'stage':'verified_application_counter_definition','permission':permission_audit,
+                'implementationSource':'ApplicationAppService.GetMyReviewPageAsync.StatusCount.PendingReviewCount',
+                'verifiedAt':'2026-09-15','result':result.public_json()})
         try:
             plan = await plan_stage(knowledge_context, timeout_stage="planning", reason="initial")
         except ReaderStageTimeout as exc:
@@ -8724,6 +8991,10 @@ class AdminPortalReader:
             return ReaderOutcome(result, {**_timeout_evidence(exc, budget), "permission": permission_audit})
         raw_tool_payload = tool_result.get("result") if isinstance(tool_result, dict) else None
         observation = raw_tool_payload.get("observation") if isinstance(raw_tool_payload, dict) else None
+        lookup_result = _observed_application_lookup(question, observation, request.start_path)
+        if lookup_result is not None and raw_tool_payload.get('result') not in {'load_failed','no_permission'}:
+            return ReaderOutcome(lookup_result, {'stage':'observed_application_lookup','permission':permission_audit,
+                'observation':bounded_portal_observation(observation),'result':lookup_result.public_json()})
         if observation is not None and (
             any(str(action.get("type") or "").casefold() == "observe" for action in request.actions)
             or not raw_tool_payload.get("facts")
@@ -9676,6 +9947,7 @@ class AdminPortalReader:
                         page=detail_page,
                         record_identity=resolved_detail_identity,
                         scope=verified_scope,
+                        question=question,
                     )
                     if detail_result is not None:
                         if compound_first_detail:

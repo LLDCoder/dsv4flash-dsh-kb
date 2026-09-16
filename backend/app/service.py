@@ -97,6 +97,13 @@ def reader_evidence_only_response(
     assignment = assignment_answer(reader_result, language)
     if assignment is not None:
         return assignment
+    if reader_result.get('missing') == ['completion_period_not_verified']:
+        messages = {
+            'en': 'I cannot confirm how many you completed in that week or period. The available count does not establish both your completed work and its completion dates. A full-list total, Effective Date, or Submission Time cannot answer that question. A completion-date report for your account is needed.',
+            'zh': '目前无法确认你在该周或该时间段完成了多少项。现有统计没有同时确认你的已完成任务及其完成日期，不能用列表总数、生效日期或提交时间替代。需要与你账号对应、按完成日期统计的报表。',
+            'ar': 'لا أستطيع تأكيد عدد ما أنجزته في تلك الفترة. العدد المتاح لا يثبت مهامك المكتملة وتواريخ إكمالها معًا. لا يمكن استخدام إجمالي القائمة أو تاريخ السريان أو وقت التقديم بديلًا. يلزم تقرير لحسابك حسب تاريخ الإكمال.',
+        }
+        return messages.get(language, messages['en'])
     if reader_result.get('workflowState') in {'filter_return_verified', 'filter_return_unverified'}:
         status = reader_result.get('result')
         messages = {
@@ -550,6 +557,11 @@ def reader_evidence_only_response(
 
     if facts:
         rendered_facts = render_facts()
+        if reader_result.get('completeness') == 'bounded' and answer_shape == 'list':
+            sample = {'en': 'These are some matching records, not the full list.',
+                      'zh': '以下仅为部分匹配记录，并非完整列表。',
+                      'ar': 'هذه بعض السجلات المطابقة وليست القائمة الكاملة.'}
+            rendered_facts = sample.get(language, sample['en']) + '\n\n' + rendered_facts
         if status == "success":
             return f"**{fact_prefix.get(language, fact_prefix['en'])}**\n\n{rendered_facts}"
         if status in messages["en"]:
@@ -623,6 +635,12 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
         lowered,
     ):
         return False
+    if completeness != 'complete' and 'not the full list' in verified_text.casefold():
+        sample = r'\b(?:some|sample|partial|not (?:the |a )?(?:full|complete)|may be more|not exhaustive)\b|部分|并非完整|بعض|ليست.*الكاملة'
+        if not re.search(sample, answer, re.I):
+            return False
+        if re.search(r'\bthere are (?:\d+|one|two|three|four|five) (?:applications|tasks|records)\b', answer, re.I):
+            return False
     # Formatting an amount must not silently assign a currency.
     for symbol in ('$', '€', '£', '¥'):
         if symbol in answer and symbol not in verified_text:
@@ -778,7 +796,24 @@ def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, Any]:
     shape = result.get("answerShape")
     if completeness not in {"bounded", "complete", "unknown"} or shape not in {"overview", "count", "list", "attention", "due", "detail"}:
         return {}
-    return {"deliveredAnswerShape": shape, "completeness": completeness, **assignment_references(result)}
+    metadata = {"deliveredAnswerShape": shape, "completeness": completeness, **assignment_references(result)}
+    if result.get('result') == 'success' and shape == 'count':
+        labels = [m[1].strip() for fact in result.get('facts', []) if isinstance(fact, str)
+                  and (m := re.fullmatch(r'([^:\d]{1,80})\s*:?\s+[\d,.]+', fact))]
+        for fact in result.get('facts', []):
+            try:
+                fields = json.loads(fact)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(fields, dict):
+                labels.extend(str(k)[:80] for k,v in fields.items()
+                              if type(v) in (int, float) and re.search(r'(?:total|count|approved|rejected|pending)', str(k), re.I))
+        if labels and result.get('page'):
+            metadata['countSource'] = {'page': result['page'], 'view': result.get('selectedState', ''),
+                                       'labels': labels[:5]}
+    elif isinstance(result.get('countSource'), dict):
+        metadata['countSource'] = result['countSource']
+    return metadata
 
 
 def _reader_conversation_context(
