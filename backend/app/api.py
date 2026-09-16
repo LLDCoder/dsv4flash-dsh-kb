@@ -1011,6 +1011,10 @@ def make_router(service: DSHService) -> APIRouter:
         Team-scoped requests require a bound team view or verified permission scope;
         personal lists cannot be relabeled as team results. Catalogue captions may
         supply a bounded overview, but never establish record counts.
+        A temporary Admin Portal gateway HTTP failure or dependency timeout is
+        persisted as a normal load_failed reader result and completed turn, so
+        the client receives a bounded status answer instead of a dead-conversation
+        Retry state. It never establishes a business-data conclusion.
         Final answers use concise natural-language formatting over verified facts,
         with deterministic fallback when formatting cannot be validated. Equal
         headings or selected tabs do not merge independent evidence sources;

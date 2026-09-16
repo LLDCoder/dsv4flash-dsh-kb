@@ -47,6 +47,43 @@ def runtime_error_payload(request_id: str, exc: Exception) -> dict[str, str]:
     return {"requestId": request_id, "code": "runtime_failed", "error": type(exc).__name__}
 
 
+def recoverable_reader_failure(exc: Exception, *, timeout_seconds: float) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Turn an external Reader dependency failure into a normal turn result.
+
+    A portal/model transport failure is not an application failure and must not
+    leave the conversation in ``DEAD``. The Portal Reader translates most
+    expected failures close to their source, but a gateway HTTP exception can
+    still escape an individual read stage. Keep this boundary narrow so actual
+    programming errors continue to reach the runtime-error path.
+    """
+
+    if isinstance(exc, httpx.TimeoutException):
+        missing = "reader_dependency_timeout"
+        timeout_kind = "dependency"
+    elif isinstance(exc, httpx.HTTPError):
+        missing = "reader_dependency_unavailable"
+        timeout_kind = ""
+    else:
+        return None
+    evidence = {
+        "result": "load_failed",
+        "page": "",
+        "section": "",
+        "scope": "unknown",
+        "facts": [],
+        "workflowState": "",
+        "missing": [missing],
+    }
+    audit = {
+        "stage": "reader_dependency",
+        "errorType": type(exc).__name__,
+        "failureCode": missing,
+        "timeoutKind": timeout_kind,
+        "timeoutSeconds": timeout_seconds if timeout_kind else None,
+    }
+    return evidence, audit
+
+
 def _response_language_for(text: str) -> str:
     """Keep Chinese follow-ups in Chinese while retaining Arabic/English behavior."""
 
@@ -230,6 +267,33 @@ def reader_evidence_only_response(
             'zh': '当前模型服务余额或计费状态不足，未能完成本次查询，尚未验证业务数据结论。',
             'ar': 'تتطلب خدمة النموذج تحديث الرصيد أو الفوترة. لم يكتمل الطلب ولم يتم التحقق من نتيجة بيانات الأعمال.',
         }.get(language, 'The configured model service requires a balance or billing update.')
+    if status == 'load_failed' and not facts and reader_result.get('missing') in (
+        ['reader_dependency_timeout'],
+        ['reader_dependency_unavailable'],
+    ):
+        timed_out = reader_result.get('missing') == ['reader_dependency_timeout']
+        messages = {
+            'en': (
+                'The Admin Portal read service took too long to respond. No business-data conclusion was verified, '
+                'but this conversation remains available.'
+                if timed_out else
+                'The Admin Portal read service was temporarily unavailable. No business-data conclusion was verified, '
+                'but this conversation remains available.'
+            ),
+            'zh': (
+                'Admin Portal 读取服务响应超时，尚未验证业务数据结论；当前对话仍可继续使用。'
+                if timed_out else
+                'Admin Portal 读取服务暂时不可用，尚未验证业务数据结论；当前对话仍可继续使用。'
+            ),
+            'ar': (
+                'استغرقت خدمة قراءة بوابة الإدارة وقتًا أطول من المتوقع. لم يتم التحقق من أي نتيجة لبيانات الأعمال، '
+                'لكن يمكن متابعة هذه المحادثة.'
+                if timed_out else
+                'خدمة قراءة بوابة الإدارة غير متاحة مؤقتًا. لم يتم التحقق من أي نتيجة لبيانات الأعمال، '
+                'لكن يمكن متابعة هذه المحادثة.'
+            ),
+        }
+        return messages.get(language, messages['en'])
     if status == 'not_confirmed' and not facts and reader_result.get('missing') == ['observed_queue_not_available']:
         return {
             'en': 'The requested queue was not visible in the current page layout; no named queue tabs were shown. This is not a no-matching-records result, and no other queue was substituted.',
@@ -1867,6 +1931,10 @@ class DSHService:
                                 "timeoutKind": "total",
                                 "timeoutSeconds": total_timeout,
                             }
+                        except httpx.HTTPError as exc:
+                            recovered = recoverable_reader_failure(exc, timeout_seconds=total_timeout)
+                            assert recovered is not None
+                            evidence, audit_evidence = recovered
                         await self.append_audit(
                             db,
                             conversation,

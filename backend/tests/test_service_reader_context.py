@@ -1,6 +1,14 @@
 from types import SimpleNamespace
 
-from app.service import DSHService, _reader_conversation_context, _response_language_for, reader_evidence_only_response
+import httpx
+
+from app.service import (
+    DSHService,
+    _reader_conversation_context,
+    _response_language_for,
+    reader_evidence_only_response,
+    recoverable_reader_failure,
+)
 from app.portal_reader import ReaderResult
 
 
@@ -79,6 +87,41 @@ def test_empty_reader_results_are_answered_without_final_llm_inference() -> None
     assert reader_evidence_only_response({"result": "no_permission", "facts": []}, "en") == "You do not have permission to read the requested information."
     assert reader_evidence_only_response({"result": "no_data", "facts": []}, "zh") == "在所请求范围内没有匹配信息。"
     assert reader_evidence_only_response({"result": "success", "facts": [], "missing": ["untrusted generated text"]}, "en") == "I do not have verified details to answer that request."
+
+
+def test_gateway_http_failure_finishes_as_a_safe_reader_result() -> None:
+    recovered = recoverable_reader_failure(
+        httpx.ConnectError("gateway unavailable", request=httpx.Request("POST", "http://gateway/read")),
+        timeout_seconds=90,
+    )
+
+    assert recovered is not None
+    evidence, audit = recovered
+    assert evidence["result"] == "load_failed"
+    assert evidence["missing"] == ["reader_dependency_unavailable"]
+    assert audit["stage"] == "reader_dependency"
+    assert reader_evidence_only_response(evidence, "en") == (
+        "The Admin Portal read service was temporarily unavailable. No business-data conclusion was verified, "
+        "but this conversation remains available."
+    )
+
+
+def test_gateway_timeout_finishes_as_a_safe_reader_result() -> None:
+    recovered = recoverable_reader_failure(
+        httpx.ReadTimeout("gateway timed out", request=httpx.Request("POST", "http://gateway/read")),
+        timeout_seconds=90,
+    )
+
+    assert recovered is not None
+    evidence, audit = recovered
+    assert evidence["missing"] == ["reader_dependency_timeout"]
+    assert audit["timeoutKind"] == "dependency"
+    assert audit["timeoutSeconds"] == 90
+    assert "took too long" in reader_evidence_only_response(evidence, "en")
+
+
+def test_programming_errors_are_not_converted_to_dependency_results() -> None:
+    assert recoverable_reader_failure(KeyError("bad state"), timeout_seconds=90) is None
 
 
 def test_failed_reader_result_with_verified_facts_returns_only_those_facts() -> None:
