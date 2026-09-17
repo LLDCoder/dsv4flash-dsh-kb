@@ -3,6 +3,7 @@ from app.portal_reader import (
     ReaderResult,
     _explicit_reader_source,
     _native_approaching_sla_rows,
+    _native_explicit_source_rows,
     _native_longest_overdue,
     _profile_verification_empty_pending_result,
     _private_customer_information_request,
@@ -154,3 +155,20 @@ def test_profile_dashboard_empty_marker_accepts_the_rendered_card_text() -> None
     })
 
     assert metadata["profileVerificationEmpty"] == "true"
+
+
+def test_named_source_rows_use_only_one_current_rendered_table() -> None:
+    result = _native_explicit_source_rows({
+        "sectionSummaries": [{
+            "nodeId": "refunds-table",
+            "kind": "table",
+            "heading": "Refund Requests",
+            "columnHeaders": ["Refund No.", "Status"],
+            "rowFields": [{"Refund No.": "REF-1", "Status": "To Do"}],
+        }],
+    }, page="/happiness/refunds", question="Actually, show me license refunds instead")
+
+    assert result is not None
+    assert result.status == "success"
+    assert result.page == "/happiness/refunds"
+    assert "REF-1" in " ".join(result.facts)

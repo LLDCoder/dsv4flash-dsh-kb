@@ -3856,6 +3856,30 @@ def _profile_verification_empty_pending_result(observation: Any) -> ReaderResult
     )
 
 
+def _native_explicit_source_rows(observation: Any, *, page: str, question: str) -> ReaderResult | None:
+    """Return one current rendered list for a deliberately named source page.
+
+    This is used only after a successfully authorised direct read of a page
+    named in the question. It never selects a sibling module or invents a
+    category when the matching table is not rendered.
+    """
+
+    if not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return None
+    tables = [node for node in _observation_semantic_nodes(observation)
+              if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")]
+    if len(tables) != 1:
+        return None
+    table = tables[0]
+    result = _result_from_structured_observation(
+        observation, page=page, section_name=str(table.get("nodeId") or table.get("heading") or ""),
+        answer_shape="list", scope="unknown", question=question,
+    )
+    if result is None or result.status not in {"success", "no_data"}:
+        return None
+    return replace(result, source_hint={"page": page})
+
+
 def _native_status_filter_rows(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Recover a failed planner only after a literal status selection and rows agree."""
     if (outcome.result.status not in {'success','not_confirmed'}
@@ -8600,6 +8624,54 @@ class AdminPortalReader:
                 result = ReaderResult(status='load_failed', page=request.start_path, answer_shape='due',
                     summary='Service Application SLA rows could not be read.', missing=(type(exc).__name__,))
                 return ReaderOutcome(result, {'stage': 'service_application_approaching_sla',
+                                              'permission': permission_audit, 'result': result.public_json()})
+        explicit_source = _explicit_reader_source(question, bounded_conversation_context)
+        if explicit_source in {'/happiness/refunds', '/content/ContentLibrary'}:
+            request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
+            denied = validate_policy(request, reason='explicit_named_source_list')
+            if denied:
+                result = ReaderResult(status='no_permission', page=explicit_source, source_hint={'page': explicit_source},
+                    summary='The current permissions do not allow reading the requested named page.', missing=(denied,))
+                return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
+                                              'permission': permission_audit, 'result': result.public_json()})
+            try:
+                tool = await portal_read_stage(request, timeout_stage='explicit_named_source_list',
+                                               attempt='explicit_named_source_list')
+                if not tool.get('ok'):
+                    raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
+                observation = (tool.get('result') or {}).get('observation') or {}
+                actions: tuple[dict[str, Any], ...] = ()
+                if explicit_source == '/content/ContentLibrary':
+                    action = _observed_switch_tab_action({'name': 'Books'}, observation)
+                    if action is None:
+                        result = ReaderResult(status='not_confirmed', page=explicit_source, answer_shape='list',
+                            summary='The Books category was not visible in the current Content Library view.',
+                            missing=('books_category_not_observed',))
+                        return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
+                                                      'permission': permission_audit, 'observation': observation,
+                                                      'result': result.public_json()})
+                    actions = (action,)
+                    tool = await portal_read_stage(replace(request, actions=actions),
+                                                   timeout_stage='explicit_named_source_books',
+                                                   attempt='explicit_named_source_books')
+                    if not tool.get('ok'):
+                        raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
+                    observation = (tool.get('result') or {}).get('observation') or {}
+                result = _native_explicit_source_rows(observation, page=explicit_source, question=question)
+                if result is not None:
+                    return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
+                                                  'permission': permission_audit, 'observation': observation,
+                                                  'actions': actions, 'result': result.public_json()})
+                result = ReaderResult(status='not_confirmed', page=explicit_source, answer_shape='list',
+                    summary='The requested named-page list could not be verified from the current rendered view.',
+                    missing=('named_source_list_not_visible',))
+                return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
+                                              'permission': permission_audit, 'observation': observation,
+                                              'actions': actions, 'result': result.public_json()})
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                result = ReaderResult(status='load_failed', page=explicit_source, answer_shape='list',
+                    summary='The requested named-page list could not be read.', missing=(type(exc).__name__,))
+                return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
                                               'permission': permission_audit, 'result': result.public_json()})
         absence_explanation = reader_absence_limit_explanation(question)
         if absence_explanation:
