@@ -142,3 +142,15 @@ def test_profile_dashboard_empty_marker_keeps_only_a_boolean_for_followup() -> N
     })
 
     assert metadata["profileVerificationEmpty"] == "true"
+
+
+def test_profile_dashboard_empty_marker_accepts_the_rendered_card_text() -> None:
+    metadata = _reader_presentation_metadata({
+        "result": "success",
+        "page": "/dashboard",
+        "answerShape": "overview",
+        "completeness": "bounded",
+        "facts": ["Profile Verification | 0 | Total | Pending Review | 0 | Approved | 0 | Rejected | 0 | 0 | Total Tasks | 0 | Done Today | 0 | Overdue Tasks"],
+    })
+
+    assert metadata["profileVerificationEmpty"] == "true"

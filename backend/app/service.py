@@ -877,10 +877,21 @@ def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, Any]:
             try:
                 fields = json.loads(fact) if isinstance(fact, str) else {}
             except (ValueError, TypeError):
-                continue
+                fields = {}
             if (isinstance(fields, dict)
                     and fields.get('profileVerificationCard.totalCount') == 0
                     and fields.get('profileVerificationCard.totalTasks') == 0):
+                metadata['profileVerificationEmpty'] = 'true'
+                break
+            # Some dashboard observations arrive as one native card string
+            # rather than an API field mapping. Keep the same boolean only
+            # when that one rendered card explicitly shows every profile
+            # status and task total as zero.
+            card = re.sub(r'\s+', ' ', str(fact or '')).casefold()
+            if (re.search(r'profile verification\s*\|\s*0\s*\|\s*total', card)
+                    and re.search(r'pending review\s*\|\s*0', card)
+                    and re.search(r'0\s*\|\s*total tasks', card)
+                    and re.search(r'0\s*\|\s*overdue tasks', card)):
                 metadata['profileVerificationEmpty'] = 'true'
                 break
     source = result.get('countSource') or {}
