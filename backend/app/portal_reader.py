@@ -3774,7 +3774,7 @@ def _native_approaching_sla_rows(outcome: ReaderOutcome, question: str) -> Reade
         return outcome
     evidence = outcome.audit_evidence
     observation = evidence.get("observation") or ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
-    if not isinstance(observation, dict) or (observation.get("readHealth") or {}).get("healthy") is not True:
+    if not isinstance(observation, dict):
         return outcome
     tables = [node for node in _observation_semantic_nodes(observation)
               if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")]
@@ -3796,6 +3796,36 @@ def _native_approaching_sla_rows(outcome: ReaderOutcome, question: str) -> Reade
         visible = {key: value for key, value in row.items() if key in table["columnHeaders"]}
         if visible:
             visible_rows.append(visible)
+    if not visible_rows:
+        candidates = (observation.get('apiDiscovery') or {}).get('candidates') or []
+        api_rows: list[dict[str, Any]] = []
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                sla_value = next((str(child).strip() for key, child in value.items()
+                                  if _key(key) in {'sla', 'sladescription'}), '')
+                compact = bool(re.fullmatch(r"\d+\s*d(?:\s*\d+\s*h)?", sla_value.casefold()))
+                textual = bool(re.search(r"\bdue in\b|\bdue soon\b|\bupcoming\b", sla_value, re.I))
+                if (compact or textual) and not re.search(r"\boverdue\b|\bpast due\b", sla_value, re.I):
+                    permitted = {'applicationno', 'applicationnumber', 'servicename', 'servicecategory', 'status', 'sla', 'sladescription'}
+                    row = {key: child for key, child in value.items() if _key(key) in permitted and isinstance(child, (str, int, float))}
+                    if row:
+                        api_rows.append(row)
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    visit(child)
+
+        for candidate in candidates:
+            if (isinstance(candidate, dict)
+                    and candidate.get('operationKey') == 'POST /api/Application/MyTodoPage'
+                    and candidate.get('status') == 200
+                    and isinstance(candidate.get('responseEvidence'), dict)
+                    and candidate['responseEvidence'].get('isSuccess') is not False):
+                visit(candidate['responseEvidence'])
+        visible_rows = list(dict.fromkeys(json.dumps(row, sort_keys=True, ensure_ascii=False) for row in api_rows))
+        visible_rows = [json.loads(row) for row in visible_rows]
     if not visible_rows:
         return outcome
     facts = tuple(json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in visible_rows[:8])
