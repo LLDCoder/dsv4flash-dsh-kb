@@ -14,7 +14,7 @@ import httpx
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import String, and_, cast, delete, func, not_, or_, select
+from sqlalchemy import String, and_, cast, delete, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -1260,6 +1260,99 @@ def make_router(service: DSHService) -> APIRouter:
             "updatedAt": values.get("updatedAt"),
         }
 
+    def audit_skill_detail_json(item: Skill) -> dict[str, object]:
+        return {
+            "skillId": item.skill_id,
+            "name": item.name,
+            "version": item.version,
+            "source": item.source,
+            "status": item.status,
+            "scope": item.scope,
+            "enabled": item.enabled,
+            "allowedTools": list(item.allowed_tools or []),
+            "dependencies": list(item.dependencies or []),
+            "domain": item.domain,
+            "aliases": list(item.aliases or []),
+            "positiveExamples": list(item.positive_examples or []),
+            "negativeExamples": list(item.negative_examples or []),
+            "workflow": dict(item.workflow or {}),
+            "content": item.content or "",
+            "updatedBy": item.updated_by,
+            "updatedAt": item.updated_at.isoformat() if item.updated_at else None,
+        }
+
+    def audit_tool_detail_json(item: Tool | dict[str, Any]) -> dict[str, object]:
+        if isinstance(item, Tool):
+            return {
+                "toolName": item.tool_name,
+                "displayName": item.display_name,
+                "description": item.description,
+                "operationId": item.operation_id,
+                "httpMethod": item.http_method,
+                "httpPath": item.http_path,
+                "interfaceKey": item.interface_key,
+                "parameters": dict(item.parameters or {}),
+                "responseSchema": dict(item.response_schema or {}),
+                "authStrategy": item.auth_strategy,
+                "sideEffect": item.side_effect,
+                "confirmationRequired": item.confirmation_required,
+                "rbacPolicy": item.rbac_policy,
+                "maskingPolicy": item.masking_policy,
+                "profileScope": dict(item.profile_scope or {}),
+                "swaggerSource": item.swagger_source,
+                "source": item.source,
+                "version": item.version,
+                "enabled": item.enabled,
+                "published": item.published,
+                "updatedBy": item.updated_by,
+                "updatedAt": item.updated_at.isoformat() if item.updated_at else None,
+                "toolType": "business",
+                "mutable": True,
+            }
+        return dict(item)
+
+    async def invalidate_skill_catalog() -> None:
+        catalog = getattr(service, "skill_catalog", None)
+        if catalog is not None:
+            await catalog.invalidate()
+
+    def validate_skill_lifecycle(status: str, enabled: bool) -> None:
+        if enabled and status != "PUBLISHED":
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_skill_lifecycle", "message": "only a PUBLISHED Skill may be enabled"},
+            )
+
+    async def validate_skill_tools(db: AsyncSession, status: str, allowed_tools: list[str]) -> None:
+        if status != "PUBLISHED" or not allowed_tools:
+            return
+        available = await available_published_tools(db)
+        missing = sorted(set(allowed_tools) - available)
+        if missing:
+            raise HTTPException(status_code=422, detail={"code": "unpublished_tools", "tools": missing})
+
+    async def disable_other_active_skill_versions(
+        db: AsyncSession,
+        *,
+        skill_id: str,
+        scope: str,
+        version: int,
+        activate: bool,
+    ) -> None:
+        if not activate:
+            return
+        await db.execute(
+            update(Skill)
+            .where(
+                Skill.skill_id == skill_id,
+                Skill.scope == scope,
+                Skill.version != version,
+                Skill.enabled.is_(True),
+                Skill.status == "PUBLISHED",
+            )
+            .values(enabled=False)
+        )
+
     async def audit_config_json(db: AsyncSession) -> dict[str, object]:
         result = await db.execute(select(ConfigEntry).where(ConfigEntry.scope == "system"))
         entries = {item.key: item for item in result.scalars().all()}
@@ -1430,6 +1523,110 @@ def make_router(service: DSHService) -> APIRouter:
             })
         return {"items": items, "search": (search or "").strip() or None, **pagination_json(total, page, page_size)}
 
+    @router.get("/audit/skills/{skill_id}", tags=["Audit console"])
+    async def get_audit_skill(
+        skill_id: str,
+        version: int | None = Query(default=None, ge=1),
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        query = select(Skill).where(Skill.skill_id == skill_id)
+        if version is not None:
+            query = query.where(Skill.version == version)
+        else:
+            query = query.order_by(Skill.version.desc())
+        item = (await db.execute(query)).scalars().first()
+        if item is None:
+            raise HTTPException(status_code=404, detail="skill not found")
+        return audit_skill_detail_json(item)
+
+    @router.post("/audit/skills", tags=["Audit console"], status_code=201)
+    async def create_audit_skill(
+        payload: SkillCreate,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        validate_skill_lifecycle(payload.status, payload.enabled)
+        await validate_skill_tools(db, payload.status, payload.allowed_tools)
+        existing = await db.execute(
+            select(Skill.id).where(Skill.skill_id == payload.skill_id, Skill.version == payload.version)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=409, detail=f"skill {payload.skill_id} v{payload.version} already exists")
+        await disable_other_active_skill_versions(
+            db,
+            skill_id=payload.skill_id,
+            scope=payload.scope,
+            version=payload.version,
+            activate=payload.enabled and payload.status == "PUBLISHED",
+        )
+        item = Skill(
+            skill_id=payload.skill_id,
+            updated_by=f"audit:{principal.operator_id}",
+            **payload.model_dump(exclude={"skill_id"}),
+        )
+        db.add(item)
+        db.add(AuditOperatorEvent(
+            actor_operator_id=principal.operator_id,
+            username=principal.username,
+            event_type="skill.created",
+            remote_address=audit_remote_address(request),
+            detail={"skillId": payload.skill_id, "version": payload.version},
+        ))
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="Skill version or active publication conflicts with an existing Skill") from exc
+        await invalidate_skill_catalog()
+        return audit_skill_detail_json(item)
+
+    @router.put("/audit/skills/{skill_id}", tags=["Audit console"])
+    async def update_audit_skill(
+        skill_id: str,
+        payload: SkillUpsert,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        validate_skill_lifecycle(payload.status, payload.enabled)
+        await validate_skill_tools(db, payload.status, payload.allowed_tools)
+        item = (await db.execute(
+            select(Skill).where(Skill.skill_id == skill_id, Skill.version == payload.version)
+        )).scalar_one_or_none()
+        await disable_other_active_skill_versions(
+            db,
+            skill_id=skill_id,
+            scope=payload.scope,
+            version=payload.version,
+            activate=payload.enabled and payload.status == "PUBLISHED",
+        )
+        values = payload.model_dump()
+        if item is None:
+            item = Skill(skill_id=skill_id, updated_by=f"audit:{principal.operator_id}", **values)
+            db.add(item)
+            event_type = "skill.created"
+        else:
+            for key, value in values.items():
+                setattr(item, key, value)
+            item.updated_by = f"audit:{principal.operator_id}"
+            event_type = "skill.updated"
+        db.add(AuditOperatorEvent(
+            actor_operator_id=principal.operator_id,
+            username=principal.username,
+            event_type=event_type,
+            remote_address=audit_remote_address(request),
+            detail={"skillId": skill_id, "version": payload.version},
+        ))
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="active Skill publication conflicts with an existing Skill") from exc
+        await invalidate_skill_catalog()
+        return audit_skill_detail_json(item)
+
     @router.get("/audit/tools", tags=["Audit console"])
     async def list_audit_tool_diagnostics(
         search: str | None = Query(default=None, max_length=160),
@@ -1464,6 +1661,108 @@ def make_router(service: DSHService) -> APIRouter:
             "search": (search or "").strip() or None,
             **pagination_json(total, page, page_size),
         }
+
+    @router.get("/audit/tools/{tool_name:path}", tags=["Audit console"])
+    async def get_audit_tool(
+        tool_name: str,
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        system_item = next(
+            (item for item in system_default_tool_definitions(service.settings) if item.get("toolName") == tool_name),
+            None,
+        )
+        if system_item is not None:
+            return audit_tool_detail_json(system_item)
+        item = (await db.execute(select(Tool).where(Tool.tool_name == tool_name))).scalar_one_or_none()
+        if item is None:
+            raise HTTPException(status_code=404, detail="tool not found")
+        return audit_tool_detail_json(item)
+
+    @router.post("/audit/tools", tags=["Audit console"], status_code=201)
+    async def create_audit_tool(
+        payload: ToolCreate,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        if is_system_default_tool(payload.tool_name):
+            raise HTTPException(status_code=422, detail="system default capabilities are managed by runtime configuration")
+        key = payload.interface_key or interface_key(payload.http_method, payload.http_path)
+        duplicate = await db.execute(
+            select(Tool.id).where((Tool.tool_name == payload.tool_name) | (Tool.interface_key == key))
+        )
+        if duplicate.scalars().first() is not None:
+            raise HTTPException(status_code=409, detail="tool name or HTTP interface already exists")
+        values = payload.model_dump(exclude={"tool_name", "interface_key"})
+        values["profile_scope"] = normalize_profile_scope(
+            values.get("profile_scope"),
+            parameters=values.get("parameters"),
+            http_path=str(values.get("http_path") or ""),
+        )
+        item = Tool(
+            tool_name=payload.tool_name,
+            updated_by=f"audit:{principal.operator_id}",
+            interface_key=key,
+            **values,
+        )
+        db.add(item)
+        db.add(AuditOperatorEvent(
+            actor_operator_id=principal.operator_id,
+            username=principal.username,
+            event_type="tool.created",
+            remote_address=audit_remote_address(request),
+            detail={"toolName": payload.tool_name},
+        ))
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="tool name or HTTP interface already exists") from exc
+        return audit_tool_detail_json(item)
+
+    @router.put("/audit/tools/{tool_name:path}", tags=["Audit console"])
+    async def update_audit_tool(
+        tool_name: str,
+        payload: ToolUpsert,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        if is_system_default_tool(tool_name):
+            raise HTTPException(status_code=422, detail="system default capabilities are managed by runtime configuration")
+        item = (await db.execute(select(Tool).where(Tool.tool_name == tool_name))).scalar_one_or_none()
+        if item is None:
+            raise HTTPException(status_code=404, detail="tool not found")
+        key = payload.interface_key or interface_key(payload.http_method, payload.http_path)
+        duplicate = await db.execute(
+            select(Tool.id).where(Tool.interface_key == key, Tool.tool_name != tool_name)
+        )
+        if duplicate.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=409, detail="this HTTP interface is already registered by another tool")
+        values = payload.model_dump(exclude={"interface_key"})
+        values["profile_scope"] = normalize_profile_scope(
+            values.get("profile_scope"),
+            parameters=values.get("parameters"),
+            http_path=str(values.get("http_path") or ""),
+        )
+        for field, value in values.items():
+            setattr(item, field, value)
+        item.interface_key = key
+        item.updated_by = f"audit:{principal.operator_id}"
+        db.add(AuditOperatorEvent(
+            actor_operator_id=principal.operator_id,
+            username=principal.username,
+            event_type="tool.updated",
+            remote_address=audit_remote_address(request),
+            detail={"toolName": tool_name},
+        ))
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="this HTTP interface is already registered by another tool") from exc
+        return audit_tool_detail_json(item)
 
     @router.get("/conversations")
     async def list_conversations(
@@ -2147,14 +2446,18 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.post("/skills", status_code=201)
     async def create_skill(payload: SkillCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        if payload.status == "PUBLISHED" and payload.allowed_tools:
-            available = await available_published_tools(db)
-            missing = sorted(set(payload.allowed_tools) - available)
-            if missing:
-                raise HTTPException(status_code=422, detail={"code": "unpublished_tools", "tools": missing})
+        validate_skill_lifecycle(payload.status, payload.enabled)
+        await validate_skill_tools(db, payload.status, payload.allowed_tools)
         result = await db.execute(select(Skill).where(Skill.skill_id == payload.skill_id, Skill.version == payload.version))
         if result.scalar_one_or_none():
             raise HTTPException(status_code=409, detail=f"skill {payload.skill_id} v{payload.version} already exists")
+        await disable_other_active_skill_versions(
+            db,
+            skill_id=payload.skill_id,
+            scope=payload.scope,
+            version=payload.version,
+            activate=payload.enabled and payload.status == "PUBLISHED",
+        )
         values = payload.model_dump(exclude={"skill_id"})
         item = Skill(skill_id=payload.skill_id, updated_by=principal.user_id, **values)
         db.add(item)
@@ -2168,13 +2471,17 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.put("/skills/{skill_id}")
     async def upsert_skill(skill_id: str, payload: SkillUpsert, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        if payload.status == "PUBLISHED" and payload.allowed_tools:
-            available = await available_published_tools(db)
-            missing = sorted(set(payload.allowed_tools) - available)
-            if missing:
-                raise HTTPException(status_code=422, detail={"code": "unpublished_tools", "tools": missing})
+        validate_skill_lifecycle(payload.status, payload.enabled)
+        await validate_skill_tools(db, payload.status, payload.allowed_tools)
         result = await db.execute(select(Skill).where(Skill.skill_id == skill_id, Skill.version == payload.version))
         item = result.scalar_one_or_none()
+        await disable_other_active_skill_versions(
+            db,
+            skill_id=skill_id,
+            scope=payload.scope,
+            version=payload.version,
+            activate=payload.enabled and payload.status == "PUBLISHED",
+        )
         values = payload.model_dump()
         if item:
             for key, value in values.items():
@@ -2183,7 +2490,11 @@ def make_router(service: DSHService) -> APIRouter:
         else:
             item = Skill(skill_id=skill_id, updated_by=principal.user_id, **values)
             db.add(item)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="active Skill publication conflicts with an existing Skill") from exc
         await service.skill_catalog.invalidate()
         return {"skillId": item.skill_id, "version": item.version, "status": item.status, "enabled": item.enabled}
 

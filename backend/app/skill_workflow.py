@@ -172,6 +172,57 @@ def normalize_route_directives(
     return normalized_intent, normalized_filters
 
 
+def bind_declared_keyword_filter(
+    workflow: dict[str, Any] | None,
+    allowed_tools: list[str],
+    tool_definitions: dict[str, dict[str, Any]],
+    filters: object,
+    candidate: object,
+) -> dict[str, Any]:
+    """Bind a search term only when both Skill and Tool declare the slot.
+
+    This is intentionally domain-neutral. A Profile display name or another
+    trusted search term may be carried as ``keyword`` for any published Skill,
+    but only when its routing contract declares that filter, its request maps
+    the filter to an argument, and the selected Tool schema exposes the mapped
+    argument. Workflows without such a slot remain untouched.
+    """
+
+    result = dict(filters) if isinstance(filters, dict) else {}
+    value = str(candidate or "").strip()
+    if not value:
+        return result
+    workflow = workflow or {}
+    specification = dict((workflow.get("routing") or {}).get("filters") or {}).get("keyword")
+    if not isinstance(specification, dict) or specification.get("type", "string") != "string":
+        return result
+
+    definitions = [
+        item for item in workflow.get("requests", [])
+        if isinstance(item, dict)
+    ]
+    default_request = workflow.get("defaultToolRequest")
+    if isinstance(default_request, dict):
+        definitions.append(default_request)
+    allowed = set(allowed_tools)
+    for definition in definitions:
+        tool_name = str(definition.get("toolName") or "")
+        if tool_name not in allowed:
+            continue
+        properties = dict((tool_definitions.get(tool_name, {}).get("parameters") or {}).get("properties") or {})
+        for binding in definition.get("bindings", []):
+            if not isinstance(binding, dict) or binding.get("filter") != "keyword":
+                continue
+            argument = str(binding.get("argument") or "")
+            if argument and argument in properties:
+                # The caller supplies an authorized canonical value (for
+                # example the full Profile display name), so it supersedes a
+                # looser classifier extraction such as just "Peter".
+                result["keyword"] = value[:500]
+                return result
+    return result
+
+
 def _selection_items(history: list[Any], selection: dict[str, Any]) -> list[dict[str, Any]]:
     source_tool = str(selection.get("sourceTool") or "")
     for event in reversed(history):

@@ -327,6 +327,45 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+async def reconcile_active_published_skills(session: AsyncSession) -> int:
+    """Keep only the newest active published version for each scoped Skill.
+
+    Older deployments allowed multiple versions to be published and enabled at
+    once.  Reconcile those rows before installing the database constraint so an
+    in-place upgrade cannot fail on existing operator data.
+    """
+
+    result = await session.execute(
+        select(Skill)
+        .where(Skill.enabled.is_(True), Skill.status == "PUBLISHED")
+        .order_by(Skill.scope, Skill.skill_id, Skill.version.desc(), Skill.id.desc())
+    )
+    seen: set[tuple[str, str]] = set()
+    disabled = 0
+    for item in result.scalars().all():
+        key = (item.scope, item.skill_id)
+        if key in seen:
+            item.enabled = False
+            disabled += 1
+        else:
+            seen.add(key)
+    if disabled:
+        await session.flush()
+    return disabled
+
+
+async def ensure_active_published_skill_index(connection: Any) -> None:
+    """Install the partial uniqueness guard after legacy rows are reconciled."""
+
+    if connection.dialect.name not in {"postgresql", "sqlite"}:
+        return
+    await connection.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_skill_one_active_published "
+        "ON skill (scope, skill_id) "
+        "WHERE enabled IS TRUE AND status = 'PUBLISHED'"
+    ))
+
+
 async def init_db() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -346,7 +385,7 @@ async def init_db() -> None:
 
     # Seed the routing skills once so the Skill API and the runtime share the
     # same guardrails. Existing operator-managed versions are preserved.
-    from .skills import DEFAULT_SKILL_DEFINITIONS
+    from .skills import DEFAULT_SKILL_DEFINITIONS, REMOVED_CUSTOMER_SKILL_IDS
     from .profile_scope import infer_profile_scope
     from .tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, interface_key
 
@@ -396,6 +435,17 @@ async def init_db() -> None:
             delete(Tool).where(Tool.tool_name.in_((*SYSTEM_DEFAULT_TOOL_NAMES, "umc.licenses")))
         )
         changed = changed or bool(removed_defaults.rowcount)
+        # Customer DSH no longer shares administrator business Skills. Delete
+        # persisted legacy rows so the database-backed catalog cannot keep
+        # routing customer questions into the retired admin domain.
+        removed_admin_skills = await session.execute(
+            delete(Skill).where(Skill.skill_id.in_(tuple(REMOVED_CUSTOMER_SKILL_IDS)))
+        )
+        changed = changed or bool(removed_admin_skills.rowcount)
+        # Reconcile before seeding as well as after it.  On later startups the
+        # partial unique index already exists, so this prevents a seed insert
+        # from colliding with a newer active operator-managed version.
+        changed = bool(await reconcile_active_published_skills(session)) or changed
         for definition in DEFAULT_SKILL_DEFINITIONS:
             result = await session.execute(select(Skill).where(Skill.skill_id == definition["skill_id"], Skill.version == 1))
             existing_skill = result.scalar_one_or_none()
@@ -423,15 +473,24 @@ async def init_db() -> None:
                             existing_skill.workflow = workflow
                             changed = True
                 continue
+            existing_active = await session.execute(
+                select(Skill.id).where(
+                    Skill.skill_id == definition["skill_id"],
+                    Skill.scope == "system",
+                    Skill.enabled.is_(True),
+                    Skill.status == "PUBLISHED",
+                )
+            )
+            has_active_version = existing_active.scalar_one_or_none() is not None
             session.add(
                 Skill(
                     skill_id=definition["skill_id"],
                     name=definition["name"],
                     version=1,
                     source="builtin",
-                    status="PUBLISHED",
+                    status="PUBLISHED" if not has_active_version else "DISABLED",
                     scope="system",
-                    enabled=True,
+                    enabled=not has_active_version,
                     allowed_tools=definition["allowed_tools"],
                     dependencies=definition["dependencies"],
                     domain=definition.get("domain", "general"),
@@ -477,5 +536,12 @@ async def init_db() -> None:
                 )
             )
             changed = True
+        changed = bool(await reconcile_active_published_skills(session)) or changed
         if changed:
             await session.commit()
+
+    # PostgreSQL is authoritative in production; SQLite receives the same
+    # partial index so isolated tests and local development exercise matching
+    # lifecycle semantics.
+    async with engine.begin() as connection:
+        await ensure_active_published_skill_index(connection)

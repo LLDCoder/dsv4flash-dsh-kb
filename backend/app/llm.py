@@ -32,6 +32,7 @@ class LLMAdapter:
             "Do not call tools, do not answer the user, and do not invent a skill. "
             "When the chosen candidate declares routing intents, return its intentId. "
             "When it declares routing filters, return only supported filters using their configured IDs and shapes. "
+            "If it declares a string keyword filter, put any explicit residual business search phrase there when it is not represented by a more specific filter; examples include payment, licence, violation, refund, enquiry, a service/reference, or an authorized Profile display name. "
             "Return JSON only with keys skillId, intentId, filters, confidence, needsClarification, clarifyingQuestion. "
             "Use needsClarification=true when the scope or intent is ambiguous."
         )

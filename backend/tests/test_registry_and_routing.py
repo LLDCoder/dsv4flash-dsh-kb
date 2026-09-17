@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.skills import CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY, LEGACY_SKILL_ID_MIGRATIONS, SKILL_GUIDANCE, build_system_prompt, canonical_skill_id, merged_skill_workflow, resolve_configured_skill, resolve_skill, response_language_for
+from app.skills import CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY, DEFAULT_SKILL_DEFINITIONS, LEGACY_SKILL_ID_MIGRATIONS, REMOVED_CUSTOMER_SKILL_IDS, SKILL_GUIDANCE, build_system_prompt, canonical_skill_id, merged_skill_workflow, resolve_configured_skill, resolve_skill, response_language_for
 from app.skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives, routing_contract
 from app.tool_registry import DEFAULT_BUSINESS_TOOL_DEFINITIONS, DEFAULT_TOOL_DEFINITIONS, SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, extract_operations, interface_key
 from app.tool_gateway import ToolGateway
@@ -17,6 +17,21 @@ from app.skill_router import SkillCatalogCache, add_keyword_skill_candidate, con
 
 
 class RegistryAndRoutingTests(unittest.TestCase):
+    def test_customer_catalog_excludes_retired_admin_skills(self):
+        skill_ids = {item["skill_id"] for item in DEFAULT_SKILL_DEFINITIONS}
+
+        self.assertTrue(skill_ids.isdisjoint(REMOVED_CUSTOMER_SKILL_IDS))
+        self.assertFalse(any(item.get("domain") == "admin" for item in DEFAULT_SKILL_DEFINITIONS))
+
+    def test_customer_inspection_notice_never_routes_to_admin(self):
+        route = resolve_skill("I received an inspection notice. What should I do?")
+
+        self.assertEqual(
+            (route.skill_id, route.category, route.tool_name, route.routing_locked),
+            ("inspection_notice_guidance", "knowledge", "knowledge.search", True),
+        )
+        self.assertIn("Ignore evidence about internal/admin inspection modules", SKILL_GUIDANCE[route.skill_id])
+
     def test_license_intents_are_separate_from_application_status(self):
         self.assertEqual(resolve_skill("How many license do I have?").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("What's my license status?").skill_id, "license_permit_status")
@@ -139,7 +154,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         )
         self.assertEqual(list_definition["parameters"]["properties"]["keyword"], {"type": "string"})
 
-    def test_published_license_skill_inherits_missing_canonical_routing(self):
+    def test_operator_managed_skill_workflow_does_not_inherit_canonical_routing(self):
         published = SimpleNamespace(
             skill_id="license_permit_status",
             name="Operator-managed license status",
@@ -161,16 +176,39 @@ class RegistryAndRoutingTests(unittest.TestCase):
             [summary],
             canonicalize=False,
         )
-        self.assertIsNotNone(route)
-        self.assertEqual(
-            (route.skill_id, route.category, route.routing_locked),
-            ("license_permit_status", "data_query", True),
-        )
+        self.assertIsNone(route)
 
-    def test_legacy_profile_switch_rule_cannot_capture_application_queries(self):
+    def test_legacy_empty_skill_workflow_uses_builtin_fallback(self):
+        published = SimpleNamespace(
+            skill_id="license_permit_status",
+            name="Legacy license status",
+            source="ops",
+            content="Published instructions",
+            allowed_tools=["umc.licenses.list", "umc.licenses.detail"],
+            dependencies=[],
+            domain="licenses_permits",
+            aliases=[],
+            positive_examples=[],
+            negative_examples=[],
+            workflow={},
+            version=2,
+            status="PUBLISHED",
+            enabled=True,
+        )
+        summary = SkillCatalogCache._summary(published)
+        route = resolve_configured_skill(
+            "متى تنتهي صلاحية رخصة الإعلام الخاصة بي رقم 2649427؟",
+            [summary],
+            canonicalize=False,
+        )
+        self.assertIsNotNone(route)
+        self.assertEqual(route.skill_id, "license_permit_status")
+
+    def test_operator_profile_workflow_is_not_silently_rewritten(self):
         published = SimpleNamespace(
             skill_id="profile_status",
             name="Operator-managed profile status",
+            source="ops",
             content="Published instructions",
             allowed_tools=["umc.profile.summary"],
             dependencies=[],
@@ -197,13 +235,13 @@ class RegistryAndRoutingTests(unittest.TestCase):
         )
 
         summary = SkillCatalogCache._summary(published)
-        self.assertIsNone(
-            resolve_configured_skill(
-                "Show applications for my other profile",
-                [summary],
-                canonicalize=False,
-            )
+        configured = resolve_configured_skill(
+            "Show applications for my other profile",
+            [summary],
+            canonicalize=False,
         )
+        self.assertIsNotNone(configured)
+        self.assertEqual(configured.skill_id, "profile_status")
         route = resolve_skill("Show applications for my other profile")
         self.assertEqual(
             (route.skill_id, route.category, route.routing_locked),
@@ -613,7 +651,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         service_eligibility = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "service_eligibility")
         self.assertEqual(
             build_configured_tool_request(service_eligibility["workflow"], service_eligibility["allowed_tools"], "Which services can I apply for?", []),
-            ("umc.collected-services", {}),
+            ("umc.services.eligible", {}),
         )
         fine_appeal = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "fine_appeal")
         self.assertEqual(
@@ -731,7 +769,13 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertTrue(SYSTEM_DEFAULT_TOOL_NAMES.isdisjoint(business_tools))
         self.assertEqual(
             SYSTEM_DEFAULT_TOOL_NAMES,
-            {"knowledge.search", "ocr.layout_parsing", "umc.profile.summary"},
+            {
+                "knowledge.search",
+                "ocr.layout_parsing",
+                "umc.profile.summary",
+                "umc.media-licensing.eligible-services",
+                "umc.services.eligible",
+            },
         )
 
     def test_skill_router_modes_and_validation(self):

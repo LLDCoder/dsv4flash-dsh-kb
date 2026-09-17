@@ -355,6 +355,91 @@ class AuditConsoleApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await auditor.aclose()
 
+    async def test_administrator_can_view_create_and_update_skill_and_tool_details(self):
+        await self.add_operator("registry-admin", "AdminPass123", AUDIT_ROLE_ADMINISTRATOR)
+        self.assertEqual((await self.login("registry-admin", "AdminPass123")).status_code, 200)
+
+        tool_payload = {
+            "toolName": "customer.widgets",
+            "displayName": "Customer widgets",
+            "description": "Search customer widgets",
+            "operationId": "searchWidgets",
+            "httpMethod": "GET",
+            "httpPath": "/api/widgets",
+            "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}},
+            "responseSchema": {"type": "object"},
+            "source": "manual",
+            "enabled": True,
+            "published": True,
+        }
+        created_tool = await self.client.post("/api/v1/audit/tools", json=tool_payload)
+        self.assertEqual(created_tool.status_code, 201, created_tool.text)
+        self.assertEqual(created_tool.json()["parameters"], tool_payload["parameters"])
+
+        tool_detail = await self.client.get("/api/v1/audit/tools/customer.widgets")
+        self.assertEqual(tool_detail.status_code, 200, tool_detail.text)
+        self.assertEqual(tool_detail.json()["operationId"], "searchWidgets")
+        tool_payload.pop("toolName")
+        tool_payload["description"] = "Updated widget search"
+        updated_tool = await self.client.put("/api/v1/audit/tools/customer.widgets", json=tool_payload)
+        self.assertEqual(updated_tool.status_code, 200, updated_tool.text)
+        self.assertEqual(updated_tool.json()["description"], "Updated widget search")
+
+        first_skill = {
+            "skillId": "widget_search",
+            "name": "Widget search v1",
+            "version": 1,
+            "source": "ops",
+            "status": "PUBLISHED",
+            "scope": "system",
+            "enabled": True,
+            "allowedTools": ["customer.widgets"],
+            "domain": "widgets",
+            "workflow": {"routing": {"defaultIntentId": "search"}},
+            "content": "Search the customer's widgets.",
+        }
+        self.assertEqual((await self.client.post("/api/v1/audit/skills", json=first_skill)).status_code, 201)
+        second_skill = dict(first_skill)
+        second_skill.update({"name": "Widget search v2", "version": 2, "content": "Authoritative v2 instructions."})
+        created_second = await self.client.post("/api/v1/audit/skills", json=second_skill)
+        self.assertEqual(created_second.status_code, 201, created_second.text)
+
+        first_detail = await self.client.get("/api/v1/audit/skills/widget_search?version=1")
+        second_detail = await self.client.get("/api/v1/audit/skills/widget_search?version=2")
+        self.assertFalse(first_detail.json()["enabled"])
+        self.assertTrue(second_detail.json()["enabled"])
+        self.assertEqual(second_detail.json()["content"], "Authoritative v2 instructions.")
+
+        second_skill.pop("skillId")
+        second_skill["content"] = "Updated authoritative v2 instructions."
+        updated_skill = await self.client.put("/api/v1/audit/skills/widget_search", json=second_skill)
+        self.assertEqual(updated_skill.status_code, 200, updated_skill.text)
+        self.assertEqual(updated_skill.json()["content"], "Updated authoritative v2 instructions.")
+
+    async def test_auditor_cannot_read_details_or_mutate_skill_and_tool_registry(self):
+        await self.add_operator("registry-reader", "ReaderPass123", AUDIT_ROLE_AUDITOR)
+        self.assertEqual((await self.login("registry-reader", "ReaderPass123")).status_code, 200)
+
+        skill_payload = {
+            "skillId": "forbidden",
+            "name": "Forbidden",
+            "version": 1,
+            "status": "DRAFT",
+            "enabled": False,
+        }
+        tool_payload = {
+            "toolName": "forbidden.tool",
+            "displayName": "Forbidden",
+            "httpMethod": "GET",
+            "httpPath": "/forbidden",
+        }
+        self.assertEqual((await self.client.get("/api/v1/audit/skills/forbidden")).status_code, 403)
+        self.assertEqual((await self.client.post("/api/v1/audit/skills", json=skill_payload)).status_code, 403)
+        self.assertEqual((await self.client.put("/api/v1/audit/skills/forbidden", json={key: value for key, value in skill_payload.items() if key != "skillId"})).status_code, 403)
+        self.assertEqual((await self.client.get("/api/v1/audit/tools/forbidden.tool")).status_code, 403)
+        self.assertEqual((await self.client.post("/api/v1/audit/tools", json=tool_payload)).status_code, 403)
+        self.assertEqual((await self.client.put("/api/v1/audit/tools/forbidden.tool", json={key: value for key, value in tool_payload.items() if key != "toolName"})).status_code, 403)
+
     async def test_only_administrator_can_manage_customer_safe_configuration(self):
         await self.add_operator("config-admin", "AdminPass123", AUDIT_ROLE_ADMINISTRATOR)
         await self.add_operator("config-reader", "ReaderPass123", AUDIT_ROLE_AUDITOR)

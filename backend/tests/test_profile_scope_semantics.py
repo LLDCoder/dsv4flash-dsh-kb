@@ -11,7 +11,7 @@ from app.profile_scope import (
     requires_profile_switch,
 )
 from app.service import DSHService
-from app.skill_workflow import build_configured_tool_request
+from app.skill_workflow import bind_declared_keyword_filter, build_configured_tool_request
 from app.skills import DEFAULT_SKILL_DEFINITIONS, SkillRoute, build_system_prompt, merged_skill_workflow
 
 
@@ -106,17 +106,35 @@ class ProfileScopeSemanticsTests(unittest.TestCase):
                 self.global_context,
             )
         )
-        filters = DSHService.application_profile_filters(
-            "application_status",
-            "Show Peter's applications",
-            self.global_context,
-            None,
-        )
-        self.assertEqual(filters, {"keyword": "Individual Peter"})
-
         definition = next(
             item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "application_status"
         )
+        filters = bind_declared_keyword_filter(
+            definition["workflow"],
+            definition["allowed_tools"],
+            {
+                "umc.applications": {
+                    "parameters": {"properties": {"keyword": {"type": "string"}}}
+                }
+            },
+            None,
+            requested_profile("Show Peter's applications", self.global_context).name,
+        )
+        self.assertEqual(filters, {"keyword": "Individual Peter"})
+
+        canonicalized = bind_declared_keyword_filter(
+            definition["workflow"],
+            definition["allowed_tools"],
+            {
+                "umc.applications": {
+                    "parameters": {"properties": {"keyword": {"type": "string"}}}
+                }
+            },
+            {"keyword": "Peter"},
+            requested_profile("Show Peter's applications", self.global_context).name,
+        )
+        self.assertEqual(canonicalized, {"keyword": "Individual Peter"})
+
         request = build_configured_tool_request(
             merged_skill_workflow("application_status", definition["workflow"]),
             definition["allowed_tools"],
@@ -126,6 +144,31 @@ class ProfileScopeSemanticsTests(unittest.TestCase):
         )
         self.assertEqual(request[0], "umc.applications")
         self.assertEqual(request[1]["keyword"], "Individual Peter")
+
+    def test_profile_keyword_requires_both_skill_binding_and_tool_schema(self) -> None:
+        application = next(
+            item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "application_status"
+        )
+        missing_tool_slot = bind_declared_keyword_filter(
+            application["workflow"],
+            application["allowed_tools"],
+            {"umc.applications": {"parameters": {"properties": {"pageIndex": {"type": "integer"}}}}},
+            {},
+            "Individual Peter",
+        )
+        self.assertEqual(missing_tool_slot, {})
+
+        payment = next(
+            item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "application_payment"
+        )
+        missing_skill_slot = bind_declared_keyword_filter(
+            payment["workflow"],
+            payment["allowed_tools"],
+            {"umc.applications": {"parameters": {"properties": {"keyword": {"type": "string"}}}}},
+            {},
+            "Individual Peter",
+        )
+        self.assertEqual(missing_skill_slot, {})
 
     def test_unknown_account_record_queries_have_identical_local_refusal(self) -> None:
         known_shape = DSHService.profile_scope_guard(

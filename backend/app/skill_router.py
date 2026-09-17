@@ -36,15 +36,32 @@ class SkillCatalogCache:
             await self.redis.aclose()
 
     @staticmethod
+    def _latest_catalog_entries(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        latest: dict[str, dict[str, Any]] = {}
+        for item in items:
+            skill_id = str(item.get("skillId") or "")
+            if not skill_id:
+                continue
+            current = latest.get(skill_id)
+            if current is None or int(item.get("version") or 0) > int(current.get("version") or 0):
+                latest[skill_id] = item
+        return [latest[skill_id] for skill_id in sorted(latest)]
+
+    @staticmethod
     def _summary(item: Any) -> dict[str, Any]:
-        # Operator-managed Skill versions may predate deterministic routing.
-        # Use the same backwards-compatible merge as execution so the router
-        # sees canonical rules that are absent from (but never overwrite rules
-        # explicitly present in) the published workflow.
-        from .skills import merged_skill_workflow
+        # Operator-managed workflow is the published runtime contract.  Only a
+        # builtin record, or a legacy record with no workflow at all, receives
+        # the builtin fallback.  This prevents a later code deployment from
+        # silently adding routing arrays to a complete operator configuration.
+        from .skills import effective_skill_workflow
 
         content = str(item.content or "").strip()
-        workflow = merged_skill_workflow(str(item.skill_id), dict(getattr(item, "workflow", None) or {}))
+        published_workflow = dict(getattr(item, "workflow", None) or {})
+        workflow = effective_skill_workflow(
+            str(item.skill_id),
+            str(getattr(item, "source", "") or ""),
+            published_workflow,
+        )
         return {
             "skillId": item.skill_id,
             "name": item.name,
@@ -85,7 +102,9 @@ class SkillCatalogCache:
                 if cached:
                     value = json.loads(cached)
                     if isinstance(value, list):
-                        return value
+                        return self._latest_catalog_entries([
+                            item for item in value if isinstance(item, dict)
+                        ])
             except Exception:
                 pass
         from .db import Skill
@@ -96,12 +115,23 @@ class SkillCatalogCache:
             .order_by(Skill.skill_id, Skill.version.desc())
         )
         items = list(result.scalars().all())
-        catalog = [self._summary(item) for item in items]
+        # The database index is the primary guard.  Keep this defensive
+        # de-duplication for rolling upgrades and restored databases that have
+        # not completed migration yet.
+        latest_items = []
+        seen_skill_ids: set[str] = set()
+        for item in items:
+            skill_id = str(item.skill_id)
+            if skill_id in seen_skill_ids:
+                continue
+            seen_skill_ids.add(skill_id)
+            latest_items.append(item)
+        catalog = [self._summary(item) for item in latest_items]
         if self.redis:
             try:
                 pipe = self.redis.pipeline()
                 pipe.setex(SKILL_CATALOG_KEY, SKILL_CACHE_TTL_SECONDS, json.dumps(catalog, ensure_ascii=False))
-                for item in items:
+                for item in latest_items:
                     pipe.setex(
                         f"dsh:skill:system:{item.skill_id}:v{item.version}",
                         SKILL_CACHE_TTL_SECONDS,

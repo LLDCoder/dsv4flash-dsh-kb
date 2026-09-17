@@ -38,6 +38,13 @@ LEGACY_SKILL_ID_MIGRATIONS = {
     "fine_payment": "fine_payment_guidance",
 }
 
+REMOVED_CUSTOMER_SKILL_IDS = frozenset({
+    "admin_inspection",
+    "admin_analytics",
+    "admin_finance",
+    "admin_audit",
+})
+
 
 def canonical_skill_id(skill_id: str) -> str:
     """Normalize retired built-in IDs in routing context and audit metadata."""
@@ -110,29 +117,11 @@ SKILL_GUIDANCE: dict[str, str] = {
         "current knowledge-base evidence and the specific content scenario.",
         "distinguish general guidance from legal advice, and identify when professional review is needed.",
     ),
-    "admin_inspection": _guidance(
-        "an authorized administrator asks for inspection summaries, risk indicators, or drill-downs.",
-        "a customer asks about another account or the caller lacks administrator scope.",
-        "trusted principal and verified admin_scope; no customer data may be inferred from aggregates.",
-        "enforce account/tenant scope, label risk as an analytical signal, and state when the current tool set cannot provide a requested metric.",
-    ),
-    "admin_analytics": _guidance(
-        "an authorized administrator asks for pivots, dimensions, processing time, or operational trends.",
-        "a customer asks for administrative data or the requested dimension is not available in the evidence.",
-        "trusted principal, admin_scope, a time range, metric definition, and grouping dimension.",
-        "keep one metric definition and time window, show the population size, and do not invent causes for a trend.",
-    ),
-    "admin_finance": _guidance(
-        "an authorized administrator asks for revenue, collection, or finance trend analysis.",
-        "the user asks to initiate, refund, or change a payment, or lacks admin_scope.",
-        "trusted principal, admin_scope, and a precise period/currency definition.",
-        "report aggregates with their source and period; this Skill is read-only and never performs a financial operation.",
-    ),
-    "admin_audit": _guidance(
-        "an authorized administrator asks about audit events, permissions, or low-confidence records.",
-        "a customer asks to inspect another user or the caller lacks admin_scope.",
-        "trusted principal and admin_scope; sensitive fields must be masked.",
-        "separate recorded facts from review signals, apply RBAC before returning data, and never expose tokens or credentials.",
+    "inspection_notice_guidance": _knowledge_guidance(
+        "a customer says they received an inspection notice and asks what it means or what to do next.",
+        "the user asks for internal inspection analytics, risk scores, staff queues, or another account's inspection data.",
+        "customer-facing knowledge evidence and the non-sensitive details printed on the notice.",
+        "use only customer-facing instructions. Ignore evidence about internal/admin inspection modules, staff queues, analytics, risk scores, or operational SLAs. Prioritize the issuing authority, reference, stated response deadline, and instructions printed on the notice. Do not invent a deadline, appeal right, penalty, or internal inspection status. When verified customer instructions are unavailable, advise the customer to preserve the notice, follow its stated directions, and use [Enquiries and Complaints](/complaints) for portal support.",
     ),
     "profile_status": _guidance(
         "the user asks about their current Profile, available individual or establishment Profiles, whether they have a Profile, Profile review/rejection state, or the validity/expiry of their own identity or establishment documents.",
@@ -162,7 +151,7 @@ SKILL_GUIDANCE: dict[str, str] = {
         "the user asks for the status, progress, filters, counts, or history of their own My Requests applications.",
         "the user asks for an issued license/permit count or general application requirements.",
         "trusted UMC identity; query the current account's application list and use detail only for a selected application.",
-        "include Application No., Service Name, Request Type, Profile Name, Submission Time, current status, and result scope when returned by UMC. A four-part UMC reference such as HC-02-2026-3194244 or MC-3-203-2852058 is an application number: always query the current account's live application list with that exact keyword and never use the knowledge base. If an exact match is returned, report its available status or stage; if no exact match is returned for the selected Profile, say so and guide the user to [My Requests](/my-requests). Keep Request Type separate from status and call an application a renewal only when Request Type is Renew. This Skill is read-only and never edits, cancels, duplicates, submits, or pays.",
+        "include Application No., Service Name, Request Type, Profile Name, Submission Time, current status, and result scope when returned by UMC. For a count question, use applicationPage.total from the filtered live response; never count only the returned page items. A four-part UMC reference such as HC-02-2026-3194244 or MC-3-203-2852058 is an application number: always query the current account's live application list with that exact keyword and never use the knowledge base. If an exact match is returned, report its available status or stage; if no exact match is returned for the selected Profile, say so and guide the user to [My Requests](/my-requests). Keep Request Type separate from status and call an application a renewal only when Request Type is Renew. This Skill is read-only and never edits, cancels, duplicates, submits, or pays.",
     ),
     "license_permit_status": _guidance(
         "the user asks about their own issued License/Permit list, count, status, validity, expiry, number, or available portal actions, including a named document such as 'How about my Social Media Advertiser Permit?'.",
@@ -279,10 +268,7 @@ SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
     "umc_book_by_isbn": {"domain": "books", "aliases": ["isbn", "book lookup", "书号"]},
     "umc_add_application": {"domain": "applications", "aliases": ["new application", "create draft", "新建申请", "草稿"]},
     "copyright_guidance": {"domain": "knowledge_policy", "aliases": ["copyright", "content permission", "版权", "内容合规"]},
-    "admin_inspection": {"domain": "admin", "aliases": ["inspection", "risk", "检查", "高风险"]},
-    "admin_analytics": {"domain": "admin", "aliases": ["analytics", "pivot", "processing time", "分析", "趋势"]},
-    "admin_finance": {"domain": "admin", "aliases": ["revenue", "collection", "finance", "收入", "财务"]},
-    "admin_audit": {"domain": "admin", "aliases": ["audit", "permissions", "审计", "权限"]},
+    "inspection_notice_guidance": {"domain": "customer_support", "aliases": ["inspection notice", "received an inspection", "notice of inspection", "检查通知", "收到检查", "إشعار تفتيش"]},
     "profile_status": {"domain": "profile", "aliases": ["my profile", "profile review", "profile status", "profile expiry", "资料审核", "档案", "身份"]},
     "service_eligibility": {"domain": "services", "aliases": ["my eligibility", "eligible for", "资格", "适用服务"]},
     "media_licensing_account_services": {"domain": "services", "aliases": ["media licensing services for this account", "media licensing services for my account", "media licensing services available to this profile", "which media licensing services can this account apply for"]},
@@ -351,32 +337,11 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "content": SKILL_GUIDANCE["copyright_guidance"],
     },
     {
-        "skill_id": "admin_inspection",
-        "name": "Admin inspection drilldown",
-        "allowed_tools": [],
-        "dependencies": ["trusted_principal", "admin_scope"],
-        "content": SKILL_GUIDANCE["admin_inspection"],
-    },
-    {
-        "skill_id": "admin_analytics",
-        "name": "Admin analytics and pivots",
-        "allowed_tools": [],
-        "dependencies": ["trusted_principal", "admin_scope"],
-        "content": SKILL_GUIDANCE["admin_analytics"],
-    },
-    {
-        "skill_id": "admin_finance",
-        "name": "Admin finance trend",
-        "allowed_tools": [],
-        "dependencies": ["trusted_principal", "admin_scope"],
-        "content": SKILL_GUIDANCE["admin_finance"],
-    },
-    {
-        "skill_id": "admin_audit",
-        "name": "Admin audit and permissions",
-        "allowed_tools": [],
-        "dependencies": ["trusted_principal", "admin_scope"],
-        "content": SKILL_GUIDANCE["admin_audit"],
+        "skill_id": "inspection_notice_guidance",
+        "name": "Customer inspection notice guidance",
+        "allowed_tools": ["knowledge.search"],
+        "dependencies": ["knowledge_gateway"],
+        "content": SKILL_GUIDANCE["inspection_notice_guidance"],
     },
     {
         "skill_id": "profile_status",
@@ -490,7 +455,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                     {"id": "detail", "description": "Show a selected application from the preceding application list."},
                 ],
                 "filters": {
-                    "keyword": {"type": "string", "description": "Application number or text the user explicitly supplied."},
+                    "keyword": {"type": "string", "description": "An explicit application reference, authorized Profile display name, service name, or other search phrase that does not map to a more specific declared filter."},
                     "submissionDate": {"type": "date_range", "description": "Inclusive submission-date range with ISO start and end dates."},
                     "status": {
                         "type": "enum",
@@ -569,7 +534,7 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                     {"id": "detail", "description": "Show a selected record from the preceding license or permit list."},
                 ],
                 "filters": {
-                    "keyword": {"type": "string", "description": "A public license or permit number explicitly supplied by the user."},
+                    "keyword": {"type": "string", "description": "An explicit public license/permit reference, authorized Profile display name, document name, or other search phrase that does not map to a more specific declared filter."},
                     "record": {"type": "selection", "description": "A record from the latest license list, by ordinal or identifier."},
                 },
             },
@@ -837,10 +802,7 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
         {"priority": 898, "anyTerms": ["number", "no.", "编号", "号码", "رقم"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "patterns": ["(?<!\\d)\\d{5,}(?!\\d)"], "noneTerms": ["application", "申请", "申请状态", "حالة الطلب", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
         {"priority": 895, "anyTerms": ["valid until", "license status", "licence status", "permit status", "how many license", "how many licence", "number of licenses", "number of licences", "which licenses", "which licences", "which permits", "expiring licenses", "expiring licences", "expiring permits", "哪些许可证", "许可证数量", "牌照数量", "许可证状态", "牌照状态", "ما هي الرخص", "أي الرخص", "الرخص التي", "حالة الرخص", "حالة التصاريح", "عدد الرخص", "عدد التصاريح"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
     ],
-    "admin_inspection": [{"priority": 820, "anyTerms": ["inspection summary", "high risk", "inspection", "检查摘要", "高风险"], "route": {"category": "data_query"}}],
-    "admin_analytics": [{"priority": 820, "anyTerms": ["dimension pivot", "process time", "按省", "按酋长国", "اتجاه وقت معالجة", "قسّمه حسب الإمارة"], "route": {"category": "data_query"}}],
-    "admin_finance": [{"priority": 820, "anyTerms": ["revenue", "fine collection", "last 7 days", "finance trend", "收入", "罚款回收", "الإيرادات", "تحصيل الغرامات"], "route": {"category": "data_query"}}],
-    "admin_audit": [{"priority": 820, "anyTerms": ["audit", "low-confidence", "full user details", "permissions", "审计", "低置信度", "用户详情"], "route": {"category": "data_query"}}],
+    "inspection_notice_guidance": [{"priority": 995, "anyTerms": ["inspection notice", "received an inspection", "notice of inspection", "检查通知", "收到检查", "إشعار تفتيش"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "routingLocked": True}}],
     "application_status": [
         {
             "priority": 990,
@@ -998,6 +960,25 @@ def merged_skill_workflow(skill_id: str, published_workflow: dict[str, Any] | No
     return merge_defaults(dict((default or {}).get("workflow") or {}), published)
 
 
+def effective_skill_workflow(
+    skill_id: str,
+    source: str | None,
+    published_workflow: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the workflow contract that may control a runtime turn.
+
+    A non-empty operator-managed workflow is authoritative. Built-in rows and
+    legacy rows with no workflow still receive code defaults so existing
+    installations can be upgraded safely without making code defaults shadow
+    an administrator's published configuration.
+    """
+
+    published = dict(published_workflow or {})
+    if str(source or "").strip().lower() != "builtin" and published:
+        return published
+    return merged_skill_workflow(skill_id, published)
+
+
 def resolve_skill(text: str) -> SkillRoute:
     """Resolve default Skill configuration; published Skills can override it at runtime."""
 
@@ -1016,6 +997,7 @@ def build_knowledge_query(route: SkillRoute, original_text: str) -> str:
         "latest_regulations": "UAE media regulation Federal Decree-Law 55 of 2023 Cabinet Decision 68 of 2024 article",
         "fine_payment_guidance": "UMC media violation fine payment process",
         "copyright_guidance": "UMC UAE media content copyright permission commercial campaign guidance",
+        "inspection_notice_guidance": "NMA customer inspection notice response instructions deadline enquiry complaint support",
         "service_discovery": "UMC UAE Media Council media services service catalogue applicant activity",
     }
     prefix = prefixes.get(route.skill_id)

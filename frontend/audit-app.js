@@ -72,7 +72,46 @@ const copy = {
     accountManagement: "Account management",
     skillsDiagnostics: "Skills diagnostics",
     toolsDiagnostics: "Tools diagnostics",
-    diagnosticsHint: "Read-only runtime configuration for audit diagnosis.",
+    diagnosticsHint: "Inspect runtime configuration and manage it with an Administrator account.",
+    viewDetails: "View details",
+    addSkill: "Add Skill",
+    addTool: "Add Tool",
+    edit: "Edit",
+    create: "Create",
+    save: "Save",
+    skillDetails: "Skill details",
+    toolDetails: "Tool details",
+    newSkill: "New Skill",
+    newTool: "New Tool",
+    editSkill: "Edit Skill",
+    editTool: "Edit Tool",
+    detailsLoadFailed: "Unable to load details.",
+    invalidJson: "Enter valid JSON.",
+    savedSuccessfully: "Saved successfully.",
+    saveFailed: "Unable to save.",
+    identifier: "Identifier",
+    scope: "Scope",
+    domain: "Domain",
+    allowedTools: "Allowed Tools",
+    dependencies: "Dependencies",
+    aliases: "Aliases",
+    positiveExamples: "Positive examples",
+    negativeExamples: "Negative examples",
+    workflow: "Workflow JSON",
+    content: "Instructions / content",
+    operationId: "Operation ID",
+    httpMethod: "HTTP method",
+    httpPath: "HTTP path",
+    description: "Description",
+    confirmationRequired: "Confirmation required",
+    parametersSchema: "Parameters schema JSON",
+    responseSchema: "Response schema JSON",
+    profileScope: "Profile scope JSON",
+    authentication: "Authentication strategy",
+    rbacPolicy: "RBAC policy",
+    maskingPolicy: "Masking policy",
+    swaggerSource: "Swagger source",
+    commaSeparatedHint: "Separate values with commas or new lines.",
     configuration: "Configuration",
     configurationManagement: "Runtime configuration",
     configurationHint: "Manage DSH runtime settings. The portal remains fixed to Customer; Database and Redis changes require a restart.",
@@ -268,7 +307,46 @@ const copy = {
     accountManagement: "إدارة الحسابات",
     skillsDiagnostics: "تشخيص المهارات",
     toolsDiagnostics: "تشخيص الأدوات",
-    diagnosticsHint: "إعدادات وقت التشغيل للعرض فقط لأغراض التشخيص.",
+    diagnosticsHint: "افحص إعدادات وقت التشغيل وأدرها باستخدام حساب مسؤول.",
+    viewDetails: "عرض التفاصيل",
+    addSkill: "إضافة مهارة",
+    addTool: "إضافة أداة",
+    edit: "تعديل",
+    create: "إنشاء",
+    save: "حفظ",
+    skillDetails: "تفاصيل المهارة",
+    toolDetails: "تفاصيل الأداة",
+    newSkill: "مهارة جديدة",
+    newTool: "أداة جديدة",
+    editSkill: "تعديل المهارة",
+    editTool: "تعديل الأداة",
+    detailsLoadFailed: "تعذر تحميل التفاصيل.",
+    invalidJson: "أدخل JSON صالحاً.",
+    savedSuccessfully: "تم الحفظ بنجاح.",
+    saveFailed: "تعذر الحفظ.",
+    identifier: "المعرف",
+    scope: "النطاق",
+    domain: "المجال",
+    allowedTools: "الأدوات المسموح بها",
+    dependencies: "التبعيات",
+    aliases: "الأسماء البديلة",
+    positiveExamples: "أمثلة إيجابية",
+    negativeExamples: "أمثلة سلبية",
+    workflow: "سير العمل JSON",
+    content: "التعليمات / المحتوى",
+    operationId: "معرف العملية",
+    httpMethod: "طريقة HTTP",
+    httpPath: "مسار HTTP",
+    description: "الوصف",
+    confirmationRequired: "يتطلب تأكيداً",
+    parametersSchema: "مخطط المعلمات JSON",
+    responseSchema: "مخطط الاستجابة JSON",
+    profileScope: "نطاق الملف JSON",
+    authentication: "استراتيجية المصادقة",
+    rbacPolicy: "سياسة RBAC",
+    maskingPolicy: "سياسة الإخفاء",
+    swaggerSource: "مصدر Swagger",
+    commaSeparatedHint: "افصل القيم بفواصل أو أسطر جديدة.",
     configuration: "الإعدادات",
     configurationManagement: "إعدادات وقت التشغيل",
     configurationHint: "إدارة إعدادات تشغيل DSH. تظل البوابة مثبتة على بوابة العميل، وتتطلب تغييرات قاعدة البيانات وRedis إعادة التشغيل.",
@@ -1463,13 +1541,13 @@ function renderDiagnosticsView(kind) {
   const items = auditState.diagnostics[kind] || [];
   const meta = auditState.diagnosticMeta[kind];
   const headings = isSkills
-    ? [t("name"), "ID", t("version"), t("source"), t("status"), t("tools")]
-    : [t("name"), t("endpoint"), t("effect"), t("source"), t("status")];
+    ? [t("name"), "ID", t("version"), t("source"), t("status"), t("tools"), t("actions")]
+    : [t("name"), t("endpoint"), t("effect"), t("source"), t("status"), t("actions")];
   const content = byId("auditContent");
   content.classList.add("is-diagnostics-view");
   content.innerHTML = `
     <section class="audit-diagnostics-panel">
-      <header><div><h2>${escapeHtml(t(isSkills ? "skillsDiagnostics" : "toolsDiagnostics"))}</h2><p>${escapeHtml(t("diagnosticsHint"))}</p></div><button id="auditDiagnosticsRefresh" class="audit-icon-button" type="button" title="${escapeHtml(t("refresh"))}" aria-label="${escapeHtml(t("refresh"))}">${icon("refresh")}</button></header>
+      <header><div><h2>${escapeHtml(t(isSkills ? "skillsDiagnostics" : "toolsDiagnostics"))}</h2><p>${escapeHtml(t("diagnosticsHint"))}</p></div><div class="audit-diagnostics-header-actions"><button id="auditDiagnosticsCreate" class="audit-primary-button" type="button">${icon("plus")}<span>${escapeHtml(t(isSkills ? "addSkill" : "addTool"))}</span></button><button id="auditDiagnosticsRefresh" class="audit-icon-button" type="button" title="${escapeHtml(t("refresh"))}" aria-label="${escapeHtml(t("refresh"))}">${icon("refresh")}</button></div></header>
       <form id="auditDiagnosticsControls" class="audit-diagnostics-controls">
         <label class="audit-search-field"><span class="audit-visually-hidden">${escapeHtml(t("search"))}</span>${icon("search")}<input id="auditDiagnosticsSearch" type="search" value="${escapeHtml(meta.search)}" placeholder="${escapeHtml(t(isSkills ? "searchSkills" : "searchTools"))}" autocomplete="off"></label>
       </form>
@@ -1483,6 +1561,7 @@ function renderDiagnosticsView(kind) {
       </footer>
     </section>`;
   byId("auditDiagnosticsRefresh").addEventListener("click", () => void loadDiagnostics(kind, meta.page));
+  byId("auditDiagnosticsCreate").addEventListener("click", () => openDiagnosticEditor(kind));
   byId("auditDiagnosticsControls").addEventListener("submit", (event) => {
     event.preventDefault();
     meta.search = byId("auditDiagnosticsSearch").value.trim();
@@ -1505,7 +1584,7 @@ function renderDiagnosticsView(kind) {
 function renderDiagnosticsRows(kind, items = auditState.diagnostics[kind] || []) {
   const body = byId("auditDiagnosticsBody");
   if (!body) return;
-  const columns = kind === "skills" ? 6 : 5;
+  const columns = kind === "skills" ? 7 : 6;
   if (!items.length) {
     body.innerHTML = `<tr><td colspan="${columns}"><div class="audit-empty-state"><p>${escapeHtml(t("noDiagnostics"))}</p></div></td></tr>`;
     return;
@@ -1515,13 +1594,19 @@ function renderDiagnosticsRows(kind, items = auditState.diagnostics[kind] || [])
     const status = String(item.status || (item.published ? t("published") : t("draft")));
     if (kind === "skills") {
       const toolNames = item.allowedTools || item.allowed_tools || item.toolNames || item.tools || [];
-      return `<tr><td><strong>${escapeHtml(item.name || item.displayName || item.skillId || "-")}</strong></td><td><code>${escapeHtml(item.skillId || item.skill_id || item.id || "-")}</code></td><td>${escapeHtml(item.version || "-")}</td><td>${escapeHtml([item.source, item.scope].filter(Boolean).join(" / ") || "-")}</td><td><span class="audit-diagnostic-state ${enabled ? "active" : "inactive"}">${escapeHtml(status)} · ${escapeHtml(t(enabled ? "enabled" : "disabled"))}</span></td><td>${escapeHtml(Array.isArray(toolNames) ? toolNames.join(", ") || "-" : toolNames || "-")}</td></tr>`;
+      const skillId = item.skillId || item.skill_id || item.id || "";
+      return `<tr class="audit-diagnostic-row" data-diagnostic-id="${escapeHtml(skillId)}" data-diagnostic-version="${escapeHtml(item.version || 1)}"><td><strong>${escapeHtml(item.name || item.displayName || skillId || "-")}</strong></td><td><code>${escapeHtml(skillId || "-")}</code></td><td>${escapeHtml(item.version || "-")}</td><td>${escapeHtml([item.source, item.scope].filter(Boolean).join(" / ") || "-")}</td><td><span class="audit-diagnostic-state ${enabled ? "active" : "inactive"}">${escapeHtml(status)} · ${escapeHtml(t(enabled ? "enabled" : "disabled"))}</span></td><td>${escapeHtml(Array.isArray(toolNames) ? toolNames.join(", ") || "-" : toolNames || "-")}</td><td><button class="audit-link-button" data-view-diagnostic type="button">${escapeHtml(t("viewDetails"))}</button></td></tr>`;
     }
     const method = item.httpMethod || item.http_method || "";
     const path = item.httpPath || item.http_path || "";
     const published = item.published !== false;
-    return `<tr><td><strong>${escapeHtml(item.displayName || item.display_name || item.toolName || item.tool_name || "-")}</strong><code>${escapeHtml(item.toolName || item.tool_name || "")}</code></td><td><code>${escapeHtml([method, path].filter(Boolean).join(" ") || "-")}</code></td><td>${escapeHtml(item.sideEffect || item.side_effect || "read")}${item.confirmationRequired || item.confirmation_required ? " · confirmation" : ""}</td><td>${escapeHtml(item.toolType || item.tool_type || item.source || "-")}</td><td><span class="audit-diagnostic-state ${enabled && published ? "active" : "inactive"}">${escapeHtml(t(published ? "published" : "draft"))} · ${escapeHtml(t(enabled ? "enabled" : "disabled"))}</span></td></tr>`;
+    const toolName = item.toolName || item.tool_name || "";
+    return `<tr class="audit-diagnostic-row" data-diagnostic-id="${escapeHtml(toolName)}"><td><strong>${escapeHtml(item.displayName || item.display_name || toolName || "-")}</strong><code>${escapeHtml(toolName)}</code></td><td><code>${escapeHtml([method, path].filter(Boolean).join(" ") || "-")}</code></td><td>${escapeHtml(item.sideEffect || item.side_effect || "read")}${item.confirmationRequired || item.confirmation_required ? " · confirmation" : ""}</td><td>${escapeHtml(item.toolType || item.tool_type || item.source || "-")}</td><td><span class="audit-diagnostic-state ${enabled && published ? "active" : "inactive"}">${escapeHtml(t(published ? "published" : "draft"))} · ${escapeHtml(t(enabled ? "enabled" : "disabled"))}</span></td><td><button class="audit-link-button" data-view-diagnostic type="button">${escapeHtml(t("viewDetails"))}</button></td></tr>`;
   }).join("");
+  body.querySelectorAll("[data-view-diagnostic]").forEach((button) => button.addEventListener("click", () => {
+    const row = button.closest("[data-diagnostic-id]");
+    void openDiagnosticDetails(kind, row.dataset.diagnosticId, Number(row.dataset.diagnosticVersion || 1));
+  }));
 }
 
 function renderDiagnosticsPager(kind) {
@@ -1537,7 +1622,7 @@ function renderDiagnosticsPager(kind) {
 
 async function loadDiagnostics(kind, page = auditState.diagnosticMeta[kind].page) {
   const body = byId("auditDiagnosticsBody");
-  const columns = kind === "skills" ? 6 : 5;
+  const columns = kind === "skills" ? 7 : 6;
   const meta = auditState.diagnosticMeta[kind];
   const request = ++auditState.diagnosticRequests[kind];
   if (body) body.innerHTML = `<tr><td colspan="${columns}"><div class="audit-empty-state audit-loading-state"><span class="audit-spinner"></span>${escapeHtml(t("loading"))}</div></td></tr>`;
@@ -1559,6 +1644,223 @@ async function loadDiagnostics(kind, page = auditState.diagnosticMeta[kind].page
     if (error.message === "AUTH_REQUIRED" || request !== auditState.diagnosticRequests[kind]) return;
     if (body) body.innerHTML = `<tr><td colspan="${columns}"><div class="audit-empty-state audit-error-state"><p>${escapeHtml(t("loadFailed"))}</p><button id="auditDiagnosticsRetry" class="audit-secondary-button" type="button">${escapeHtml(t("retry"))}</button></div></td></tr>`;
     byId("auditDiagnosticsRetry")?.addEventListener("click", () => void loadDiagnostics(kind, page));
+  }
+}
+
+function diagnosticValue(item, camel, snake, fallback = "") {
+  return item?.[camel] ?? item?.[snake] ?? fallback;
+}
+
+function prettyJson(value) {
+  return JSON.stringify(value && typeof value === "object" ? value : {}, null, 2);
+}
+
+function splitDiagnosticValues(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  return String(value || "").split(/[\n,]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+async function fetchDiagnosticDetails(kind, identifier, version = 1) {
+  const suffix = kind === "skills" ? `?version=${encodeURIComponent(version)}` : "";
+  return auditApi(`/api/v1/audit/${kind}/${encodeURIComponent(identifier)}${suffix}`);
+}
+
+async function openDiagnosticDetails(kind, identifier, version = 1) {
+  openDialog(`<header><h2>${escapeHtml(t(kind === "skills" ? "skillDetails" : "toolDetails"))}</h2><button class="audit-icon-button" data-dialog-close type="button" aria-label="${escapeHtml(t("close"))}">${icon("close")}</button></header><div class="audit-diagnostic-dialog-loading"><span class="audit-spinner"></span>${escapeHtml(t("loading"))}</div>`);
+  try {
+    const item = await fetchDiagnosticDetails(kind, identifier, version);
+    renderDiagnosticDetailDialog(kind, item);
+  } catch (error) {
+    const host = byId("auditDialogHost");
+    if (host) host.querySelector(".audit-dialog").innerHTML = `<header><h2>${escapeHtml(t(kind === "skills" ? "skillDetails" : "toolDetails"))}</h2><button class="audit-icon-button" data-dialog-close type="button" aria-label="${escapeHtml(t("close"))}">${icon("close")}</button></header><div class="audit-diagnostic-dialog-loading audit-error-state">${escapeHtml(t("detailsLoadFailed"))}<br>${escapeHtml(error.message)}</div>`;
+    host?.querySelector("[data-dialog-close]")?.addEventListener("click", closeDialog);
+  }
+}
+
+function detailRow(label, value, { code = false, wide = false } = {}) {
+  const display = Array.isArray(value) ? value.join(", ") : (value ?? "-");
+  return `<div class="${wide ? "wide" : ""}"><dt>${escapeHtml(label)}</dt><dd ${code ? 'class="is-code"' : ""}>${escapeHtml(String(display || "-"))}</dd></div>`;
+}
+
+function detailJson(label, value) {
+  return `<section class="audit-diagnostic-json"><h3>${escapeHtml(label)}</h3><pre>${escapeHtml(prettyJson(value))}</pre></section>`;
+}
+
+function renderDiagnosticDetailDialog(kind, item) {
+  const isSkill = kind === "skills";
+  const identifier = diagnosticValue(item, isSkill ? "skillId" : "toolName", isSkill ? "skill_id" : "tool_name");
+  const mutable = isSkill || (item.mutable !== false && diagnosticValue(item, "toolType", "tool_type") !== "system_default");
+  const host = byId("auditDialogHost");
+  if (!host) return;
+  const details = isSkill ? `
+    ${detailRow(t("identifier"), identifier, { code: true })}
+    ${detailRow(t("name"), item.name)}
+    ${detailRow(t("version"), item.version)}
+    ${detailRow(t("source"), item.source)}
+    ${detailRow(t("status"), `${item.status || "DRAFT"} · ${t(item.enabled ? "enabled" : "disabled")}`)}
+    ${detailRow(t("scope"), item.scope)}
+    ${detailRow(t("domain"), item.domain)}
+    ${detailRow(t("allowedTools"), diagnosticValue(item, "allowedTools", "allowed_tools", []), { wide: true })}
+    ${detailRow(t("dependencies"), item.dependencies || [], { wide: true })}
+    ${detailRow(t("aliases"), item.aliases || [], { wide: true })}
+    ${detailRow(t("positiveExamples"), diagnosticValue(item, "positiveExamples", "positive_examples", []), { wide: true })}
+    ${detailRow(t("negativeExamples"), diagnosticValue(item, "negativeExamples", "negative_examples", []), { wide: true })}
+    ${detailRow(t("content"), item.content, { wide: true })}` : `
+    ${detailRow(t("identifier"), identifier, { code: true })}
+    ${detailRow(t("displayName"), diagnosticValue(item, "displayName", "display_name"))}
+    ${detailRow(t("operationId"), diagnosticValue(item, "operationId", "operation_id"), { code: true })}
+    ${detailRow(t("endpoint"), `${diagnosticValue(item, "httpMethod", "http_method")} ${diagnosticValue(item, "httpPath", "http_path")}`, { code: true, wide: true })}
+    ${detailRow(t("effect"), diagnosticValue(item, "sideEffect", "side_effect", "read"))}
+    ${detailRow(t("source"), `${item.source || "-"} · v${item.version || 1}`)}
+    ${detailRow(t("status"), `${t(item.published ? "published" : "draft")} · ${t(item.enabled ? "enabled" : "disabled")}`)}
+    ${detailRow(t("authentication"), diagnosticValue(item, "authStrategy", "auth_strategy"))}
+    ${detailRow(t("rbacPolicy"), diagnosticValue(item, "rbacPolicy", "rbac_policy"))}
+    ${detailRow(t("maskingPolicy"), diagnosticValue(item, "maskingPolicy", "masking_policy"))}
+    ${detailRow(t("description"), item.description, { wide: true })}`;
+  const jsonSections = isSkill
+    ? detailJson(t("workflow"), item.workflow)
+    : [detailJson(t("parametersSchema"), item.parameters), detailJson(t("responseSchema"), diagnosticValue(item, "responseSchema", "response_schema", {})), detailJson(t("profileScope"), diagnosticValue(item, "profileScope", "profile_scope", {}))].join("");
+  host.innerHTML = `<div class="audit-dialog-backdrop"><section class="audit-dialog audit-diagnostic-dialog" role="dialog" aria-modal="true"><header><div><h2>${escapeHtml(t(isSkill ? "skillDetails" : "toolDetails"))}</h2><p>${escapeHtml(identifier)}</p></div><button class="audit-icon-button" data-dialog-close type="button" aria-label="${escapeHtml(t("close"))}">${icon("close")}</button></header><div class="audit-diagnostic-detail"><dl>${details}</dl>${jsonSections}</div><footer class="audit-diagnostic-dialog-footer"><button class="audit-secondary-button" data-dialog-close type="button">${escapeHtml(t("close"))}</button>${mutable ? `<button id="auditDiagnosticEdit" class="audit-primary-button" type="button">${escapeHtml(t("edit"))}</button>` : ""}</footer></section></div>`;
+  host.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", closeDialog));
+  byId("auditDiagnosticEdit")?.addEventListener("click", () => openDiagnosticEditor(kind, item));
+}
+
+function formField(label, id, value = "", { type = "text", required = false, wide = false, readonly = false, min = "" } = {}) {
+  return `<label class="${wide ? "wide" : ""}"><span>${escapeHtml(label)}</span><input id="${id}" type="${type}" value="${escapeHtml(value)}" ${required ? "required" : ""} ${readonly ? "readonly" : ""} ${min ? `min="${escapeHtml(min)}"` : ""}></label>`;
+}
+
+function formTextarea(label, id, value = "", { json = false, wide = true, rows = 5 } = {}) {
+  return `<label class="${wide ? "wide" : ""}"><span>${escapeHtml(label)}</span><textarea id="${id}" rows="${rows}" ${json ? 'data-json-field="true" spellcheck="false"' : ""}>${escapeHtml(value)}</textarea>${json ? `<small class="audit-field-error" data-json-error-for="${id}"></small>` : ""}</label>`;
+}
+
+function formCheckbox(label, id, checked = false) {
+  return `<label class="audit-diagnostic-checkbox"><input id="${id}" type="checkbox" ${checked ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`;
+}
+
+function openDiagnosticEditor(kind, item = null) {
+  if (!isAdministrator()) return;
+  const isSkill = kind === "skills";
+  const creating = !item;
+  const identifier = item ? diagnosticValue(item, isSkill ? "skillId" : "toolName", isSkill ? "skill_id" : "tool_name") : "";
+  const title = t(creating ? (isSkill ? "newSkill" : "newTool") : (isSkill ? "editSkill" : "editTool"));
+  const fields = isSkill ? skillEditorFields(item) : toolEditorFields(item);
+  openDialog(`<header><div><h2>${escapeHtml(title)}</h2>${identifier ? `<p>${escapeHtml(identifier)}</p>` : ""}</div><button class="audit-icon-button" data-dialog-close type="button" aria-label="${escapeHtml(t("close"))}">${icon("close")}</button></header><form id="auditDiagnosticForm" class="audit-diagnostic-form"><div class="audit-diagnostic-form-grid">${fields}</div><p id="auditDialogError" class="audit-form-error" role="alert"></p><footer><button class="audit-secondary-button" data-dialog-close type="button">${escapeHtml(t("cancel"))}</button><button class="audit-primary-button" type="submit">${escapeHtml(t(creating ? "create" : "save"))}</button></footer></form>`);
+  byId("auditDiagnosticForm").addEventListener("submit", (event) => void saveDiagnostic(event, kind, item));
+}
+
+function skillEditorFields(item = {}) {
+  item = item || {};
+  return [
+    formField(t("identifier"), "diagnosticSkillId", diagnosticValue(item, "skillId", "skill_id"), { required: true, readonly: Boolean(diagnosticValue(item, "skillId", "skill_id")) }),
+    formField(t("name"), "diagnosticSkillName", item.name, { required: true }),
+    formField(t("version"), "diagnosticSkillVersion", item.version || 1, { type: "number", required: true, min: "1" }),
+    formField(t("source"), "diagnosticSkillSource", item.source || "ops", { required: true }),
+    `<label><span>${escapeHtml(t("status"))}</span><select id="diagnosticSkillStatus"><option value="DRAFT" ${item.status === "DRAFT" || !item.status ? "selected" : ""}>DRAFT</option><option value="PUBLISHED" ${item.status === "PUBLISHED" ? "selected" : ""}>PUBLISHED</option><option value="DISABLED" ${item.status === "DISABLED" ? "selected" : ""}>DISABLED</option></select></label>`,
+    formField(t("scope"), "diagnosticSkillScope", item.scope || "system", { required: true }),
+    formField(t("domain"), "diagnosticSkillDomain", item.domain || "general", { required: true }),
+    formCheckbox(t("enabled"), "diagnosticSkillEnabled", Boolean(item.enabled)),
+    formTextarea(t("allowedTools"), "diagnosticSkillTools", (diagnosticValue(item, "allowedTools", "allowed_tools", []) || []).join("\n")),
+    formTextarea(t("dependencies"), "diagnosticSkillDependencies", (item.dependencies || []).join("\n")),
+    formTextarea(t("aliases"), "diagnosticSkillAliases", (item.aliases || []).join("\n")),
+    formTextarea(t("positiveExamples"), "diagnosticSkillPositive", (diagnosticValue(item, "positiveExamples", "positive_examples", []) || []).join("\n")),
+    formTextarea(t("negativeExamples"), "diagnosticSkillNegative", (diagnosticValue(item, "negativeExamples", "negative_examples", []) || []).join("\n")),
+    formTextarea(t("workflow"), "diagnosticSkillWorkflow", prettyJson(item.workflow), { json: true, rows: 10 }),
+    formTextarea(t("content"), "diagnosticSkillContent", item.content || "", { rows: 8 }),
+  ].join("");
+}
+
+function toolEditorFields(item = {}) {
+  item = item || {};
+  const method = diagnosticValue(item, "httpMethod", "http_method", "GET");
+  return [
+    formField(t("identifier"), "diagnosticToolName", diagnosticValue(item, "toolName", "tool_name"), { required: true, readonly: Boolean(diagnosticValue(item, "toolName", "tool_name")) }),
+    formField(t("displayName"), "diagnosticToolDisplayName", diagnosticValue(item, "displayName", "display_name"), { required: true }),
+    formField(t("operationId"), "diagnosticToolOperationId", diagnosticValue(item, "operationId", "operation_id")),
+    `<label><span>${escapeHtml(t("httpMethod"))}</span><select id="diagnosticToolMethod">${["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].map((value) => `<option value="${value}" ${value === method ? "selected" : ""}>${value}</option>`).join("")}</select></label>`,
+    formField(t("httpPath"), "diagnosticToolPath", diagnosticValue(item, "httpPath", "http_path"), { required: true }),
+    formField(t("effect"), "diagnosticToolEffect", diagnosticValue(item, "sideEffect", "side_effect", "read"), { required: true }),
+    formField(t("authentication"), "diagnosticToolAuth", diagnosticValue(item, "authStrategy", "auth_strategy", "current_umc_bearer_token"), { required: true }),
+    formField(t("rbacPolicy"), "diagnosticToolRbac", diagnosticValue(item, "rbacPolicy", "rbac_policy", "trusted_principal"), { required: true }),
+    formField(t("maskingPolicy"), "diagnosticToolMasking", diagnosticValue(item, "maskingPolicy", "masking_policy", "default"), { required: true }),
+    formField(t("source"), "diagnosticToolSource", item.source || "manual", { required: true }),
+    formField(t("version"), "diagnosticToolVersion", item.version || 1, { type: "number", required: true, min: "1" }),
+    formField(t("swaggerSource"), "diagnosticToolSwagger", diagnosticValue(item, "swaggerSource", "swagger_source")),
+    formCheckbox(t("confirmationRequired"), "diagnosticToolConfirmation", Boolean(diagnosticValue(item, "confirmationRequired", "confirmation_required", false))),
+    formCheckbox(t("enabled"), "diagnosticToolEnabled", Boolean(item.enabled)),
+    formCheckbox(t("published"), "diagnosticToolPublished", Boolean(item.published)),
+    formTextarea(t("description"), "diagnosticToolDescription", item.description || "", { rows: 4 }),
+    formTextarea(t("parametersSchema"), "diagnosticToolParameters", prettyJson(item.parameters), { json: true, rows: 10 }),
+    formTextarea(t("responseSchema"), "diagnosticToolResponse", prettyJson(diagnosticValue(item, "responseSchema", "response_schema", {})), { json: true, rows: 10 }),
+    formTextarea(t("profileScope"), "diagnosticToolProfile", prettyJson(diagnosticValue(item, "profileScope", "profile_scope", {})), { json: true, rows: 7 }),
+  ].join("");
+}
+
+function parseJsonField(id) {
+  const field = byId(id);
+  const error = document.querySelector(`[data-json-error-for="${id}"]`);
+  try {
+    const value = JSON.parse(field.value.trim() || "{}");
+    if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("object required");
+    field.classList.remove("is-invalid");
+    if (error) error.textContent = "";
+    return value;
+  } catch {
+    field.classList.add("is-invalid");
+    if (error) error.textContent = t("invalidJson");
+    throw new Error(t("invalidJson"));
+  }
+}
+
+async function saveDiagnostic(event, kind, existing) {
+  event.preventDefault();
+  const creating = !existing;
+  const submit = event.submitter;
+  const errorNode = byId("auditDialogError");
+  let identifier;
+  let version;
+  let payload;
+  try {
+    if (kind === "skills") {
+      identifier = byId("diagnosticSkillId").value.trim();
+      version = Number(byId("diagnosticSkillVersion").value || 1);
+      payload = {
+        name: byId("diagnosticSkillName").value.trim(), version, source: byId("diagnosticSkillSource").value.trim() || "ops",
+        status: byId("diagnosticSkillStatus").value, scope: byId("diagnosticSkillScope").value.trim() || "system", enabled: byId("diagnosticSkillEnabled").checked,
+        allowedTools: splitDiagnosticValues(byId("diagnosticSkillTools").value), dependencies: splitDiagnosticValues(byId("diagnosticSkillDependencies").value),
+        domain: byId("diagnosticSkillDomain").value.trim() || "general", aliases: splitDiagnosticValues(byId("diagnosticSkillAliases").value),
+        positiveExamples: splitDiagnosticValues(byId("diagnosticSkillPositive").value), negativeExamples: splitDiagnosticValues(byId("diagnosticSkillNegative").value),
+        workflow: parseJsonField("diagnosticSkillWorkflow"), content: byId("diagnosticSkillContent").value,
+      };
+      if (creating) payload.skillId = identifier;
+    } else {
+      identifier = byId("diagnosticToolName").value.trim();
+      version = Number(byId("diagnosticToolVersion").value || 1);
+      payload = {
+        displayName: byId("diagnosticToolDisplayName").value.trim(), description: byId("diagnosticToolDescription").value,
+        operationId: byId("diagnosticToolOperationId").value.trim(), httpMethod: byId("diagnosticToolMethod").value, httpPath: byId("diagnosticToolPath").value.trim(),
+        parameters: parseJsonField("diagnosticToolParameters"), responseSchema: parseJsonField("diagnosticToolResponse"), profileScope: parseJsonField("diagnosticToolProfile"),
+        authStrategy: byId("diagnosticToolAuth").value.trim() || "current_umc_bearer_token", sideEffect: byId("diagnosticToolEffect").value.trim() || "read",
+        confirmationRequired: byId("diagnosticToolConfirmation").checked, rbacPolicy: byId("diagnosticToolRbac").value.trim() || "trusted_principal",
+        maskingPolicy: byId("diagnosticToolMasking").value.trim() || "default", swaggerSource: byId("diagnosticToolSwagger").value.trim(),
+        source: byId("diagnosticToolSource").value.trim() || "manual", version, enabled: byId("diagnosticToolEnabled").checked, published: byId("diagnosticToolPublished").checked,
+      };
+      if (creating) payload.toolName = identifier;
+    }
+  } catch (error) {
+    errorNode.textContent = error.message;
+    return;
+  }
+  submit.disabled = true;
+  errorNode.textContent = "";
+  try {
+    const base = `/api/v1/audit/${kind}`;
+    await auditApi(creating ? base : `${base}/${encodeURIComponent(identifier)}`, { method: creating ? "POST" : "PUT", body: JSON.stringify(payload) });
+    await loadDiagnostics(kind, auditState.diagnosticMeta[kind].page);
+    showToast(t("savedSuccessfully"));
+    await openDiagnosticDetails(kind, identifier, version);
+  } catch (error) {
+    errorNode.textContent = `${t("saveFailed")} ${error.message}`;
+    submit.disabled = false;
   }
 }
 

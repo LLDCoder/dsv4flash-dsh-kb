@@ -24,15 +24,15 @@ from .profile_scope import ProfileContext, profile_context_from_payload, request
 from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
-from .skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives
+from .skill_workflow import bind_declared_keyword_filter, build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives
 from .skills import (
     SkillRoute,
     build_flow_prompt,
     build_knowledge_query,
     build_system_prompt,
     canonical_skill_id,
+    effective_skill_workflow,
     exact_quote_source_sufficient,
-    merged_skill_workflow,
     resolve_configured_skill,
     resolve_skill,
     response_language_for,
@@ -47,6 +47,8 @@ UMC_CONVERSATION_TENANT_PREFIXES = (
     "umc:profile:",
     "umc:establishment:",
 )
+
+DOMAIN_CONSISTENT_ROUTER_MIN_CONFIDENCE = 0.50
 
 
 class EventBroker:
@@ -138,22 +140,6 @@ class DSHService:
             )
             return {"code": "external_account_lookup", "content": content_text}
         return None
-
-    @staticmethod
-    def application_profile_filters(
-        skill_id: str,
-        content: str,
-        profile_context: ProfileContext | None,
-        filters: object,
-    ) -> dict[str, Any] | None:
-        """Bind an explicitly requested authorized Profile to application search."""
-
-        existing = dict(filters) if isinstance(filters, dict) else {}
-        target_profile = requested_profile(content, profile_context)
-        if skill_id != "application_status" or not target_profile:
-            return existing or None
-        existing.setdefault("keyword", target_profile.name)
-        return existing
 
     @staticmethod
     def is_profile_sensitive_data_request(content: str) -> bool:
@@ -652,8 +638,9 @@ class DSHService:
             return keyword_route, metadata
 
         catalog = await self.skill_catalog.load(db)
-        recall = recall_skill_candidates(question, catalog, context)
-        recall = add_keyword_skill_candidate(recall, catalog, keyword_route.skill_id)
+        domain_recall = recall_skill_candidates(question, catalog, context)
+        current_turn_recall = recall_skill_candidates(question, catalog)
+        recall = add_keyword_skill_candidate(domain_recall, catalog, keyword_route.skill_id)
         candidates = recall.candidates
         candidate_ids = [str(item.get("skillId")) for item in candidates]
         metadata["candidateSkillIds"] = candidate_ids
@@ -678,6 +665,7 @@ class DSHService:
                 "llmSkillId": llm_skill_id,
                 "confidence": llm_result.get("confidence") if isinstance(llm_result, dict) else None,
                 "needsClarification": bool(llm_result.get("needsClarification", False)) if isinstance(llm_result, dict) else False,
+                "clarifyingQuestion": str(llm_result.get("clarifyingQuestion") or "").strip()[:500] if isinstance(llm_result, dict) else "",
                 "routeConsistent": bool(llm_skill_id and llm_skill_id == keyword_route.skill_id),
             }
         )
@@ -691,8 +679,58 @@ class DSHService:
                 runtime_id=conversation.runtime_id,
             )
             return keyword_route, metadata
-        if valid and isinstance(llm_skill_id, str):
-            selected_candidate = next((item for item in candidates if item.get("skillId") == llm_skill_id), {})
+        selected_candidate = next(
+            (item for item in candidates if item.get("skillId") == llm_skill_id),
+            None,
+        )
+        selected_domain = str((selected_candidate or {}).get("domain") or "general")
+        current_domain_consistent = bool(
+            selected_candidate
+            and len(current_turn_recall.domains) == 1
+            and selected_domain == current_turn_recall.domains[0]
+        )
+        narrow_business_match = bool(
+            current_domain_consistent
+            and float((llm_result or {}).get("confidence", 0.0))
+            >= DOMAIN_CONSISTENT_ROUTER_MIN_CONFIDENCE
+        )
+        needs_clarification = bool(metadata["needsClarification"])
+        if selected_candidate and needs_clarification and not narrow_business_match:
+            # Ambiguity is not a knowledge-search intent. Preserve the
+            # classifier's business context so the next answer can be routed
+            # consistently, but let the turn ask one short question and call
+            # no Tool.
+            fallback_reason = "needs_clarification"
+            valid = True
+        elif selected_candidate and needs_clarification and narrow_business_match:
+            # Some classifier responses redundantly request clarification even
+            # though the current turn independently identifies exactly one
+            # business domain and the classifier selects the same Skill. Keep
+            # the original signal in audit metadata, but do not block the Tool.
+            metadata["classifierNeedsClarification"] = True
+            metadata["needsClarification"] = False
+            fallback_reason = (
+                "domain_consistent_low_confidence"
+                if not valid and fallback_reason == "low_confidence"
+                else fallback_reason
+            )
+            if fallback_reason == "domain_consistent_low_confidence":
+                metadata["domainConsistentLowConfidence"] = True
+            valid = True
+        elif (
+            not valid
+            and fallback_reason == "low_confidence"
+            and selected_candidate
+            and narrow_business_match
+        ):
+            # Keep a clearly recalled business domain when the classifier
+            # agrees on the Skill and misses the global threshold only
+            # narrowly. This does not lower the global threshold and does not
+            # apply when the classifier itself requests clarification.
+            fallback_reason = "domain_consistent_low_confidence"
+            metadata["domainConsistentLowConfidence"] = True
+            valid = True
+        if valid and isinstance(llm_skill_id, str) and selected_candidate:
             intent_id, filters = normalize_route_directives(
                 {"routing": selected_candidate.get("routing")},
                 llm_result.get("intentId") if llm_result else None,
@@ -700,6 +738,8 @@ class DSHService:
             )
             metadata["intentId"] = intent_id
             metadata["filters"] = filters
+            if fallback_reason:
+                metadata["fallbackReason"] = fallback_reason
             return self.route_shape_for_skill(llm_skill_id, catalog), metadata
         metadata["fallbackReason"] = fallback_reason or "invalid_output"
         active_skill_id = str((context or {}).get("activeSkillId") or "")
@@ -802,7 +842,7 @@ class DSHService:
         linked application question to the existing My Requests Skill.
         """
 
-        workflow = merged_skill_workflow(active_skill.skill_id, active_skill.workflow)
+        workflow = effective_skill_workflow(active_skill.skill_id, active_skill.source, active_skill.workflow)
         handoffs = workflow.get("crossSkillHandoffs") or []
         question = latest_content.casefold().strip()
         for handoff in handoffs:
@@ -1162,6 +1202,21 @@ class DSHService:
         return "service"
 
     @staticmethod
+    def clarification_message(metadata: dict[str, Any], response_language: str) -> str | None:
+        """Return one bounded user-facing question for an ambiguous route."""
+
+        if not metadata.get("needsClarification"):
+            return None
+        question = " ".join(str(metadata.get("clarifyingQuestion") or "").split())[:300]
+        if question and not is_internal_tool_protocol(question):
+            return question if question.endswith(("?", "؟")) else question + "?"
+        return (
+            "هل يمكنك توضيح نوع السجلات أو معلومات الخدمة التي تريد مني التحقق منها؟"
+            if response_language == "ar"
+            else "Could you clarify which records or service information you want me to check?"
+        )
+
+    @staticmethod
     def status_message(language: str, phase: str) -> str:
         """Return a short progress message without exposing prompts or reasoning."""
 
@@ -1449,7 +1504,7 @@ class DSHService:
                             else:
                                 cross_skill_handoff = None
                         elif active_skill and matches_configured_selection_follow_up(
-                            merged_skill_workflow(active_skill.skill_id, active_skill.workflow), latest_content, history
+                            effective_skill_workflow(active_skill.skill_id, active_skill.source, active_skill.workflow), latest_content, history
                         ):
                             keyword_route = self.route_shape_for_skill(
                                 active_skill_record_id,
@@ -1466,12 +1521,6 @@ class DSHService:
                         cross_skill_handoff = None
                     route, route_metadata = await self.choose_skill_route(
                         db, latest_content, keyword_route, conversation, principal.request_id, route_context
-                    )
-                    route_metadata["filters"] = self.application_profile_filters(
-                        route.skill_id,
-                        latest_content,
-                        profile_context,
-                        route_metadata.get("filters"),
                     )
                     if attachment_ocr_route:
                         route_metadata["attachmentOcrForced"] = True
@@ -1496,7 +1545,7 @@ class DSHService:
                     )
                     selected_skill = selected_skill_result.scalars().first()
                     selected_workflow = (
-                        merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow)
+                        effective_skill_workflow(selected_skill.skill_id, selected_skill.source, selected_skill.workflow)
                         if selected_skill
                         else {}
                     )
@@ -1511,13 +1560,68 @@ class DSHService:
                         name for name in (list(selected_skill.allowed_tools) if selected_skill else [])
                         if name not in SYSTEM_DEFAULT_TOOL_NAMES or name in configured_system_tools
                     ]
+                    selected_tool_docs: list[dict[str, Any]] = [
+                        {
+                            "name": item["toolName"],
+                            "description": item["description"],
+                            "parameters": item["parameters"],
+                            "sideEffect": item["sideEffect"],
+                            "confirmationRequired": item["confirmationRequired"],
+                        }
+                        for name, item in system_tool_map.items()
+                        if name in allowed_tool_names
+                    ]
+                    tool_definition_by_name: dict[str, dict[str, Any]] = {
+                        name: system_tool_map[name]
+                        for name in allowed_tool_names
+                        if name in system_tool_map
+                    }
+                    if selected_skill and allowed_tool_names:
+                        selected_tools_result = await db.execute(
+                            select(Tool).where(
+                                ~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES),
+                                Tool.tool_name.in_(allowed_tool_names),
+                                Tool.enabled.is_(True),
+                                Tool.published.is_(True),
+                            )
+                        )
+                        selected_tool_docs = [
+                            {
+                                "name": item.tool_name,
+                                "description": item.description,
+                                "parameters": item.parameters,
+                                "sideEffect": item.side_effect,
+                                "confirmationRequired": item.confirmation_required,
+                                "operationId": item.operation_id,
+                                "httpMethod": item.http_method,
+                                "httpPath": item.http_path,
+                                "authStrategy": item.auth_strategy,
+                                "rbacPolicy": item.rbac_policy,
+                                "maskingPolicy": item.masking_policy,
+                                "profileScope": item.profile_scope,
+                                "source": item.source,
+                            }
+                            for item in selected_tools_result.scalars().all()
+                        ]
+                        tool_definition_by_name.update({item["name"]: item for item in selected_tool_docs})
+                    target_profile = requested_profile(latest_content, profile_context)
+                    route_metadata["filters"] = bind_declared_keyword_filter(
+                        selected_workflow,
+                        allowed_tool_names,
+                        tool_definition_by_name,
+                        route_metadata.get("filters"),
+                        target_profile.name if target_profile else None,
+                    ) or None
                     handoff_tool_request = cross_skill_handoff.get("toolRequest") if cross_skill_handoff else None
                     handoff_missing_message = (
                         str(cross_skill_handoff.get("missingMessage") or "")
                         if cross_skill_handoff and cross_skill_handoff.get("missing")
                         else ""
                     )
-                    if attachment_ocr_route:
+                    clarifying_question = self.clarification_message(route_metadata, response_language)
+                    if clarifying_question:
+                        tool_request = None
+                    elif attachment_ocr_route:
                         tool_request = (
                             (
                                 "ocr.layout_parsing",
@@ -1531,9 +1635,11 @@ class DSHService:
                         )
                     else:
                         tool_request = parse_tool_request(latest_content) if latest_user else None
-                    if handoff_tool_request and not latest_attachment:
+                    if handoff_tool_request and not latest_attachment and not clarifying_question:
                         tool_request = handoff_tool_request
-                    if route.mode == "portal_action":
+                    if clarifying_question:
+                        tool_request = None
+                    elif route.mode == "portal_action":
                         # Downloads, exports, payments, and refunds are visible
                         # Portal actions only for this read-only release.
                         tool_request = None
@@ -1608,6 +1714,8 @@ class DSHService:
                             "routeContextUsed": route_metadata.get("routeContextUsed"),
                             "confidence": route_metadata.get("confidence"),
                             "needsClarification": route_metadata.get("needsClarification"),
+                            "clarifyingQuestion": route_metadata.get("clarifyingQuestion"),
+                            "domainConsistentLowConfidence": route_metadata.get("domainConsistentLowConfidence", False),
                             "crossSkillHandoffId": route_metadata.get("crossSkillHandoffId"),
                             "crossSkillSourceSkillId": route_metadata.get("crossSkillSourceSkillId"),
                             "crossSkillSourceToolName": route_metadata.get("crossSkillSourceToolName"),
@@ -1630,50 +1738,6 @@ class DSHService:
                             response_language,
                             request_id=principal.request_id,
                         )
-                    selected_tool_docs: list[dict[str, Any]] = [
-                        {
-                            "name": item["toolName"],
-                            "description": item["description"],
-                            "parameters": item["parameters"],
-                            "sideEffect": item["sideEffect"],
-                            "confirmationRequired": item["confirmationRequired"],
-                        }
-                        for name, item in system_tool_map.items()
-                        if name in allowed_tool_names
-                    ]
-                    tool_definition_by_name: dict[str, dict[str, Any]] = {
-                        name: system_tool_map[name]
-                        for name in allowed_tool_names
-                        if name in system_tool_map
-                    }
-                    if selected_skill and allowed_tool_names:
-                        selected_tools_result = await db.execute(
-                            select(Tool).where(
-                                ~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES),
-                                Tool.tool_name.in_(allowed_tool_names),
-                                Tool.enabled.is_(True),
-                                Tool.published.is_(True),
-                            )
-                        )
-                        selected_tool_docs = [
-                            {
-                                "name": item.tool_name,
-                                "description": item.description,
-                                "parameters": item.parameters,
-                                "sideEffect": item.side_effect,
-                                "confirmationRequired": item.confirmation_required,
-                                "operationId": item.operation_id,
-                                "httpMethod": item.http_method,
-                                "httpPath": item.http_path,
-                                "authStrategy": item.auth_strategy,
-                                "rbacPolicy": item.rbac_policy,
-                                "maskingPolicy": item.masking_policy,
-                                "profileScope": item.profile_scope,
-                                "source": item.source,
-                            }
-                            for item in selected_tools_result.scalars().all()
-                        ]
-                        tool_definition_by_name.update({item["name"]: item for item in selected_tool_docs})
                     messages.insert(
                         0,
                         {
@@ -1690,7 +1754,7 @@ class DSHService:
                     )
                     if route.category in {"data_query", "api_call"}:
                         messages.insert(1, {"role": "system", "content": "FLOW INTERACTION CONSTRAINTS: " + json.dumps(build_flow_prompt(route), ensure_ascii=False)})
-                    forced_response_message: str | None = handoff_missing_message or (
+                    forced_response_message: str | None = clarifying_question or handoff_missing_message or (
                         self.profile_sensitive_data_refusal(response_language)
                         if profile_sensitive_request
                         else "تعذر علي تحليل الملف المرفق لأن إعداد تحليل المستندات غير متاح حالياً. "
@@ -1841,6 +1905,7 @@ class DSHService:
                                     "content": (
                                         "TRUSTED TOOL RESULT: The lookup below has already completed. "
                                         "Use these returned values as the authoritative source for the answer. "
+                                        "For a count question, use the returned total/count field for the filtered result, not the length of a paginated items list. "
                                         "Do not ask the user to confirm a profile, category, or record that is already present, "
                                         "and never claim there are no records when this result contains items.\n"
                                         + self.answer_tool_evidence(tool_name, tool_result, masking_policy)
@@ -1920,7 +1985,7 @@ class DSHService:
                                     if self.is_read_only_tool_definition(handoff_definitions.get(name))
                                 ]
                                 handoff_request = build_configured_tool_request(
-                                    merged_skill_workflow(handoff_skill.skill_id, handoff_skill.workflow)
+                                    effective_skill_workflow(handoff_skill.skill_id, handoff_skill.source, handoff_skill.workflow)
                                     if handoff_skill
                                     else {},
                                     handoff_allowed,
