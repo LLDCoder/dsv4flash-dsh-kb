@@ -3721,7 +3721,11 @@ def _native_longest_overdue(outcome: ReaderOutcome, question: str) -> ReaderOutc
         return outcome
     evidence = outcome.audit_evidence
     observation = evidence.get("observation") or ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
-    if not isinstance(observation, dict) or (observation.get("readHealth") or {}).get("healthy") is not True:
+    # This helper is called only after the direct dashboard observation has
+    # returned successfully. The gateway's compact API observation does not
+    # always repeat its UI readHealth marker, so requiring that optional field
+    # here would discard the same fresh card values we just read.
+    if not isinstance(observation, dict):
         return outcome
     tables = [node for node in _observation_semantic_nodes(observation)
               if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")]
@@ -3816,7 +3820,10 @@ def _profile_verification_empty_pending_result(observation: Any) -> ReaderResult
     unconfirmed instead of borrowing the Service Application queue's count.
     """
 
-    if not isinstance(observation, dict) or (observation.get("readHealth") or {}).get("healthy") is not True:
+    # This helper is called only after the direct dashboard observation has
+    # returned successfully. The compact API observation does not always
+    # repeat its UI readHealth marker, so do not discard its fresh card data.
+    if not isinstance(observation, dict):
         return None
     values: list[tuple[str, Any]] = []
 
@@ -8531,6 +8538,8 @@ class AdminPortalReader:
             try:
                 tool = await portal_read_stage(request, timeout_stage='profile_verification_pending_review',
                                                attempt='profile_verification_pending_review')
+                if not tool.get('ok'):
+                    raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
                 observation = (tool.get('result') or {}).get('observation') or {}
                 result = _profile_verification_empty_pending_result(observation)
                 if result is not None:
@@ -8561,6 +8570,8 @@ class AdminPortalReader:
             try:
                 tool = await portal_read_stage(request, timeout_stage='service_application_approaching_sla',
                                                attempt='service_application_approaching_sla')
+                if not tool.get('ok'):
+                    raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
                 observation = (tool.get('result') or {}).get('observation') or {}
                 seed = ReaderOutcome(
                     ReaderResult(status='not_confirmed', page=request.start_path, answer_shape='due',

@@ -121,3 +121,12 @@ def test_profile_pending_followup_does_not_guess_from_a_nonempty_card() -> None:
         "readHealth": {"healthy": True},
         "profileVerificationCard": {"totalCount": 2, "totalTasks": 2},
     }) is None
+
+
+def test_profile_pending_followup_accepts_a_fresh_gateway_card_without_ui_health_marker() -> None:
+    result = _profile_verification_empty_pending_result({
+        "profileVerificationCard": {"totalCount": 0, "totalTasks": 0},
+    })
+
+    assert result is not None
+    assert result.facts[0] == "Pending Review: 0."
