@@ -4,6 +4,7 @@ from app.portal_reader import (
     _explicit_reader_source,
     _native_approaching_sla_rows,
     _native_longest_overdue,
+    _profile_verification_empty_pending_result,
     _private_customer_information_request,
     _service_processing_time_explanation,
     reader_answer_shape,
@@ -100,3 +101,23 @@ def test_approaching_sla_uses_visible_compact_countdowns_without_a_threshold() -
     assert "APP-1" in " ".join(repaired.result.facts)
     assert "APP-2" not in " ".join(repaired.result.facts)
     assert "threshold" in " ".join(repaired.result.facts)
+
+
+def test_profile_pending_followup_uses_only_the_empty_profile_dashboard_card() -> None:
+    result = _profile_verification_empty_pending_result({
+        "readHealth": {"healthy": True},
+        "profileVerificationCard": {"totalCount": 0, "totalTasks": 0},
+        "serviceApplicationCard": {"pendingReview": 53},
+    })
+
+    assert result is not None
+    assert result.status == "success"
+    assert result.facts[0] == "Pending Review: 0."
+    assert "Service Application" in result.facts[1]
+
+
+def test_profile_pending_followup_does_not_guess_from_a_nonempty_card() -> None:
+    assert _profile_verification_empty_pending_result({
+        "readHealth": {"healthy": True},
+        "profileVerificationCard": {"totalCount": 2, "totalTasks": 2},
+    }) is None

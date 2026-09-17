@@ -3807,6 +3807,47 @@ def _native_approaching_sla_rows(outcome: ReaderOutcome, question: str) -> Reade
     return ReaderOutcome(result, {**evidence, "nativeApproachingSla": True, "result": result.public_json()})
 
 
+def _profile_verification_empty_pending_result(observation: Any) -> ReaderResult | None:
+    """Confirm a zero pending-review count only from the Profile card's zero total.
+
+    The dashboard's Profile Verification card has no separately labelled
+    Pending Review counter. A displayed zero total-task count does establish
+    that there can be no pending task in that card; any non-zero total remains
+    unconfirmed instead of borrowing the Service Application queue's count.
+    """
+
+    if not isinstance(observation, dict) or (observation.get("readHealth") or {}).get("healthy") is not True:
+        return None
+    values: list[tuple[str, Any]] = []
+
+    def visit(value: Any, prefix: str = "") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                values.append((path, child))
+                visit(child, path)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, prefix)
+
+    visit(observation)
+    total_values = [value for path, value in values if re.fullmatch(
+        r"profileverificationcard(?:totaltasks|totalcount)", _key(path), re.I,
+    )]
+    if not total_values or not all(type(value) in {int, float} and value == 0 for value in total_values):
+        return None
+    return ReaderResult(
+        status="success",
+        summary="The current Profile Verification dashboard card is empty.",
+        page="/dashboard",
+        section="Profile Verification",
+        source_section="profileVerificationCard",
+        answer_shape="count",
+        completeness="bounded",
+        facts=("Pending Review: 0.", "The current Profile Verification dashboard card shows 0 total tasks; no Service Application queue count was used."),
+    )
+
+
 def _native_status_filter_rows(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Recover a failed planner only after a literal status selection and rows agree."""
     if (outcome.result.status not in {'success','not_confirmed'}
@@ -8478,6 +8519,65 @@ class AdminPortalReader:
                            'No inspection task records were read.',), missing=('page_not_permitted',))
                 return ReaderOutcome(result, {'stage':'named_page_permission', 'permission':permission_audit,
                                               'result':result.public_json()})
+        if _profile_verification_pending_followup(question, bounded_conversation_context):
+            request = PortalReadRequest(start_path='/dashboard', actions=({'type': 'observe'},))
+            denied = validate_policy(request, reason='profile_verification_pending_review')
+            if denied:
+                result = ReaderResult(status='no_permission', page='/dashboard', source_hint={'page': '/dashboard'},
+                    summary='The current permissions do not allow reading the Profile Verification dashboard card.',
+                    missing=(denied,))
+                return ReaderOutcome(result, {'stage': 'profile_verification_pending_review',
+                                              'permission': permission_audit, 'result': result.public_json()})
+            try:
+                tool = await portal_read_stage(request, timeout_stage='profile_verification_pending_review',
+                                               attempt='profile_verification_pending_review')
+                observation = (tool.get('result') or {}).get('observation') or {}
+                result = _profile_verification_empty_pending_result(observation)
+                if result is not None:
+                    return ReaderOutcome(result, {'stage': 'profile_verification_pending_review',
+                                                  'permission': permission_audit, 'observation': observation,
+                                                  'result': result.public_json()})
+                result = ReaderResult(status='not_confirmed', page='/dashboard', section='Profile Verification',
+                    answer_shape='count', summary='The current Profile Verification pending-review count could not be verified.',
+                    missing=('profile_verification_pending_review_not_visible',))
+                return ReaderOutcome(result, {'stage': 'profile_verification_pending_review',
+                                              'permission': permission_audit, 'observation': observation,
+                                              'result': result.public_json()})
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                result = ReaderResult(status='load_failed', page='/dashboard', section='Profile Verification',
+                    answer_shape='count', summary='The Profile Verification dashboard card could not be read.',
+                    missing=(type(exc).__name__,))
+                return ReaderOutcome(result, {'stage': 'profile_verification_pending_review',
+                                              'permission': permission_audit, 'result': result.public_json()})
+        if (_due_query_mode(question) == 'upcoming'
+                and re.search(r'\bservice\s+applications?\b', question, re.I)):
+            request = PortalReadRequest(start_path='/licensing/applications', actions=({'type': 'observe'},))
+            denied = validate_policy(request, reason='service_application_approaching_sla')
+            if denied:
+                result = ReaderResult(status='no_permission', page=request.start_path, source_hint={'page': request.start_path},
+                    summary='The current permissions do not allow reading Service Application SLA rows.', missing=(denied,))
+                return ReaderOutcome(result, {'stage': 'service_application_approaching_sla',
+                                              'permission': permission_audit, 'result': result.public_json()})
+            try:
+                tool = await portal_read_stage(request, timeout_stage='service_application_approaching_sla',
+                                               attempt='service_application_approaching_sla')
+                observation = (tool.get('result') or {}).get('observation') or {}
+                seed = ReaderOutcome(
+                    ReaderResult(status='not_confirmed', page=request.start_path, answer_shape='due',
+                                 summary='Visible Service Application SLA countdown rows are being checked.',
+                                 missing=('approaching_sla_not_visible',)),
+                    {'stage': 'service_application_approaching_sla', 'permission': permission_audit,
+                     'observation': observation},
+                )
+                recovered = _native_approaching_sla_rows(seed, question)
+                if recovered.result.status == 'success':
+                    return recovered
+                return seed
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                result = ReaderResult(status='load_failed', page=request.start_path, answer_shape='due',
+                    summary='Service Application SLA rows could not be read.', missing=(type(exc).__name__,))
+                return ReaderOutcome(result, {'stage': 'service_application_approaching_sla',
+                                              'permission': permission_audit, 'result': result.public_json()})
         absence_explanation = reader_absence_limit_explanation(question)
         if absence_explanation:
             return ReaderOutcome(
