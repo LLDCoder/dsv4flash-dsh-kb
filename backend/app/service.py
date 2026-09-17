@@ -49,6 +49,8 @@ UMC_CONVERSATION_TENANT_PREFIXES = (
 )
 
 DOMAIN_CONSISTENT_ROUTER_MIN_CONFIDENCE = 0.50
+STRONG_DOMAIN_ROUTER_MIN_CONFIDENCE = 0.40
+STRONG_DOMAIN_RECALL_MIN_SCORE = 1.0
 
 
 class EventBroker:
@@ -684,16 +686,24 @@ class DSHService:
             None,
         )
         selected_domain = str((selected_candidate or {}).get("domain") or "general")
+        current_domain_score = float(current_turn_recall.scores.get(selected_domain, 0.0))
         current_domain_consistent = bool(
             selected_candidate
             and len(current_turn_recall.domains) == 1
             and selected_domain == current_turn_recall.domains[0]
         )
+        confidence = float((llm_result or {}).get("confidence", 0.0))
         narrow_business_match = bool(
             current_domain_consistent
-            and float((llm_result or {}).get("confidence", 0.0))
-            >= DOMAIN_CONSISTENT_ROUTER_MIN_CONFIDENCE
+            and (
+                confidence >= DOMAIN_CONSISTENT_ROUTER_MIN_CONFIDENCE
+                or (
+                    current_domain_score >= STRONG_DOMAIN_RECALL_MIN_SCORE
+                    and confidence >= STRONG_DOMAIN_ROUTER_MIN_CONFIDENCE
+                )
+            )
         )
+        metadata["currentDomainScore"] = current_domain_score
         needs_clarification = bool(metadata["needsClarification"])
         if selected_candidate and needs_clarification and not narrow_business_match:
             # Ambiguity is not a knowledge-search intent. Preserve the

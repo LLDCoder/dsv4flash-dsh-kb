@@ -87,10 +87,10 @@ class RouterDecisionTests(unittest.IsolatedAsyncioTestCase):
             {
                 "skillId": "application_status",
                 "intentId": "list",
-                "filters": {},
-                "confidence": 0.55,
+                "filters": {"keyword": "Peter"},
+                "confidence": 0.42,
                 "needsClarification": True,
-                "clarifyingQuestion": "Which kind of asset do you mean?",
+                "clarifyingQuestion": "Do you mean your own applications or Peter's applications?",
             }
         )
 
@@ -107,6 +107,8 @@ class RouterDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(metadata["needsClarification"])
         self.assertTrue(metadata["classifierNeedsClarification"])
         self.assertEqual(metadata["fallbackReason"], "domain_consistent_low_confidence")
+        self.assertEqual(metadata["filters"], {"keyword": "Peter"})
+        self.assertGreaterEqual(metadata["currentDomainScore"], 1.0)
 
     async def test_very_low_confidence_still_uses_configured_knowledge_fallback(self):
         service = self.service(

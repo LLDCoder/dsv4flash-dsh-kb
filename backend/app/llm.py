@@ -33,6 +33,7 @@ class LLMAdapter:
             "When the chosen candidate declares routing intents, return its intentId. "
             "When it declares routing filters, return only supported filters using their configured IDs and shapes. "
             "If it declares a string keyword filter, put any explicit residual business search phrase there when it is not represented by a more specific filter; examples include payment, licence, violation, refund, enquiry, a service/reference, or an authorized Profile display name. "
+            "Do not infer that a named person or Profile is outside the authenticated scope. When the business domain is clear and the selected Skill exposes a keyword filter, use the name as that keyword and let the token-scoped Tool determine whether it matches an authorized record. "
             "Return JSON only with keys skillId, intentId, filters, confidence, needsClarification, clarifyingQuestion. "
             "Use needsClarification=true when the scope or intent is ambiguous."
         )
