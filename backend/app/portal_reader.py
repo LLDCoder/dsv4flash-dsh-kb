@@ -2619,6 +2619,11 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     """Bind distinctive object names to documented read surfaces before planning."""
 
     normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    # Profile Verification is a distinct Licensing surface. Binding the
+    # initial summary as well as its elliptical follow-up prevents a generic
+    # pending-review count from silently switching to Application tasks.
+    if re.search(r"\bprofile\s+verification\b", normalized):
+        return "/licensing/profile"
     if re.search(r"\b(?:books?|book)\s+applications?\b", normalized):
         return "/content/ContentLibrary"
     if re.search(r"\b(?:license|licensing)\s+refunds?\b", normalized):
@@ -3749,6 +3754,57 @@ def _native_longest_overdue(outcome: ReaderOutcome, question: str) -> ReaderOutc
         missing=(),
     )
     return ReaderOutcome(result, {**evidence, "nativeLongestOverdue": maximum, "result": result.public_json()})
+
+
+def _native_approaching_sla_rows(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Recover visible non-overdue SLA countdown rows without inventing a threshold.
+
+    The Admin Portal labels some pending rows with a compact countdown such as
+    ``1d`` rather than the words ``Due in 1 day``. That is sufficient to
+    report the row's displayed SLA value, but not to claim a product-defined
+    number of days for what counts as "approaching".
+    """
+
+    if _due_query_mode(question) != "upcoming":
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get("observation") or ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
+    if not isinstance(observation, dict) or (observation.get("readHealth") or {}).get("healthy") is not True:
+        return outcome
+    tables = [node for node in _observation_semantic_nodes(observation)
+              if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")]
+    if len(tables) != 1:
+        return outcome
+    table = tables[0]
+    visible_rows: list[dict[str, Any]] = []
+    for row in table.get("rowFields") or []:
+        if not isinstance(row, dict):
+            continue
+        sla = next((str(value).strip() for key, value in row.items()
+                    if _key(key) in {"sla", "sladescription"}), "")
+        normalized_sla = re.sub(r"\s+", " ", sla).casefold()
+        is_countdown = bool(re.search(r"\bdue in\b|\bdue soon\b|\bupcoming\b|即将|临近|قريب", normalized_sla))
+        is_compact_countdown = bool(re.fullmatch(r"\d+\s*d(?:\s*\d+\s*h)?", normalized_sla))
+        is_overdue = bool(re.search(r"\boverdue\b|\bpast due\b|逾期|متأخر", normalized_sla))
+        if not (is_countdown or is_compact_countdown) or is_overdue:
+            continue
+        visible = {key: value for key, value in row.items() if key in table["columnHeaders"]}
+        if visible:
+            visible_rows.append(visible)
+    if not visible_rows:
+        return outcome
+    facts = tuple(json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in visible_rows[:8])
+    result = replace(
+        outcome.result,
+        status="success",
+        section=str(table.get("heading") or table.get("nodeId") or ""),
+        source_section=str(table.get("nodeId") or ""),
+        answer_shape="due",
+        completeness="bounded",
+        facts=(*facts, "Rows are shown from their visible non-overdue SLA countdowns; the portal does not define an 'approaching SLA' day threshold."),
+        missing=(),
+    )
+    return ReaderOutcome(result, {**evidence, "nativeApproachingSla": True, "result": result.public_json()})
 
 
 def _native_status_filter_rows(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
@@ -7143,6 +7199,7 @@ class AdminPortalReader:
         outcome = _native_identity_search_result(outcome, question, intent_state)
         outcome = _native_queue_followup(outcome, question, bounded_context)
         outcome = _native_status_filter_rows(outcome, question)
+        outcome = _native_approaching_sla_rows(outcome, question)
         outcome = _native_longest_overdue(outcome, question)
         executions = [entry for entry in trace.entries if entry.get("stage") == "portal_execution"]
         outcome = _native_filter_outcome(outcome, question, executions, bounded_context)

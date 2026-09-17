@@ -2,6 +2,7 @@ from app.portal_reader import (
     ReaderOutcome,
     ReaderResult,
     _explicit_reader_source,
+    _native_approaching_sla_rows,
     _native_longest_overdue,
     _private_customer_information_request,
     _service_processing_time_explanation,
@@ -41,6 +42,7 @@ def test_private_customer_request_is_refused_without_repeating_application_data(
 def test_explicit_object_phrases_bind_to_their_documented_surfaces() -> None:
     assert _explicit_reader_source("Show me books applications", {}) == "/content/ContentLibrary"
     assert _explicit_reader_source("Actually, show me license refunds instead", {}) == "/happiness/refunds"
+    assert _explicit_reader_source("Show the current Profile Verification summary.", {}) == "/licensing/profile"
     profile_context = {"previousIntent": {"question": "Show the Profile Verification summary on my dashboard."}}
     assert _explicit_reader_source("How many are pending review?", profile_context) == "/licensing/profile"
 
@@ -69,3 +71,32 @@ def test_longest_overdue_uses_one_native_table_and_its_visible_sla_values() -> N
     assert repaired.result.status == "success"
     assert "APP-2" in " ".join(repaired.result.facts)
     assert "11 days overdue" in " ".join(repaired.result.facts)
+
+
+def test_approaching_sla_uses_visible_compact_countdowns_without_a_threshold() -> None:
+    observation = {
+        "readHealth": {"healthy": True},
+        "sectionSummaries": [{
+            "nodeId": "applications-table",
+            "kind": "table",
+            "heading": "My Application Tasks",
+            "columnHeaders": ["Application No.", "SLA", "Status"],
+            "rowFields": [
+                {"Application No.": "APP-1", "SLA": "1d", "Status": "To Do"},
+                {"Application No.": "APP-2", "SLA": "4d Overdue", "Status": "To Do"},
+            ],
+        }],
+    }
+    outcome = ReaderOutcome(
+        ReaderResult(status="not_confirmed", summary="planner failed", page="/licensing/applications"),
+        {"observation": observation},
+    )
+
+    repaired = _native_approaching_sla_rows(
+        outcome, "Which Service Application tasks are approaching their SLA?",
+    )
+
+    assert repaired.result.status == "success"
+    assert "APP-1" in " ".join(repaired.result.facts)
+    assert "APP-2" not in " ".join(repaired.result.facts)
+    assert "threshold" in " ".join(repaired.result.facts)

@@ -1001,6 +1001,12 @@ def make_router(service: DSHService) -> APIRouter:
         Selected tab labels use contiguous phrase matching to avoid sibling-view
         collisions. Model HTTP 402 failures are reported as load_failed with
         model_payment_required, not as an invalid user intent or empty data.
+        Requests for private customer or applicant information are refused
+        before any profile read. Displayed processing-time metric labels may
+        be explained with their verified limits, but never as an inferred
+        formula or per-record guarantee. Compact visible SLA countdowns can
+        be reported as bounded non-overdue rows without inventing the
+        product's "approaching" threshold.
         Contextual phrases such as this account are not
         accepted as record identifiers or converted into search filters.
         Grouped table headers retain their parent labels for native value binding;
