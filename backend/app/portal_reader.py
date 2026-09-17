@@ -1593,7 +1593,7 @@ def reader_answer_shape(
         (
             "due",
             r"\bdue\b|\bdue soon\b|\bdeadlines?\b|"
-            r"\b(?:approaching|near(?:ing)?)\b.{0,32}\b(?:deadlines?|due|expiry|expiration)\b|"
+            r"\b(?:approaching|near(?:ing)?)\b.{0,32}\b(?:deadlines?|due|expiry|expiration|sla)\b|"
             r"expir|overdue|到期|逾期",
         ),
         ("detail", r"\bdetails?\b|详情|明细"),
@@ -2550,6 +2550,82 @@ def question_is_conceptual(question: str) -> bool:
         r"|解释|含义|区别|手册|是什么意思|如何|怎么使用|شرح|معنى|الفرق|كيف",
         normalized,
     )) or any(marker in normalized for marker in _DOCUMENTATION_QUESTION_MARKERS)
+
+
+def _private_customer_information_request(question: str) -> bool:
+    """Recognize a direct request for protected customer/profile data."""
+
+    normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    return bool(re.search(
+        r"\b(?:customer|applicant|user)(?:'s)?\s+(?:private|personal|confidential)\s+"
+        r"(?:information|data|details?)\b|\b(?:private|personal)\s+"
+        r"(?:customer|applicant|profile)\s+(?:information|data|details?)\b"
+        r"|客户.{0,8}(?:隐私|个人).{0,8}(?:信息|数据)|申请人.{0,8}(?:隐私|个人).{0,8}(?:信息|数据)",
+        normalized,
+    ))
+
+
+def _service_processing_time_explanation(question: str, context: dict[str, Any] | None = None) -> ReaderResult | None:
+    """Answer two metric-meaning questions without inventing a KPI formula."""
+
+    normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    previous = (context or {}).get("previousIntent") if isinstance(context, dict) else None
+    prior_text = " ".join(str(previous.get(key) or "") for key in ("question", "businessObject", "businessFocus")) if isinstance(previous, dict) else ""
+    metric_context = normalized + " " + prior_text.casefold()
+    if not re.search(r"\b(?:service )?application\b.{0,50}\b(?:processing[ -]?time|avg\.? processing)\b|\b(?:processing[ -]?time|avg\.? processing)\b.{0,50}\b(?:service )?application\b", metric_context):
+        return None
+    if re.search(r"\b(?:does|do).{0,25}\baverage\b.{0,80}\b(?:same|every|each)\b", normalized):
+        return ReaderResult(
+            status="success",
+            summary="An average does not establish identical individual processing times.",
+            section="Service Operations Analytics",
+            answer_shape="detail",
+            completeness="bounded",
+            facts=(
+                "No. An average processing-time value summarizes a group; it does not mean every individual Service Application took the same time.",
+                "The displayed metric label does not establish its formula, denominator, or which start/end events are used. Those details require documented metric definitions.",
+            ),
+        )
+    if re.search(r"\b(?:what does|what is|explain|represent|mean)\b", normalized):
+        return ReaderResult(
+            status="success",
+            summary="The visible metric is a performance measure with bounded meaning.",
+            section="Service Operations Analytics",
+            answer_shape="detail",
+            completeness="bounded",
+            facts=(
+                "Avg. Processing Time is the Service Application performance measure displayed for the current analytics period.",
+                "Its label does not establish the exact formula, denominator, or processing start/end events, so those details are not inferred.",
+            ),
+        )
+    return None
+
+
+def _profile_verification_pending_followup(question: str, context: dict[str, Any]) -> bool:
+    """Keep an elliptical pending-review follow-up in its Profile Verification scope."""
+
+    if not re.fullmatch(r"\s*(?:how many|what number)(?: are| is)?\s+pending review\s*[?.!]?\s*", question, re.I):
+        return False
+    previous = context.get("previousIntent") if isinstance(context, dict) else None
+    if not isinstance(previous, dict):
+        return False
+    text = " ".join(str(previous.get(key) or "") for key in (
+        "question", "businessObject", "businessFocus", "section", "sourceSection",
+    ))
+    return bool(re.search(r"profile\s+verification", text, re.I))
+
+
+def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
+    """Bind distinctive object names to documented read surfaces before planning."""
+
+    normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    if re.search(r"\b(?:books?|book)\s+applications?\b", normalized):
+        return "/content/ContentLibrary"
+    if re.search(r"\b(?:license|licensing)\s+refunds?\b", normalized):
+        return "/happiness/refunds"
+    if _profile_verification_pending_followup(question, context):
+        return "/licensing/profile"
+    return ""
 
 
 def _question_needs_native_surface(question: str) -> bool:
@@ -3633,6 +3709,48 @@ def _native_queue_followup(outcome: ReaderOutcome, question: str, context: dict[
     return ReaderOutcome(result,{**evidence,'verifiedQueueView':requested,'result':result.public_json()})
 
 
+def _native_longest_overdue(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Select the largest visible overdue duration only from one healthy table."""
+
+    if not re.fullmatch(r"\s*which one has been overdue the longest\s*[?.!]?\s*", question, re.I):
+        return outcome
+    evidence = outcome.audit_evidence
+    observation = evidence.get("observation") or ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
+    if not isinstance(observation, dict) or (observation.get("readHealth") or {}).get("healthy") is not True:
+        return outcome
+    tables = [node for node in _observation_semantic_nodes(observation)
+              if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")]
+    if len(tables) != 1:
+        return outcome
+    table = tables[0]
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for row in table.get("rowFields") or []:
+        if not isinstance(row, dict):
+            continue
+        sla = next((str(value) for key, value in row.items() if _key(key) in {"sla", "sladescription"}), "")
+        match = re.search(r"\b(\d+)\s*d(?:ays?)?\s+overdue\b", sla, re.I)
+        if match:
+            candidates.append((int(match.group(1)), {key: value for key, value in row.items() if key in table["columnHeaders"]}))
+    if not candidates:
+        return outcome
+    maximum = max(days for days, _row in candidates)
+    matched_rows = [row for days, row in candidates if days == maximum]
+    if len(matched_rows) != 1:
+        return outcome
+    result = replace(
+        outcome.result,
+        status="success",
+        section=str(table.get("heading") or table.get("nodeId") or ""),
+        source_section=str(table.get("nodeId") or ""),
+        answer_shape="detail",
+        completeness="bounded",
+        facts=(json.dumps(matched_rows[0], ensure_ascii=False, separators=(",", ":")),
+               f"This is the longest overdue duration among the current bounded list: {maximum} days overdue."),
+        missing=(),
+    )
+    return ReaderOutcome(result, {**evidence, "nativeLongestOverdue": maximum, "result": result.public_json()})
+
+
 def _native_status_filter_rows(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Recover a failed planner only after a literal status selection and rows agree."""
     if (outcome.result.status not in {'success','not_confirmed'}
@@ -3855,7 +3973,7 @@ def _due_query_mode(value: str) -> Literal["upcoming", "overdue", "any"]:
     normalized = re.sub(r"\s+", " ", str(value or "").casefold()).strip()
     upcoming = bool(re.search(
         r"\bdue soon\b|\bupcoming\b|\bexpir(?:es?|ing)\b|"
-        r"\b(?:approaching|near(?:ing)?)\b.{0,32}\b(?:deadlines?|due|expiry|expiration)\b|"
+        r"\b(?:approaching|near(?:ing)?)\b.{0,32}\b(?:deadlines?|due|expiry|expiration|sla)\b|"
         r"即将|临近|قريب",
         normalized,
     ))
@@ -7025,6 +7143,7 @@ class AdminPortalReader:
         outcome = _native_identity_search_result(outcome, question, intent_state)
         outcome = _native_queue_followup(outcome, question, bounded_context)
         outcome = _native_status_filter_rows(outcome, question)
+        outcome = _native_longest_overdue(outcome, question)
         executions = [entry for entry in trace.entries if entry.get("stage") == "portal_execution"]
         outcome = _native_filter_outcome(outcome, question, executions, bounded_context)
         if (outcome.result.status in {"success", "no_data", "not_confirmed"} and executions
@@ -8262,6 +8381,25 @@ class AdminPortalReader:
                              missing=("action_not_read_only",)),
                 {"stage": "read_only_boundary", "permission": permission_audit},
             )
+        if _private_customer_information_request(question):
+            trace.record("privacy_boundary", "failed", failure_code="private_customer_data_forbidden",
+                         output_summary={"decision": "private_customer_data_refused"})
+            return ReaderOutcome(
+                ReaderResult(
+                    status="no_permission",
+                    summary="Private customer information is outside the Reader's permitted scope.",
+                    missing=("private_customer_data_forbidden",),
+                ),
+                {"stage": "privacy_boundary", "permission": permission_audit},
+            )
+        processing_explanation = _service_processing_time_explanation(question, bounded_conversation_context)
+        if processing_explanation is not None:
+            trace.record("metric_explanation", "passed", output_summary={"metric": "avg_processing_time"})
+            return ReaderOutcome(
+                processing_explanation,
+                {"stage": "metric_explanation", "permission": permission_audit,
+                 "result": processing_explanation.public_json()},
+            )
         if re.search(r'\b(?:i?gnore|bypass|override)\s+(?:the\s+)?(?:role|permission|access)\s+(?:restriction|check|limit|control)s?\b', question, re.I):
             return ReaderOutcome(
                 ReaderResult(status='no_permission', summary='Role restrictions cannot be bypassed.',
@@ -8597,6 +8735,10 @@ class AdminPortalReader:
             object_source = '/content/ContentApplications' if application_ids[0].upper().startswith('MC-2-') else '/licensing/applications'
             knowledge_context_hint = {'page': object_source}
             bounded_conversation_context['sourceHint'] = knowledge_context_hint
+        explicit_source = _explicit_reader_source(question, bounded_conversation_context)
+        if explicit_source:
+            object_source = explicit_source
+            bounded_conversation_context['sourceHint'] = {'page': explicit_source}
         if source_resolution.invalid_path_count or source_resolution.detail_candidate_count:
             failure_code = (
                 "invalid_documented_path"

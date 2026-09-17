@@ -173,6 +173,13 @@ def reader_evidence_only_response(
             'zh': '当前账号的权限未授权本次请求的页面读取，因此尚未核实所请求的记录。这不代表其他页面也不可访问。',
             'ar': 'صلاحيات هذا الحساب الحالية لا تسمح بقراءة الصفحة المطلوبة. لم يتم التحقق من السجلات المطلوبة، ولا يحدد ذلك صلاحية الوصول إلى صفحات أخرى.',
         }.get(language, 'Current permissions do not authorize the requested page read. The requested records have not been verified.')
+    if (reader_result.get('result') == 'no_permission' and not reader_result.get('facts')
+            and reader_result.get('missing') == ['private_customer_data_forbidden']):
+        return {
+            'en': 'I can’t provide private customer or applicant information. No private profile data was read or disclosed.',
+            'zh': '我不能提供客户或申请人的隐私信息；本次未读取或披露任何私密档案数据。',
+            'ar': 'لا يمكنني تقديم معلومات العميل أو مقدم الطلب الخاصة. لم تُقرأ أو تُكشف أي بيانات ملف شخصي خاصة.',
+        }.get(language, 'I can’t provide private customer or applicant information.')
  
     raw_facts = reader_result.get("facts")
     selected_view = str(reader_result.get('selectedState') or '').strip()
