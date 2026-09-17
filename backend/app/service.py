@@ -868,6 +868,21 @@ def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, Any]:
     if completeness not in {"bounded", "complete", "unknown"} or shape not in {"overview", "count", "list", "attention", "due", "detail"}:
         return {}
     metadata = {"deliveredAnswerShape": shape, "completeness": completeness, **assignment_references(result)}
+    # Preserve only a boolean continuity marker for an immediately preceding
+    # Profile Verification dashboard card that explicitly showed zero tasks.
+    # This stores neither a row nor personal data, and prevents an elliptical
+    # pending-review question from being redirected to Service Applications.
+    if result.get('result') == 'success' and result.get('page') == '/dashboard':
+        for fact in result.get('facts', []):
+            try:
+                fields = json.loads(fact) if isinstance(fact, str) else {}
+            except (ValueError, TypeError):
+                continue
+            if (isinstance(fields, dict)
+                    and fields.get('profileVerificationCard.totalCount') == 0
+                    and fields.get('profileVerificationCard.totalTasks') == 0):
+                metadata['profileVerificationEmpty'] = 'true'
+                break
     source = result.get('countSource') or {}
     if (result.get('result') == 'success' and shape == 'count' and result.get('scope') == 'personal'
             and source.get('page') == result.get('page') and source.get('view') == 'Completed'

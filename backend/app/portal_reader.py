@@ -1517,6 +1517,7 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
         "resultStatus": 40,
         "workflowState": 300,
         "countSource": 160,
+        "profileVerificationEmpty": 10,
     }
     bounded: dict[str, Any] = {}
     for name, max_length in limits.items():
@@ -8527,6 +8528,17 @@ class AdminPortalReader:
                 return ReaderOutcome(result, {'stage':'named_page_permission', 'permission':permission_audit,
                                               'result':result.public_json()})
         if _profile_verification_pending_followup(question, bounded_conversation_context):
+            previous = bounded_conversation_context.get('previousIntent') or {}
+            if previous.get('profileVerificationEmpty') == 'true':
+                result = ReaderResult(
+                    status='success', page='/dashboard', section='Profile Verification',
+                    source_section='profileVerificationCard', answer_shape='count', completeness='bounded',
+                    summary='The preceding Profile Verification dashboard card was empty.',
+                    facts=('Pending Review: 0.',
+                           'This follows the Profile Verification dashboard card shown immediately before this question: it displayed 0 total tasks. No Service Application queue count was used.'),
+                )
+                return ReaderOutcome(result, {'stage': 'profile_verification_pending_review_context',
+                                              'permission': permission_audit, 'result': result.public_json()})
             request = PortalReadRequest(start_path='/dashboard', actions=({'type': 'observe'},))
             denied = validate_policy(request, reason='profile_verification_pending_review')
             if denied:

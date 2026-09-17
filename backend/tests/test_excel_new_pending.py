@@ -9,7 +9,7 @@ from app.portal_reader import (
     _service_processing_time_explanation,
     reader_answer_shape,
 )
-from app.service import reader_evidence_only_response
+from app.service import _reader_presentation_metadata, reader_evidence_only_response
 
 
 def test_approaching_sla_is_a_due_question() -> None:
@@ -130,3 +130,15 @@ def test_profile_pending_followup_accepts_a_fresh_gateway_card_without_ui_health
 
     assert result is not None
     assert result.facts[0] == "Pending Review: 0."
+
+
+def test_profile_dashboard_empty_marker_keeps_only_a_boolean_for_followup() -> None:
+    metadata = _reader_presentation_metadata({
+        "result": "success",
+        "page": "/dashboard",
+        "answerShape": "overview",
+        "completeness": "bounded",
+        "facts": ['{"profileVerificationCard.totalCount":0,"profileVerificationCard.totalTasks":0}'],
+    })
+
+    assert metadata["profileVerificationEmpty"] == "true"
