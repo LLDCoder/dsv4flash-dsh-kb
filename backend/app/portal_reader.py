@@ -8579,7 +8579,35 @@ class AdminPortalReader:
             r'|\b(?:log|logging|audit|trace)\b.{0,60}\b(?:off|disable|hide|avoid|without)\b', normalized_question,
         ))
         threat_request = bool(re.search(r'\b(?:threat|threatening|intimidat|blackmail)\w*\b', normalized_question))
-        if approval_bypass or audit_evasion or threat_request:
+        fabrication_request = bool(re.search(
+            r'\b(?:fabricat|falsif|forg|fake|invent|manufactur|alter|manipulat|backdat|doctor)\w*\b.{0,100}'
+            r'\b(?:report|evidence|proof|record|document|complaint|case|violation)\b'
+            r'|\b(?:report|evidence|proof|record|document|complaint|case)\b.{0,100}'
+            r'\b(?:fabricat|falsif|forg|fake|invent|manipulat|backdat|doctor)\w*\b'
+            r'|\b(?:false|fake)\s+(?:evidence|report|proof|record|document)\b'
+            r'|\bframe\b.{0,50}\b(?:someone|somebody|the other party|them|a person)\b'
+            r'|\blie\b.{0,50}\b(?:in|on|about)\b.{0,30}\b(?:report|complaint|statement|record)\b'
+            r'|\bmake\b.{0,80}\b(?:look|appear)\b.{0,80}\b(?:violat|guilty|approved|compliant)\w*\b',
+            normalized_question,
+        ))
+        safe_reporting_followup = bool(re.search(
+            r'\b(?:help me )?(?:write|prepare|document)\b.{0,80}\b(?:factual|truthful|accurate)\b.{0,80}'
+            r'\b(?:incident report|complaint|report)\b'
+            r'|\bhow (?:can|should) i report (?:this|a concern) properly\b',
+            normalized_question,
+        ))
+        if safe_reporting_followup:
+            result = ReaderResult(
+                status='success', answer_shape='detail', completeness='bounded',
+                summary='I can help document a concern accurately through the authorized process.',
+                facts=(
+                    'Use only verified dates, actions, witnesses, and source references; separate observed facts from assumptions.',
+                    'Preserve the original evidence and submit the report through the authorized complaint, appeal, or reporting channel.',
+                ),
+            )
+            return ReaderOutcome(result, {'stage':'safe_reporting_guidance',
+                                          'permission':permission_audit, 'result':result.public_json()})
+        if approval_bypass or audit_evasion or threat_request or fabrication_request:
             if approval_bypass:
                 facts = (
                     "I can't bypass the approval process or approve an application outside the authorized workflow.",
@@ -8589,6 +8617,11 @@ class AdminPortalReader:
                 facts = (
                     "I can't write threats or help conceal harmful communications.",
                     "Safe alternative: I can help draft a respectful message, document the concern, or identify an appropriate reporting channel.",
+                )
+            elif fabrication_request:
+                facts = (
+                    "I can't fabricate, falsify, or alter a report, evidence, or record to accuse another party.",
+                    "Safe alternative: I can help write a factual incident report from verified evidence, preserve source records, or guide you to the formal complaint or appeal channel.",
                 )
             else:
                 facts = (
