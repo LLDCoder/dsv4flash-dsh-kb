@@ -8585,15 +8585,15 @@ class AdminPortalReader:
                     "I can't bypass the approval process or approve an application outside the authorized workflow.",
                     "Compliant next step: I can help you check the application's current status, explain the approval steps, or guide you to the authorized reviewer.",
                 )
-            elif audit_evasion:
-                facts = (
-                    "I can't disable, hide, or evade audit logging for an operation.",
-                    "Compliant next step: I can explain the recorded approval workflow or help you correct an authorized action through the normal process.",
-                )
-            else:
+            elif threat_request:
                 facts = (
                     "I can't write threats or help conceal harmful communications.",
                     "Safe alternative: I can help draft a respectful message, document the concern, or identify an appropriate reporting channel.",
+                )
+            else:
+                facts = (
+                    "I can't disable, hide, or evade audit logging for an operation.",
+                    "Compliant next step: I can explain the recorded approval workflow or help you correct an authorized action through the normal process.",
                 )
             result = ReaderResult(status='not_confirmed', answer_shape='detail', completeness='bounded',
                                   summary='The requested action is outside the safe, read-only and compliant assistant scope.',
@@ -8898,6 +8898,34 @@ class AdminPortalReader:
                 recovered = _native_approaching_sla_rows(seed, question)
                 if recovered.result.status == 'success':
                     return recovered
+                # A current queue can legitimately have no countdown rows.
+                # Report that bounded state explicitly instead of collapsing
+                # it into the generic planner failure message.
+                tables = [node for node in _observation_semantic_nodes(observation)
+                          if node.get('kind') in {'table', 'grid'} and node.get('rowFields')
+                          and any(_key(header) in {'sla', 'sladescription'} for header in node.get('columnHeaders', []))]
+                sla_values = []
+                for table in tables:
+                    for row in table.get('rowFields') or []:
+                        if isinstance(row, dict):
+                            value = next((str(cell).strip() for key, cell in row.items()
+                                          if _key(key) in {'sla', 'sladescription'} and str(cell).strip()), '')
+                            if value and value not in sla_values:
+                                sla_values.append(value)
+                if tables and sla_values:
+                    result = ReaderResult(
+                        status='success', page=request.start_path, section='My Application Tasks',
+                        answer_shape='due', completeness='bounded',
+                        summary='No approaching-SLA countdown rows are visible in the current Service Application view.',
+                        facts=(
+                            'No Service Application task in the current bounded view displays a verifiable approaching-SLA countdown.',
+                            'Visible SLA values in this view: ' + ', '.join(sla_values[:12]) + '.',
+                            'The portal does not define a separate day threshold for the phrase approaching SLA; overdue and on-time labels were not reclassified.',
+                        ),
+                    )
+                    return ReaderOutcome(result, {'stage': 'service_application_approaching_sla',
+                                                  'permission': permission_audit, 'observation': observation,
+                                                  'result': result.public_json()})
                 return seed
             except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
                 result = ReaderResult(status='load_failed', page=request.start_path, answer_shape='due',
