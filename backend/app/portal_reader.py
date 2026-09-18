@@ -8652,6 +8652,84 @@ class AdminPortalReader:
             return ReaderOutcome(result, {'stage':'content_module_pending_reviews',
                                           'permission':permission_audit, 'observation':observation,
                                           'result':result.public_json()})
+
+        # Preserve a literal Content Library category switch such as
+        # "How about movies?" from the immediately preceding Books read.
+        # This is a native tab transition, not a new API-selection question;
+        # routing it through the planner previously lost the conversation
+        # context and returned an unconfirmed result.
+        content_library_switch = re.fullmatch(
+            r'\s*how about\s+(?P<category>movies?|newspapers?|magazines?|video\s+games?)\s*[?.!]?[\s]*',
+            question, re.I,
+        )
+        previous_intent = bounded_conversation_context.get('previousIntent') or {}
+        previous_page = str(
+            previous_intent.get('page')
+            or (previous_intent.get('sourceHint') or {}).get('page')
+            or bounded_conversation_context.get('sourceHint', {}).get('page')
+            or ''
+        ) if isinstance(previous_intent, dict) else ''
+        if content_library_switch and previous_page.rstrip('/').casefold() == '/content/contentlibrary':
+            page = '/content/ContentLibrary'
+            request = PortalReadRequest(start_path=page, actions=({'type': 'observe'},))
+            denied = validate_policy(request, reason='content_library_category_followup')
+            if denied:
+                result = ReaderResult(status='no_permission', page=page, source_hint={'page': page},
+                                      summary='The current permissions do not allow reading the requested Content Library category.',
+                                      missing=(denied,))
+                return ReaderOutcome(result, {'stage':'content_library_category_followup',
+                                              'permission':permission_audit, 'result':result.public_json()})
+            try:
+                initial = await portal_read_stage(request, timeout_stage='content_library_category_followup',
+                                                  attempt='content_library_category_followup')
+                observation = (initial.get('result') or {}).get('observation') or {}
+                category = str(content_library_switch.group('category')).casefold()
+                category_label = ('Movies' if category.startswith('movie') else
+                                  'Newspapers' if category.startswith('newspaper') else
+                                  'Magazines' if category.startswith('magazine') else 'Video Games')
+                action = _observed_switch_tab_action({'name': category_label}, observation)
+                selected = any(
+                    isinstance(tab, dict) and tab.get('selected') is True
+                    and str(tab.get('name') or '').casefold() == category_label.casefold()
+                    for tab in observation.get('tabControls', [])
+                )
+                if action is None and not selected:
+                    result = ReaderResult(status='not_confirmed', page=page, answer_shape='list',
+                                          summary=f'The {category_label} category was not visible in the current Content Library view.',
+                                          missing=('content_library_category_not_observed',))
+                    return ReaderOutcome(result, {'stage':'content_library_category_followup',
+                                                  'permission':permission_audit, 'observation':observation,
+                                                  'result':result.public_json()})
+                if action is not None:
+                    followup = await portal_read_stage(
+                        replace(request, actions=(action,)),
+                        timeout_stage='content_library_category_followup_read',
+                        attempt='content_library_category_followup_read',
+                    )
+                    observation = (followup.get('result') or {}).get('observation') or {}
+                    if not followup.get('ok'):
+                        result = _reader_result_from_tool(followup)
+                        return ReaderOutcome(replace(result, page=page, source_hint={'page': page}),
+                                             {'stage':'content_library_category_followup',
+                                              'permission':permission_audit, 'result':result.public_json()})
+                result = _native_explicit_source_rows(observation, page=page, question=question)
+                if result is not None:
+                    return ReaderOutcome(replace(result, source_hint={'page': page}),
+                                         {'stage':'content_library_category_followup',
+                                          'permission':permission_audit, 'observation':observation,
+                                          'result':result.public_json()})
+                result = ReaderResult(status='not_confirmed', page=page, answer_shape='list',
+                                      summary=f'The {category_label} category opened, but its records were not displayed in a verifiable list.',
+                                      missing=('content_library_category_rows_not_observed',))
+                return ReaderOutcome(result, {'stage':'content_library_category_followup',
+                                              'permission':permission_audit, 'observation':observation,
+                                              'result':result.public_json()})
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                result = ReaderResult(status='not_confirmed', page=page, answer_shape='list',
+                                      summary=f'The {category_label} category could not be read.',
+                                      missing=(type(exc).__name__,))
+                return ReaderOutcome(result, {'stage':'content_library_category_followup',
+                                              'permission':permission_audit, 'result':result.public_json()})
         if _profile_verification_pending_followup(question, bounded_conversation_context):
             previous = bounded_conversation_context.get('previousIntent') or {}
             if previous.get('profileVerificationEmpty') == 'true':
