@@ -8913,6 +8913,18 @@ class AdminPortalReader:
                             if value and value not in sla_values:
                                 sla_values.append(value)
                 if tables and sla_values:
+                    visible_rows = []
+                    for table in tables:
+                        headers = table.get('columnHeaders') or []
+                        for row in table.get('rowFields') or []:
+                            if not isinstance(row, dict):
+                                continue
+                            selected = {
+                                key: value for key, value in row.items()
+                                if key in headers and isinstance(value, (str, int, float))
+                            }
+                            if selected:
+                                visible_rows.append(json.dumps(selected, ensure_ascii=False, separators=(',', ':')))
                     result = ReaderResult(
                         status='success', page=request.start_path, section='My Application Tasks',
                         answer_shape='due', completeness='bounded',
@@ -8920,7 +8932,10 @@ class AdminPortalReader:
                         facts=(
                             'No Service Application task in the current bounded view displays a verifiable approaching-SLA countdown.',
                             'Visible SLA values in this view: ' + ', '.join(sla_values[:12]) + '.',
+                            f'The current bounded view contains {len(visible_rows)} visible Service Application task row(s).',
+                            *visible_rows[:8],
                             'The portal does not define a separate day threshold for the phrase approaching SLA; overdue and on-time labels were not reclassified.',
+                            'This is the current bounded view, not a collection-wide total. Use the portal pagination or filters to inspect additional tasks.',
                         ),
                     )
                     return ReaderOutcome(result, {'stage': 'service_application_approaching_sla',
