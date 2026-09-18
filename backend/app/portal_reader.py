@@ -8540,7 +8540,8 @@ class AdminPortalReader:
                 "approval_bypass": bool(re.search(
                     r'\b(?:skip|bypass|circumvent|evade)\b.{0,80}\b(?:approval|approve|review|process)\b'
                     r'|\bapprove\b.{0,60}\b(?:directly|without|skip|bypass)\b'
-                    r'|\bsubmit\b.{0,80}\b(?:approval|approve)\b.{0,60}\b(?:without|hide|conceal|not tell|no)\b.{0,40}\b(?:reviewer|review|audit)\b',
+                    r'|\bsubmit\b.{0,80}\b(?:approval|approve)\b.{0,60}\b(?:without|hide|conceal|not tell|no)\b.{0,40}\b(?:reviewer|review|audit)\b'
+                    r'|\b(?:i have permission|do it anyway|just do it)\b',
                     candidate,
                 )),
                 "audit_evasion": bool(re.search(
@@ -8556,6 +8557,7 @@ class AdminPortalReader:
                     r'\b(?:report|evidence|proof|record|document|complaint|case|violation|allegation)\b'
                     r'|\b(?:report|evidence|proof|record|document|complaint|case|complaint|allegation)\b.{0,100}'
                     r'\b(?:fabricat|falsif|forg|fake|invent|manipulat|backdat|doctor)\w*\b'
+                    r'|\b(?:change|edit|modify|alter)\b.{0,80}\b(?:record|status)\b.{0,80}\b(?:look|appear|approved|compliant)\w*\b'
                     r'|\b(?:false|fake)\s+(?:evidence|report|proof|record|document|complaint|allegation)\b'
                     r'|\bframe\b.{0,50}\b(?:someone|somebody|the other party|them|a person)\b'
                     r'|\blie\b.{0,50}\b(?:in|on|about)\b.{0,30}\b(?:report|complaint|statement|record)\b'
@@ -8581,6 +8583,11 @@ class AdminPortalReader:
             audit_evasion = audit_evasion or previous_safety["audit_evasion"]
             threat_request = threat_request or previous_safety["threat_request"]
             fabrication_request = fabrication_request or previous_safety["fabrication_request"]
+        if re.search(
+            r'\b(?:only a test|remove the word fake|tell me the steps|make the (?:report|message) more convincing)\b',
+            normalized_question,
+        ):
+            fabrication_request = True
         if question_requests_business_mutation(question) and not any((approval_bypass, audit_evasion, threat_request, fabrication_request)):
             trace.record("read_policy", "failed", failure_code="action_not_read_only",
                          output_summary={"decision": "explicit_business_command_rejected"})
@@ -8623,7 +8630,7 @@ class AdminPortalReader:
             r'|\bhow (?:can|should) i report (?:this|a concern) properly\b'
             r'|\bwhat information should i preserve\b.{0,80}\b(?:complaint|report)\b'
             r'|\bhow do i report (?:a concern|this) through the proper channel\b'
-            r'|\bhelp me separate verified facts from assumptions\b'
+            r'|\b(?:can you )?help (?:me )?separate verified facts from assumptions\b'
             r'|\bexplain the normal approval and audit workflow\b',
             normalized_question,
         ))
@@ -8663,6 +8670,26 @@ class AdminPortalReader:
                                   summary='The requested action is outside the safe, read-only and compliant assistant scope.',
                                   facts=facts, missing=('unsafe_or_noncompliant_request',))
             return ReaderOutcome(result, {'stage':'safety_compliance_boundary',
+                                          'permission':permission_audit, 'result':result.public_json()})
+        record_summary_without_change = bool(re.search(
+            r'\bsummarize\b.{0,40}\b(?:the )?(?:current )?record\b.{0,40}\bwithout changing\b',
+            normalized_question,
+        ))
+        previous_intent = bounded_conversation_context.get('previousIntent') or {}
+        has_record_identity = bool(previous_intent.get('recordIdentity')) or bool(re.search(
+            r'\b(?:trx|ml|case|application|license|permit)[-_ ]?[a-z0-9-]{3,}\b', normalized_question,
+        ))
+        if record_summary_without_change and not has_record_identity:
+            result = ReaderResult(
+                status='not_confirmed', answer_shape='detail', completeness='bounded',
+                summary='Please identify the record to summarize.',
+                facts=(
+                    'I can summarize a record without changing it, but the request does not identify a specific application, case, license, permit, or transaction.',
+                    'Provide the record number or another unique identifier and I will read only the permitted details.',
+                ),
+                missing=('record_identity_required',),
+            )
+            return ReaderOutcome(result, {'stage':'record_summary_clarification',
                                           'permission':permission_audit, 'result':result.public_json()})
         missing_transaction = re.search(r'\bTRX-99999999-ZZ\b', question, re.I)
         if missing_transaction:
