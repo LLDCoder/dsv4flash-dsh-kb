@@ -77,7 +77,9 @@ function renderLocalizedContent(node, content) {
   node.replaceChildren();
   const text = String(content || "");
   const event = node.closest(".event");
-  if (event) event.classList.toggle("rtl", containsArabic(text));
+  const rtl = containsArabic(text);
+  node.dir = rtl ? "rtl" : "ltr";
+  if (event) event.classList.toggle("rtl", rtl);
   if (!text) return;
   text.split(/\n{2,}/).forEach((paragraph) => {
     const lines = paragraph.split("\n");
