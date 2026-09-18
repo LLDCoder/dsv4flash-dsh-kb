@@ -2647,6 +2647,8 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
         return "/content/ContentLibrary"
     if re.search(r"\b(?:license|licensing)\s+refunds?\b", normalized):
         return "/happiness/refunds"
+    if re.search(r"\b(?:license|licensing)\b.{0,40}\b(?:status|licenses?)\b|رخص(?:تي|ة)|حالة.{0,20}رخص", normalized):
+        return "/licensing/licenses"
     if _profile_verification_pending_followup(question, context):
         return "/licensing/profile"
     return ""
@@ -9081,7 +9083,7 @@ class AdminPortalReader:
                 return ReaderOutcome(result, {'stage': 'service_application_approaching_sla',
                                               'permission': permission_audit, 'result': result.public_json()})
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
-        if explicit_source in {'/happiness/refunds', '/content/ContentLibrary'}:
+        if explicit_source in {'/happiness/refunds', '/content/ContentLibrary', '/licensing/licenses'}:
             request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
             denied = validate_policy(request, reason='explicit_named_source_list')
             if denied:
