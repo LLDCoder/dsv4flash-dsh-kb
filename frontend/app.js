@@ -70,6 +70,35 @@ function renderLocalizedContent(node, content) {
   if (event) event.classList.toggle("rtl", containsArabic(text));
   if (!text) return;
   text.split(/\n{2,}/).forEach((paragraph) => {
+    const lines = paragraph.split("\n");
+    const bulletLines = lines.filter((line) => /^\s*[•●▪◦*-]\s+/.test(line));
+    if (containsArabic(paragraph) && bulletLines.length) {
+      let list = null;
+      lines.forEach((line) => {
+        const match = line.match(/^\s*[•●▪◦*-]\s+(.*)$/);
+        if (match) {
+          if (!list) {
+            list = document.createElement("ul");
+            list.className = "localized-list";
+            list.dir = "rtl";
+            node.appendChild(list);
+          }
+          const item = document.createElement("li");
+          item.textContent = match[1];
+          list.appendChild(item);
+          return;
+        }
+        if (line.trim()) {
+          list = null;
+          const block = document.createElement("div");
+          block.className = "localized-block";
+          block.dir = containsArabic(line) ? "rtl" : "ltr";
+          block.textContent = line;
+          node.appendChild(block);
+        }
+      });
+      return;
+    }
     const block = document.createElement("div");
     block.className = "localized-block";
     block.dir = containsArabic(paragraph) ? "rtl" : "ltr";
