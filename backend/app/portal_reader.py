@@ -219,6 +219,7 @@ class UserPermissionContext:
     subpages: tuple[str, ...] = ()
     buttons: tuple[str, ...] = ()
     data_scope: dict[str, Any] = field(default_factory=dict)
+    preferred_language: str = ""
 
     def prompt_json(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -1427,6 +1428,21 @@ def permission_context_from_user_info(payload: Any) -> UserPermissionContext:
     scope = bounded_json(scope_values[0], max_depth=4, max_items=50, max_string=300) if scope_values else {}
     if not isinstance(scope, dict):
         scope = {"values": scope if isinstance(scope, list) else [scope]}
+    profile_rows = envelope_data.get("userProfileInfo") if isinstance(envelope_data, dict) else None
+    profile = profile_rows[0] if isinstance(profile_rows, list) and profile_rows and isinstance(profile_rows[0], dict) else {}
+    language_id = profile.get("defaultLanguageId") or profile.get("DefaultLanguageId")
+    language_code = str(profile.get("primaryLangCode") or profile.get("PrimaryLangCode") or "").casefold()
+    preferred_language = {
+        "1": "en", "en": "en", "english": "en", "enus": "en",
+        "2": "ar", "ar": "ar", "arabic": "ar", "arar": "ar",
+        "3": "zh", "zh": "zh", "chinese": "zh", "zhcn": "zh",
+    }.get(str(language_id).strip().casefold(), "")
+    if not preferred_language:
+        preferred_language = {
+            "en": "en", "english": "en", "enus": "en",
+            "ar": "ar", "arabic": "ar", "arar": "ar",
+            "zh": "zh", "chinese": "zh", "zhcn": "zh",
+        }.get(language_code, "")
     return UserPermissionContext(
         user_id=user_id,
         account=account,
@@ -1437,6 +1453,7 @@ def permission_context_from_user_info(payload: Any) -> UserPermissionContext:
         subpages=_strings(_find_values(payload, aliases["subpages"])),
         buttons=_strings(_find_values(payload, aliases["buttons"])),
         data_scope=scope,
+        preferred_language=preferred_language,
     )
 
 
@@ -1474,6 +1491,7 @@ def permission_audit_summary(context: UserPermissionContext) -> dict[str, Any]:
         "pageCount": len(context.pages),
         "subpageCount": len(context.subpages),
         "buttonCount": len(context.buttons),
+        "preferredLanguage": context.preferred_language,
         "observedAt": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -8534,6 +8552,30 @@ class AdminPortalReader:
             },
         )
         normalized_question = re.sub(r'\s+', ' ', question).strip().casefold()
+
+        # A slash date with both day and month in the 1..12 range is
+        # inherently ambiguous. Ask the user which convention they intended
+        # before reading a portal page rather than returning a generic failure.
+        ambiguous_date = re.search(r"(?<!\d)(\d{1,2})/(\d{1,2})/(\d{4})(?!\d)", question)
+        if ambiguous_date:
+            first, second, year = (int(ambiguous_date.group(index)) for index in (1, 2, 3))
+            if first <= 12 and second <= 12:
+                result = ReaderResult(
+                    status="not_confirmed",
+                    answer_shape="detail",
+                    completeness="bounded",
+                    summary="The date format is ambiguous and needs confirmation.",
+                    facts=(
+                        f"The date {ambiguous_date.group(0)} can mean {year:04d}-{first:02d}-{second:02d} (MM/DD/YYYY) or {year:04d}-{second:02d}-{first:02d} (DD/MM/YYYY).",
+                        "Please confirm which date you mean before I search the task list.",
+                    ),
+                    missing=("ambiguous_date_format",),
+                )
+                return ReaderOutcome(result, {
+                    "stage": "date_format_clarification",
+                    "permission": permission_audit,
+                    "result": result.public_json(),
+                })
 
         def _safety_flags(candidate: str) -> dict[str, bool]:
             return {

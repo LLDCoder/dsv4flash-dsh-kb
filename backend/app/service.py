@@ -84,12 +84,12 @@ def recoverable_reader_failure(exc: Exception, *, timeout_seconds: float) -> tup
     return evidence, audit
 
 
-def _response_language_for(text: str) -> str:
-    """Keep Chinese follow-ups in Chinese while retaining Arabic/English behavior."""
+def _response_language_for(text: str, preferred_language: str | None = None) -> str:
+    """Choose explicit request, then the verified profile language, then script."""
 
-    if any("\u4e00" <= char <= "\u9fff" for char in text):
+    if any("\u4e00" <= char <= "\u9fff" for char in text) and preferred_language not in {"en", "ar"}:
         return "zh"
-    return response_language_for(text)
+    return response_language_for(text, preferred_language)
 
 
 def _format_remaining_minutes(value: int | float | str) -> str:
@@ -131,6 +131,31 @@ def reader_evidence_only_response(
     question: str = "",
 ) -> str:
     """Render the bounded Reader result without another source of business facts."""
+    if re.search(r"支持中文|support(?:ed)?\s+(?:language|languages|chinese)|official(?:ly)?\s+support", question or "", re.I):
+        support_messages = {
+            "zh": "当前正式支持英语和阿拉伯语。中文问题可以提供有限帮助，但为保证页面字段和业务状态准确，建议使用英语或阿拉伯语。",
+            "en": "The officially supported response languages are English and Arabic. Chinese questions may receive limited assistance, but English or Arabic is recommended for accurate portal fields and business status.",
+            "ar": "اللغتان المدعومتان رسميًا للرد هما الإنجليزية والعربية. يمكن تقديم مساعدة محدودة بالأسئلة الصينية، لكن يُنصح باستخدام الإنجليزية أو العربية لدقة حقول البوابة وحالة الأعمال.",
+        }
+        support = support_messages.get(language, support_messages["en"])
+        if not reader_result.get("facts") or reader_result.get("result") not in {"success", "no_data"}:
+            return support
+        metric_match = re.search(
+            r"([^|\n]+)\s*\|\s*SLA\s+Compliance(?:\s*\|\s*([^|\n]+))?",
+            " ".join(str(item) for item in reader_result.get("facts") or []),
+            re.I,
+        )
+        if metric_match:
+            metric = metric_match.group(1).strip()
+            metric_messages = {
+                "zh": f"当前仪表盘的 SLA 合规率为 {metric}。",
+                "en": f"The current dashboard shows an SLA Compliance value of {metric}.",
+                "ar": f"تُظهر لوحة المعلومات الحالية أن قيمة الامتثال لاتفاقية مستوى الخدمة هي {metric}.",
+            }
+            return support + "\n\n" + metric_messages.get(language, metric_messages["en"])
+        return support + "\n\n" + reader_evidence_only_response(
+            reader_result, language, prior_answer_coverage=prior_answer_coverage, question=""
+        )
     assignment = assignment_answer(reader_result, language)
     if assignment is not None:
         return assignment
@@ -1982,6 +2007,10 @@ class DSHService:
                             "reader.result",
                             {**evidence, "requestId": principal.request_id, "runtimeId": conversation.runtime_id},
                         )
+                    # GetUserInfo is the authoritative source for the signed-in
+                    # profile language. Explicit per-turn requests still win.
+                    profile_language = str((audit_evidence.get("permission") or {}).get("preferredLanguage") or "")
+                    language = _response_language_for(latest_content, profile_language)
                     await self.append_status(db, conversation, "drafting", language, request_id=principal.request_id)
                     assembly_started = time.perf_counter()
                     content, formatting_failed, assembly_strategy = await self._natural_reader_response(

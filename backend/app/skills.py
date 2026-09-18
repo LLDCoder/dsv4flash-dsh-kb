@@ -1,8 +1,31 @@
+import re
 from typing import Any
 
 
-def response_language_for(text: str) -> str:
-    """Use Arabic only for primarily Arabic input; English is the fallback."""
+def requested_response_language(text: str) -> str | None:
+    """Return an explicitly requested output language, when one is present.
+
+    Explicit requests must win over script heuristics: Arabic users may ask for
+    English and English users may ask for Arabic in the same turn.
+    """
+    value = str(text or "")
+    if re.search(r"\b(?:in|answer|respond|reply|write)\s+(?:in\s+)?english\b|بال(?:لغة\s+)?الإنجليزية|بالإنجليزية", value, re.I):
+        return "en"
+    if re.search(r"\b(?:in|answer|respond|reply|write)\s+(?:in\s+)?arabic\b|بال(?:لغة\s+)?العربية|بالعربية", value, re.I):
+        return "ar"
+    if re.search(r"\b(?:in|answer|respond|reply|write)\s+(?:in\s+)?chinese\b|用中文|中文回答|中文回复", value, re.I):
+        return "zh"
+    return None
+
+
+def response_language_for(text: str, preferred_language: str | None = None) -> str:
+    """Choose output language using explicit request, profile preference, then script."""
+
+    explicit = requested_response_language(text)
+    if explicit:
+        return explicit
+    if preferred_language in {"en", "ar", "zh"}:
+        return preferred_language
 
     arabic_count = sum(
         1
