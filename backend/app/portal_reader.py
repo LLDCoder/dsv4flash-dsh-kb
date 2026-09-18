@@ -8578,7 +8578,9 @@ class AdminPortalReader:
                 result = ReaderResult(status='no_permission', page=page, source_hint={'page': page},
                     summary='The current account cannot read Inspection Task Management.',
                     facts=('The current account permissions do not include Inspection Task Management. '
-                           'No inspection task records were read.',), missing=('page_not_permitted',))
+                           'No inspection task records were read.',
+                           'Next step: ask an administrator to grant this account the Inspection Task Management page permission, then sign in again and retry the request.'),
+                    missing=('page_not_permitted',))
                 return ReaderOutcome(result, {'stage':'named_page_permission', 'permission':permission_audit,
                                               'result':result.public_json()})
             # This is an authorization question, not a request to derive a
@@ -8591,7 +8593,8 @@ class AdminPortalReader:
                 status='success', page=page, source_hint={'page': page},
                 answer_shape='detail', completeness='bounded',
                 summary='The current account can read Inspection Task Management.',
-                facts=('The current account permissions include Inspection Task Management.',),
+                facts=('The current account permissions include Inspection Task Management.',
+                       'How to proceed: open the Admin Portal, go to Inspection > Inspection Task Management, and use the To Do or Completed view to inspect the task list.'),
             )
             return ReaderOutcome(result, {'stage':'named_page_permission', 'permission':permission_audit,
                                           'result':result.public_json()})
