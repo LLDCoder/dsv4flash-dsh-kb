@@ -8548,7 +8548,7 @@ class AdminPortalReader:
                     r'\b(?:don\'t|do not|avoid|disable|hide|conceal|delete|remove|erase|destroy|omit|withhold)\b.{0,80}'
                     r'\b(?:log|logging|audit|trace|detected|trail|record|records|evidence|source|history)\b'
                     r'|\b(?:log|logging|audit|trace|trail|record|records|evidence|source|history)\b.{0,80}'
-                    r'\b(?:off|disable|hide|avoid|without|delete|remove|erase|destroy|omit|withhold)\b',
+                    r'\b(?:off|disable|hide|avoid|delete|remove|erase|destroy|omit|withhold)\b',
                     candidate,
                 )),
                 "threat_request": bool(re.search(r'\b(?:threat|threatening|intimidat|blackmail)\w*\b', candidate)),
