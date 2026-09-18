@@ -61,6 +61,31 @@ class RegistryAndRoutingTests(unittest.TestCase):
                 )
                 self.assertEqual(response_language_for(question), language)
 
+    def test_chinese_customer_questions_use_chinese_response_language(self):
+        self.assertEqual(response_language_for("显示我的支付记录"), "zh")
+        self.assertEqual(response_language_for("给我查一下Peter有几个申请"), "zh")
+
+    def test_generic_violations_requests_are_not_fine_payment_requests(self):
+        definitions = [{
+            "skill_id": "violations_fines_status",
+            "workflow": {
+                "deterministicRouting": [{
+                    "priority": 1001,
+                    "anyTerms": ["显示我的违规和罚款", "اعرض مخالفاتي وغراماتي"],
+                    "route": {"category": "data_query", "routingLocked": True},
+                }],
+            },
+        }]
+        for question in (
+            "显示我的违规和罚款",
+            "اعرض مخالفاتي وغراماتي",
+        ):
+            with self.subTest(question=question):
+                route = resolve_configured_skill(question, definitions)
+                self.assertIsNotNone(route)
+                self.assertEqual(route.skill_id, "violations_fines_status")
+                self.assertTrue(route.routing_locked)
+
     def test_license_renewal_process_uses_knowledge_in_english_and_arabic(self):
         questions = (
             ("How do I renew my license?", "en"),

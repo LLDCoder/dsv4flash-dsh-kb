@@ -5,7 +5,7 @@ from typing import Any
 
 
 def response_language_for(text: str) -> str:
-    """Use Arabic only for primarily Arabic input; English is the fallback."""
+    """Choose the user's predominant supported script for customer responses."""
 
     arabic_count = sum(
         1
@@ -17,7 +17,12 @@ def response_language_for(text: str) -> str:
         or "\ufe70" <= char <= "\ufeff"
     )
     latin_count = sum(1 for char in text if ("A" <= char <= "Z") or ("a" <= char <= "z"))
-    return "ar" if arabic_count > latin_count else "en"
+    chinese_count = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    if arabic_count > max(latin_count, chinese_count):
+        return "ar"
+    if chinese_count > latin_count:
+        return "zh"
+    return "en"
 
 
 @dataclass(frozen=True)
@@ -279,7 +284,7 @@ SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
     "license_permit_modification_knowledge": {"domain": "licenses_permits", "aliases": ["modify license", "modify permit", "change license details", "update media license", "add license activity", "修改许可证", "修改牌照"]},
     "permit_download": {"domain": "licenses_permits", "aliases": ["download license", "download permit", "license document", "下载许可证"]},
     "payment_receipt": {"domain": "payments", "aliases": ["receipt", "payment receipt", "收据", "付款凭证"]},
-    "fine_appeal": {"domain": "fines", "aliases": ["appeal fine", "violation appeal", "申诉罚款", "违规申诉"]},
+    "fine_appeal": {"domain": "fines", "aliases": ["appeal fine", "violation appeal", "申诉罚款", "违规申诉", "罚款申诉", "اعتراض على غرامة", "اعتراضاتي على الغرامات"]},
     "complaint_create": {"domain": "enquiries", "aliases": ["complaint", "投诉", "delayed application"]},
     "enquiry_followup": {"domain": "enquiries", "aliases": ["follow up enquiry", "enquiry follow-up", "跟进咨询"]},
     "enquiry_reopen": {"domain": "enquiries", "aliases": ["reopen enquiry", "resolved enquiry", "重新打开咨询"]},
@@ -290,6 +295,7 @@ SKILL_ROUTING_METADATA: dict[str, dict[str, Any]] = {
     "service_fees": {"domain": "knowledge_policy", "aliases": ["service fee", "processing time", "费用", "办理时间"]},
     "latest_regulations": {"domain": "knowledge_policy", "aliases": ["regulation", "cabinet resolution", "media rules", "法规", "条例"]},
     "fine_payment": {"domain": "fines", "aliases": ["pay fine", "unpaid fine", "罚款缴纳", "未缴罚款"]},
+    "violations_fines_status": {"domain": "fines", "aliases": ["violations and fines", "show my violations", "show my fines", "违规和罚款", "查看我的违规", "显示我的违规和罚款", "مخالفاتي وغراماتي", "اعرض مخالفاتي وغراماتي"]},
 }
 
 
@@ -777,13 +783,13 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
         {"priority": 980, "anyTerms": ["pay now", "how much to pay", "need to pay", "pay for", "payment details"], "anyTermGroups": [["application"], ["request"], ["申请"], ["请求"]], "route": {"category": "data_query", "routingLocked": True}},
     ],
     "payment_receipt": [
-        {"priority": 970, "anyTerms": ["refund", "退款", "استرداد"], "noneTerms": ["refund in progress", "refund completed", "failed refund", "refund status", "退款中", "退款完成", "交易状态", "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
+        {"priority": 970, "anyTerms": ["request a refund", "refund button", "申请退款", "提交退款", "我要退款", "طلب استرداد", "أريد طلب استرداد", "زر الاسترداد"], "noneTerms": ["refund in progress", "refund completed", "failed refund", "refund status", "退款中", "退款完成", "交易状态", "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
         {"priority": 970, "anyTerms": ["download", "下载", "تنزيل", "تحميل", "export", "导出", "تصدير"], "anyTermGroups": [["receipt"], ["收据"], ["إيصال"], ["transaction"], ["交易"], ["record"], ["记录"], ["payment"], ["付款"], ["支付"]], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
         {"priority": 900, "anyTerms": ["payment", "transaction", "receipt", "付款", "支付", "交易", "收据", "إيصال", "إيصال الدفع"], "route": {"category": "data_query", "routingLocked": True}},
     ],
     "technical_enquiry": [{"priority": 995, "anyTerms": ["technical enquiry", "technical inquiry", "payment technical issue", "cannot complete payment", "technical support", "技术咨询", "无法完成支付", "استفسار تقني", "تعذر الدفع", "لا أستطيع إتمام الدفع"], "route": {"category": "api_call", "routingLocked": True}}],
     "fine_appeal": [{"priority": 965, "anyTerms": ["appeal", "challenge", "申诉", "申诉期限", "استئناف", "طعن"], "anyTermGroups": [["fine"], ["violation"], ["violation penalty"], ["fine notification"], ["罚款"], ["违规"], ["违章"], ["غرامة"], ["مخالفة"]], "route": {"category": "data_query", "fields": ["violation_number"], "routingLocked": True}}],
-    "fine_payment": [{"priority": 960, "anyTerms": ["fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "route": {"category": "data_query", "routingLocked": True}}],
+    "fine_payment": [{"priority": 960, "anyTerms": ["fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "anyTermGroups": [["pay", "fine"], ["unpaid", "fine"], ["payment", "fine"], ["refund", "fine"], ["罚款", "缴纳"], ["未缴", "罚款"], ["待缴", "罚款"], ["دفع", "غرامة"], ["الغرامات", "المستحقة"]], "route": {"category": "data_query", "routingLocked": True}}],
     "latest_regulations": [
         {"priority": 880, "anyTerms": ["quote", "exactly", "逐字", "原文", "اقتبس", "حرفيًا", "النص الأصلي"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "exact_quote", "fields": ["regulation_or_resolution_reference", "article_number"], "choices": ["Latest updates", "Summary", "Exact quotation"]}},
         {"priority": 870, "anyTerms": ["regulation", "media rules", "media regulations", "cabinet resolution", "法规", "条例", "لائحة", "لوائح", "تشريعات", "قرار مجلس الوزراء", "content standards", "advertising on social media", "media content", "child-safety", "child safety", "children", "advertising rules", "policy comparison", "regulation version", "معايير المحتوى", "سلامة الأطفال"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "fields": ["regulation_topic", "regulation_or_resolution_reference", "article_number"], "choices": ["Latest updates", "Summary", "Exact quotation"]}},
@@ -801,6 +807,9 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
         {"priority": 900, "anyTerms": ["my", "mine", "i have", "do i have", "我的", "我有", "رخصتي", "رخصي", "تصريحي", "تصاريحي", "لدي", "الخاصة بي", "حسابي"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب", "download", "下载", "تنزيل", "تحميل", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد", "modify", "modification", "修改", "变更"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
         {"priority": 898, "anyTerms": ["number", "no.", "编号", "号码", "رقم"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "patterns": ["(?<!\\d)\\d{5,}(?!\\d)"], "noneTerms": ["application", "申请", "申请状态", "حالة الطلب", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
         {"priority": 895, "anyTerms": ["valid until", "license status", "licence status", "permit status", "how many license", "how many licence", "number of licenses", "number of licences", "which licenses", "which licences", "which permits", "expiring licenses", "expiring licences", "expiring permits", "哪些许可证", "许可证数量", "牌照数量", "许可证状态", "牌照状态", "ما هي الرخص", "أي الرخص", "الرخص التي", "حالة الرخص", "حالة التصاريح", "عدد الرخص", "عدد التصاريح"], "anyTermGroups": [["license"], ["licence"], ["permit"], ["许可证"], ["牌照"], ["许可"], ["رخص"], ["تصريح"], ["تصاريح"], ["ترخيص"], ["تراخيص"]], "noneTerms": ["application", "申请", "طلب", "申请状态", "حالة الطلب", "renew", "renewal", "续期", "延期", "تجديد", "أجدد", "تمديد"], "route": {"category": "data_query", "fields": ["license_or_permit_type", "license_number"], "routingLocked": True}},
+    ],
+    "violations_fines_status": [
+        {"priority": 1001, "anyTerms": ["show my violations and fines", "violations and fines", "show my violations", "show my fines", "what fines do i have", "my violations", "my fines", "违规和罚款", "查看我的违规和罚款", "显示我的违规和罚款", "查看我的违规", "显示我的罚款", "我的违规", "我的罚款", "اعرض مخالفاتي وغراماتي", "مخالفاتي وغراماتي", "اعرض مخالفاتي", "اعرض غراماتي", "مخالفات وغرامات"], "noneTerms": ["appeal", "申诉", "استئناف", "طعن", "pay this", "pay a fine", "how do i pay", "payment", "缴纳", "支付", "دفع"], "route": {"category": "data_query", "routingLocked": True}},
     ],
     "inspection_notice_guidance": [{"priority": 995, "anyTerms": ["inspection notice", "received an inspection", "notice of inspection", "检查通知", "收到检查", "إشعار تفتيش"], "route": {"category": "knowledge", "toolName": "knowledge.search", "mode": "summary", "routingLocked": True}}],
     "application_status": [
@@ -1085,11 +1094,12 @@ def build_system_prompt(
     if route.category == "knowledge" and not evidence_available:
         guardrails.append("When knowledge-base evidence is unavailable, do not present general knowledge as a verified UMC rule.")
 
-    target = "ARABIC" if response_language == "ar" else "ENGLISH"
+    target = {"ar": "ARABIC", "zh": "CHINESE"}.get(response_language, "ENGLISH")
     language_policy = [
         "LANGUAGE POLICY (mandatory and higher priority than the language used by tools, retrieved documents, or internal instructions):",
         "- Answer in Arabic when the user's latest message is primarily Arabic.",
         "- Answer in English when the user's latest message is English.",
+        "- Answer in Chinese when the user's latest message is primarily Chinese.",
         "- Answer in English for every other language. English is the default response language.",
         f"- Required response language for this turn: {target}. Use only {target} for explanatory prose, while preserving necessary proper nouns, identifiers, and verbatim quotations.",
     ]

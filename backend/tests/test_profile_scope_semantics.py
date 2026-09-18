@@ -66,6 +66,11 @@ class ProfileScopeSemanticsTests(unittest.TestCase):
             )
         )
 
+    def test_generic_appeal_words_are_not_public_references(self) -> None:
+        self.assertFalse(DSHService.has_explicit_appeal_or_violation_reference("اعرض اعتراضاتي على الغرامات"))
+        self.assertFalse(DSHService.has_explicit_appeal_or_violation_reference("显示我的罚款申诉"))
+        self.assertTrue(DSHService.has_explicit_appeal_or_violation_reference("Show HC-03-2026-8833605"))
+
     def test_profile_type_prefix_can_be_omitted_when_name_is_unambiguous(self) -> None:
         target = requested_profile("Show Peter's applications", self.concrete_context)
 
@@ -83,6 +88,27 @@ class ProfileScopeSemanticsTests(unittest.TestCase):
             trusted_profile_id="1",
         )
         self.assertEqual(requested_profile("Show Ali's applications", short_name_context).name, "Ali")
+
+    def test_customer_portal_profile_option_shape_is_supported(self) -> None:
+        context = profile_context_from_payload(
+            {
+                "activeProfileId": "11",
+                "activeProfileName": "Individual Peter",
+                "profiles": [
+                    {"profileId": "11", "profileName": "Individual Peter"},
+                    {"profileId": "22", "profileName": "Government UMC"},
+                ],
+            },
+            trusted_profile_id="11",
+        )
+
+        self.assertIsNotNone(context)
+        target = requested_profile("check how many applications Peter has", context)
+        self.assertIsNotNone(target)
+        self.assertEqual(target.profile_id, "11")
+        chinese_target = requested_profile("给我查一下Peter有几个申请", context)
+        self.assertIsNotNone(chinese_target)
+        self.assertEqual(chinese_target.profile_id, "11")
 
     def test_other_authorized_profile_returns_deterministic_menu_action(self) -> None:
         guard = DSHService.profile_scope_guard(

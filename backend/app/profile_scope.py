@@ -85,8 +85,15 @@ def profile_context_from_payload(value: object, *, trusted_profile_id: str | Non
     profiles: list[ProfileReference] = []
     for item in value.get("profiles", [])[:50] if isinstance(value.get("profiles"), list) else []:
         if isinstance(item, dict):
-            profile_id = str(item.get("id") or "").strip()
-            name = str(item.get("name") or "").strip()[:256]
+            # The DSH HTTP contract historically used ``id`` / ``name``;
+            # the Customer Portal's ChatProfileOption uses
+            # ``profileId`` / ``profileName``.  Accept both spellings so the
+            # active, token-verified scope and its display-name matching use
+            # the same profile collection.  The client value remains only
+            # presentation metadata: ``trusted_profile_id`` below is still
+            # the authorization boundary for the active Profile.
+            profile_id = str(item.get("id") or item.get("profileId") or "").strip()
+            name = str(item.get("name") or item.get("profileName") or "").strip()[:256]
             if profile_id and name:
                 profiles.append(ProfileReference(profile_id, name))
     if active_profile_id and active_profile_name and (trusted_profile_id is None or client_profile_id == active_profile_id) and all(item.profile_id != active_profile_id for item in profiles):
@@ -119,7 +126,20 @@ def _contains_profile_name(text: str, name: str) -> bool:
     if not name_words or len(name_words) > len(text_words):
         return False
     width = len(name_words)
-    return any(text_words[index:index + width] == name_words for index in range(len(text_words) - width + 1))
+    if any(text_words[index:index + width] == name_words for index in range(len(text_words) - width + 1)):
+        return True
+
+    # ``\\w`` treats CJK and Latin characters as one continuous word.  Thus
+    # a Chinese question such as ``给我查一下Peter有几个申请`` has no word
+    # boundary around ``Peter`` even though the display name is unambiguous.
+    # For an ASCII Profile name, permit CJK/punctuation around it while still
+    # requiring non-ASCII-word boundaries on either side.  That preserves the
+    # protection against matching a short name such as ``Test`` in ``latest``.
+    ascii_words = re.findall(r"[A-Za-z0-9]+", name)
+    if ascii_words and " ".join(ascii_words).casefold() == " ".join(name_words).casefold():
+        joined = r"[^A-Za-z0-9_]+".join(re.escape(word) for word in ascii_words)
+        return bool(re.search(rf"(?<![A-Za-z0-9_]){joined}(?![A-Za-z0-9_])", text, flags=re.IGNORECASE))
+    return False
 
 
 def _profile_name_forms(name: str) -> set[str]:

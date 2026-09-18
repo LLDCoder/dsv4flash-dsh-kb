@@ -20,8 +20,10 @@ class _Catalog:
 class _Router:
     def __init__(self, result):
         self.result = result
+        self.calls = []
 
     async def route_skill(self, _question, _candidates, _context):
+        self.calls.append([item["skillId"] for item in _candidates])
         return self.result
 
 
@@ -203,6 +205,61 @@ class RouterDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(
             resolve_skill("How many Total assets belong to Peter?").skill_id,
             "application_status",
+        )
+
+    async def test_locked_skill_still_extracts_declared_keyword_filter(self):
+        service = self.service(
+            {
+                "skillId": "application_status",
+                "intentId": "list",
+                "filters": {"keyword": "Peter"},
+                "confidence": 0.99,
+                "needsClarification": False,
+            }
+        )
+
+        route, metadata = await service.choose_skill_route(
+            None,
+            "check how many applications Peter has",
+            SkillRoute("application_status", "data_query", routing_locked=True),
+            SimpleNamespace(runtime_id="rt_test"),
+            "req_test",
+            {},
+        )
+
+        self.assertEqual(route.skill_id, "application_status")
+        self.assertTrue(metadata["routingLocked"])
+        self.assertEqual(metadata["intentId"], "list")
+        self.assertEqual(metadata["filters"], {"keyword": "Peter"})
+        self.assertEqual(metadata["filterExtractionMode"], "locked_skill")
+        self.assertEqual(service.llm.calls, [["application_status"]])
+
+    async def test_empty_lexical_recall_uses_complete_catalog_before_knowledge_fallback(self):
+        service = self.service(
+            {
+                "skillId": "application_status",
+                "intentId": "list",
+                "filters": {"keyword": "Peter"},
+                "confidence": 0.95,
+                "needsClarification": False,
+            }
+        )
+
+        route, metadata = await service.choose_skill_route(
+            None,
+            "给我查一下Peter有几个申请",
+            SkillRoute("general", "general"),
+            SimpleNamespace(runtime_id="rt_test"),
+            "req_test",
+            {},
+        )
+
+        self.assertEqual(route.skill_id, "application_status")
+        self.assertTrue(metadata["semanticFallbackUsed"])
+        self.assertEqual(metadata["filters"], {"keyword": "Peter"})
+        self.assertCountEqual(
+            service.llm.calls[0],
+            ["application_status", "general_knowledge"],
         )
 
 

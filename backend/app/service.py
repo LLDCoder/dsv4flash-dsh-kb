@@ -110,6 +110,17 @@ class DSHService:
         return False
 
     @staticmethod
+    def has_explicit_appeal_or_violation_reference(content: str) -> bool:
+        """Keep appeal-list keywords limited to public business references.
+
+        Generic domain nouns (including their Chinese and Arabic equivalents)
+        are not list-search terms.  Passing them to the appeal API can turn a
+        valid unfiltered list into a false zero-result response.
+        """
+
+        return bool(re.search(r"\b(?:HC|VN)-\d{1,8}(?:-\d{1,8}){2,}\b", content, re.IGNORECASE))
+
+    @staticmethod
     def profile_scope_guard(
         content: str,
         response_language: str,
@@ -633,21 +644,64 @@ class DSHService:
         metadata: dict[str, Any] = {"routerMode": mode, "keywordSkillId": keyword_route.skill_id}
         if mode == "keyword":
             return keyword_route, metadata
+        catalog = await self.skill_catalog.load(db)
         if keyword_route.routing_locked:
-            # A deterministic route may opt out of LLM replacement when its
-            # declared precedence is part of the business contract.
+            # A deterministic route fixes the business Skill, but must not
+            # discard declared filters.  In particular, a request such as
+            # "how many applications does Peter have" still needs the
+            # selected Skill's keyword filter.  Give the classifier only the
+            # locked Skill: it cannot replace the business domain, Tool, or
+            # authorization boundary, and its output is normalized against
+            # that Skill's published routing contract below.
             metadata["routingLocked"] = True
+            locked_candidate = next(
+                (item for item in catalog if item.get("skillId") == keyword_route.skill_id),
+                None,
+            )
+            metadata["candidateSkillIds"] = [keyword_route.skill_id] if locked_candidate else []
+            metadata["candidateDomainIds"] = [str(locked_candidate.get("domain") or "general")] if locked_candidate else []
+            metadata["domainScores"] = {}
+            metadata["routeContextUsed"] = bool((context or {}).get("recentMessages") or (context or {}).get("activeSkillId"))
+            if locked_candidate:
+                try:
+                    extracted = await self.llm.route_skill(question, [locked_candidate], context)
+                    intent_id, filters = normalize_route_directives(
+                        {"routing": locked_candidate.get("routing")},
+                        extracted.get("intentId"),
+                        extracted.get("filters"),
+                    )
+                    metadata.update({
+                        "llmSkillId": extracted.get("skillId"),
+                        "confidence": extracted.get("confidence"),
+                        # The configured request bindings are selected by
+                        # intent.  Retain the normalized intent alongside the
+                        # filters so a locked route does not fall through to
+                        # an unbound default request.
+                        "intentId": intent_id,
+                        "filters": filters or None,
+                        "filterExtractionMode": "locked_skill",
+                    })
+                except Exception:
+                    metadata["filterExtractionMode"] = "locked_skill_unavailable"
             return keyword_route, metadata
 
-        catalog = await self.skill_catalog.load(db)
         domain_recall = recall_skill_candidates(question, catalog, context)
         current_turn_recall = recall_skill_candidates(question, catalog)
         recall = add_keyword_skill_candidate(domain_recall, catalog, keyword_route.skill_id)
         candidates = recall.candidates
+        semantic_fallback_used = False
+        if not candidates and catalog:
+            # Lexical aliases are a fast recall aid, not an authority to send
+            # a personal-record request to knowledge search.  In LLM mode, a
+            # bounded complete catalog lets the classifier resolve natural
+            # language variants before the configured knowledge fallback.
+            candidates = list(catalog)
+            semantic_fallback_used = True
         candidate_ids = [str(item.get("skillId")) for item in candidates]
         metadata["candidateSkillIds"] = candidate_ids
         metadata["candidateDomainIds"] = recall.domains
         metadata["domainScores"] = recall.scores
+        metadata["semanticFallbackUsed"] = semantic_fallback_used
         metadata["routeContextUsed"] = bool((context or {}).get("recentMessages") or (context or {}).get("activeSkillId"))
         llm_result: dict[str, object] | None = None
         fallback_reason = ""
@@ -1615,13 +1669,37 @@ class DSHService:
                         ]
                         tool_definition_by_name.update({item["name"]: item for item in selected_tool_docs})
                     target_profile = requested_profile(latest_content, profile_context)
+                    # ApplicationPage's keyword is deliberately limited to
+                    # application numbers and service names.  A Profile name
+                    # is handled by the trusted portal scope instead: when it
+                    # names the currently selected Profile, query that scope
+                    # without inventing a text filter.  This keeps a request
+                    # such as "how many applications does Peter have" correct
+                    # when Peter is the selected Profile.
+                    profile_name_handled_by_scope = bool(
+                        route.skill_id in {"application_status", "application_payment"}
+                        and target_profile
+                        and profile_context
+                        and target_profile.profile_id == profile_context.active_profile_id
+                    )
+                    declared_filters = dict(route_metadata.get("filters") or {})
+                    if profile_name_handled_by_scope:
+                        declared_filters.pop("keyword", None)
+                    if (
+                        route.skill_id == "fine_appeal"
+                        and declared_filters.get("keyword")
+                        and not self.has_explicit_appeal_or_violation_reference(latest_content)
+                    ):
+                        declared_filters.pop("keyword", None)
+                        route_metadata["unqualifiedAppealKeywordSuppressed"] = True
                     route_metadata["filters"] = bind_declared_keyword_filter(
                         selected_workflow,
                         allowed_tool_names,
                         tool_definition_by_name,
-                        route_metadata.get("filters"),
-                        target_profile.name if target_profile else None,
+                        declared_filters,
+                        None if profile_name_handled_by_scope else (target_profile.name if target_profile else None),
                     ) or None
+                    route_metadata["profileNameHandledByScope"] = profile_name_handled_by_scope
                     handoff_tool_request = cross_skill_handoff.get("toolRequest") if cross_skill_handoff else None
                     handoff_missing_message = (
                         str(cross_skill_handoff.get("missingMessage") or "")
@@ -1720,6 +1798,9 @@ class DSHService:
                             "candidateDomainIds": route_metadata.get("candidateDomainIds"),
                             "domainScores": route_metadata.get("domainScores"),
                             "routingLocked": route_metadata.get("routingLocked", False),
+                            "filterExtractionMode": route_metadata.get("filterExtractionMode"),
+                            "semanticFallbackUsed": route_metadata.get("semanticFallbackUsed", False),
+                            "profileNameHandledByScope": route_metadata.get("profileNameHandledByScope", False),
                             "attachmentOcrForced": route_metadata.get("attachmentOcrForced", False),
                             "routeContextUsed": route_metadata.get("routeContextUsed"),
                             "confidence": route_metadata.get("confidence"),
@@ -1762,6 +1843,21 @@ class DSHService:
                             ),
                         },
                     )
+                    if profile_name_handled_by_scope:
+                        messages.insert(
+                            1,
+                            {
+                                "role": "system",
+                                "content": (
+                                    "TRUSTED PROFILE SCOPE CONFIRMATION: The Profile name in the user's "
+                                    "request matches the currently selected, authorized Profile. The completed "
+                                    "lookup is the full scope for that named current Profile and intentionally "
+                                    "did not use a text keyword. For a count request, report applicationPage.total "
+                                    "as the count for that named current Profile. Do not say that the Profile name "
+                                    "was searched, cannot be used, or that the user may need to switch Profiles."
+                                ),
+                            },
+                        )
                     if route.category in {"data_query", "api_call"}:
                         messages.insert(1, {"role": "system", "content": "FLOW INTERACTION CONSTRAINTS: " + json.dumps(build_flow_prompt(route), ensure_ascii=False)})
                     forced_response_message: str | None = clarifying_question or handoff_missing_message or (
@@ -1916,6 +2012,10 @@ class DSHService:
                                         "TRUSTED TOOL RESULT: The lookup below has already completed. "
                                         "Use these returned values as the authoritative source for the answer. "
                                         "For a count question, use the returned total/count field for the filtered result, not the length of a paginated items list. "
+                                        "TRUSTED EXECUTED TOOL PARAMETERS: "
+                                        + json.dumps(audited_parameters, ensure_ascii=False)
+                                        + ". State that a filter was applied only when its corresponding parameter appears here. "
+                                        "When startTime/endTime or startDate/endDate appear here, the server-side date range was applied; do not describe it as unsupported or unverified. "
                                         "Do not ask the user to confirm a profile, category, or record that is already present, "
                                         "and never claim there are no records when this result contains items.\n"
                                         + self.answer_tool_evidence(tool_name, tool_result, masking_policy)
