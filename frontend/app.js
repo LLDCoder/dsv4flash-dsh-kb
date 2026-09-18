@@ -1,4 +1,4 @@
-const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
+const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, lastUserContent: "", lastFailedUserContent: "", transientErrorNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
 const dshBasePath = window.location.pathname === "/dsh-audit" || window.location.pathname.startsWith("/dsh-audit/")
   ? "/dsh-audit"
@@ -175,6 +175,7 @@ function addEvent(type, content, meta = "") {
   if (empty) empty.remove();
   const row = document.createElement("article");
   row.className = `event ${type.includes("assistant") ? "assistant" : type.includes("user") ? "user" : "system"}`;
+  if (containsArabic(content)) row.classList.add("rtl");
   row.innerHTML = `<div class="event-meta"><span>${type}</span><small>${meta}</small></div><div class="event-body"></div>`;
   renderLocalizedContent(row.querySelector(".event-body"), content);
   $("events").appendChild(row);
@@ -1490,6 +1491,9 @@ async function createConversation() {
   state.assistantNode = null;
   state.assistantContent = "";
   state.statusNode = null;
+  state.lastUserContent = "";
+  state.lastFailedUserContent = "";
+  state.transientErrorNode = null;
   $("conversationId").value = state.conversationId;
   $("runtimeId").textContent = data.runtimeId || "等待首条消息";
   $("lastSeq").textContent = data.lastSeq;
@@ -1576,6 +1580,9 @@ async function connect() {
           return;
         }
         if (packet.type !== "event") return;
+        // A subscribe/reconnect can replay the last event at the boundary.
+        // Do not render it twice or a recovered turn will show duplicate rows.
+        if (packet.seq && packet.seq <= state.seq) return;
         state.seq = Math.max(state.seq, packet.seq || 0);
         $("lastSeq").textContent = state.seq;
         const data = packet.data || {};
@@ -1591,13 +1598,21 @@ async function connect() {
           $("events").scrollTop = $("events").scrollHeight;
         } else if (packet.eventType === "assistant.message") {
           clearAssistantStatus();
+          if (state.transientErrorNode?.isConnected) state.transientErrorNode.remove();
+          state.transientErrorNode = null;
           state.assistantContent = data.content || state.assistantContent;
           if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", state.assistantContent, `seq ${packet.seq}`);
           else renderLocalizedContent(state.assistantNode, state.assistantContent);
         } else if (packet.eventType === "user.message") {
           clearAssistantStatus();
           const attachmentNote = data.attachment ? `附件：${data.attachment.fileName || "未命名文件"}` : "";
-          addEvent("user.message", data.content || attachmentNote, `seq ${packet.seq}`);
+          const userContent = data.content || attachmentNote;
+          if (userContent && userContent === state.lastFailedUserContent) {
+            state.lastFailedUserContent = "";
+          } else {
+            addEvent("user.message", userContent, `seq ${packet.seq}`);
+          }
+          state.lastUserContent = userContent;
           state.assistantNode = null;
           state.assistantContent = "";
         } else if (packet.eventType === "turn.completed") {
@@ -1607,7 +1622,13 @@ async function connect() {
             void loadAuditDetail(state.conversationId);
           }
         } else {
-          if (packet.eventType === "runtime.error" || packet.eventType === "turn.cancelled") clearAssistantStatus();
+          if (packet.eventType === "runtime.error") {
+            clearAssistantStatus();
+            state.lastFailedUserContent = state.lastUserContent;
+            state.transientErrorNode = addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
+            return;
+          }
+          if (packet.eventType === "turn.cancelled") clearAssistantStatus();
           addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
         }
       };
