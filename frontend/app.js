@@ -1,13 +1,5 @@
-const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, lastUserContent: "", lastFailedUserContent: "", transientErrorNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
+const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
-const dshBasePath = window.location.pathname === "/dsh-audit" || window.location.pathname.startsWith("/dsh-audit/")
-  ? "/dsh-audit"
-  : "";
-const dshUrl = (path) => `${dshBasePath}${path}`;
-
-function opensAuditByDefault() {
-  return window.location.pathname.replace(/\/+$/, "") === "/dsh-audit";
-}
 
 function debounce(callback, delay = 250) {
   let timer = null;
@@ -71,95 +63,17 @@ function containsArabic(text) {
   return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/u.test(text);
 }
 
-const allowedExternalMessageHosts = [
-  "umc-adminportal.sol.daypop.ai",
-  "umc-customerportal.sol.daypop.ai",
-];
-
-function isIpLiteral(hostname) {
-  return hostname.startsWith("[")
-    || hostname.endsWith("]")
-    || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname);
-}
-
-function hostMatchesPolicy(hostname) {
-  const normalizedHostname = hostname.toLowerCase().replace(/\.$/, "");
-  return allowedExternalMessageHosts.some((entry) => {
-    const allowed = entry.trim().toLowerCase().replace(/\.$/, "");
-    if (!allowed) return false;
-    if (allowed.startsWith("*.")) {
-      const suffix = allowed.slice(2);
-      return Boolean(suffix) && normalizedHostname.endsWith("." + suffix);
-    }
-    return normalizedHostname === allowed;
-  });
-}
-
-function normalizeMessageHref(value) {
-  const candidate = String(value || "").trim();
-  if (!candidate || candidate.includes("\\")) return null;
-  try {
-    if (candidate.startsWith("/") && !candidate.startsWith("//")) {
-      const url = new URL(candidate, window.location.origin);
-      if (url.origin !== window.location.origin || url.username || url.password) return null;
-      return url.pathname + url.search + url.hash;
-    }
-
-    const url = new URL(candidate);
-    if (url.origin === window.location.origin && !url.username && !url.password) {
-      return url.pathname + url.search + url.hash;
-    }
-    if (
-      url.protocol !== "https:"
-      || url.username
-      || url.password
-      || (url.port && url.port !== "443")
-      || !url.hostname
-      || isIpLiteral(url.hostname)
-      || !hostMatchesPolicy(url.hostname)
-    ) {
-      return null;
-    }
-    return url.href;
-  } catch {
-    return null;
-  }
-}
-
-function renderMarkdownLinks(node, text) {
-  const linkPattern = /\[([^\]\n]+)\]\(([^)\s]+)\)/g;
-  let cursor = 0;
-  let match;
-  while ((match = linkPattern.exec(text)) !== null) {
-    node.append(document.createTextNode(text.slice(cursor, match.index)));
-    const href = normalizeMessageHref(match[2]);
-    if (href) {
-      const link = document.createElement("a");
-      link.textContent = match[1];
-      link.href = href;
-      link.className = "message-link";
-      if (href.startsWith("https://")) {
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-      }
-      node.append(link);
-    } else {
-      node.append(document.createTextNode(match[0]));
-    }
-    cursor = match.index + match[0].length;
-  }
-  node.append(document.createTextNode(text.slice(cursor)));
-}
-
 function renderLocalizedContent(node, content) {
   node.replaceChildren();
   const text = String(content || "");
+  const event = node.closest(".event");
+  if (event) event.classList.toggle("rtl", containsArabic(text));
   if (!text) return;
   text.split(/\n{2,}/).forEach((paragraph) => {
     const block = document.createElement("div");
     block.className = "localized-block";
     block.dir = containsArabic(paragraph) ? "rtl" : "ltr";
-    renderMarkdownLinks(block, paragraph);
+    block.textContent = paragraph;
     node.appendChild(block);
   });
 }
@@ -175,7 +89,6 @@ function addEvent(type, content, meta = "") {
   if (empty) empty.remove();
   const row = document.createElement("article");
   row.className = `event ${type.includes("assistant") ? "assistant" : type.includes("user") ? "user" : "system"}`;
-  if (containsArabic(content)) row.classList.add("rtl");
   row.innerHTML = `<div class="event-meta"><span>${type}</span><small>${meta}</small></div><div class="event-body"></div>`;
   renderLocalizedContent(row.querySelector(".event-body"), content);
   $("events").appendChild(row);
@@ -211,7 +124,7 @@ async function api(path, options = {}) {
   const rawToken = state.umcToken || $("umcToken")?.value.trim() || "";
   const headers = { "Content-Type": "application/json", "X-User-Id": $("userId").value, "X-Tenant-Id": $("tenantId").value, ...(options.headers || {}) };
   if (rawToken && !headers.Authorization) headers.Authorization = rawToken.toLowerCase().startsWith("bearer ") ? rawToken : `Bearer ${rawToken}`;
-  const response = await fetch(dshUrl(path), { credentials: "same-origin", ...options, headers });
+  const response = await fetch(path, { credentials: "same-origin", ...options, headers });
   if (response.status === 401 && !path.startsWith("/api/v1/console/")) {
     state.consoleAuthenticated = false;
     showConsoleGate("控制台会话已过期，请重新输入密码。", true);
@@ -222,7 +135,7 @@ async function api(path, options = {}) {
 
 async function consoleApi(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  const response = await fetch(dshUrl(path), { credentials: "same-origin", ...options, headers });
+  const response = await fetch(path, { credentials: "same-origin", ...options, headers });
   if (response.status === 401) {
     state.consoleAuthenticated = false;
     showConsoleGate("控制台会话已过期，请重新输入密码。", true);
@@ -250,7 +163,7 @@ function hideConsoleGate() {
 }
 
 async function checkConsoleSession() {
-  const response = await fetch(dshUrl("/api/v1/console/session"), { credentials: "same-origin" });
+  const response = await fetch("/api/v1/console/session", { credentials: "same-origin" });
   if (!response.ok) return false;
   const data = await response.json();
   return data.authenticated === true;
@@ -262,7 +175,7 @@ async function loginConsole(event) {
   const status = $("consoleAuthStatus");
   status.textContent = "正在验证…";
   try {
-    const response = await fetch(dshUrl("/api/v1/console/login"), {
+    const response = await fetch("/api/v1/console/login", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
@@ -271,7 +184,6 @@ async function loginConsole(event) {
     if (!response.ok) throw new Error("密码不正确或服务不可用");
     state.consoleAuthenticated = true;
     hideConsoleGate();
-    if (opensAuditByDefault()) setTab("auditPanel");
     await loadUmcToken().catch(() => {});
   } catch (error) {
     status.textContent = error.message;
@@ -308,7 +220,7 @@ function syncUmcIdentity(rawToken, session = {}) {
 }
 
 async function logoutConsole() {
-  await fetch(dshUrl("/api/v1/console/logout"), { method: "POST", credentials: "same-origin" }).catch(() => {});
+  await fetch("/api/v1/console/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
   state.consoleAuthenticated = false;
   state.umcToken = "";
   $("umcToken").value = "";
@@ -329,7 +241,6 @@ async function bootstrapConsole() {
     return;
   }
   hideConsoleGate();
-  if (opensAuditByDefault()) setTab("auditPanel");
   await loadUmcToken().catch(() => {});
 }
 
@@ -641,8 +552,13 @@ function renderSkills(items) {
     enabledCell.textContent = item.enabled ? "启用" : "停用";
     enabledCell.className = item.enabled ? "skill-enabled" : "skill-disabled";
     const actionCell = document.createElement("td");
-    actionCell.textContent = "只读";
-    actionCell.className = "skill-disabled";
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "secondary skill-edit-button";
+    editButton.dataset.action = "edit-skill";
+    editButton.dataset.skillId = item.skillId;
+    editButton.textContent = "编辑";
+    actionCell.appendChild(editButton);
     row.append(idCell, nameCell, versionCell, sourceCell, statusCell, enabledCell, actionCell);
     body.appendChild(row);
   });
@@ -693,8 +609,13 @@ function renderTools(items) {
     const stateCell = document.createElement("td");
     stateCell.textContent = `${item.published ? "PUBLISHED" : "DRAFT"} · ${item.enabled ? "启用" : "停用"}`;
     const action = document.createElement("td");
-    action.textContent = "只读";
-    action.className = "skill-disabled";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary";
+    button.dataset.action = item.toolType === "system_default" ? "view-system-tool" : "edit-tool";
+    button.dataset.toolName = item.toolName;
+    button.textContent = item.toolType === "system_default" ? "查看配置" : "编辑";
+    action.appendChild(button);
     row.append(typeCell, name, endpoint, sideEffect, stateCell, action);
     body.appendChild(row);
   });
@@ -706,7 +627,7 @@ async function loadTools(page = state.toolPage) {
     const params = new URLSearchParams({ page: String(page), pageSize: String(state.toolPageSize) });
     const search = $("toolsSearchInput")?.value.trim();
     if (search) params.set("search", search);
-    const data = await api(`/api/v1/audit/tools?${params}`);
+    const data = await api(`/api/v1/tools?${params}`);
     state.toolPage = data.page || page;
     state.toolTotal = data.total || 0;
     renderTools(data.items || []);
@@ -1028,12 +949,6 @@ function auditRecordSummary(item) {
     case "assistant.chunk": return content ? `流式片段：${content.slice(0, 180)}` : "流式回答片段";
     case "assistant.welcome": return "初始化欢迎语";
     case "skill.route": return `Skill：${payload.skillId || payload.skill_id || "未标识"} · 模式：${payload.mode || "answer"}`;
-    case "reader.evidence": {
-      const permission = payload.permission || {};
-      const account = permission.account || "未确认";
-      const currentRole = permission.currentRole || (Array.isArray(permission.roles) ? permission.roles[0] : "") || "未确认";
-      return `Reader 审计：登录账号 ${account} · 当前角色 ${currentRole} · 阶段 ${payload.stage || "未标识"}`;
-    }
     case "tool.call": return `调用 Tool：${payload.toolName || "未标识"}`;
     case "tool.result": return `Tool 结果：${payload.toolName || "未标识"} · ${payload.ok === false ? "失败" : "成功"}`;
     case "llm.request": return `LLM 请求：${payload.model || "未标识"} · ${Array.isArray(payload.messages) ? `${payload.messages.length} 条消息` : ""}`;
@@ -1099,12 +1014,9 @@ function renderAuditOverview(conversation) {
   heading.append(headingText, status);
   const grid = document.createElement("div");
   grid.className = "audit-overview-grid";
-  const readerIdentity = conversation.readerIdentity || conversation.auditIdentity || {};
   const fields = [
     ["创建时间", auditTime(conversation.createdAt)],
     ["最近活动", auditTime(conversation.lastActivityAt)],
-    ["登录账号", readerIdentity.account || "未记录"],
-    ["当前角色", readerIdentity.currentRole || "未记录"],
     ["运行时", conversation.runtimeId || "尚未分配"],
     ["DSH Session", conversation.dshSessionId || "-"],
     ["Skill Profile", conversation.skillProfile || "default"],
@@ -1113,7 +1025,6 @@ function renderAuditOverview(conversation) {
   if (state.auditScope === "admin" && conversation.owner) {
     fields.splice(2, 0, ["所属账号", conversation.owner.userId || "-"]);
     fields.splice(3, 0, ["所属租户", conversation.owner.tenantId || "-"]);
-    fields.splice(4, 0, ["所属用户 ID", conversation.owner.userId || conversation.userId || "-"]);
   }
   fields.forEach(([label, value]) => {
     const field = document.createElement("div");
@@ -1251,10 +1162,6 @@ async function loadAuditDetail(conversationId, { append = false } = {}) {
 }
 
 async function loadAuditConversations(page = state.auditConversationPage) {
-  const requestedPage = Number(page);
-  page = Number.isInteger(requestedPage) && requestedPage >= 1
-    ? requestedPage
-    : state.auditConversationPage;
   state.auditConversationPage = page;
   $("auditStatus").textContent = "正在读取会话列表…";
   try {
@@ -1345,8 +1252,8 @@ function extractUploadReference(value, depth = 0) {
 
 async function postAttachment(file, token) {
   const formData = new FormData();
-  // Reuse the configured UMC Portal upload endpoint. The portal contract
-  // uses the plural multipart field name `files`.
+  // Reuse the UMC Customer Portal upload endpoint. The verified portal
+  // contract uses the plural multipart field name `files`.
   formData.append("files", file, file.name);
   const response = await fetch("/api/Document/Upload", {
     method: "POST",
@@ -1491,9 +1398,6 @@ async function createConversation() {
   state.assistantNode = null;
   state.assistantContent = "";
   state.statusNode = null;
-  state.lastUserContent = "";
-  state.lastFailedUserContent = "";
-  state.transientErrorNode = null;
   $("conversationId").value = state.conversationId;
   $("runtimeId").textContent = data.runtimeId || "等待首条消息";
   $("lastSeq").textContent = data.lastSeq;
@@ -1513,7 +1417,7 @@ async function connect() {
     const previous = state.ws;
     if (previous && previous.readyState <= 1) previous.close();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${protocol}://${location.host}${dshUrl("/api/v1/ws")}?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
+    const ws = new WebSocket(`${protocol}://${location.host}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
     state.ws = ws;
     const generation = ++state.wsGeneration;
     const ready = new Promise((resolve, reject) => {
@@ -1580,9 +1484,6 @@ async function connect() {
           return;
         }
         if (packet.type !== "event") return;
-        // A subscribe/reconnect can replay the last event at the boundary.
-        // Do not render it twice or a recovered turn will show duplicate rows.
-        if (packet.seq && packet.seq <= state.seq) return;
         state.seq = Math.max(state.seq, packet.seq || 0);
         $("lastSeq").textContent = state.seq;
         const data = packet.data || {};
@@ -1598,21 +1499,13 @@ async function connect() {
           $("events").scrollTop = $("events").scrollHeight;
         } else if (packet.eventType === "assistant.message") {
           clearAssistantStatus();
-          if (state.transientErrorNode?.isConnected) state.transientErrorNode.remove();
-          state.transientErrorNode = null;
           state.assistantContent = data.content || state.assistantContent;
           if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", state.assistantContent, `seq ${packet.seq}`);
           else renderLocalizedContent(state.assistantNode, state.assistantContent);
         } else if (packet.eventType === "user.message") {
           clearAssistantStatus();
           const attachmentNote = data.attachment ? `附件：${data.attachment.fileName || "未命名文件"}` : "";
-          const userContent = data.content || attachmentNote;
-          if (userContent && userContent === state.lastFailedUserContent) {
-            state.lastFailedUserContent = "";
-          } else {
-            addEvent("user.message", userContent, `seq ${packet.seq}`);
-          }
-          state.lastUserContent = userContent;
+          addEvent("user.message", data.content || attachmentNote, `seq ${packet.seq}`);
           state.assistantNode = null;
           state.assistantContent = "";
         } else if (packet.eventType === "turn.completed") {
@@ -1622,13 +1515,7 @@ async function connect() {
             void loadAuditDetail(state.conversationId);
           }
         } else {
-          if (packet.eventType === "runtime.error") {
-            clearAssistantStatus();
-            state.lastFailedUserContent = state.lastUserContent;
-            state.transientErrorNode = addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
-            return;
-          }
-          if (packet.eventType === "turn.cancelled") clearAssistantStatus();
+          if (packet.eventType === "runtime.error" || packet.eventType === "turn.cancelled") clearAssistantStatus();
           addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
         }
       };
@@ -1664,7 +1551,7 @@ $("selectAllSwagger").addEventListener("change", (event) => {
 $("swaggerOperationsTable").addEventListener("change", (event) => {
   if (event.target.matches("input[data-operation-id]")) updateSwaggerSelectionState();
 });
-$("reloadAuditBtn").addEventListener("click", () => { void loadAuditConversations(); });
+$("reloadAuditBtn").addEventListener("click", loadAuditConversations);
 $("auditConversationSearchInput").addEventListener("input", debounce(() => { void loadAuditConversations(1); }));
 $("auditRecordSearchInput").addEventListener("input", debounce(() => { void loadAuditDetail(state.auditConversationId); }));
 $("auditCategoryFilter").addEventListener("change", () => loadAuditDetail(state.auditConversationId));
@@ -1746,8 +1633,4 @@ $("messageForm").addEventListener("submit", async (event) => {
 
 // Unlock the console before obtaining the configured account's UMC session;
 // operators should never need to paste a token before uploading or connecting.
-if (window.__DSH_AUDIT_MODE__) {
-  void import(new URL("./audit-app.js?v=20260915-admin-portal-subtitle3", import.meta.url));
-} else {
-  void bootstrapConsole();
-}
+void bootstrapConsole();

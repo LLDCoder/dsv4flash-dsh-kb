@@ -8581,6 +8581,74 @@ class AdminPortalReader:
                            'No inspection task records were read.',), missing=('page_not_permitted',))
                 return ReaderOutcome(result, {'stage':'named_page_permission', 'permission':permission_audit,
                                               'result':result.public_json()})
+            # This is an authorization question, not a request to derive a
+            # task result from a discovered API.  GetUserInfo plus the same
+            # read-only policy used for every portal request are the
+            # authoritative evidence.  Do not send the yes/no capability
+            # probe through API selection, where an unrelated candidate can
+            # make a permitted account look indeterminate.
+            result = ReaderResult(
+                status='success', page=page, source_hint={'page': page},
+                answer_shape='detail', completeness='bounded',
+                summary='The current account can read Inspection Task Management.',
+                facts=('The current account permissions include Inspection Task Management.',),
+            )
+            return ReaderOutcome(result, {'stage':'named_page_permission', 'permission':permission_audit,
+                                          'result':result.public_json()})
+
+        # "Content Module pending reviews" is exposed by the current Content
+        # account on the Team Management page. Resolve it before model/API
+        # planning so a planner failure cannot erase the permitted read.
+        content_pending_review_query = bool(re.fullmatch(
+            r'\s*(?:show|list|display)\s+(?:me\s+)?content module pending reviews?[?.!]?\s*',
+            question, re.I,
+        ))
+        if content_pending_review_query:
+            page = '/content/team-management'
+            request = PortalReadRequest(start_path=page, actions=({'type': 'observe'},))
+            denied = validate_policy(request, reason='content_module_pending_reviews')
+            if denied:
+                result = ReaderResult(
+                    status='no_permission', page=page, source_hint={'page': page},
+                    summary='The current account cannot read Content Module pending reviews.',
+                    missing=(denied,),
+                )
+                return ReaderOutcome(result, {'stage':'content_module_pending_reviews',
+                                              'permission':permission_audit, 'result':result.public_json()})
+            try:
+                tool = await portal_read_stage(
+                    request, timeout_stage='content_module_pending_reviews',
+                    attempt='content_module_pending_reviews',
+                )
+            except ReaderStageTimeout as exc:
+                missing = 'reader_total_timeout' if exc.total_budget else 'portal_read_timeout'
+                result = ReaderResult(status='not_confirmed', page=page,
+                                      summary='Content Module pending reviews could not be read in time.',
+                                      missing=(missing,))
+                return ReaderOutcome(result, {**_timeout_evidence(exc, budget),
+                                              'stage':'content_module_pending_reviews', 'permission':permission_audit})
+            if not tool.get('ok'):
+                result = _reader_result_from_tool(tool)
+                result = replace(result, page=page, source_hint={'page': page})
+                return ReaderOutcome(result, {'stage':'content_module_pending_reviews',
+                                              'permission':permission_audit, 'result':result.public_json()})
+            observation = ((tool.get('result') or {}).get('observation') or {})
+            result = _native_explicit_source_rows(observation, page=page, question=question)
+            if result is None:
+                result = _native_metric_count_fallback(
+                    observation, page=page, scope=_permission_result_scope(permission_context), question=question,
+                )
+            if result is not None:
+                result = replace(result, source_hint={'page': page})
+                return ReaderOutcome(result, {'stage':'content_module_pending_reviews',
+                                              'permission':permission_audit, 'observation':observation,
+                                              'result':result.public_json()})
+            result = ReaderResult(status='not_confirmed', page=page, source_hint={'page': page},
+                                  summary='Content Module was opened, but its Pending Review records were not displayed in a verifiable list.',
+                                  missing=('content_pending_review_rows_not_observed',))
+            return ReaderOutcome(result, {'stage':'content_module_pending_reviews',
+                                          'permission':permission_audit, 'observation':observation,
+                                          'result':result.public_json()})
         if _profile_verification_pending_followup(question, bounded_conversation_context):
             previous = bounded_conversation_context.get('previousIntent') or {}
             if previous.get('profileVerificationEmpty') == 'true':
