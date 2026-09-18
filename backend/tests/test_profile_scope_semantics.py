@@ -71,6 +71,12 @@ class ProfileScopeSemanticsTests(unittest.TestCase):
         self.assertFalse(DSHService.has_explicit_appeal_or_violation_reference("显示我的罚款申诉"))
         self.assertTrue(DSHService.has_explicit_appeal_or_violation_reference("Show HC-03-2026-8833605"))
 
+    def test_refund_date_phrase_is_never_an_application_number(self) -> None:
+        for phrase in ("September 2026", "سبتمبر 2026", "2026年9月", "2026-09"):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(DSHService.is_date_only_search_phrase(phrase))
+        self.assertFalse(DSHService.is_date_only_search_phrase("HC-03-2026-8833605"))
+
     def test_profile_type_prefix_can_be_omitted_when_name_is_unambiguous(self) -> None:
         target = requested_profile("Show Peter's applications", self.concrete_context)
 

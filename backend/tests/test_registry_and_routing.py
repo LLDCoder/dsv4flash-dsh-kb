@@ -86,6 +86,11 @@ class RegistryAndRoutingTests(unittest.TestCase):
                 self.assertEqual(route.skill_id, "violations_fines_status")
                 self.assertTrue(route.routing_locked)
 
+    def test_arabic_payment_transactions_use_payment_history(self):
+        route = resolve_skill("اعرض معاملات الدفع المكتملة من نوع طلب خدمة")
+        self.assertEqual(route.skill_id, "payment_transaction_history")
+        self.assertTrue(route.routing_locked)
+
     def test_license_renewal_process_uses_knowledge_in_english_and_arabic(self):
         questions = (
             ("How do I renew my license?", "en"),

@@ -783,6 +783,7 @@ ROUTING_RULES: dict[str, list[dict[str, Any]]] = {
         {"priority": 980, "anyTerms": ["pay now", "how much to pay", "need to pay", "pay for", "payment details"], "anyTermGroups": [["application"], ["request"], ["申请"], ["请求"]], "route": {"category": "data_query", "routingLocked": True}},
     ],
     "payment_receipt": [
+        {"id": "payment-transactions-ar-v1", "priority": 1510, "patterns": [r"(?:معاملات\s+الدفع|سجل\s+المدفوعات|دفعات\s+مكتملة)"], "route": {"category": "data_query", "mode": "answer", "routingLocked": True}},
         {"priority": 970, "anyTerms": ["request a refund", "refund button", "申请退款", "提交退款", "我要退款", "طلب استرداد", "أريد طلب استرداد", "زر الاسترداد"], "noneTerms": ["refund in progress", "refund completed", "failed refund", "refund status", "退款中", "退款完成", "交易状态", "fine", "violation penalty", "unpaid fines", "罚款", "违规", "غرامة", "مخالفة"], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
         {"priority": 970, "anyTerms": ["download", "下载", "تنزيل", "تحميل", "export", "导出", "تصدير"], "anyTermGroups": [["receipt"], ["收据"], ["إيصال"], ["transaction"], ["交易"], ["record"], ["记录"], ["payment"], ["付款"], ["支付"]], "route": {"category": "portal_action", "mode": "portal_action", "routingLocked": True}},
         {"priority": 900, "anyTerms": ["payment", "transaction", "receipt", "付款", "支付", "交易", "收据", "إيصال", "إيصال الدفع"], "route": {"category": "data_query", "routingLocked": True}},

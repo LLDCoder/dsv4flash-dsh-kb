@@ -121,6 +121,27 @@ class DSHService:
         return bool(re.search(r"\b(?:HC|VN)-\d{1,8}(?:-\d{1,8}){2,}\b", content, re.IGNORECASE))
 
     @staticmethod
+    def is_date_only_search_phrase(value: object) -> bool:
+        """Recognize a standalone calendar phrase that is not a business ID.
+
+        Refund search accepts only an exact public application number.  Without
+        this guard, the router can mistake a month such as ``September 2026``
+        for that number and falsely claim that a server-side date filter ran.
+        """
+
+        phrase = " ".join(str(value or "").split())
+        return bool(re.fullmatch(
+            r"(?:"
+            r"(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:19|20)\d{2}"
+            r"|(?:يناير|فبراير|مارس|أبريل|ابريل|مايو|يونيو|يوليو|أغسطس|اغسطس|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر)\s+(?:19|20)\d{2}"
+            r"|(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月"
+            r"|(?:19|20)\d{2}[-/]\d{1,2}(?:[-/]\d{1,2})?"
+            r")",
+            phrase,
+            re.IGNORECASE,
+        ))
+
+    @staticmethod
     def profile_scope_guard(
         content: str,
         response_language: str,
@@ -1692,6 +1713,16 @@ class DSHService:
                     ):
                         declared_filters.pop("keyword", None)
                         route_metadata["unqualifiedAppealKeywordSuppressed"] = True
+                    if (
+                        route.skill_id == "refund_status"
+                        and self.is_date_only_search_phrase(declared_filters.get("keyword"))
+                    ):
+                        # Refund application's documented read contract has no
+                        # date parameter.  A calendar phrase must never be
+                        # sent as an application number, and the answer is
+                        # consequently forbidden from claiming a date filter.
+                        declared_filters.pop("keyword", None)
+                        route_metadata["unsupportedRefundDateSuppressed"] = True
                     route_metadata["filters"] = bind_declared_keyword_filter(
                         selected_workflow,
                         allowed_tool_names,
