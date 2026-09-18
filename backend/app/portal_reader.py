@@ -8730,6 +8730,62 @@ class AdminPortalReader:
                                       missing=(type(exc).__name__,))
                 return ReaderOutcome(result, {'stage':'content_library_category_followup',
                                               'permission':permission_audit, 'result':result.public_json()})
+
+        # A Profile Verification follow-up that asks which previously listed
+        # row is pending review can be answered from a fresh bounded read of
+        # the same table. Do not ask the planner to invent a selector from a
+        # prior answer summary.
+        profile_pending_followup = bool(re.fullmatch(
+            r'\s*which\s+one\s+is\s+pending\s+review\s*[?.!]?[\s]*', question, re.I,
+        )) and previous_page.rstrip('/').casefold() == '/licensing/profile'
+        if profile_pending_followup:
+            page = '/licensing/profile'
+            request = PortalReadRequest(start_path=page, actions=({'type': 'observe'},))
+            denied = validate_policy(request, reason='profile_pending_review_followup')
+            if denied:
+                result = ReaderResult(status='no_permission', page=page, source_hint={'page': page},
+                                      summary='The current permissions do not allow reading Profile Verification tasks.',
+                                      missing=(denied,))
+                return ReaderOutcome(result, {'stage':'profile_pending_review_followup',
+                                              'permission':permission_audit, 'result':result.public_json()})
+            try:
+                tool = await portal_read_stage(request, timeout_stage='profile_pending_review_followup',
+                                               attempt='profile_pending_review_followup')
+                observation = (tool.get('result') or {}).get('observation') or {}
+                tables = [node for node in _observation_semantic_nodes(observation)
+                          if node.get('kind') in {'table', 'grid'} and node.get('rowFields')
+                          and 'Status' in node.get('columnHeaders', [])]
+                pending_rows = []
+                for table in tables:
+                    for row in table.get('rowFields') or []:
+                        if isinstance(row, dict) and str(row.get('Status') or '').casefold() == 'pending review':
+                            pending_rows.append((table, row))
+                if pending_rows:
+                    table, _ = pending_rows[0]
+                    facts = tuple(
+                        json.dumps({key: value for key, value in row.items() if key in table.get('columnHeaders', [])},
+                                   ensure_ascii=False, separators=(',', ':'))
+                        for _table, row in pending_rows[:4]
+                    )
+                    result = ReaderResult(status='success', page=page,
+                                          section=str(table.get('heading') or 'My Profile Verification Tasks'),
+                                          source_section=str(table.get('nodeId') or ''), answer_shape='detail',
+                                          completeness='bounded', facts=facts,
+                                          summary='The pending Profile Verification task was found in the current task list.')
+                else:
+                    result = ReaderResult(status='no_data', page=page,
+                                          section='My Profile Verification Tasks', answer_shape='detail',
+                                          completeness='bounded',
+                                          summary='No Pending Review Profile Verification task is visible in the current task list.')
+                return ReaderOutcome(result, {'stage':'profile_pending_review_followup',
+                                              'permission':permission_audit, 'observation':observation,
+                                              'result':result.public_json()})
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                result = ReaderResult(status='not_confirmed', page=page, answer_shape='detail',
+                                      summary='The current Profile Verification task list could not be read.',
+                                      missing=(type(exc).__name__,))
+                return ReaderOutcome(result, {'stage':'profile_pending_review_followup',
+                                              'permission':permission_audit, 'result':result.public_json()})
         if _profile_verification_pending_followup(question, bounded_conversation_context):
             previous = bounded_conversation_context.get('previousIntent') or {}
             if previous.get('profileVerificationEmpty') == 'true':
