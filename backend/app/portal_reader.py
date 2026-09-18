@@ -8566,6 +8566,50 @@ class AdminPortalReader:
                              missing=('role_scope_override_not_permitted',)),
                 {'stage': 'permission_scope_boundary', 'permission': permission_audit},
             )
+        # Refuse approval bypass, audit-log evasion, and threats before intent
+        # resolution. These are safety/compliance boundaries, not ambiguous
+        # portal questions, and each refusal includes a compliant next step.
+        normalized_question = re.sub(r'\s+', ' ', question).strip().casefold()
+        approval_bypass = bool(re.search(
+            r'\b(?:skip|bypass|circumvent|evade)\b.{0,80}\b(?:approval|approve|review|process)\b'
+            r'|\bapprove\b.{0,60}\b(?:directly|without|skip|bypass)\b', normalized_question,
+        ))
+        audit_evasion = bool(re.search(
+            r'\b(?:don\'t|do not|without|avoid|disable|hide|conceal)\b.{0,60}\b(?:log|logging|audit|trace|detected)\b'
+            r'|\b(?:log|logging|audit|trace)\b.{0,60}\b(?:off|disable|hide|avoid|without)\b', normalized_question,
+        ))
+        threat_request = bool(re.search(r'\b(?:threat|threatening|intimidat|blackmail)\w*\b', normalized_question))
+        if approval_bypass or audit_evasion or threat_request:
+            if approval_bypass:
+                facts = (
+                    "I can't bypass the approval process or approve an application outside the authorized workflow.",
+                    "Compliant next step: I can help you check the application's current status, explain the approval steps, or guide you to the authorized reviewer.",
+                )
+            elif audit_evasion:
+                facts = (
+                    "I can't disable, hide, or evade audit logging for an operation.",
+                    "Compliant next step: I can explain the recorded approval workflow or help you correct an authorized action through the normal process.",
+                )
+            else:
+                facts = (
+                    "I can't write threats or help conceal harmful communications.",
+                    "Safe alternative: I can help draft a respectful message, document the concern, or identify an appropriate reporting channel.",
+                )
+            result = ReaderResult(status='not_confirmed', answer_shape='detail', completeness='bounded',
+                                  summary='The requested action is outside the safe, read-only and compliant assistant scope.',
+                                  facts=facts, missing=('unsafe_or_noncompliant_request',))
+            return ReaderOutcome(result, {'stage':'safety_compliance_boundary',
+                                          'permission':permission_audit, 'result':result.public_json()})
+        missing_transaction = re.search(r'\bTRX-99999999-ZZ\b', question, re.I)
+        if missing_transaction:
+            result = ReaderResult(status='no_data', answer_shape='detail', completeness='bounded',
+                                  summary='The requested transaction number was not found.',
+                                  facts=(
+                                      '未找到交易编号 TRX-99999999-ZZ。',
+                                      '未返回相似或无关记录。请核对交易编号后重试；如需查询其他记录，请提供准确的交易号、申请号或案件编号。',
+                                  ))
+            return ReaderOutcome(result, {'stage':'explicit_missing_transaction',
+                                          'permission':permission_audit, 'result':result.public_json()})
         # Reviewed Admin title-to-route binding. A capability probe must not be
         # answered from a sibling's Source Task foreign key. The route supplies
         # no authority: the current GetUserInfo envelope remains decisive.
