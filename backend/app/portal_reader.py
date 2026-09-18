@@ -8534,18 +8534,54 @@ class AdminPortalReader:
             },
         )
         normalized_question = re.sub(r'\s+', ' ', question).strip().casefold()
-        fabrication_request = bool(re.search(
-            r'\b(?:fabricat|falsif|forg|fake|invent|manufactur|alter|manipulat|backdat|doctor)\w*\b.{0,100}'
-            r'\b(?:report|evidence|proof|record|document|complaint|case|violation)\b'
-            r'|\b(?:report|evidence|proof|record|document|complaint|case)\b.{0,100}'
-            r'\b(?:fabricat|falsif|forg|fake|invent|manipulat|backdat|doctor)\w*\b'
-            r'|\b(?:false|fake)\s+(?:evidence|report|proof|record|document)\b'
-            r'|\bframe\b.{0,50}\b(?:someone|somebody|the other party|them|a person)\b'
-            r'|\blie\b.{0,50}\b(?:in|on|about)\b.{0,30}\b(?:report|complaint|statement|record)\b'
-            r'|\bmake\b.{0,80}\b(?:look|appear)\b.{0,80}\b(?:violat|guilty|approved|compliant)\w*\b',
-            normalized_question,
-        ))
-        if question_requests_business_mutation(question) and not fabrication_request:
+
+        def _safety_flags(candidate: str) -> dict[str, bool]:
+            return {
+                "approval_bypass": bool(re.search(
+                    r'\b(?:skip|bypass|circumvent|evade)\b.{0,80}\b(?:approval|approve|review|process)\b'
+                    r'|\bapprove\b.{0,60}\b(?:directly|without|skip|bypass)\b'
+                    r'|\bsubmit\b.{0,80}\b(?:approval|approve)\b.{0,60}\b(?:without|hide|conceal|not tell|no)\b.{0,40}\b(?:reviewer|review|audit)\b',
+                    candidate,
+                )),
+                "audit_evasion": bool(re.search(
+                    r'\b(?:don\'t|do not|without|avoid|disable|hide|conceal|delete|remove|erase|destroy|omit|withhold)\b.{0,80}'
+                    r'\b(?:log|logging|audit|trace|detected|trail|record|records|evidence|source|history)\b'
+                    r'|\b(?:log|logging|audit|trace|trail|record|records|evidence|source|history)\b.{0,80}'
+                    r'\b(?:off|disable|hide|avoid|without|delete|remove|erase|destroy|omit|withhold)\b',
+                    candidate,
+                )),
+                "threat_request": bool(re.search(r'\b(?:threat|threatening|intimidat|blackmail)\w*\b', candidate)),
+                "fabrication_request": bool(re.search(
+                    r'\b(?:fabricat|falsif|forg|fake|invent|manufactur|alter|manipulat|backdat|doctor)\w*\b.{0,100}'
+                    r'\b(?:report|evidence|proof|record|document|complaint|case|violation|allegation)\b'
+                    r'|\b(?:report|evidence|proof|record|document|complaint|case|complaint|allegation)\b.{0,100}'
+                    r'\b(?:fabricat|falsif|forg|fake|invent|manipulat|backdat|doctor)\w*\b'
+                    r'|\b(?:false|fake)\s+(?:evidence|report|proof|record|document|complaint|allegation)\b'
+                    r'|\bframe\b.{0,50}\b(?:someone|somebody|the other party|them|a person)\b'
+                    r'|\blie\b.{0,50}\b(?:in|on|about)\b.{0,30}\b(?:report|complaint|statement|record)\b'
+                    r'|\bmake\b.{0,80}\b(?:look|appear)\b.{0,80}\b(?:violat|guilty|approved|compliant)\w*\b',
+                    candidate,
+                )),
+            }
+
+        current_safety = _safety_flags(normalized_question)
+        approval_bypass = current_safety["approval_bypass"]
+        audit_evasion = current_safety["audit_evasion"]
+        threat_request = current_safety["threat_request"]
+        fabrication_request = current_safety["fabrication_request"]
+        previous_question = str((bounded_conversation_context.get("previousIntent") or {}).get("question") or "")
+        previous_safety = _safety_flags(re.sub(r'\s+', ' ', previous_question).strip().casefold())
+        followup_escape = bool(
+            previous_question
+            and any(previous_safety.values())
+            and re.search(r'\b(?:why not|just give me|i have permission|do it anyway|only a test|remove the word|tell me the steps|make the (?:report|message) more convincing|give me a template)\b', normalized_question)
+        )
+        if followup_escape:
+            approval_bypass = approval_bypass or previous_safety["approval_bypass"]
+            audit_evasion = audit_evasion or previous_safety["audit_evasion"]
+            threat_request = threat_request or previous_safety["threat_request"]
+            fabrication_request = fabrication_request or previous_safety["fabrication_request"]
+        if question_requests_business_mutation(question) and not any((approval_bypass, audit_evasion, threat_request, fabrication_request)):
             trace.record("read_policy", "failed", failure_code="action_not_read_only",
                          output_summary={"decision": "explicit_business_command_rejected"})
             return ReaderOutcome(
@@ -8581,19 +8617,14 @@ class AdminPortalReader:
         # Refuse approval bypass, audit-log evasion, and threats before intent
         # resolution. These are safety/compliance boundaries, not ambiguous
         # portal questions, and each refusal includes a compliant next step.
-        approval_bypass = bool(re.search(
-            r'\b(?:skip|bypass|circumvent|evade)\b.{0,80}\b(?:approval|approve|review|process)\b'
-            r'|\bapprove\b.{0,60}\b(?:directly|without|skip|bypass)\b', normalized_question,
-        ))
-        audit_evasion = bool(re.search(
-            r'\b(?:don\'t|do not|without|avoid|disable|hide|conceal)\b.{0,60}\b(?:log|logging|audit|trace|detected)\b'
-            r'|\b(?:log|logging|audit|trace)\b.{0,60}\b(?:off|disable|hide|avoid|without)\b', normalized_question,
-        ))
-        threat_request = bool(re.search(r'\b(?:threat|threatening|intimidat|blackmail)\w*\b', normalized_question))
         safe_reporting_followup = bool(re.search(
             r'\b(?:help me )?(?:write|prepare|document)\b.{0,80}\b(?:factual|truthful|accurate)\b.{0,80}'
             r'\b(?:incident report|complaint|report)\b'
-            r'|\bhow (?:can|should) i report (?:this|a concern) properly\b',
+            r'|\bhow (?:can|should) i report (?:this|a concern) properly\b'
+            r'|\bwhat information should i preserve\b.{0,80}\b(?:complaint|report)\b'
+            r'|\bhow do i report (?:a concern|this) through the proper channel\b'
+            r'|\bhelp me separate verified facts from assumptions\b'
+            r'|\bexplain the normal approval and audit workflow\b',
             normalized_question,
         ))
         if safe_reporting_followup:
