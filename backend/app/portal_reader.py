@@ -8533,7 +8533,19 @@ class AdminPortalReader:
                 "buttonCount": len(permission_context.buttons),
             },
         )
-        if question_requests_business_mutation(question):
+        normalized_question = re.sub(r'\s+', ' ', question).strip().casefold()
+        fabrication_request = bool(re.search(
+            r'\b(?:fabricat|falsif|forg|fake|invent|manufactur|alter|manipulat|backdat|doctor)\w*\b.{0,100}'
+            r'\b(?:report|evidence|proof|record|document|complaint|case|violation)\b'
+            r'|\b(?:report|evidence|proof|record|document|complaint|case)\b.{0,100}'
+            r'\b(?:fabricat|falsif|forg|fake|invent|manipulat|backdat|doctor)\w*\b'
+            r'|\b(?:false|fake)\s+(?:evidence|report|proof|record|document)\b'
+            r'|\bframe\b.{0,50}\b(?:someone|somebody|the other party|them|a person)\b'
+            r'|\blie\b.{0,50}\b(?:in|on|about)\b.{0,30}\b(?:report|complaint|statement|record)\b'
+            r'|\bmake\b.{0,80}\b(?:look|appear)\b.{0,80}\b(?:violat|guilty|approved|compliant)\w*\b',
+            normalized_question,
+        ))
+        if question_requests_business_mutation(question) and not fabrication_request:
             trace.record("read_policy", "failed", failure_code="action_not_read_only",
                          output_summary={"decision": "explicit_business_command_rejected"})
             return ReaderOutcome(
@@ -8569,7 +8581,6 @@ class AdminPortalReader:
         # Refuse approval bypass, audit-log evasion, and threats before intent
         # resolution. These are safety/compliance boundaries, not ambiguous
         # portal questions, and each refusal includes a compliant next step.
-        normalized_question = re.sub(r'\s+', ' ', question).strip().casefold()
         approval_bypass = bool(re.search(
             r'\b(?:skip|bypass|circumvent|evade)\b.{0,80}\b(?:approval|approve|review|process)\b'
             r'|\bapprove\b.{0,60}\b(?:directly|without|skip|bypass)\b', normalized_question,
@@ -8579,17 +8590,6 @@ class AdminPortalReader:
             r'|\b(?:log|logging|audit|trace)\b.{0,60}\b(?:off|disable|hide|avoid|without)\b', normalized_question,
         ))
         threat_request = bool(re.search(r'\b(?:threat|threatening|intimidat|blackmail)\w*\b', normalized_question))
-        fabrication_request = bool(re.search(
-            r'\b(?:fabricat|falsif|forg|fake|invent|manufactur|alter|manipulat|backdat|doctor)\w*\b.{0,100}'
-            r'\b(?:report|evidence|proof|record|document|complaint|case|violation)\b'
-            r'|\b(?:report|evidence|proof|record|document|complaint|case)\b.{0,100}'
-            r'\b(?:fabricat|falsif|forg|fake|invent|manipulat|backdat|doctor)\w*\b'
-            r'|\b(?:false|fake)\s+(?:evidence|report|proof|record|document)\b'
-            r'|\bframe\b.{0,50}\b(?:someone|somebody|the other party|them|a person)\b'
-            r'|\blie\b.{0,50}\b(?:in|on|about)\b.{0,30}\b(?:report|complaint|statement|record)\b'
-            r'|\bmake\b.{0,80}\b(?:look|appear)\b.{0,80}\b(?:violat|guilty|approved|compliant)\w*\b',
-            normalized_question,
-        ))
         safe_reporting_followup = bool(re.search(
             r'\b(?:help me )?(?:write|prepare|document)\b.{0,80}\b(?:factual|truthful|accurate)\b.{0,80}'
             r'\b(?:incident report|complaint|report)\b'
