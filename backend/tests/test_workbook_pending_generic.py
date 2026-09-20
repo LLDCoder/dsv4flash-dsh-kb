@@ -95,3 +95,29 @@ def test_cross_script_fallback_explains_supported_languages_in_default_language(
     )
     assert answer.startswith("I could not confirm the requested information.")
     assert "Supported response languages are English and Arabic." in answer
+
+
+def test_uae_pass_public_guidance_is_answered_without_claiming_portal_records():
+    answer = reader_evidence_only_response(
+        {"result": "not_confirmed", "facts": [], "missing": ["knowledge_gap"]},
+        "en",
+        question="How do I get UAE PASS?",
+    )
+    assert answer.startswith("To get UAE PASS")
+    assert "password" in answer and "one-time code" in answer
+
+
+def test_symbol_heavy_input_gets_a_single_language_supported_request_prompt():
+    answer = reader_evidence_only_response(
+        {
+            "result": "not_confirmed",
+            "facts": [],
+            "missing": ["intent_ambiguous"],
+            "intentContext": {"relation": "clarify", "clarificationOptions": ["one", "two"]},
+            "clarificationOptions": ["one", "two"],
+        },
+        "en",
+        question="$$!!%% @@## 😂🔥 qwezxcv",
+    )
+    assert answer.startswith("I could not identify a supported request.")
+    assert "Do you mean" not in answer

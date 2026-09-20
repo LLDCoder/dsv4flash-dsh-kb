@@ -127,6 +127,42 @@ def _clarification_labels_match_language(options: Any, language: str) -> bool:
     return not _script_conflicts_with_language(labels, language)
 
 
+def _general_guidance_response(question: str, language: str) -> str | None:
+    """Answer narrowly scoped public guidance without inventing portal records."""
+    if not re.search(r"\bUAE\s*PASS\b|uae\s*pass|الهوية الرقمية", question or "", re.I):
+        return None
+    return {
+        "en": (
+            "To get UAE PASS, install the official UAE PASS app, register with your Emirates ID "
+            "and mobile number, and complete the identity-verification steps shown in the app. "
+            "Use only official UAE PASS channels, and never share your password or one-time code here."
+        ),
+        "ar": (
+            "للحصول على UAE PASS، نزّل تطبيق UAE PASS الرسمي، وسجّل باستخدام الهوية الإماراتية "
+            "ورقم الهاتف، ثم أكمل خطوات التحقق من الهوية الظاهرة في التطبيق. استخدم القنوات الرسمية "
+            "فقط، ولا تشارك كلمة المرور أو رمز التحقق لمرة واحدة هنا."
+        ),
+        "zh": (
+            "如需获取 UAE PASS，请安装官方 UAE PASS 应用，使用阿联酋身份证和手机号码注册，"
+            "并按应用提示完成身份验证。请只使用官方渠道，不要在此提供密码或一次性验证码。"
+        ),
+    }.get(language, "To get UAE PASS, use the official UAE PASS app and complete its identity verification. Never share your password or one-time code here.")
+
+
+def _low_signal_request_response(question: str, language: str) -> str | None:
+    """Give a useful prompt for symbol-heavy or gibberish input instead of fake choices."""
+    value = str(question or "")
+    letters = re.findall(r"[A-Za-z\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]", value)
+    symbols = re.findall(r"[^\w\s]", value, re.UNICODE)
+    if len(letters) < 3 or len(symbols) <= len(letters):
+        return None
+    return {
+        "en": "I could not identify a supported request. Please ask about the dashboard, applications, licenses, profiles, tasks, or complaints in English or Arabic.",
+        "ar": "لم أتمكن من تحديد طلب مدعوم. يرجى السؤال عن لوحة التحكم أو الطلبات أو التراخيص أو الملفات الشخصية أو المهام أو الشكاوى بالعربية أو الإنجليزية.",
+        "zh": "我无法识别出受支持的请求。请使用英语或阿拉伯语询问仪表板、申请、许可证、档案、任务或投诉。",
+    }.get(language, "I could not identify a supported request. Please ask about a dashboard, application, license, profile, task, or complaint in English or Arabic.")
+
+
 def _format_remaining_minutes(value: int | float | str) -> str:
     """Render an SLA minute value as a concise user-facing duration."""
 
@@ -374,6 +410,10 @@ def reader_evidence_only_response(
         }.get(language, "Total of the displayed records")
         return f"{label}: {total:.2f}."
     status = str(reader_result.get("result") or "")
+    if not facts:
+        guidance = _general_guidance_response(question, language)
+        if guidance:
+            return guidance
     if status == 'load_failed' and not facts and reader_result.get('missing') == ['model_payment_required']:
         return {
             'en': 'The configured model service requires a balance or billing update. This request could not be completed; no business-data conclusion was verified.',
@@ -462,6 +502,9 @@ def reader_evidence_only_response(
         and options == intent.get("clarificationOptions")
     ):
         try:
+            low_signal = _low_signal_request_response(question, language)
+            if low_signal:
+                return low_signal
             if _clarification_labels_match_language(options, language):
                 return format_clarification_options(options, language)
             # Never echo labels in a different script under a fixed UI language.
