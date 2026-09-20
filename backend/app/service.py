@@ -603,6 +603,23 @@ def reader_evidence_only_response(
         "license number": "رقم الترخيص",
         "name": "الاسم",
         "title": "العنوان",
+        "ticket no": "رقم التذكرة",
+        "ticket number": "رقم التذكرة",
+        "current handler": "المسؤول الحالي",
+        "assigned to": "المكلف",
+        "owner": "المالك",
+        "responsible person": "المسؤول",
+        "service name": "اسم الخدمة",
+        "customer": "العميل",
+        "issue category": "فئة المشكلة",
+        "submission time": "وقت التقديم",
+        "team member": "عضو الفريق",
+        "pending tickets": "التذاكر قيد الانتظار",
+        "overdue tickets": "التذاكر المتأخرة",
+        "closed tickets": "التذاكر المغلقة",
+        "next step": "الخطوة التالية",
+        "source": "المصدر",
+        "count": "العدد",
     }
 
     def display_name(key: str) -> str:
@@ -629,6 +646,11 @@ def reader_evidence_only_response(
         enum_maps = {
             "status": {
                 "completed": "مكتمل",
+                "open": "مفتوح",
+                "closed": "مغلق",
+                "resolved": "تم الحل",
+                "pending review": "قيد المراجعة",
+                "processing": "قيد المعالجة",
                 "pending": "قيد الانتظار",
                 "pending refund": "استرداد قيد الانتظار",
                 "pending review": "قيد المراجعة",

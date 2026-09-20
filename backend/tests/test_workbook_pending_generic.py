@@ -1,6 +1,9 @@
 from app.portal_reader import (
     _explicit_reader_source,
     _native_metric_trend_fallback,
+    _financial_daily_status_summary,
+    _ticket_team_summary_result,
+    _ticket_team_summary_requested,
     _refund_completed_view_requested,
     _state_control_label_matches,
     reader_answer_shape,
@@ -213,3 +216,80 @@ def test_symbol_heavy_input_gets_a_single_language_supported_request_prompt():
     )
     assert answer.startswith("I could not identify a supported request.")
     assert "Do you mean" not in answer
+
+
+def _ticket_observation(rows, selected):
+    return {
+        "readHealth": {"healthy": True},
+        "tabControls": [
+            {"name": "To Do", "selected": selected == "To Do"},
+            {"name": "Completed", "selected": selected == "Completed"},
+        ],
+        "sectionSummaries": [{
+            "nodeId": f"tickets-{selected.casefold().replace(' ', '-')}",
+            "kind": "table",
+            "heading": "Enquiries & Complaints",
+            "selectedState": selected,
+            "columnHeaders": ["Ticket No.", "Current Handler", "Status", "SLA"],
+            "rowFields": rows,
+        }],
+    }
+
+
+def test_pending_workbook_ticket_queries_bind_to_the_ticket_page():
+    assert _explicit_reader_source(
+        "Inquire about the request, status, responsible person, and deadline for HC-01-2026-9762913",
+        {},
+    ) == "/happiness/tickets"
+    assert _explicit_reader_source(
+        "For transaction TRX-2026-0001, give amount, currency, status, and application.", {},
+    ) == "/financial-payment/transactions"
+
+
+def test_team_ticket_summary_uses_both_visible_views_and_exact_member():
+    question = "Summarize each staff member's pending, overdue, and closed tickets in my team."
+    assert _ticket_team_summary_requested(question)
+    result = _ticket_team_summary_result(
+        _ticket_observation([
+            {"Ticket No.": "HC-01-2026-1", "Current Handler": "shiting zhao", "Status": "Open", "SLA": "2d Overdue"},
+            {"Ticket No.": "HC-01-2026-2", "Current Handler": "shiting zhao", "Status": "Open", "SLA": "Due in 1d"},
+        ], "To Do"),
+        _ticket_observation([
+            {"Ticket No.": "HC-01-2026-3", "Current Handler": "shiting zhao", "Status": "Completed", "SLA": "Met"},
+        ], "Completed"),
+        question=question,
+        scope="team",
+    )
+    assert result and result.status == "success"
+    assert result.facts == ('{"Team Member":"shiting zhao","Pending Tickets":2,"Overdue Tickets":1,"Closed Tickets":1}',)
+    member = _ticket_team_summary_result(
+        _ticket_observation([
+            {"Ticket No.": "HC-01-2026-1", "Current Handler": "shiting zhaozhao", "Status": "Open", "SLA": "Due in 1d"},
+        ], "To Do"),
+        _ticket_observation([
+            {"Ticket No.": "HC-01-2026-3", "Current Handler": "shiting zhaozhao", "Status": "Completed", "SLA": "Met"},
+        ], "Completed"),
+        question="我部门 shiting zhao 这个员工，未处理的单子还有多少个？",
+        scope="team",
+    )
+    assert member and "shiting zhaozhao" in " ".join(member.facts)
+
+
+def test_financial_daily_summary_counts_only_rows_dated_today():
+    from datetime import datetime
+    today = datetime.now().strftime("%d/%m/%Y")
+    result = _financial_daily_status_summary((
+        ("Payments", {
+            "readHealth": {"healthy": True},
+            "sectionSummaries": [{"kind": "table", "columnHeaders": ["Status", "Transaction Time"],
+                                   "rowFields": [{"Status": "Completed", "Transaction Time": f"{today} 10:00:00"}]}],
+        }),
+        ("Refunds", {
+            "readHealth": {"healthy": True},
+            "sectionSummaries": [{"kind": "table", "columnHeaders": ["Status", "Last Updated"],
+                                   "rowFields": [{"Status": "Pending Refund", "Last Updated": f"{today} 11:00:00"}]}],
+        }),
+    ), scope="team")
+    assert result and result.status == "success"
+    assert '"Source":"Payments"' in result.facts[0]
+    assert '"Source":"Refunds"' in result.facts[1]

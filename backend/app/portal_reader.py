@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
@@ -2683,6 +2684,28 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
         return "/licensing/profile"
     if re.search(r"\b(?:books?|book)\s+applications?\b", normalized):
         return "/content/ContentLibrary"
+    # Customer Happiness work orders are rendered on Enquiries & Complaints,
+    # rather than on the refund workflow.  HC-01 is the stable ticket-number
+    # family observed on that page.  Bind it before planning so an exact ticket
+    # question cannot be redirected to an unrelated application/detail API.
+    if re.search(r"\bHC-01-\d{4}-\d+\b", str(question or ""), re.I) or re.search(
+        r"\b(?:ticket|tickets|work\s*orders?|enquir(?:y|ies)|complaints?|cases?)\b"
+        r"|(?:工单|工單|票据|案件|投诉|諮詢)",
+        normalized,
+        re.I,
+    ):
+        return "/happiness/tickets"
+    # A transaction number belongs to Finance Transactions.  This is kept
+    # separate from Finance Refunds and Customer Happiness Refunds because
+    # their status fields describe different business objects.
+    if re.search(r"\bTRX-[A-Za-z0-9-]+\b", str(question or ""), re.I) or re.search(
+        r"\b(?:transaction|transactions|payment|payments)\b.{0,40}"
+        r"\b(?:amount|currency|status|application|details?)\b"
+        r"|(?:交易|付款).{0,30}(?:金额|币种|状态|申请|详情)",
+        normalized,
+        re.I,
+    ):
+        return "/financial-payment/transactions"
     if re.search(r"\b(?:license|licensing)\s+refunds?\b", normalized):
         return "/happiness/refunds"
     # Finance Refunds is a separate rendered table from Customer Happiness
@@ -2719,6 +2742,313 @@ def _refund_completed_view_requested(question: str) -> bool:
 
     normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
     return bool(re.search(r"\bcompleted\b|(?:ال)?مكتمل[\u0600-\u06ff]*", normalized))
+
+
+def _ticket_team_summary_requested(question: str) -> bool:
+    """Recognize only the explicit staff/work-order roll-up requested in row 54.
+
+    A normal ticket list must remain a normal bounded list.  This higher-level
+    projection is therefore deliberately limited to requests that name team
+    members/staff and ask for pending, overdue, or closed/completed counts.
+    """
+
+    normalized = re.sub(r"\s+", " ", str(question or "").casefold())
+    has_people = bool(re.search(r"\b(?:team|staff|member|employee|handler)s?\b|(?:团队|團隊|员工|員工|部门|部門|فريق|موظف)", normalized))
+    has_ticket_scope = bool(re.search(r"\b(?:ticket|work\s*order|case|complaint|enquir(?:y|ies))s?\b|(?:工单|工單|票据|案件|تذاكر|طلبات)", normalized))
+    has_rollup = bool(re.search(r"\b(?:pending|overdue|closed|completed|unhandled|open)\b|(?:未处理|未處理|逾期|关闭|關閉|已关闭|معل[قةق]|متأخر|مغلق)", normalized))
+    return has_people and has_ticket_scope and has_rollup
+
+
+def _ticket_member_query(question: str) -> str:
+    """Extract a user-named staff member without treating Chinese prose as a name."""
+
+    value = str(question or "")
+    chinese = re.search(r"(?:部门|部門)\s+([A-Za-z][A-Za-z .'-]{1,80}?)\s*(?:这个|這個)?员工", value, re.I)
+    english = None if re.search(r"\b(?:staff\s+member|team\s+member)'s\b", value, re.I) else re.search(
+        r"\b(?:staff(?:\s+member)?|team\s+member|employee|handler)\s+(?:named\s+)?"
+        r"([A-Za-z][A-Za-z .'-]{1,80}?)(?=(?:'s\b|\s+(?:pending|overdue|closed|completed|tickets?)\b|[?.!,]|$))",
+        value,
+        re.I,
+    )
+    selected = chinese.group(1) if chinese else english.group(1) if english else ""
+    return re.sub(r"\s+", " ", selected).strip(" .,-")[:100]
+
+
+def _ticket_team_summary_result(
+    todo_observation: Any,
+    completed_observation: Any,
+    *,
+    question: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult | None:
+    """Aggregate only visible ticket rows by their rendered owner field.
+
+    This does not infer assignment from queue membership: an owner is counted
+    only when an actual ``Current Handler``/``Assigned To`` column was read.
+    ``Completed`` is a view label, so the response calls it a completed/closed
+    count rather than claiming every possible terminal workflow state.
+    """
+
+    if scope not in {"team", "global"}:
+        return ReaderResult(
+            status="not_confirmed",
+            summary="A team-scoped ticket view was not verified for this account.",
+            page="/happiness/tickets",
+            answer_shape="overview",
+            scope=scope,
+            missing=("requested_team_scope_unverified",),
+        )
+
+    def table_rows(observation: Any) -> tuple[list[dict[str, Any]], str] | None:
+        if not isinstance(observation, dict) or _observation_has_error_state(observation):
+            return None
+        if (observation.get("readHealth") or {}).get("healthy") is not True:
+            return None
+        tables = [
+            node for node in _observation_semantic_nodes(observation)
+            if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")
+        ]
+        if len(tables) != 1:
+            return None
+        return list(tables[0].get("rowFields") or []), str(tables[0].get("nodeId") or "")
+
+    todo = table_rows(todo_observation)
+    completed = table_rows(completed_observation)
+    if todo is None or completed is None:
+        return None
+
+    def field(row: dict[str, Any], *names: str) -> str:
+        wanted = {re.sub(r"[^a-z0-9]", "", name.casefold()) for name in names}
+        for key, value in row.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+            if normalized in wanted and value is not None:
+                return str(value).strip()
+        return ""
+
+    totals: dict[str, dict[str, int]] = {}
+    labels: dict[str, str] = {}
+
+    def add(rows: list[dict[str, Any]], *, completed_view: bool) -> None:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            handler = field(row, "Current Handler", "Assigned To", "Owner", "Responsible Person")
+            if not handler or handler.casefold() in {"-", "unassigned", "n/a", "none"}:
+                continue
+            key = re.sub(r"[^a-z0-9]", "", handler.casefold())
+            if not key:
+                continue
+            labels.setdefault(key, handler)
+            bucket = totals.setdefault(key, {"Pending Tickets": 0, "Overdue Tickets": 0, "Closed Tickets": 0})
+            status = field(row, "Status").casefold()
+            sla = field(row, "SLA").casefold()
+            if completed_view:
+                if status in {"completed", "closed", "cancelled", "canceled", "resolved"} or status:
+                    bucket["Closed Tickets"] += 1
+            else:
+                bucket["Pending Tickets"] += 1
+                if "overdue" in sla or "past due" in sla:
+                    bucket["Overdue Tickets"] += 1
+
+    add(todo[0], completed_view=False)
+    add(completed[0], completed_view=True)
+    requested_member = _ticket_member_query(question)
+    if requested_member:
+        member_key = re.sub(r"[^a-z0-9]", "", requested_member.casefold())
+        matching = [key for key in totals if member_key and member_key in key]
+        if not matching:
+            return ReaderResult(
+                status="no_data",
+                summary="The named staff member was not visible in the current ticket rows.",
+                page="/happiness/tickets",
+                section="Enquiries & Complaints",
+                source_section=todo[1],
+                answer_shape="overview",
+                completeness="bounded",
+                scope=scope,
+                facts=(f"No visible Current Handler matches {requested_member} in the current To Do and Completed ticket views.",),
+            )
+        totals = {key: totals[key] for key in matching}
+
+    facts = tuple(
+        json.dumps({"Team Member": labels[key], **totals[key]}, ensure_ascii=False, separators=(",", ":"))
+        for key in sorted(totals, key=lambda item: labels[item].casefold())
+    )
+    if not facts:
+        return ReaderResult(
+            status="not_confirmed",
+            summary="The current ticket views did not expose a usable owner field.",
+            page="/happiness/tickets",
+            section="Enquiries & Complaints",
+            source_section=todo[1],
+            answer_shape="overview",
+            completeness="bounded",
+            scope=scope,
+            missing=("ticket_current_handler_not_observed",),
+        )
+    return ReaderResult(
+        status="success",
+        summary="Visible To Do and Completed ticket rows were aggregated by Current Handler.",
+        page="/happiness/tickets",
+        section="Enquiries & Complaints",
+        source_section=todo[1],
+        answer_shape="overview",
+        completeness="bounded",
+        scope=scope,
+        selected_state="To Do / Completed",
+        facts=facts,
+    )
+
+
+def _refund_overdue_sorted_result(
+    observation: Any,
+    *,
+    page: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult | None:
+    """Return only rendered overdue refund rows, sorted by their amount."""
+
+    if not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return None
+    if (observation.get("readHealth") or {}).get("healthy") is not True:
+        return None
+    tables = [
+        node for node in _observation_semantic_nodes(observation)
+        if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")
+    ]
+    if len(tables) != 1:
+        return None
+    table = tables[0]
+    headers = [str(header) for header in table.get("columnHeaders") or []]
+    rows: list[tuple[float, dict[str, Any]]] = []
+    for raw_row in table.get("rowFields") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        row = {key: raw_row[key] for key in headers if key in raw_row}
+        sla = " ".join(str(value) for key, value in row.items() if "sla" in re.sub(r"[^a-z0-9]", "", str(key).casefold()))
+        if not re.search(r"overdue|past\s+due|متأخر|逾期", sla, re.I):
+            continue
+        amount = None
+        for key, value in row.items():
+            if "amount" in re.sub(r"[^a-z0-9]", "", str(key).casefold()):
+                try:
+                    amount = float(str(value).replace(",", ""))
+                except (TypeError, ValueError):
+                    amount = None
+                break
+        if amount is not None:
+            rows.append((amount, row))
+    if not rows:
+        return ReaderResult(
+            status="no_data",
+            summary="No overdue refund rows were visible in the current rendered view.",
+            page=page,
+            section=str(table.get("heading") or "Refunds"),
+            source_section=str(table.get("nodeId") or ""),
+            answer_shape="list",
+            completeness="bounded",
+            scope=scope,
+            facts=("No visible refund row has an SLA marked overdue in the current view.",),
+        )
+    facts = _bounded_native_row_facts({**table, "rowFields": [row for _amount, row in sorted(rows, key=lambda item: item[0])]}, limit=8)
+    return ReaderResult(
+        status="success",
+        summary="Visible overdue refund rows were sorted by amount.",
+        page=page,
+        section=str(table.get("heading") or "Refunds"),
+        source_section=str(table.get("nodeId") or ""),
+        answer_shape="list",
+        completeness="bounded",
+        scope=scope,
+        facts=facts,
+    )
+
+
+def _financial_daily_status_summary(
+    observations: tuple[tuple[str, Any], ...],
+    *,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult | None:
+    """Count only payment/refund rows whose rendered date is today."""
+
+    today = datetime.now().date()
+    grouped: dict[tuple[str, str], int] = defaultdict(int)
+    saw_date = False
+    for source_label, observation in observations:
+        if not isinstance(observation, dict) or _observation_has_error_state(observation):
+            continue
+        if (observation.get("readHealth") or {}).get("healthy") is not True:
+            continue
+        tables = [
+            node for node in _observation_semantic_nodes(observation)
+            if node.get("kind") in {"table", "grid"} and node.get("rowFields")
+        ]
+        if not tables:
+            tables = [
+                node for node in observation.get("sectionSummaries", [])
+                if isinstance(node, dict) and node.get("kind") in {"table", "grid"} and node.get("rowFields")
+            ]
+        if len(tables) != 1:
+            continue
+        for raw_row in tables[0].get("rowFields") or []:
+            if not isinstance(raw_row, dict):
+                continue
+            date_value = ""
+            status_value = ""
+            for key, value in raw_row.items():
+                normalized_key = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                if any(token in normalized_key for token in ("transactiontime", "lastupdated", "updatedat", "submissiontime", "date")):
+                    date_value = str(value or "").strip()
+                if normalized_key.endswith("status") or normalized_key == "status":
+                    status_value = str(value or "").strip() or "Unknown"
+            parsed = None
+            for pattern in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                try:
+                    parsed = datetime.strptime(date_value[:19], pattern).date()
+                    break
+                except (TypeError, ValueError):
+                    continue
+            if parsed is None:
+                continue
+            saw_date = True
+            if parsed == today:
+                grouped[(source_label, status_value)] += 1
+    if grouped:
+        facts = tuple(
+            json.dumps({"Source": source, "Status": status, "Count": count}, ensure_ascii=False, separators=(",", ":"))
+            for (source, status), count in sorted(grouped.items())
+        )
+        return ReaderResult(
+            status="success",
+            summary="Today’s rendered payment and refund rows were grouped by status.",
+            page="/financial-payment/transactions",
+            section="Transactions and Finance Refunds",
+            answer_shape="count",
+            completeness="bounded",
+            scope=scope,
+            facts=facts,
+        )
+    if saw_date:
+        return ReaderResult(
+            status="no_data",
+            summary="No rendered payment or refund row is dated today.",
+            page="/financial-payment/transactions",
+            section="Transactions and Finance Refunds",
+            answer_shape="count",
+            completeness="bounded",
+            scope=scope,
+            facts=("No payment or refund rows dated today were visible in the current bounded views.",),
+        )
+    return ReaderResult(
+        status="not_confirmed",
+        summary="The visible payment/refund rows did not expose a verifiable date field.",
+        page="/financial-payment/transactions",
+        section="Transactions and Finance Refunds",
+        answer_shape="count",
+        completeness="bounded",
+        scope=scope,
+        missing=("today_date_not_observed",),
+    )
 
 
 def _question_needs_native_surface(question: str) -> bool:
@@ -9348,8 +9678,66 @@ class AdminPortalReader:
                     summary='Service Application SLA rows could not be read.', missing=(type(exc).__name__,))
                 return ReaderOutcome(result, {'stage': 'service_application_approaching_sla',
                                               'permission': permission_audit, 'result': result.public_json()})
+        financial_daily_summary = bool(
+            re.search(r"\b(?:today|today's|current day)\b|今天|今日|اليوم", normalized_question, re.I)
+            and re.search(r"\b(?:payments?|refunds?)\b|付款|支付|退款|استرداد|مدفوع", normalized_question, re.I)
+            and re.search(r"\b(?:status|statuses|count|how many|breakdown|summar(?:y|ise|ize))\b|按状态|汇总|حسب الحالة|كم", normalized_question, re.I)
+        )
+        if financial_daily_summary:
+            daily_pages = (
+                ("Payments", "/financial-payment/transactions"),
+                ("Refunds", "/financial-payment/refunds"),
+            )
+            daily_observations: list[tuple[str, Any]] = []
+            daily_permission_error = ""
+            for label, page in daily_pages:
+                request = PortalReadRequest(start_path=page, actions=({'type': 'observe'},))
+                denied = validate_policy(request, reason='financial_daily_status_summary')
+                if denied:
+                    daily_permission_error = denied
+                    continue
+                try:
+                    tool = await portal_read_stage(
+                        request,
+                        timeout_stage='financial_daily_status_summary',
+                        attempt=f'financial_daily_status_summary_{label.casefold()}',
+                    )
+                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                    result = ReaderResult(
+                        status='load_failed', page=page, answer_shape='count',
+                        summary='The payment/refund status summary could not be read.',
+                        missing=(type(exc).__name__,),
+                    )
+                    return ReaderOutcome(result, {
+                        'stage': 'financial_daily_status_summary',
+                        'permission': permission_audit,
+                        'result': result.public_json(),
+                    })
+                daily_observations.append((label, (tool.get('result') or {}).get('observation') or {}))
+            if daily_permission_error and not daily_observations:
+                result = ReaderResult(
+                    status='no_permission', page='/financial-payment/transactions', answer_shape='count',
+                    summary='The current account cannot read the requested payment/refund pages.',
+                    missing=(daily_permission_error,),
+                )
+                return ReaderOutcome(result, {'stage': 'financial_daily_status_summary', 'permission': permission_audit,
+                                              'result': result.public_json()})
+            daily_result = _financial_daily_status_summary(
+                tuple(daily_observations), scope=_permission_result_scope(permission_context),
+            )
+            if daily_result is not None:
+                return ReaderOutcome(daily_result, {
+                    'stage': 'financial_daily_status_summary',
+                    'permission': permission_audit,
+                    'observations': {label: observation for label, observation in daily_observations},
+                    'result': daily_result.public_json(),
+                })
+
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
-        if explicit_source in {'/happiness/refunds', '/financial-payment/refunds', '/content/ContentLibrary', '/licensing/licenses'}:
+        if explicit_source in {
+            '/happiness/tickets', '/happiness/refunds', '/financial-payment/refunds',
+            '/financial-payment/transactions', '/content/ContentLibrary', '/licensing/licenses',
+        }:
             request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
             denied = validate_policy(request, reason='explicit_named_source_list')
             if denied:
@@ -9364,6 +9752,88 @@ class AdminPortalReader:
                     raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
                 observation = (tool.get('result') or {}).get('observation') or {}
                 actions: tuple[dict[str, Any], ...] = ()
+                # Exact Customer Happiness/Finance identifiers must stay on
+                # the one visible matching row.  Without this early binding,
+                # the named-source list branch could return the first four
+                # unrelated rows and make a real record look unavailable.
+                if explicit_source in {'/happiness/tickets', '/financial-payment/transactions', '/financial-payment/refunds'}:
+                    identity_matches = re.findall(
+                        r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"
+                        r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9])",
+                        str(question or ''),
+                    )
+                    if len(identity_matches) == 1:
+                        exact = _native_exact_identity_row_result(
+                            observation,
+                            page=explicit_source,
+                            record_identity=identity_matches[0],
+                            scope=_permission_result_scope(permission_context),
+                            question=question,
+                        )
+                        if exact is not None:
+                            return ReaderOutcome(exact, {
+                                'stage': 'explicit_named_source_exact_record',
+                                'permission': permission_audit,
+                                'observation': observation,
+                                'result': exact.public_json(),
+                            })
+                if explicit_source in {'/happiness/refunds', '/financial-payment/refunds'} and re.search(
+                    r"\b(?:overdue|past\s+due)\b.{0,30}\brefunds?\b|\brefunds?\b.{0,30}\b(?:overdue|past\s+due)\b|逾期.*(?:退款|استرداد)|(?:退款|استرداد).*逾期",
+                    normalized_question,
+                    re.I,
+                ) and re.search(r"\b(?:sort|sorted|order)\b.{0,30}\bamount\b|按金额|حسب المبلغ", normalized_question, re.I):
+                    sorted_result = _refund_overdue_sorted_result(
+                        observation,
+                        page=explicit_source,
+                        scope=_permission_result_scope(permission_context),
+                    )
+                    if sorted_result is not None:
+                        return ReaderOutcome(sorted_result, {
+                            'stage': 'explicit_named_source_overdue_refunds',
+                            'permission': permission_audit,
+                            'observation': observation,
+                            'result': sorted_result.public_json(),
+                        })
+                if explicit_source == '/happiness/tickets' and _ticket_team_summary_requested(question):
+                    # The team roll-up requires both visible queue states.  A
+                    # single fresh To Do read is insufficient evidence for
+                    # closed-ticket counts, so switch only after the observed
+                    # Completed control has been uniquely identified.
+                    completed_action = _observed_switch_tab_action({'name': 'Completed'}, observation)
+                    if completed_action is None:
+                        result = ReaderResult(
+                            status='not_confirmed', page=explicit_source,
+                            section='Enquiries & Complaints', answer_shape='overview',
+                            scope=_permission_result_scope(permission_context),
+                            summary='The Completed ticket view was not visible in the current layout.',
+                            missing=('completed_ticket_view_not_visible',),
+                        )
+                        return ReaderOutcome(result, {
+                            'stage': 'ticket_team_summary', 'permission': permission_audit,
+                            'observation': observation, 'result': result.public_json(),
+                        })
+                    completed_tool = await portal_read_stage(
+                        replace(request, actions=(completed_action,)),
+                        timeout_stage='explicit_named_source_completed_tickets',
+                        attempt='explicit_named_source_completed_tickets',
+                    )
+                    if not completed_tool.get('ok'):
+                        raise RuntimeError(str(completed_tool.get('code') or 'completed_ticket_read_failed'))
+                    completed_observation = (completed_tool.get('result') or {}).get('observation') or {}
+                    team_result = _ticket_team_summary_result(
+                        observation,
+                        completed_observation,
+                        question=question,
+                        scope=_permission_result_scope(permission_context),
+                    )
+                    if team_result is not None:
+                        return ReaderOutcome(team_result, {
+                            'stage': 'ticket_team_summary', 'permission': permission_audit,
+                            'observation': observation,
+                            'completedObservation': completed_observation,
+                            'actions': (completed_action,),
+                            'result': team_result.public_json(),
+                        })
                 if explicit_source == '/content/ContentLibrary':
                     action = _observed_switch_tab_action({'name': 'Books'}, observation)
                     if action is None:
