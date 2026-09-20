@@ -52,6 +52,32 @@ def test_refund_amount_presentation_keeps_rows_total_and_missing_currency_bounda
     )
 
 
+def test_arabic_refund_list_localizes_dynamic_field_names_and_enum_values():
+    evidence = {
+        "result": "success",
+        "answerShape": "list",
+        "completeness": "bounded",
+        "facts": [
+            '{"Page Index":1,"Page Size":10,"Total Count":20}',
+            '{"Items Refund No":"HC-02-2026-5239576","Items Status":"Completed","Items Type":"Refund","Items Refund Scope":"Full","Items Payment Method":"Credit Debit Card","Items Amount":-200.0,"Items Currency":"AED"}',
+        ],
+    }
+    answer = reader_evidence_only_response(
+        evidence,
+        "ar",
+        question="ما مبلغ وعمِلة طلب الاسترداد المكتمل الظاهر في هذه الصفحة؟",
+    )
+    assert "رقم الاسترداد" in answer
+    assert "الحالة: مكتمل" in answer
+    assert "النوع: استرداد" in answer
+    assert "نطاق الاسترداد: كامل" in answer
+    assert "طريقة الدفع: بطاقة ائتمانية/خصم" in answer
+    assert "المبلغ: -200.0" in answer
+    assert "العملة: AED" in answer
+    assert "Items Status" not in answer
+    assert "Items Amount" not in answer
+
+
 def test_explicit_refund_identity_not_confirmed_is_record_specific_in_english_and_arabic():
     evidence = {
         "result": "not_confirmed",

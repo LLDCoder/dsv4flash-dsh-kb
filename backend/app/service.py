@@ -561,13 +561,83 @@ def reader_evidence_only_response(
         "en": "Confirmed details:",
     })
 
+    arabic_field_names = {
+        "page index": "رقم الصفحة",
+        "page size": "حجم الصفحة",
+        "total count": "إجمالي العدد",
+        "items": "العناصر",
+        "refund no": "رقم الاسترداد",
+        "items refund no": "رقم الاسترداد",
+        "original transaction no": "رقم المعاملة الأصلية",
+        "items original transaction no": "رقم المعاملة الأصلية",
+        "status": "الحالة",
+        "items status": "الحالة",
+        "type": "النوع",
+        "items type": "النوع",
+        "refund scope": "نطاق الاسترداد",
+        "items refund scope": "نطاق الاسترداد",
+        "payment method": "طريقة الدفع",
+        "items payment method": "طريقة الدفع",
+        "amount": "المبلغ",
+        "items amount": "المبلغ",
+        "currency": "العملة",
+        "items currency": "العملة",
+        "apply for icon key": "رمز نوع الطلب",
+        "items apply for icon key": "رمز نوع الطلب",
+        "last updated": "آخر تحديث",
+        "updated at": "وقت التحديث",
+        "application no": "رقم الطلب",
+        "application number": "رقم الطلب",
+        "license no": "رقم الترخيص",
+        "license number": "رقم الترخيص",
+        "name": "الاسم",
+        "title": "العنوان",
+    }
+
     def display_name(key: str) -> str:
         display_segments: list[str] = []
         for segment in re.split(r"[_\-.]+", key):
             words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", segment)
             words = re.sub(r"\s+", " ", words).strip()
             display_segments.append(words[:1].upper() + words[1:] if words else segment)
-        return " ".join(segment for segment in display_segments if segment) or key
+        rendered = " ".join(segment for segment in display_segments if segment) or key
+        if language == "ar":
+            localized = arabic_field_names.get(rendered.casefold())
+            if localized:
+                return localized
+        return rendered
+
+    def display_enum_value(key: str, value: str) -> str:
+        """Translate bounded portal enum values without changing business identifiers."""
+        if language != "ar":
+            return value
+        normalized_key = re.sub(r"\s+", " ", display_name(key).casefold()).strip()
+        normalized_value = re.sub(r"\s+", " ", value.casefold()).strip()
+        enum_maps = {
+            "status": {
+                "completed": "مكتمل",
+                "pending": "قيد الانتظار",
+                "pending refund": "استرداد قيد الانتظار",
+                "pending review": "قيد المراجعة",
+                "rejected": "مرفوض",
+                "cancelled": "ملغى",
+                "canceled": "ملغى",
+            },
+            "type": {"refund": "استرداد"},
+            "refund scope": {"full": "كامل", "partial": "جزئي"},
+            "apply for icon key": {"commercial": "تجاري", "individual": "فردي"},
+            "payment method": {
+                "credit debit card": "بطاقة ائتمانية/خصم",
+                "credit card": "بطاقة ائتمانية",
+                "debit card": "بطاقة خصم",
+                "cash": "نقدًا",
+                "bank transfer": "تحويل مصرفي",
+            },
+        }
+        for field_name, values in enum_maps.items():
+            if field_name in normalized_key and normalized_value in values:
+                return values[normalized_value]
+        return value
     def display_value(value: str) -> str:
         """Make strict ISO date-times readable without changing their timezone."""
         match = re.fullmatch(
@@ -609,7 +679,7 @@ def reader_evidence_only_response(
                 display_fields.append((key, "Remaining time", _format_remaining_minutes(value)))
                 continue
             if isinstance(value, str):
-                rendered = display_value(value)
+                rendered = display_enum_value(key, display_value(value))
             else:
                 try:
                     rendered = json.dumps(value, ensure_ascii=False, allow_nan=False)
