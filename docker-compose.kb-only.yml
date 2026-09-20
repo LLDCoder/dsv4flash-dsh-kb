@@ -31,7 +31,9 @@ services:
       retries: 10
 
   ocr-cpu:
-    image: dsh-admin-service-ocr-cpu:latest
+    build:
+      context: ./ocr-cpu
+    image: dsh-kb-only-ocr-cpu:text-support
     environment:
       OCR_MODEL_NAME: ${OCR_MODEL_NAME:-tesseract-lstm}
       OCR_LANG: ${OCR_LANG:-eng}

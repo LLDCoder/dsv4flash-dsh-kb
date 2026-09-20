@@ -1995,6 +1995,7 @@ class DSHService:
                                     {
                                         "file": document_base64,
                                         "fileType": attachment_argument.get("fileType"),
+                                        "mimeType": attachment_argument.get("mimeType"),
                                     },
                                     allowed_tools=allowed_tool_names,
                                     tool_definition=tool_definition_by_name.get(tool_name),

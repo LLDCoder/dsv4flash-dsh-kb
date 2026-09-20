@@ -284,7 +284,10 @@ class ToolGateway:
         if not isinstance(file, str) or not file:
             return {"ok": False, "code": "invalid_arguments", "toolName": tool_name}
         try:
-            result = await self.ocr.layout_parsing(file, file_type=arguments.get("fileType"), options=arguments.get("options"))
+            options = dict(arguments.get("options") or {})
+            if arguments.get("mimeType"):
+                options["mimeType"] = arguments.get("mimeType")
+            result = await self.ocr.layout_parsing(file, file_type=arguments.get("fileType"), options=options)
             return {"ok": True, "code": "ok", "toolName": tool_name, "result": result}
         except httpx.HTTPStatusError as exc:
             code = "permission_denied" if exc.response.status_code == 403 else "tool_error"

@@ -997,9 +997,10 @@ def make_router(service: DSHService) -> APIRouter:
         content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
         name = (file.filename or "attachment").strip() or "attachment"
         suffix = Path(name).suffix.lower()
-        allowed_types = {"application/pdf", "image/png", "image/jpeg", "image/webp", "image/tiff", "image/bmp"}
-        if content_type not in allowed_types and suffix not in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}:
-            raise HTTPException(status_code=415, detail="仅支持 PDF 或常见图片附件")
+        allowed_types = {"application/pdf", "text/plain", "text/markdown", "text/csv", "application/json", "image/png", "image/jpeg", "image/webp", "image/tiff", "image/bmp"}
+        allowed_suffixes = {".pdf", ".csv", ".json", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
+        if content_type not in allowed_types and suffix not in allowed_suffixes:
+            raise HTTPException(status_code=415, detail="仅支持 PDF、图片、CSV、JSON、TXT 或 Markdown 附件")
         content = await file.read(settings.local_attachment_max_bytes + 1)
         if len(content) > settings.local_attachment_max_bytes:
             raise HTTPException(status_code=413, detail="附件不能超过 20MB")
