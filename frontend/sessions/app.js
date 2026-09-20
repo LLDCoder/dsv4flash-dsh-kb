@@ -78,24 +78,37 @@ async function copyText(text) {
   if (!copied) throw new Error("浏览器未允许复制操作");
 }
 
-function addCopyButton(node, getText) {
+function createAnswerButton(className, label, onClick) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "copy-message";
-  button.setAttribute("aria-label", "复制回答");
-  button.textContent = "复制";
-  button.addEventListener("click", async () => {
-    const original = button.textContent;
+  button.className = className;
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function addAnswerActions(node, getText, question, canRefresh) {
+  const actions = document.createElement("div");
+  actions.className = "answer-actions";
+  const copyButton = createAnswerButton("copy-message", "复制", async () => {
     try {
       await copyText(String(getText() || ""));
-      button.textContent = "已复制";
-      button.classList.add("is-copied");
+      copyButton.textContent = "已复制";
+      copyButton.classList.add("is-copied");
     } catch {
-      button.textContent = "复制失败";
+      copyButton.textContent = "复制失败";
     }
-    window.setTimeout(() => { button.textContent = original; button.classList.remove("is-copied"); }, 1500);
+    window.setTimeout(() => { copyButton.textContent = "复制"; copyButton.classList.remove("is-copied"); }, 1500);
   });
-  node.querySelector(".role").append(button);
+  copyButton.setAttribute("aria-label", "复制回答");
+  actions.append(copyButton);
+  if (canRefresh && question) {
+    const refreshButton = createAnswerButton("refresh-message", "重新回答", () => retryAnswer(question));
+    refreshButton.setAttribute("aria-label", "重新回答");
+    if (state.busy) refreshButton.disabled = true;
+    actions.append(refreshButton);
+  }
+  node.append(actions);
 }
 
 function scrollMessagesToBottom(force = false) {
@@ -108,7 +121,8 @@ function scrollMessagesToBottom(force = false) {
 function renderMessages() {
   const list = $("messages"); list.replaceChildren();
   if (!state.messages.length) { list.innerHTML = '<div class="empty">该会话还没有问题，发送第一条问题开始测试。</div>'; return; }
-  state.messages.forEach((item) => { const node = document.createElement("article"); node.className = `message ${item.role === "user" ? "user" : "assistant"}`; const role = document.createElement("span"); role.className = "role"; role.textContent = item.role === "user" ? "问题" : "回答"; const content = document.createElement("div"); renderRichText(content, item.content); node.append(role, content); if (item.role !== "user") addCopyButton(node, () => content.textContent); list.append(node); }); scrollMessagesToBottom(true);
+  const latestAssistantIndex = state.messages.reduce((latest, item, index) => item.role === "user" ? latest : index, -1);
+  state.messages.forEach((item, index) => { const node = document.createElement("article"); node.className = `message ${item.role === "user" ? "user" : "assistant"}`; const role = document.createElement("span"); role.className = "role"; role.textContent = item.role === "user" ? "问题" : "回答"; const content = document.createElement("div"); renderRichText(content, item.content); node.append(role, content); if (item.role !== "user") { const question = [...state.messages.slice(0, index)].reverse().find((entry) => entry.role === "user")?.content || ""; addAnswerActions(node, () => content.textContent, question, index === latestAssistantIndex); } list.append(node); }); scrollMessagesToBottom(true);
 }
 
 async function createSession() {
@@ -124,27 +138,30 @@ async function deleteSession() {
 }
 
 function appendUserMessage(content) { const node = document.createElement("article"); node.className = "message user"; const role = document.createElement("span"); role.className = "role"; role.textContent = "问题"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); scrollMessagesToBottom(true); }
-function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant streaming"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); addCopyButton(node, () => body.textContent); $("messages").append(node); scrollMessagesToBottom(true); return body; }
+function appendStreamMessage(content, question) { const node = document.createElement("article"); node.className = "message assistant streaming"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); addAnswerActions(node, () => body.textContent, question, true); $("messages").append(node); scrollMessagesToBottom(true); return body; }
 function parseSseData(raw) { try { return JSON.parse(raw); } catch { return raw; } }
 function dispatchSseBlock(block, onEvent) {
   const lines = block.split(/\r?\n/); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
   if (!type) return; const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n"); onEvent(type, parseSseData(data));
 }
-async function sendMessage(event) {
-  event.preventDefault(); const content = $("message").value.trim(); if (!content || !state.selectedId || state.busy) return; state.busy = true; $("sendBtn").disabled = true; $("message").value = ""; $("messageForm").classList.add("is-busy"); appendUserMessage(content); setStreamStatus("正在检索知识库并生成回答…", true);
+async function runQuestion(content) {
+  if (!content || !state.selectedId || state.busy) return; state.busy = true; $("sendBtn").disabled = true; $("message").value = ""; $("messageForm").classList.add("is-busy"); appendUserMessage(content); setStreamStatus("正在检索知识库并生成回答…", true);
   let assistant = ""; let body = null;
   try {
     const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), Accept: "text/event-stream", "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, conversation_id: state.selectedId, request_id: requestId() }) });
     if (!response.ok || !response.body) throw new Error(`流式请求失败（${response.status}）`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
-    const handleEvent = (type, data) => { if (type === "token") { const token = typeof data === "string" ? data : String(data?.content || ""); assistant += token; if (!body) body = appendStreamMessage(""); renderRichText(body, assistant); scrollMessagesToBottom(); setStreamStatus("正在接收回答…", false); } else if (type === "status") { setStreamStatus(data?.message || "正在处理…", true); } else if (type === "error") { throw new Error(data?.detail || "回答失败"); } else if (type === "end") { setStreamStatus("回答完成", false); } };
+    const handleEvent = (type, data) => { if (type === "token") { const token = typeof data === "string" ? data : String(data?.content || ""); assistant += token; if (!body) body = appendStreamMessage("", content); renderRichText(body, assistant); scrollMessagesToBottom(); setStreamStatus("正在接收回答…", false); } else if (type === "status") { setStreamStatus(data?.message || "正在处理…", true); } else if (type === "error") { throw new Error(data?.detail || "回答失败"); } else if (type === "end") { setStreamStatus("回答完成", false); } };
     while (true) { const { value, done } = await reader.read(); buffer += decoder.decode(value || new Uint8Array(), { stream: !done }); const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop() || ""; blocks.forEach((block) => dispatchSseBlock(block, handleEvent)); if (done) break; }
     if (buffer.trim()) dispatchSseBlock(buffer, handleEvent);
-    if (!body) { body = appendStreamMessage(assistant || "未收到回答内容"); }
+    if (!body) { body = appendStreamMessage(assistant || "未收到回答内容", content); }
     setStreamStatus("回答完成", false); await loadSessions(state.selectedId);
   } catch (error) { setStreamStatus(error.message, false); setStatus(error.message, true); }
   finally { state.busy = false; $("sendBtn").disabled = false; $("messageForm").classList.remove("is-busy"); }
 }
+
+async function retryAnswer(question) { await runQuestion(String(question || "").trim()); }
+async function sendMessage(event) { event.preventDefault(); await runQuestion($("message").value.trim()); }
 
 $("refreshBtn").addEventListener("click", () => loadSessions()); $("newBtn").addEventListener("click", createSession); $("newSmallBtn").addEventListener("click", createSession); $("search").addEventListener("input", renderSessions); $("saveTitleBtn").addEventListener("click", saveTitle); $("deleteBtn").addEventListener("click", deleteSession); $("messageForm").addEventListener("submit", sendMessage);
 loadSessions();
