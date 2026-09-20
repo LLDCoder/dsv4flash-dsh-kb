@@ -76,6 +76,7 @@ h2 { margin-bottom: 0; color: var(--ink); font-size: 16px; letter-spacing: -.01e
 .message { max-width: min(840px, 82%); padding: 11px 14px; border: 1px solid var(--line); border-radius: 9px; white-space: pre-wrap; line-height: 1.65; font-size: 13px; }
 .message.user { justify-self: end; border-color: #3b3e4b; background: #2a2d38; color: #e6e7ed; }
 .message.assistant { justify-self: start; border-color: #34384b; background: #151821; color: #d9dbe5; }
+.message.assistant + .message.user { margin-top: 16px; }
 .message.streaming { border-color: #59499f; box-shadow: 0 0 0 1px rgba(134,103,255,.08); }
 .message .role { display: block; margin-bottom: 5px; color: var(--subtle); font-size: 10px; font-weight: 850; letter-spacing: .05em; }
 .message strong { color: #b7a3ff; font-weight: 800; }

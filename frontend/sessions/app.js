@@ -61,10 +61,17 @@ function renderRichText(target, value) {
   if (cursor < text.length) target.append(document.createTextNode(text.slice(cursor)));
 }
 
+function scrollMessagesToBottom(force = false) {
+  const list = $("messages");
+  if (!list) return;
+  const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+  if (force || distanceFromBottom <= 48) list.scrollTop = list.scrollHeight;
+}
+
 function renderMessages() {
   const list = $("messages"); list.replaceChildren();
   if (!state.messages.length) { list.innerHTML = '<div class="empty">该会话还没有问题，发送第一条问题开始测试。</div>'; return; }
-  state.messages.forEach((item) => { const node = document.createElement("article"); node.className = `message ${item.role === "user" ? "user" : "assistant"}`; const role = document.createElement("span"); role.className = "role"; role.textContent = item.role === "user" ? "问题" : "回答"; const content = document.createElement("div"); renderRichText(content, item.content); node.append(role, content); list.append(node); }); list.scrollTop = list.scrollHeight;
+  state.messages.forEach((item) => { const node = document.createElement("article"); node.className = `message ${item.role === "user" ? "user" : "assistant"}`; const role = document.createElement("span"); role.className = "role"; role.textContent = item.role === "user" ? "问题" : "回答"; const content = document.createElement("div"); renderRichText(content, item.content); node.append(role, content); list.append(node); }); scrollMessagesToBottom(true);
 }
 
 async function createSession() {
@@ -79,8 +86,8 @@ async function deleteSession() {
   try { await request(`/api/v1/ai-chat/conversations/${encodeURIComponent(state.selectedId)}`, { method: "DELETE" }); state.selectedId = ""; await loadSessions(); } catch (error) { setStatus(error.message, true); }
 }
 
-function appendUserMessage(content) { const node = document.createElement("article"); node.className = "message user"; const role = document.createElement("span"); role.className = "role"; role.textContent = "问题"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); $("messages").scrollTop = $("messages").scrollHeight; }
-function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant streaming"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); $("messages").scrollTop = $("messages").scrollHeight; return body; }
+function appendUserMessage(content) { const node = document.createElement("article"); node.className = "message user"; const role = document.createElement("span"); role.className = "role"; role.textContent = "问题"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); scrollMessagesToBottom(true); }
+function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant streaming"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); scrollMessagesToBottom(true); return body; }
 function parseSseData(raw) { try { return JSON.parse(raw); } catch { return raw; } }
 function dispatchSseBlock(block, onEvent) {
   const lines = block.split(/\r?\n/); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
@@ -93,7 +100,7 @@ async function sendMessage(event) {
     const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), Accept: "text/event-stream", "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, conversation_id: state.selectedId, request_id: requestId() }) });
     if (!response.ok || !response.body) throw new Error(`流式请求失败（${response.status}）`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
-    const handleEvent = (type, data) => { if (type === "token") { const token = typeof data === "string" ? data : String(data?.content || ""); assistant += token; if (!body) body = appendStreamMessage(""); renderRichText(body, assistant); setStreamStatus("正在接收回答…", false); } else if (type === "status") { setStreamStatus(data?.message || "正在处理…", true); } else if (type === "error") { throw new Error(data?.detail || "回答失败"); } else if (type === "end") { setStreamStatus("回答完成", false); } };
+    const handleEvent = (type, data) => { if (type === "token") { const token = typeof data === "string" ? data : String(data?.content || ""); assistant += token; if (!body) body = appendStreamMessage(""); renderRichText(body, assistant); scrollMessagesToBottom(); setStreamStatus("正在接收回答…", false); } else if (type === "status") { setStreamStatus(data?.message || "正在处理…", true); } else if (type === "error") { throw new Error(data?.detail || "回答失败"); } else if (type === "end") { setStreamStatus("回答完成", false); } };
     while (true) { const { value, done } = await reader.read(); buffer += decoder.decode(value || new Uint8Array(), { stream: !done }); const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop() || ""; blocks.forEach((block) => dispatchSseBlock(block, handleEvent)); if (done) break; }
     if (buffer.trim()) dispatchSseBlock(buffer, handleEvent);
     if (!body) { body = appendStreamMessage(assistant || "未收到回答内容"); }
