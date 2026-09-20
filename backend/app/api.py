@@ -744,6 +744,23 @@ def make_router(service: DSHService) -> APIRouter:
             ]
         }
 
+    @router.post("/ai-chat/conversations", tags=["Chatbot compatibility"], status_code=201)
+    async def ai_chat_create_conversation(
+        payload: ConversationCreate,
+        db: AsyncSession = Depends(get_db),
+        principal: Principal = Depends(chat_principal),
+    ):
+        """Create a conversation for the lightweight knowledge-base workspace."""
+        conversation = await service.create_conversation(
+            db,
+            principal,
+            payload.workspace,
+            payload.skill_profile,
+            payload.runtime_profile,
+            payload.title,
+        )
+        return service.conversation_json(conversation, principal=principal)
+
     @router.get("/ai-chat/conversations/{conversation_id}/messages", tags=["Chatbot compatibility"])
     async def ai_chat_messages(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
         try:

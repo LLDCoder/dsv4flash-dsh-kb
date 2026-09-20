@@ -1,9 +1,10 @@
 const basePath = /^\/DSH(?:\/|$)/i.test(window.location.pathname) ? "/DSH" : "";
 const $ = (id) => document.getElementById(id);
 const state = { sessions: [], selectedId: "", messages: [], busy: false };
+const principal = { userId: "demo-user", tenantId: "kb-only" };
 
 function apiUrl(path) { return `${basePath}${path}`; }
-function headers() { return { "Content-Type": "application/json", "X-User-Id": $("userId").value.trim(), "X-Tenant-Id": $("tenantId").value.trim() }; }
+function headers() { return { "Content-Type": "application/json", "X-User-Id": principal.userId, "X-Tenant-Id": principal.tenantId }; }
 function setStatus(text, error = false) { $("status").textContent = text; $("status").style.color = error ? "#a63d3d" : ""; }
 function time(value) { if (!value) return "时间未知"; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(); }
 async function request(path, options = {}) {
@@ -11,15 +12,6 @@ async function request(path, options = {}) {
   const text = await response.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text }; }
   if (!response.ok) throw new Error(data.detail || `请求失败（${response.status}）`);
   return data;
-}
-
-async function login(event) {
-  event.preventDefault(); $("loginStatus").textContent = "正在登录…";
-  try {
-    const response = await fetch(apiUrl("/api/v1/console/login"), { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: $("password").value }) });
-    if (!response.ok) throw new Error("密码不正确或服务不可用");
-    $("loginGate").hidden = true; $("workspace").hidden = false; await loadSessions();
-  } catch (error) { $("loginStatus").textContent = error.message; }
 }
 
 function renderSessions() {
@@ -55,7 +47,7 @@ function renderMessages() {
 }
 
 async function createSession() {
-  try { const data = await request("/api/v1/conversations", { method: "POST", body: JSON.stringify({ title: "新会话", workspace: "default", skillProfile: "default", runtimeProfile: "default" }) }); await loadSessions(data.conversationId); } catch (error) { setStatus(error.message, true); }
+  try { const data = await request("/api/v1/ai-chat/conversations", { method: "POST", body: JSON.stringify({ title: "新会话", workspace: "default", skillProfile: "default", runtimeProfile: "default" }) }); await loadSessions(data.conversationId); } catch (error) { setStatus(error.message, true); }
 }
 async function saveTitle() {
   if (!state.selectedId) return; const title = $("titleInput").value.trim(); if (!title) { setStatus("会话标题不能为空", true); return; }
@@ -81,5 +73,5 @@ async function sendMessage(event) {
   finally { state.busy = false; $("sendBtn").disabled = false; }
 }
 
-$("loginForm").addEventListener("submit", login); $("refreshBtn").addEventListener("click", () => loadSessions()); $("newBtn").addEventListener("click", createSession); $("newSmallBtn").addEventListener("click", createSession); $("search").addEventListener("input", renderSessions); $("saveTitleBtn").addEventListener("click", saveTitle); $("deleteBtn").addEventListener("click", deleteSession); $("messageForm").addEventListener("submit", sendMessage);
-$("logoutBtn").addEventListener("click", async () => { await fetch(apiUrl("/api/v1/console/logout"), { method: "POST", credentials: "same-origin" }); window.location.reload(); });
+$("refreshBtn").addEventListener("click", () => loadSessions()); $("newBtn").addEventListener("click", createSession); $("newSmallBtn").addEventListener("click", createSession); $("search").addEventListener("input", renderSessions); $("saveTitleBtn").addEventListener("click", saveTitle); $("deleteBtn").addEventListener("click", deleteSession); $("messageForm").addEventListener("submit", sendMessage);
+loadSessions();

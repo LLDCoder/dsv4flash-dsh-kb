@@ -8,29 +8,15 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <section id="loginGate" class="gate">
-      <form id="loginForm" class="gate-card">
-        <p class="eyebrow">DSH · KNOWLEDGE BASE SERVICE</p>
-        <h1>会话记录</h1>
-        <p class="muted">登录后管理会话，并查看知识库问答的实时输出。</p>
-        <label>控制台密码<input id="password" type="password" required autocomplete="current-password" autofocus /></label>
-        <button type="submit">进入会话工作台</button>
-        <p id="loginStatus" class="notice" role="alert"></p>
-      </form>
-    </section>
-
-    <main id="workspace" class="workspace" hidden>
+    <main id="workspace" class="workspace">
       <header class="topbar">
         <div><p class="eyebrow">DSH · KNOWLEDGE BASE SERVICE</p><h1>会话记录</h1><p class="muted">集中查看问题、回答和流式输出；仅连接知识库，不使用 UMC 自动登录。</p></div>
-        <div class="top-actions"><span id="modePill" class="pill">KB-only</span><button id="logoutBtn" class="secondary" type="button">退出</button></div>
+        <div class="top-actions"><span id="modePill" class="pill"><span class="status-dot"></span>知识库已连接</span><a class="back-link" href="../">返回 DSH 控制台</a></div>
       </header>
 
       <section class="toolbar card">
-        <label>用户 ID<input id="userId" value="demo-user" /></label>
-        <label>租户 ID<input id="tenantId" value="kb-only" /></label>
-        <button id="refreshBtn" class="secondary" type="button">刷新会话</button>
-        <button id="newBtn" type="button">新建会话</button>
-        <span id="status" class="muted" role="status"></span>
+        <div class="toolbar-intro"><span class="toolbar-icon">✦</span><div><strong>知识库问答工作台</strong><span>问题、回答与流式检索结果集中管理</span></div></div>
+        <div class="toolbar-actions"><span id="status" class="muted" role="status"></span><button id="refreshBtn" class="secondary" type="button">刷新</button><button id="newBtn" type="button">新建会话</button></div>
       </section>
 
       <section class="layout">
