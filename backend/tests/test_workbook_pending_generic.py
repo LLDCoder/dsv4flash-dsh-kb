@@ -61,5 +61,9 @@ def test_websocket_message_limit_is_shared_with_the_browser_contract():
 
 def test_selected_portal_language_wins_for_each_turn_without_breaking_explicit_requests():
     assert _response_language_for("Please show my license status.", "ar") == "ar"
+    # The current UI language is authoritative when the user does not
+    # explicitly request another output language, even if the prompt is in
+    # English (the regression covered by workbook item 45).
+    assert _response_language_for("What can you do for me?", "ar") == "ar"
     assert _response_language_for("ما الذي يمكنك فعله من أجلي؟", "ar") == "ar"
     assert _response_language_for("Please answer in English.", "ar") == "en"
