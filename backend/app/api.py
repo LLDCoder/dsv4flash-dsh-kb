@@ -36,7 +36,7 @@ from .customer_documents import CustomerDocumentNotConfigured
 from .db import AuditOperator, AuditOperatorEvent, AuditOperatorSession, AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, Tool, get_db
 from .principal import Principal, _bearer_token, _token_profile_id, _token_reference, get_principal
 from .profile_scope import normalize_profile_scope
-from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
+from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, ConversationUpdate, MessageCreate, MessageFeedbackCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key, is_system_default_tool, system_default_tool_definitions
@@ -779,6 +779,23 @@ def make_router(service: DSHService) -> APIRouter:
         await db.commit()
         return {"deleted": True, "conversation_id": conversation_id}
 
+    @router.patch("/ai-chat/conversations/{conversation_id}", tags=["Chatbot compatibility"])
+    async def ai_chat_update_conversation(
+        conversation_id: str,
+        payload: ConversationUpdate,
+        db: AsyncSession = Depends(get_db),
+        principal: Principal = Depends(chat_principal),
+    ):
+        """Rename an owned conversation without changing its message history."""
+        try:
+            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        conversation.title = " ".join(payload.title.split())[:160]
+        await db.commit()
+        await db.refresh(conversation)
+        return service.conversation_json(conversation, principal=principal)
+
     @router.post("/ai-chat/messages/stream", tags=["Chatbot compatibility"])
     async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
         """Stream a customer-chat turn.
@@ -839,7 +856,7 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.post("/conversations")
     async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-        conversation = await service.create_conversation(db, principal, payload.workspace, payload.skill_profile, payload.runtime_profile)
+        conversation = await service.create_conversation(db, principal, payload.workspace, payload.skill_profile, payload.runtime_profile, payload.title)
         return service.conversation_json(conversation, principal=principal)
 
     @router.post("/umc/session")

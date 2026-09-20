@@ -41,9 +41,14 @@ class ServiceEligibilityResponse(APIModel):
 
 
 class ConversationCreate(APIModel):
+    title: str = Field(default="", max_length=160)
     workspace: str = "default"
     skill_profile: str = Field(default="default", validation_alias=AliasChoices("skillProfile", "skill_profile"))
     runtime_profile: str = Field(default="default", validation_alias=AliasChoices("runtimeProfile", "runtime_profile"))
+
+
+class ConversationUpdate(APIModel):
+    title: str = Field(min_length=1, max_length=160)
 
 
 class MessageAttachment(APIModel):

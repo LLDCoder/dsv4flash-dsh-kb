@@ -1015,12 +1015,21 @@ class DSHService:
     def writer_lock_for(self, conversation_id: str) -> asyncio.Lock:
         return self._writer_locks.setdefault(conversation_id, asyncio.Lock())
 
-    async def create_conversation(self, db: AsyncSession, principal: Principal, workspace: str, skill_profile: str, runtime_profile: str) -> Conversation:
+    async def create_conversation(
+        self,
+        db: AsyncSession,
+        principal: Principal,
+        workspace: str,
+        skill_profile: str,
+        runtime_profile: str,
+        title: str = "",
+    ) -> Conversation:
         conversation = Conversation(
             conversation_id=f"conv_{uuid4().hex[:20]}",
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             owner_account=principal.audit_account.strip()[:300] or None,
+            title=" ".join(str(title or "").split())[:160],
             dsh_session_id=f"dsh_{uuid4().hex[:20]}",
             runtime_profile=runtime_profile,
             workspace=workspace,
@@ -1198,6 +1207,7 @@ class DSHService:
         )
         return {
             "conversationId": conversation.conversation_id,
+            "title": conversation.title or "",
             "dshSessionId": conversation.dsh_session_id,
             "ownerAccount": conversation.owner_account,
             "sourceTenantId": conversation.tenant_id,
