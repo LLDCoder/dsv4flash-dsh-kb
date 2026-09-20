@@ -3331,6 +3331,65 @@ def _native_identity_search_result(outcome: ReaderOutcome, question: str, intent
     return ReaderOutcome(result, {**outcome.audit_evidence, 'nativeIdentityMatch': identity, 'result': result.public_json()})
 
 
+def _native_exact_identity_row_result(
+    observation: Any,
+    *,
+    page: str,
+    record_identity: str,
+    scope: str,
+    question: str,
+) -> ReaderResult | None:
+    """Read one exact visible row without requiring an English search verb.
+
+    Arabic follow-ups often ask for a record directly ("للسجل ...") rather
+    than using ``find``/``search``.  The old identity recovery therefore
+    skipped an already-visible matching row and later reported a false
+    not-confirmed result.  This helper is intentionally limited to one exact
+    row in the fresh, healthy observation; it never searches hidden pages or
+    substitutes a neighbouring record.
+    """
+    identity = _detail_identity(record_identity)
+    if not identity or not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return None
+    if (observation.get("readHealth") or {}).get("healthy") is not True:
+        return None
+    # Prefer the raw section summaries: the bounded semantic normalizer may
+    # intentionally omit numeric cells, while refund amounts and timestamps
+    # are valid, user-visible fields that must survive an exact-record read.
+    raw_tables = observation.get("sectionSummaries")
+    candidate_tables = raw_tables if isinstance(raw_tables, list) else []
+    if not candidate_tables:
+        candidate_tables = list(_observation_semantic_nodes(observation))
+    tables = [node for node in candidate_tables
+              if isinstance(node, dict)
+              and node.get("kind") in {"table", "grid"}
+              and node.get("columnHeaders") and node.get("rowFields")]
+    matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for table in tables:
+        headers = [str(header) for header in table.get("columnHeaders") or []]
+        for row in table.get("rowFields") or []:
+            if not isinstance(row, dict):
+                continue
+            values = [row.get(header) for header in headers]
+            if any(_detail_identity(value).casefold() == identity.casefold() for value in values):
+                matches.append((table, {key: row.get(key) for key in headers if key in row}))
+    if len(matches) != 1:
+        return None
+    table, fields = matches[0]
+    return ReaderResult(
+        status="success",
+        summary="The exact requested record was matched in the current native table.",
+        page=page,
+        section=str(table.get("heading") or table.get("nodeId") or ""),
+        source_section=str(table.get("nodeId") or ""),
+        selected_state=str(table.get("selectedState") or ""),
+        answer_shape="detail",
+        scope=scope,
+        completeness="bounded",
+        facts=(json.dumps(fields, ensure_ascii=False, separators=(",", ":")),),
+    )
+
+
 def _native_optional_record_fields(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Keep optional-field lists on their observed schema instead of API lookup IDs."""
     optional_fields = bool(re.search(r'\bshow\b.*\b(?:with|including)\b.*\bwhere (?:available|those fields exist)\b', question, re.I))
@@ -10086,6 +10145,37 @@ class AdminPortalReader:
         if lookup_result is not None and raw_tool_payload.get('result') not in {'load_failed','no_permission'}:
             return ReaderOutcome(lookup_result, {'stage':'observed_application_lookup','permission':permission_audit,
                 'observation':bounded_portal_observation(observation),'result':lookup_result.public_json()})
+        # Bind exact identifiers directly against the fresh visible table for
+        # all supported languages.  In particular, Arabic detail follow-ups
+        # do not contain the English ``find``/``search`` verbs used by the
+        # older identity-search recovery path.
+        observed_identity = _detail_identity(resolved_values.get("recordIdentity"))
+        if not observed_identity:
+            identity_tokens = re.findall(
+                r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"
+                r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9])",
+                str(question or ""),
+            )
+            if len(identity_tokens) == 1:
+                observed_identity = _detail_identity(identity_tokens[0])
+        exact_row_result = _native_exact_identity_row_result(
+            observation,
+            page=request.start_path,
+            record_identity=observed_identity,
+            scope=_permission_result_scope(permission_context),
+            question=question,
+        )
+        if exact_row_result is not None and raw_tool_payload.get('result') not in {'load_failed', 'no_permission'}:
+            return ReaderOutcome(
+                exact_row_result,
+                {
+                    'stage': 'observed_exact_identity_row',
+                    'permission': permission_audit,
+                    'observation': bounded_portal_observation(observation),
+                    'nativeIdentityMatch': observed_identity,
+                    'result': exact_row_result.public_json(),
+                },
+            )
         if observation is not None and (
             any(str(action.get("type") or "").casefold() == "observe" for action in request.actions)
             or not raw_tool_payload.get("facts")
@@ -11023,6 +11113,33 @@ class AdminPortalReader:
                     question, bounded_conversation_context,
                 )
                 resolved_detail_identity = _detail_identity(resolved_values.get("recordIdentity"))
+                exact_follow_up_row = _native_exact_identity_row_result(
+                    bounded_follow_up_observation,
+                    page=next_request.start_path,
+                    record_identity=resolved_detail_identity,
+                    scope=verified_scope,
+                    question=question,
+                )
+                if exact_follow_up_row is not None:
+                    semantic_resolution = record_semantic_resolution(
+                        decision="fallback",
+                        reason="exact_identity_row_visible_after_follow_up",
+                        result=exact_follow_up_row,
+                        fallback_strategy="native_exact_identity_row",
+                    )
+                    return ReaderOutcome(
+                        exact_follow_up_row,
+                        {
+                            "stage": "completed_from_exact_identity_row",
+                            "permission": permission_audit,
+                            "knowledge": knowledge_context,
+                            "portalReadPlan": bounded_json(next_request.as_payload()),
+                            "observation": bounded_follow_up_observation,
+                            "nativeIdentityMatch": resolved_detail_identity,
+                            "result": exact_follow_up_row.public_json(),
+                            "semanticResolution": semantic_resolution,
+                        },
+                    )
                 if follow_up_shape == "detail" and resolved_detail_identity:
                     detail_page = next(
                         (
