@@ -10,8 +10,8 @@
   <body>
     <main id="workspace" class="workspace">
       <header class="topbar">
-        <div><p class="eyebrow">DSH · KNOWLEDGE BASE SERVICE</p><h1>会话记录</h1><p class="muted">集中查看问题、回答和流式输出；仅连接知识库，不使用 UMC 自动登录。</p></div>
-        <div class="top-actions"><span id="modePill" class="pill"><span class="status-dot"></span>知识库已连接</span></div>
+        <div class="brand"><span class="brand-mark">✦</span><div><p class="eyebrow">DSH · KNOWLEDGE BASE SERVICE</p><h1>知识库问答工作台</h1><p class="muted">仅连接知识库，实时查看问题、回答与检索过程。</p></div></div>
+        <div class="top-actions"><span id="modePill" class="pill"><span class="status-dot"></span>知识库已连接</span><span class="top-chip">KB-ONLY</span></div>
       </header>
 
       <section class="toolbar card">
@@ -34,7 +34,7 @@
               <div class="detail-actions"><button id="saveTitleBtn" class="secondary" type="button">保存标题</button><button id="deleteBtn" class="danger" type="button">删除会话</button></div>
             </div>
             <div id="messages" class="messages"></div>
-            <div id="streamStatus" class="stream-status" aria-live="polite"></div>
+            <div id="streamStatus" class="stream-status" aria-live="polite"><span id="streamStatusText"></span><span id="loadingDots" class="loading-dots" hidden aria-label="正在处理"><i></i><i></i><i></i></span></div>
             <form id="messageForm" class="composer"><textarea id="message" rows="3" placeholder="输入问题，回答将实时显示…" required></textarea><button id="sendBtn" type="submit">发送问题</button></form>
           </div>
         </section>

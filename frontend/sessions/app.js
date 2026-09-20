@@ -9,7 +9,8 @@ function requestId() {
 
 function apiUrl(path) { return `${basePath}${path}`; }
 function headers() { return { "Content-Type": "application/json", "X-User-Id": principal.userId, "X-Tenant-Id": principal.tenantId }; }
-function setStatus(text, error = false) { $("status").textContent = text; $("status").style.color = error ? "#a63d3d" : ""; }
+function setStatus(text, error = false) { $("status").textContent = text; $("status").style.color = error ? "var(--danger)" : ""; }
+function setStreamStatus(text, loading = false) { $("streamStatusText").textContent = text || ""; $("loadingDots").hidden = !loading; $("streamStatus").classList.toggle("is-loading", loading); }
 function time(value) { if (!value) return "时间未知"; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(); }
 async function request(path, options = {}) {
   const response = await fetch(apiUrl(path), { credentials: "same-origin", ...options, headers: { ...headers(), ...(options.headers || {}) } });
@@ -79,19 +80,26 @@ async function deleteSession() {
 }
 
 function appendUserMessage(content) { const node = document.createElement("article"); node.className = "message user"; const role = document.createElement("span"); role.className = "role"; role.textContent = "问题"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); $("messages").scrollTop = $("messages").scrollHeight; }
-function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); $("messages").scrollTop = $("messages").scrollHeight; return body; }
+function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant streaming"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); $("messages").scrollTop = $("messages").scrollHeight; return body; }
+function parseSseData(raw) { try { return JSON.parse(raw); } catch { return raw; } }
+function dispatchSseBlock(block, onEvent) {
+  const lines = block.split(/\r?\n/); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+  if (!type) return; const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n"); onEvent(type, parseSseData(data));
+}
 async function sendMessage(event) {
-  event.preventDefault(); const content = $("message").value.trim(); if (!content || !state.selectedId || state.busy) return; state.busy = true; $("sendBtn").disabled = true; $("message").value = ""; appendUserMessage(content); $("streamStatus").textContent = "正在检索知识库并生成回答…";
+  event.preventDefault(); const content = $("message").value.trim(); if (!content || !state.selectedId || state.busy) return; state.busy = true; $("sendBtn").disabled = true; $("message").value = ""; $("messageForm").classList.add("is-busy"); appendUserMessage(content); setStreamStatus("正在检索知识库并生成回答…", true);
   let assistant = ""; let body = null;
   try {
-    const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, conversation_id: state.selectedId, request_id: requestId() }) });
+    const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), Accept: "text/event-stream", "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, conversation_id: state.selectedId, request_id: requestId() }) });
     if (!response.ok || !response.body) throw new Error(`流式请求失败（${response.status}）`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
-    while (true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const blocks = buffer.split("\n\n"); buffer = blocks.pop() || ""; for (const block of blocks) { const lines = block.split("\n"); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim(); const raw = lines.find((line) => line.startsWith("data:"))?.slice(5).trim() || ""; if (type === "token") { assistant += raw; if (!body) body = appendStreamMessage(""); renderRichText(body, assistant); $("streamStatus").textContent = "正在接收回答…"; } else if (type === "status") { try { $("streamStatus").textContent = JSON.parse(raw).message || "正在处理…"; } catch {} } else if (type === "error") { throw new Error(JSON.parse(raw).detail || "回答失败"); } } }
+    const handleEvent = (type, data) => { if (type === "token") { const token = typeof data === "string" ? data : String(data?.content || ""); assistant += token; if (!body) body = appendStreamMessage(""); renderRichText(body, assistant); setStreamStatus("正在接收回答…", false); } else if (type === "status") { setStreamStatus(data?.message || "正在处理…", true); } else if (type === "error") { throw new Error(data?.detail || "回答失败"); } else if (type === "end") { setStreamStatus("回答完成", false); } };
+    while (true) { const { value, done } = await reader.read(); buffer += decoder.decode(value || new Uint8Array(), { stream: !done }); const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop() || ""; blocks.forEach((block) => dispatchSseBlock(block, handleEvent)); if (done) break; }
+    if (buffer.trim()) dispatchSseBlock(buffer, handleEvent);
     if (!body) { body = appendStreamMessage(assistant || "未收到回答内容"); }
-    $("streamStatus").textContent = "回答完成"; await selectSession(state.selectedId); await loadSessions(state.selectedId);
-  } catch (error) { $("streamStatus").textContent = error.message; setStatus(error.message, true); }
-  finally { state.busy = false; $("sendBtn").disabled = false; }
+    setStreamStatus("回答完成", false); await loadSessions(state.selectedId);
+  } catch (error) { setStreamStatus(error.message, false); setStatus(error.message, true); }
+  finally { state.busy = false; $("sendBtn").disabled = false; $("messageForm").classList.remove("is-busy"); }
 }
 
 $("refreshBtn").addEventListener("click", () => loadSessions()); $("newBtn").addEventListener("click", createSession); $("newSmallBtn").addEventListener("click", createSession); $("search").addEventListener("input", renderSessions); $("saveTitleBtn").addEventListener("click", saveTitle); $("deleteBtn").addEventListener("click", deleteSession); $("messageForm").addEventListener("submit", sendMessage);

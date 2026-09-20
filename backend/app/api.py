@@ -815,7 +815,13 @@ def make_router(service: DSHService) -> APIRouter:
 
     @router.post("/ai-chat/messages/stream", tags=["Chatbot compatibility"])
     async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
-        """Stream a customer-chat turn.
+        """Stream a customer-chat turn as Server-Sent Events.
+
+        ``token`` events contain a JSON-encoded string in their ``data``
+        field. Encoding the token instead of interpolating raw model text
+        preserves newlines, leading spaces, and non-ASCII characters for
+        browser clients. ``status`` and ``error`` events contain JSON objects;
+        ``end`` uses ``[DONE]`` as its data value.
 
         A clearly linked application follow-up after a Refund or Complaints
         detail may be handed off to the read-only My Requests application
@@ -851,7 +857,9 @@ def make_router(service: DSHService) -> APIRouter:
                     event_type = event.get("eventType")
                     data = event.get("data") or {}
                     if event_type == "assistant.chunk":
-                        yield f"event: token\ndata: {data.get('content', '')}\n\n"
+                        # Encode the token as JSON so newlines, leading spaces,
+                        # and non-ASCII text survive the SSE boundary exactly.
+                        yield f"event: token\ndata: {json.dumps(str(data.get('content', '')), ensure_ascii=False)}\n\n"
                     elif event_type == "assistant.status":
                         # Additive, safe progress event for SSE clients. It
                         # contains no prompts, tool arguments, or raw reasoning.

@@ -1490,6 +1490,22 @@ class DSHService:
                     raw_attachment = latest_user.event_json.get("attachment") if latest_user else None
                     latest_attachment = raw_attachment if isinstance(raw_attachment, dict) else None
                     response_language = response_language_for(latest_content)
+
+                    async def publish_answer_text(text: str, *, chunk_size: int = 28, pause_seconds: float = 0.012) -> None:
+                        """Push deterministic answers through the same live stream as LLM tokens."""
+                        value = str(text or "")
+                        for offset in range(0, len(value), chunk_size):
+                            await self.publish_stream_event(
+                                conversation,
+                                "assistant.chunk",
+                                {
+                                    "content": value[offset : offset + chunk_size],
+                                    "requestId": principal.request_id,
+                                    "runtimeId": conversation.runtime_id,
+                                },
+                            )
+                            if pause_seconds:
+                                await asyncio.sleep(pause_seconds)
                     # Send a first visible update before deterministic routing,
                     # external calls, or the LLM request can spend time waiting.
                     await self.append_status(
@@ -2240,6 +2256,7 @@ class DSHService:
                                 handoff_result=attachment_handoff_result,
                             )
                     if forced_response_message:
+                        await publish_answer_text(forced_response_message)
                         await self.append_event(
                             db,
                             conversation,
@@ -2265,15 +2282,7 @@ class DSHService:
                             request_id=principal.request_id,
                             runtime_id=conversation.runtime_id,
                         )
-                        await self.publish_stream_event(
-                            conversation,
-                            "assistant.chunk",
-                            {
-                                "content": attachment_local_response,
-                                "requestId": principal.request_id,
-                                "runtimeId": conversation.runtime_id,
-                            },
-                        )
+                        await publish_answer_text(attachment_local_response)
                         await self.append_event(
                             db,
                             conversation,
@@ -2312,12 +2321,21 @@ class DSHService:
                             async def draft_answer(prompt_messages: list[dict[str, str]]) -> tuple[str, str]:
                                 chunks: list[str] = []
                                 reasoning_chunks: list[str] = []
+                                pending_stream = ""
+                                last_stream_flush = time.monotonic()
 
                                 async def capture_reasoning(value: str) -> None:
                                     reasoning_chunks.append(value)
 
                                 async for token in self.llm.stream(prompt_messages, on_reasoning=capture_reasoning):
                                     chunks.append(token)
+                                    pending_stream += token
+                                    if len(pending_stream) >= 24 or time.monotonic() - last_stream_flush >= 0.08:
+                                        await publish_answer_text(pending_stream)
+                                        pending_stream = ""
+                                        last_stream_flush = time.monotonic()
+                                if pending_stream:
+                                    await publish_answer_text(pending_stream)
                                 return "".join(chunks), "".join(reasoning_chunks)
 
                             content, reasoning = await draft_answer(messages)
@@ -2340,16 +2358,6 @@ class DSHService:
                                     "تعذر تنسيق النتيجة المطلوبة. يرجى المحاولة مرة أخرى."
                                     if response_language == "ar"
                                     else "I could not format the requested result. Please try again."
-                                )
-                            if content:
-                                await self.publish_stream_event(
-                                    conversation,
-                                    "assistant.chunk",
-                                    {
-                                        "content": content,
-                                        "requestId": principal.request_id,
-                                        "runtimeId": conversation.runtime_id,
-                                    },
                                 )
                         except Exception as exc:
                             await self.append_audit(
