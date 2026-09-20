@@ -1547,6 +1547,7 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
         "workflowState": 300,
         "countSource": 160,
         "profileVerificationEmpty": 10,
+        "priorFacts": 6_400,
     }
     bounded: dict[str, Any] = {}
     for name, max_length in limits.items():
@@ -3387,6 +3388,51 @@ def _native_exact_identity_row_result(
         scope=scope,
         completeness="bounded",
         facts=(json.dumps(fields, ensure_ascii=False, separators=(",", ":")),),
+    )
+
+
+def _prior_exact_record_result(
+    conversation_context: Any,
+    *,
+    record_identity: str,
+    page: str,
+    scope: str,
+) -> ReaderResult | None:
+    """Reuse one exact row already confirmed in the immediately prior turn.
+
+    A list turn may prove a record while a follow-up opens a fresh portal
+    render where the selected tab is temporarily not visible.  For an exact
+    identifier in the same conversation, the prior bounded row is stronger
+    evidence than a generic ``named_source_list_not_visible`` failure.  Only
+    an exact single match is reused; no neighbouring record is substituted.
+    """
+    identity = _detail_identity(record_identity)
+    context = _bounded_conversation_context(conversation_context)
+    previous = context.get("previousIntent") or {}
+    prior_facts = previous.get("priorFacts") if isinstance(previous, dict) else None
+    if not identity or not isinstance(prior_facts, list):
+        return None
+    matches: list[str] = []
+    for fact in prior_facts:
+        try:
+            parsed = json.loads(str(fact))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if any(_detail_identity(value).casefold() == identity.casefold() for value in parsed.values()):
+            matches.append(json.dumps(parsed, ensure_ascii=False, separators=(",", ":")))
+    if len(matches) != 1:
+        return None
+    return ReaderResult(
+        status="success",
+        summary="The exact record was reused from the immediately preceding verified list.",
+        page=page or str(previous.get("page") or ""),
+        source_hint={"page": page} if page else {},
+        answer_shape="detail",
+        scope=scope,
+        completeness="bounded",
+        facts=(matches[0],),
     )
 
 
@@ -8737,6 +8783,30 @@ class AdminPortalReader:
                 "buttonCount": len(permission_context.buttons),
             },
         )
+        prior_identity_match = ""
+        prior_identity_tokens = re.findall(
+            r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"
+            r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9])",
+            str(question or ""),
+        )
+        if len(prior_identity_tokens) == 1:
+            prior_identity_match = _detail_identity(prior_identity_tokens[0])
+        prior_result = _prior_exact_record_result(
+            bounded_conversation_context,
+            record_identity=prior_identity_match,
+            page="",
+            scope=_permission_result_scope(permission_context),
+        )
+        if prior_result is not None:
+            return ReaderOutcome(
+                prior_result,
+                {
+                    "stage": "prior_exact_record_reuse",
+                    "permission": permission_audit,
+                    "priorIdentityMatch": prior_identity_match,
+                    "result": prior_result.public_json(),
+                },
+            )
         normalized_question = re.sub(r'\s+', ' ', question).strip().casefold()
 
         # A slash date with both day and month in the 1..12 range is

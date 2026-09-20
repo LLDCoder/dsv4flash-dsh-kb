@@ -1371,6 +1371,13 @@ def _reader_conversation_context(
                 current["recordIdentity"] = identity
         if isinstance(previous_result.get("clarificationOptions"), list):
             current["clarificationOptions"] = previous_result["clarificationOptions"][:2]
+        prior_facts = previous_result.get("facts")
+        if previous_result.get("result") == "success" and isinstance(prior_facts, list):
+            current["priorFacts"] = [
+                DSHService._redact_audit_string(str(fact))[:800]
+                for fact in prior_facts[:8]
+                if isinstance(fact, str) and fact.strip()
+            ]
         return {"previousIntent": current}
     # If the immediately preceding turn failed before producing a useful
     # object/identity anchor, recover the nearest earlier bounded result. This
@@ -1477,6 +1484,13 @@ def _reader_conversation_context(
         prior_intents.append(item)
     if prior_intents:
         intent["recentIntents"] = prior_intents
+    prior_facts = previous_result.get("facts")
+    if previous_result.get("result") == "success" and isinstance(prior_facts, list):
+        intent["priorFacts"] = [
+            DSHService._redact_audit_string(str(fact))[:800]
+            for fact in prior_facts[:8]
+            if isinstance(fact, str) and fact.strip()
+        ]
     return {"previousIntent": intent}
 
 
