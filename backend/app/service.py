@@ -492,10 +492,75 @@ class DSHService:
         return str(value)[:500]
 
     @staticmethod
+    def attachment_text_lines(ocr_result: dict[str, Any]) -> list[str]:
+        """Extract bounded, user-visible text from the local OCR result."""
+
+        result = ocr_result.get("result") if isinstance(ocr_result, dict) else None
+        if not isinstance(result, dict):
+            return []
+        lines: list[str] = []
+        for page in result.get("pages", []):
+            for line in page.get("lines", []):
+                value = str(line.get("text") or "").strip()
+                if value:
+                    lines.append(value[:4_000])
+        return lines[:5_000]
+
+    @staticmethod
+    def attachment_text_summary(lines: list[str], question: str) -> str | None:
+        """Create a deterministic local summary for explicit summary questions.
+
+        This intentionally uses headings and representative lines instead of an
+        external LLM.  It gives useful results for Markdown, README, CSV and
+        plain-text files while keeping attachment contents inside this service.
+        """
+
+        normalized_question = " ".join(str(question or "").casefold().split())
+        summary_terms = (
+            "总结", "摘要", "概括", "归纳", "总结一下", "主要内容", "梳理",
+            "summarize", "summarise", "summary", "overview", "key points",
+        )
+        if not any(term in normalized_question for term in summary_terms):
+            return None
+        cleaned = [re.sub(r"^\s*#{1,6}\s*", "", line).strip() for line in lines if line.strip()]
+        if not cleaned:
+            return "（附件没有可读取的文本内容）"
+        headings: list[tuple[int, str]] = []
+        for index, raw in enumerate(lines):
+            match = re.match(r"^\s*#{1,6}\s+(.+?)\s*$", raw)
+            if match:
+                headings.append((index, match.group(1).strip()))
+        selected: list[str] = []
+        if headings:
+            first_title = cleaned[0]
+            selected.append(first_title[:240])
+            for heading_index, (line_index, heading) in enumerate(headings[:24]):
+                if heading[:240] not in selected:
+                    selected.append(heading[:240])
+                end = headings[heading_index + 1][0] if heading_index + 1 < len(headings) else len(lines)
+                examples = []
+                for candidate in lines[line_index + 1:end]:
+                    value = re.sub(r"^\s*[-*+]\s*", "", candidate).strip()
+                    value = re.sub(r"^\s*\d+[.)]\s*", "", value)
+                    if value and not re.match(r"^#{1,6}\s+", value):
+                        examples.append(value[:240])
+                    if len(examples) >= 2:
+                        break
+                selected.extend(f"{heading[:80]}：{example}" for example in examples)
+        else:
+            selected = [item[:240] for item in cleaned[:10]]
+        deduped: list[str] = []
+        for item in selected:
+            if item and item not in deduped:
+                deduped.append(item)
+        return "\n".join(f"- {item}" for item in deduped[:36])
+
+    @staticmethod
     def attachment_ocr_local_response(
         *,
         response_language: str,
         ocr_result: dict[str, Any],
+        question: str = "",
         handoff_skill_id: str | None = None,
         handoff_result: dict[str, Any] | None = None,
     ) -> str:
@@ -505,21 +570,26 @@ class DSHService:
         references = ", ".join(hints) if hints else "none"
         is_arabic = response_language == "ar"
         result = ocr_result.get("result") if isinstance(ocr_result, dict) else None
-        if isinstance(result, dict) and result.get("provider") == "DSH-Text-Local":
-            text_lines = []
-            for page in result.get("pages", []):
-                for line in page.get("lines", []):
-                    value = str(line.get("text") or "").strip()
-                    if value:
-                        text_lines.append(value)
+        if isinstance(result, dict) and result.get("pages"):
+            text_lines = DSHService.attachment_text_lines(ocr_result)
             extracted = "\n".join(text_lines)[:12_000] or "（附件没有可读取的文本内容）"
-            return (
-                "تمت قراءة الملف النصي محلياً. لم يتم إرسال محتواه إلى أي نموذج لغوي خارجي.\n\nمحتوى الملف:\n"
-                + extracted
-                if is_arabic
-                else "已在本地读取文本附件，内容未发送到任何外部语言模型。\n\n附件内容：\n"
-                + extracted
-            )
+            summary = DSHService.attachment_text_summary(text_lines, question)
+            if summary:
+                return (
+                    "تمت قراءة الملف محلياً وإنشاء ملخص بنيوي. لم يتم إرسال محتواه إلى أي نموذج لغوي خارجي.\n\nملخص الملف:\n"
+                    + summary
+                    if is_arabic
+                    else "已在本地解析附件并生成结构化摘要，内容未发送到任何外部语言模型。\n\n文档摘要：\n"
+                    + summary
+                )
+            if result.get("provider") == "DSH-Text-Local":
+                return (
+                    "تمت قراءة الملف النصي محلياً. لم يتم إرسال محتواه إلى أي نموذج لغوي خارجي.\n\nمحتوى الملف:\n"
+                    + extracted
+                    if is_arabic
+                    else "已在本地读取文本附件，内容未发送到任何外部语言模型。\n\n附件内容：\n"
+                    + extracted
+                )
         if not handoff_skill_id:
             return (
                 "تم تحليل الملف محلياً. ولحماية بياناتك، لم يتم إرسال نص المستند إلى أي نموذج لغوي خارجي. "
@@ -2275,6 +2345,7 @@ class DSHService:
                             attachment_local_response = self.attachment_ocr_local_response(
                                 response_language=response_language,
                                 ocr_result=tool_result,
+                                question=latest_content,
                                 handoff_skill_id=attachment_handoff_skill_id,
                                 handoff_result=attachment_handoff_result,
                             )

@@ -101,9 +101,10 @@ h2 { margin-bottom: 0; color: var(--ink); font-size: 16px; letter-spacing: -.01e
 .composer-actions { display: flex; align-items: center; gap: 7px; padding-bottom: 1px; }
 .file-picker { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .composer button { flex: 0 0 104px; height: 40px; }
-.composer .attach-button { flex: 0 0 auto; height: 34px; padding: 7px 10px; font-size: 11px; }
-.composer .attach-button { display: inline-flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; min-width: 218px; height: 42px; white-space: nowrap; }
-.attach-button small { color: var(--subtle); font-size: 8px; font-weight: 650; letter-spacing: 0; }
+.composer .attach-button { position: relative; flex: 0 0 auto; min-width: 68px; height: 40px; padding: 7px 12px; font-size: 11px; white-space: nowrap; }
+.attachment-tooltip { position: absolute; z-index: 20; right: 0; bottom: calc(100% + 10px); width: 238px; padding: 10px 12px; border: 1px solid #4b416f; border-radius: 8px; background: #1c1930; color: #e8e4ff; box-shadow: 0 12px 28px rgba(0, 0, 0, .34); font-size: 11px; font-weight: 560; line-height: 1.55; text-align: left; white-space: normal; opacity: 0; visibility: hidden; transform: translateY(4px); transition: opacity .16s ease, transform .16s ease, visibility .16s ease; pointer-events: none; }
+.attachment-tooltip::after { content: ""; position: absolute; right: 22px; bottom: -6px; width: 10px; height: 10px; border-right: 1px solid #4b416f; border-bottom: 1px solid #4b416f; background: #1c1930; transform: rotate(45deg); }
+.attach-button:hover .attachment-tooltip, .attach-button:focus-visible .attachment-tooltip { opacity: 1; visibility: visible; transform: translateY(0); }
 .attachment-preview { display: flex; align-items: center; gap: 7px; min-height: 26px; width: fit-content; max-width: 100%; padding: 4px 7px; border: 1px solid #4a3e79; border-radius: 6px; background: #211c3c; color: #c7bbff; font-size: 11px; }
 .attachment-icon { color: var(--accent-bright); font-weight: 900; }
 .attachment-preview #attachmentName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

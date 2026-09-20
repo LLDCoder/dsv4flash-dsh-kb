@@ -75,6 +75,24 @@ class AttachmentOcrHandoffTests(unittest.TestCase):
         self.assertNotIn("must not be shown", response)
         self.assertIn("No document text was sent to any external language model", response)
 
+    def test_text_attachment_summary_is_generated_locally(self):
+        ocr = {
+            "ok": True,
+            "result": {
+                "provider": "DSH-Text-Local",
+                "pages": [{"lines": [{"text": "# Project README"}, {"text": "- local summary"}]}],
+            },
+        }
+        response = DSHService.attachment_ocr_local_response(
+            response_language="zh",
+            ocr_result=ocr,
+            question="请总结这个文档",
+        )
+        self.assertIn("文档摘要", response)
+        self.assertIn("Project README", response)
+        self.assertIn("local summary", response)
+        self.assertIn("未发送到任何外部语言模型", response)
+
     def test_attachment_turn_does_not_append_ocr_evidence_to_llm_messages(self):
         source = inspect.getsource(DSHService._run_turn)
         start = source.index('if latest_attachment and tool_result.get("ok") and latest_content.strip():')
