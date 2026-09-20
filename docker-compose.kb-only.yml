@@ -1,0 +1,106 @@
+name: dsh-kb-only
+
+# Minimal Customer DSH deployment. It keeps chat/session storage and the LLM
+# response layer, but only exposes the knowledge-base tool. OCR, UMC Portal,
+# Platform Gateway, and local GPU services are intentionally absent.
+services:
+  postgres:
+    image: public.ecr.aws/docker/library/postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dsh}
+      POSTGRES_USER: ${POSTGRES_USER:-dsh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.kb-only}
+    volumes:
+      - dsh_kb_only_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: public.ecr.aws/docker/library/redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - dsh_kb_only_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  knowledge-gateway:
+    build:
+      context: ./knowledge-gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      KNOWLEDGE_BASE_URL: ${KNOWLEDGE_BASE_URL:?Set KNOWLEDGE_BASE_URL in .env.kb-only}
+      KNOWLEDGE_PUBLIC_PATH: ${KNOWLEDGE_PUBLIC_PATH:-/api/knowledge}
+      KNOWLEDGE_TIMEOUT_SECONDS: ${KNOWLEDGE_TIMEOUT_SECONDS:-30}
+      KNOWLEDGE_RETRY_ATTEMPTS: ${KNOWLEDGE_RETRY_ATTEMPTS:-3}
+      KNOWLEDGE_UPSTREAM_MAX_TOP_K: ${KNOWLEDGE_UPSTREAM_MAX_TOP_K:-20}
+      KNOWLEDGE_RETRIEVAL_MODES: ${KNOWLEDGE_RETRIEVAL_MODES:-bm25,graph,vector}
+    expose:
+      - "8101"
+    command: uvicorn app:app --host 0.0.0.0 --port 8101
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-dsh}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dsh}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      RUNTIME_IDLE_TTL_SECONDS: ${RUNTIME_IDLE_TTL_SECONDS:-900}
+      LLM_BASE_URL: ${LLM_BASE_URL:?Set LLM_BASE_URL in .env.kb-only}
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in .env.kb-only}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      SKILL_ROUTER_MODE: ${SKILL_ROUTER_MODE:-keyword}
+      SKILL_ROUTER_TIMEOUT_SECONDS: ${SKILL_ROUTER_TIMEOUT_SECONDS:-10}
+      KB_ONLY_MODE: "true"
+      EXTERNAL_TOOLS_ENABLED: "true"
+      OCR_GATEWAY_URL: ""
+      PLATFORM_GATEWAY_URL: ""
+      KNOWLEDGE_GATEWAY_URL: http://knowledge-gateway:8101
+      KNOWLEDGE_DEFAULT_FOLDER_ID: ${KNOWLEDGE_DEFAULT_FOLDER_ID:-}
+      KNOWLEDGE_TIMEOUT_SECONDS: ${KNOWLEDGE_TIMEOUT_SECONDS:-30}
+      KNOWLEDGE_RETRY_ATTEMPTS: ${KNOWLEDGE_RETRY_ATTEMPTS:-2}
+      KNOWLEDGE_TOP_K: ${KNOWLEDGE_TOP_K:-20}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-30}
+      AUDIT_CLEANUP_INTERVAL_SECONDS: ${AUDIT_CLEANUP_INTERVAL_SECONDS:-3600}
+      AUDIT_COOKIE_SECURE: ${AUDIT_COOKIE_SECURE:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      knowledge-gateway:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${DSH_BACKEND_PORT:-19086}:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${DSH_FRONTEND_PORT:-19087}:80"
+
+volumes:
+  dsh_kb_only_postgres_data:
+  dsh_kb_only_redis_data:

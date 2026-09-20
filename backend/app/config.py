@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     skill_router_mode: str = "llm"
     skill_router_timeout_seconds: float = 10.0
     skill_router_fallback_skill_id: str = DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID
+    # Restrict a deployment to knowledge-base retrieval. This disables OCR and
+    # UMC/Platform capabilities and lets the database seed only knowledge
+    # Skills, while keeping the general DSH conversation flow available.
+    kb_only_mode: bool = False
     # Operator-editable instructions are added to each generated system
     # prompt. Built-in language, safety, and evidence rules remain enforced.
     system_prompt: str = ""

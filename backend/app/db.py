@@ -431,9 +431,15 @@ async def init_db() -> None:
             changed = True
         # Knowledge and OCR are runtime-configured system capabilities, not
         # business Tool Registry rows. Remove rows created by older versions.
-        removed_defaults = await session.execute(
-            delete(Tool).where(Tool.tool_name.in_((*SYSTEM_DEFAULT_TOOL_NAMES, "umc.licenses")))
-        )
+        if settings.kb_only_mode:
+            # A KB-only deployment must not retain operator-created business
+            # tools from a reused database. System knowledge tools are runtime
+            # capabilities and are not persisted in this table.
+            removed_defaults = await session.execute(delete(Tool))
+        else:
+            removed_defaults = await session.execute(
+                delete(Tool).where(Tool.tool_name.in_((*SYSTEM_DEFAULT_TOOL_NAMES, "umc.licenses")))
+            )
         changed = changed or bool(removed_defaults.rowcount)
         # Customer DSH no longer shares administrator business Skills. Delete
         # persisted legacy rows so the database-backed catalog cannot keep
@@ -442,11 +448,28 @@ async def init_db() -> None:
             delete(Skill).where(Skill.skill_id.in_(tuple(REMOVED_CUSTOMER_SKILL_IDS)))
         )
         changed = changed or bool(removed_admin_skills.rowcount)
+        if settings.kb_only_mode:
+            existing_skills = list((await session.execute(select(Skill))).scalars().all())
+            for existing_skill in existing_skills:
+                allowed_tools = set(existing_skill.allowed_tools or [])
+                if not allowed_tools or not allowed_tools.issubset({"knowledge.search"}):
+                    await session.delete(existing_skill)
+                    changed = True
         # Reconcile before seeding as well as after it.  On later startups the
         # partial unique index already exists, so this prevents a seed insert
         # from colliding with a newer active operator-managed version.
         changed = bool(await reconcile_active_published_skills(session)) or changed
-        for definition in DEFAULT_SKILL_DEFINITIONS:
+        skill_definitions = (
+            tuple(
+                definition
+                for definition in DEFAULT_SKILL_DEFINITIONS
+                if set(definition.get("allowed_tools") or [])
+                and set(definition.get("allowed_tools") or []).issubset({"knowledge.search"})
+            )
+            if settings.kb_only_mode
+            else DEFAULT_SKILL_DEFINITIONS
+        )
+        for definition in skill_definitions:
             result = await session.execute(select(Skill).where(Skill.skill_id == definition["skill_id"], Skill.version == 1))
             existing_skill = result.scalar_one_or_none()
             if existing_skill:
@@ -503,7 +526,8 @@ async def init_db() -> None:
                 )
             )
             changed = True
-        for definition in DEFAULT_BUSINESS_TOOL_DEFINITIONS:
+        business_tool_definitions = () if settings.kb_only_mode else DEFAULT_BUSINESS_TOOL_DEFINITIONS
+        for definition in business_tool_definitions:
             result = await session.execute(select(Tool).where(Tool.tool_name == definition["tool_name"]))
             existing = result.scalar_one_or_none()
             if existing:

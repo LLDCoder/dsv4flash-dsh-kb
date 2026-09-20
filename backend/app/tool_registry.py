@@ -220,7 +220,9 @@ def system_default_tool_definitions(settings: Any) -> list[dict[str, Any]]:
     """Build non-persisted capabilities from live runtime configuration."""
 
     knowledge_enabled = bool(str(getattr(settings, "knowledge_gateway_url", "") or "").strip())
-    ocr_enabled = bool(str(getattr(settings, "ocr_gateway_url", "") or "").strip())
+    kb_only = bool(getattr(settings, "kb_only_mode", False))
+    ocr_enabled = not kb_only and bool(str(getattr(settings, "ocr_gateway_url", "") or "").strip())
+    platform_enabled = not kb_only and bool(str(getattr(settings, "platform_gateway_url", "") or "").strip())
     knowledge_folder = str(getattr(settings, "knowledge_default_folder_id", "") or "")
     knowledge_top_k = int(getattr(settings, "knowledge_top_k", 32) or 32)
     return [
@@ -289,8 +291,8 @@ def system_default_tool_definitions(settings: Any) -> list[dict[str, Any]]:
             "confirmationRequired": False,
             "source": "runtime_config",
             "toolType": "system_default",
-            "enabled": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
-            "published": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
+            "enabled": platform_enabled,
+            "published": platform_enabled,
             "mutable": False,
         },
         {
@@ -308,8 +310,8 @@ def system_default_tool_definitions(settings: Any) -> list[dict[str, Any]]:
             "confirmationRequired": False,
             "source": "runtime_config",
             "toolType": "system_default",
-            "enabled": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
-            "published": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
+            "enabled": platform_enabled,
+            "published": platform_enabled,
             "mutable": False,
         },
         {
@@ -327,8 +329,8 @@ def system_default_tool_definitions(settings: Any) -> list[dict[str, Any]]:
             "confirmationRequired": False,
             "source": "runtime_config",
             "toolType": "system_default",
-            "enabled": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
-            "published": bool(str(getattr(settings, "platform_gateway_url", "") or "").strip()),
+            "enabled": platform_enabled,
+            "published": platform_enabled,
             "mutable": False,
         },
     ]
