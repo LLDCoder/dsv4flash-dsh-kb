@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH · 会话记录</title>
     <link rel="icon" type="image/svg+xml" href="chat-favicon.svg?v=2" />
-    <link rel="stylesheet" href="styles.css?v=20260920-attachment-tooltip" />
+    <link rel="stylesheet" href="styles.css?v=20260920-theme" />
   </head>
   <body>
     <main id="workspace" class="workspace">
       <header class="topbar">
         <div class="brand"><span class="brand-mark">✦</span><div><p class="eyebrow">DSH · KNOWLEDGE BASE SERVICE</p><h1>知识库问答工作台</h1><p class="muted">仅连接知识库，实时查看问题、回答与检索过程。</p></div></div>
-        <div class="top-actions"><span id="modePill" class="pill"><span class="status-dot"></span>知识库已连接</span><span class="top-chip">KB-ONLY</span></div>
+        <div class="top-actions"><span id="modePill" class="pill"><span class="status-dot"></span>知识库已连接</span><span class="top-chip">KB-ONLY</span><button id="themeToggle" class="secondary theme-toggle" type="button" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☼</span><span id="themeToggleText">亮色</span></button></div>
       </header>
 
       <section class="toolbar card">
@@ -43,6 +43,6 @@
         </section>
       </section>
     </main>
-    <script src="app.js?v=20260920-attachments" type="module"></script>
+    <script src="app.js?v=20260920-theme" type="module"></script>
   </body>
 </html>

@@ -2,6 +2,7 @@ const basePath = /^\/DSH(?:\/|$)/i.test(window.location.pathname) ? "/DSH" : "";
 const $ = (id) => document.getElementById(id);
 const state = { sessions: [], selectedId: "", messages: [], busy: false, attachment: null, attachmentBusy: false };
 const principal = { userId: "demo-user", tenantId: "kb-only" };
+const THEME_KEY = "dsh-sessions-theme";
 function requestId() {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return globalThis.crypto.randomUUID();
   return `kb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -9,6 +10,26 @@ function requestId() {
 
 function apiUrl(path) { return `${basePath}${path}`; }
 function headers() { return { "Content-Type": "application/json", "X-User-Id": principal.userId, "X-Tenant-Id": principal.tenantId }; }
+function applyTheme(theme) {
+  const next = theme === "light" ? "light" : "dark";
+  document.body.dataset.theme = next;
+  const button = $("themeToggle");
+  const label = $("themeToggleText");
+  if (button && label) {
+    const light = next === "light";
+    button.setAttribute("aria-pressed", String(light));
+    button.setAttribute("aria-label", light ? "切换暗色主题" : "切换亮色主题");
+    label.textContent = light ? "暗色" : "亮色";
+    button.querySelector(".theme-icon").textContent = light ? "☾" : "☼";
+  }
+  try { window.localStorage.setItem(THEME_KEY, next); } catch { /* private browsing may block storage */ }
+}
+function initTheme() {
+  let saved = "dark";
+  try { saved = window.localStorage.getItem(THEME_KEY) || "dark"; } catch { /* use dark default */ }
+  applyTheme(saved);
+  $("themeToggle")?.addEventListener("click", () => applyTheme(document.body.dataset.theme === "light" ? "dark" : "light"));
+}
 function setStatus(text, error = false) { $("status").textContent = text; $("status").style.color = error ? "var(--danger)" : ""; }
 function setStreamStatus(text, loading = false) { $("streamStatusText").textContent = text || ""; $("loadingDots").hidden = !loading; $("streamStatus").classList.toggle("is-loading", loading); }
 function time(value) { if (!value) return "时间未知"; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(); }
@@ -176,5 +197,6 @@ function clearAttachment(showStatus = true) { state.attachment = null; $("attach
 function onAttachmentPicked(event) { const file = event.target.files?.[0]; if (file) uploadAttachment(file); }
 async function sendMessage(event) { event.preventDefault(); await runQuestion($("message").value.trim(), state.attachment); }
 
+initTheme();
 $("refreshBtn").addEventListener("click", () => loadSessions()); $("newBtn").addEventListener("click", createSession); $("newSmallBtn").addEventListener("click", createSession); $("search").addEventListener("input", renderSessions); $("saveTitleBtn").addEventListener("click", saveTitle); $("deleteBtn").addEventListener("click", deleteSession); $("messageForm").addEventListener("submit", sendMessage); $("attachBtn").addEventListener("click", () => $("attachmentPicker").click()); $("attachmentPicker").addEventListener("change", onAttachmentPicked); $("clearAttachmentBtn").addEventListener("click", () => clearAttachment());
 loadSessions();
