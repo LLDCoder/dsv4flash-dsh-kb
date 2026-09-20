@@ -44,10 +44,26 @@ async function selectSession(id) {
   catch (error) { setStatus(error.message, true); }
 }
 
+function renderRichText(target, value) {
+  target.replaceChildren();
+  const text = String(value || "");
+  const pattern = /\*\*(.+?)\*\*/g;
+  let cursor = 0;
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (match.index > cursor) target.append(document.createTextNode(text.slice(cursor, match.index)));
+    const strong = document.createElement("strong");
+    strong.textContent = match[1];
+    target.append(strong);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) target.append(document.createTextNode(text.slice(cursor)));
+}
+
 function renderMessages() {
   const list = $("messages"); list.replaceChildren();
   if (!state.messages.length) { list.innerHTML = '<div class="empty">该会话还没有问题，发送第一条问题开始测试。</div>'; return; }
-  state.messages.forEach((item) => { const node = document.createElement("article"); node.className = `message ${item.role === "user" ? "user" : "assistant"}`; const role = document.createElement("span"); role.className = "role"; role.textContent = item.role === "user" ? "问题" : "回答"; const content = document.createElement("div"); content.textContent = item.content || ""; node.append(role, content); list.append(node); }); list.scrollTop = list.scrollHeight;
+  state.messages.forEach((item) => { const node = document.createElement("article"); node.className = `message ${item.role === "user" ? "user" : "assistant"}`; const role = document.createElement("span"); role.className = "role"; role.textContent = item.role === "user" ? "问题" : "回答"; const content = document.createElement("div"); renderRichText(content, item.content); node.append(role, content); list.append(node); }); list.scrollTop = list.scrollHeight;
 }
 
 async function createSession() {
@@ -62,15 +78,16 @@ async function deleteSession() {
   try { await request(`/api/v1/ai-chat/conversations/${encodeURIComponent(state.selectedId)}`, { method: "DELETE" }); state.selectedId = ""; await loadSessions(); } catch (error) { setStatus(error.message, true); }
 }
 
-function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); body.textContent = content; node.append(role, body); $("messages").append(node); $("messages").scrollTop = $("messages").scrollHeight; return body; }
+function appendUserMessage(content) { const node = document.createElement("article"); node.className = "message user"; const role = document.createElement("span"); role.className = "role"; role.textContent = "问题"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); $("messages").scrollTop = $("messages").scrollHeight; }
+function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); $("messages").scrollTop = $("messages").scrollHeight; return body; }
 async function sendMessage(event) {
-  event.preventDefault(); const content = $("message").value.trim(); if (!content || !state.selectedId || state.busy) return; state.busy = true; $("sendBtn").disabled = true; $("message").value = ""; $("streamStatus").textContent = "正在检索知识库并生成回答…";
+  event.preventDefault(); const content = $("message").value.trim(); if (!content || !state.selectedId || state.busy) return; state.busy = true; $("sendBtn").disabled = true; $("message").value = ""; appendUserMessage(content); $("streamStatus").textContent = "正在检索知识库并生成回答…";
   let assistant = ""; let body = null;
   try {
     const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, conversation_id: state.selectedId, request_id: requestId() }) });
     if (!response.ok || !response.body) throw new Error(`流式请求失败（${response.status}）`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
-    while (true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const blocks = buffer.split("\n\n"); buffer = blocks.pop() || ""; for (const block of blocks) { const lines = block.split("\n"); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim(); const raw = lines.find((line) => line.startsWith("data:"))?.slice(5).trim() || ""; if (type === "token") { assistant += raw; if (!body) body = appendStreamMessage(""); body.textContent = assistant; $("streamStatus").textContent = "正在接收回答…"; } else if (type === "status") { try { $("streamStatus").textContent = JSON.parse(raw).message || "正在处理…"; } catch {} } else if (type === "error") { throw new Error(JSON.parse(raw).detail || "回答失败"); } } }
+    while (true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const blocks = buffer.split("\n\n"); buffer = blocks.pop() || ""; for (const block of blocks) { const lines = block.split("\n"); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim(); const raw = lines.find((line) => line.startsWith("data:"))?.slice(5).trim() || ""; if (type === "token") { assistant += raw; if (!body) body = appendStreamMessage(""); renderRichText(body, assistant); $("streamStatus").textContent = "正在接收回答…"; } else if (type === "status") { try { $("streamStatus").textContent = JSON.parse(raw).message || "正在处理…"; } catch {} } else if (type === "error") { throw new Error(JSON.parse(raw).detail || "回答失败"); } } }
     if (!body) { body = appendStreamMessage(assistant || "未收到回答内容"); }
     $("streamStatus").textContent = "回答完成"; await selectSession(state.selectedId); await loadSessions(state.selectedId);
   } catch (error) { $("streamStatus").textContent = error.message; setStatus(error.message, true); }
