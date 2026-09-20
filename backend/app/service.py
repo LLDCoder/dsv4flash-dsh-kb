@@ -797,7 +797,10 @@ def reader_evidence_only_response(
         if "additional_portal_read_required" in {str(item) for item in reader_result.get("missing", [])}:
             return detail_messages.get(language, detail_messages["en"])
     if status in messages["en"]:
-        return messages.get(language, messages["en"])[status]
+        fallback = messages.get(language, messages["en"])[status]
+        if not facts and _script_conflicts_with_language(question, language):
+            return f"{fallback}\n\n{_language_support_note(language)}"
+        return fallback
     generic = {
         "ar": "لا توجد تفاصيل مؤكدة يمكن استخدامها للإجابة على هذا الطلب.",
         "zh": "没有可用于回答该请求的已确认信息。",
