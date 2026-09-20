@@ -93,6 +93,40 @@ def _response_language_for(text: str, preferred_language: str | None = None) -> 
     return response_language_for(text, preferred_language)
 
 
+def _script_conflicts_with_language(text: str, language: str) -> bool:
+    """Detect when the question's dominant script conflicts with the UI language.
+
+    This is intentionally a small presentation guard, not a language detector:
+    identifiers and product names may be Latin inside Arabic questions. We only
+    flag a clear cross-script signal so the fallback can explain the supported
+    response languages without echoing mixed-language labels.
+    """
+    value = str(text or "")
+    arabic_count = len(re.findall(r"[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]", value))
+    latin_count = len(re.findall(r"[A-Za-z]", value))
+    if language == "en":
+        return arabic_count > 0 and arabic_count >= max(3, latin_count)
+    if language == "ar":
+        return latin_count > 0 and latin_count >= max(3, arabic_count)
+    return False
+
+
+def _language_support_note(language: str) -> str:
+    return {
+        "en": "Supported response languages are English and Arabic. I will continue in English unless you request Arabic.",
+        "ar": "لغتا الرد المدعومتان هما العربية والإنجليزية. سأتابع بالعربية ما لم تطلب الإنجليزية.",
+        "zh": "当前支持的回复语言是英语和阿拉伯语。若未特别指定，我会继续使用中文说明并以英语或阿拉伯语呈现业务字段。",
+    }.get(language, "Supported response languages are English and Arabic.")
+
+
+def _clarification_labels_match_language(options: Any, language: str) -> bool:
+    """Return false when model-provided option labels use the wrong script."""
+    if not isinstance(options, (list, tuple)) or len(options) != 2:
+        return False
+    labels = " ".join(str(option) for option in options)
+    return not _script_conflicts_with_language(labels, language)
+
+
 def _format_remaining_minutes(value: int | float | str) -> str:
     """Render an SLA minute value as a concise user-facing duration."""
 
@@ -428,7 +462,16 @@ def reader_evidence_only_response(
         and options == intent.get("clarificationOptions")
     ):
         try:
-            return format_clarification_options(options, language)
+            if _clarification_labels_match_language(options, language):
+                return format_clarification_options(options, language)
+            # Never echo labels in a different script under a fixed UI language.
+            # The model can still identify the two scopes internally; the user
+            # gets a deterministic, single-language clarification instead.
+            return {
+                "en": "I can continue in English or Arabic. The current default language is English; please clarify the requested scope.",
+                "zh": "我可以使用英语或阿拉伯语继续。当前默认语言为中文；请明确你要查询的范围。",
+                "ar": "يمكنني المتابعة بالعربية أو الإنجليزية. اللغة الافتراضية الحالية هي العربية؛ يرجى توضيح النطاق المطلوب.",
+            }.get(language, "I can continue in English or Arabic. Please clarify the requested scope.")
         except ValueError:
             pass
     messages = {
@@ -760,7 +803,10 @@ def reader_evidence_only_response(
         "zh": "没有可用于回答该请求的已确认信息。",
         "en": "I do not have verified details to answer that request.",
     }
-    return messages.get(language, messages["en"]).get(status, generic.get(language, generic["en"]))
+    fallback = messages.get(language, messages["en"]).get(status, generic.get(language, generic["en"]))
+    if not facts and _script_conflicts_with_language(question, language):
+        return f"{fallback}\n\n{_language_support_note(language)}"
+    return fallback
  
  
 def reader_natural_answer_is_grounded(answer: str, verified_text: str, question: str, *, completeness: str = "") -> bool:

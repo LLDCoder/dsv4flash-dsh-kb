@@ -67,3 +67,31 @@ def test_selected_portal_language_wins_for_each_turn_without_breaking_explicit_r
     assert _response_language_for("What can you do for me?", "ar") == "ar"
     assert _response_language_for("ما الذي يمكنك فعله من أجلي؟", "ar") == "ar"
     assert _response_language_for("Please answer in English.", "ar") == "en"
+
+
+def test_mixed_language_clarification_uses_default_language_instead_of_echoing_wrong_script():
+    answer = reader_evidence_only_response(
+        {
+            "result": "not_confirmed",
+            "facts": [],
+            "missing": ["intent_ambiguous"],
+            "intentContext": {"relation": "clarify", "clarificationOptions": [
+                "طلب مساعدة بخصوص UAE PASS", "طلب بخصوص العمل والمهام",
+            ]},
+            "clarificationOptions": ["طلب مساعدة بخصوص UAE PASS", "طلب بخصوص العمل والمهام"],
+        },
+        "en",
+        question="How do I get UAE PASS?",
+    )
+    assert answer.startswith("I can continue in English or Arabic.")
+    assert "طلب مساعدة" not in answer
+
+
+def test_cross_script_fallback_explains_supported_languages_in_default_language():
+    answer = reader_evidence_only_response(
+        {"result": "not_confirmed", "facts": [], "missing": ["no_match"]},
+        "en",
+        question="كيف أحصل على UAE PASS؟",
+    )
+    assert answer.startswith("I could not confirm the requested information.")
+    assert "Supported response languages are English and Arabic." in answer
