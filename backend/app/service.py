@@ -218,14 +218,6 @@ def reader_evidence_only_response(
         if not any(f'The current selected view is {selected_view}.' in str(fact) for fact in raw_facts):
             raw_facts = [*raw_facts[:19], view_fact]
     workflow = str(reader_result.get('workflowState') or '')
-    if workflow == "metric_trend_unavailable" and facts:
-        metric = facts[0]
-        no_history = {
-            "en": "No historical data is available in the current portal view to compare a trend over the requested period.",
-            "zh": "当前门户视图没有可用于比较所请求时段趋势的历史数据。",
-            "ar": "لا تتوفر بيانات تاريخية في عرض البوابة الحالي لمقارنة الاتجاه خلال الفترة المطلوبة.",
-        }.get(language, "No historical data is available in the current portal view to compare the requested trend.")
-        return f"{metric}\n{no_history}"
     if isinstance(raw_facts, list) and workflow.startswith('The Search input was explicitly cleared and verified empty in the freshly read view.'):
         raw_facts = [*raw_facts, workflow]
  
@@ -301,6 +293,18 @@ def reader_evidence_only_response(
     facts = [fact for fact in (
         deliverable_fact(value) for value in raw_facts[:20]
     ) if fact] if isinstance(raw_facts, list) else []
+
+    # A metric trend follow-up is intentionally deterministic.  The Reader
+    # has verified the current metric but not a historical series; do not send
+    # the full dashboard KPI bundle to the formatter or let it invent a trend.
+    if workflow == "metric_trend_unavailable" and facts:
+        metric = facts[0]
+        no_history = {
+            "en": "No historical data is available in the current portal view to compare a trend over the requested period.",
+            "zh": "当前门户视图没有可用于比较所请求时段趋势的历史数据。",
+            "ar": "لا تتوفر بيانات تاريخية في عرض البوابة الحالي لمقارنة الاتجاه خلال الفترة المطلوبة.",
+        }.get(language, "No historical data is available in the current portal view to compare the requested trend.")
+        return f"{metric}\n{no_history}"
 
     def observed_amounts(values: list[str]) -> list[Decimal]:
         amounts: list[Decimal] = []
@@ -1753,6 +1757,7 @@ class DSHService:
         conversation_id: str,
         content: str,
         client_message_id: str,
+        response_language: str | None = None,
     ) -> dict[str, Any]:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
@@ -1772,6 +1777,8 @@ class DSHService:
                     "clientMessageId": client_message_id,
                     "requestId": principal.request_id,
                 }
+                if response_language in {"en", "ar", "zh"}:
+                    event_payload["responseLanguage"] = response_language
                 event = await self.append_event(db, conversation, "user.message", event_payload)
                 db.add(MessageIdempotency(conversation_id=conversation_id, client_message_id=client_message_id, user_event_seq=event["seq"]))
                 await db.commit()
@@ -1882,6 +1889,8 @@ class DSHService:
             return fallback, False, 'deterministic_assignment_comparison'
         if evidence.get('workflowState') in {'filter_return_verified', 'filter_return_unverified'}:
             return fallback, False, 'deterministic_filter_return'
+        if evidence.get('workflowState') == 'metric_trend_unavailable':
+            return fallback, False, 'deterministic_metric_trend'
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
             return fallback, False, "status_guard"
@@ -1981,7 +1990,10 @@ class DSHService:
                     history = await self.list_events(db, conversation, after_seq=0)
                     latest_user = next((event for event in reversed(history) if event.event_type == "user.message"), None)
                     latest_content = str((latest_user.event_json if latest_user else {}).get("content") or "")
-                    language = _response_language_for(latest_content)
+                    requested_ui_language = str(
+                        (latest_user.event_json if latest_user else {}).get("responseLanguage") or ""
+                    )
+                    language = _response_language_for(latest_content, requested_ui_language or None)
                     skill_id = "admin_portal_reader"
                     selected_skill = await self._published_generic_skill(db, skill_id)
                     required_tools = ["knowledge.search", "admin.portal.read"] if skill_id == "admin_portal_reader" else ["knowledge.search"]
@@ -2089,7 +2101,10 @@ class DSHService:
                     # GetUserInfo is the authoritative source for the signed-in
                     # profile language. Explicit per-turn requests still win.
                     profile_language = str((audit_evidence.get("permission") or {}).get("preferredLanguage") or "")
-                    language = _response_language_for(latest_content, profile_language)
+                    language = _response_language_for(
+                        latest_content,
+                        requested_ui_language or profile_language,
+                    )
                     await self.append_status(db, conversation, "drafting", language, request_id=principal.request_id)
                     assembly_started = time.perf_counter()
                     content, formatting_failed, assembly_strategy = await self._natural_reader_response(

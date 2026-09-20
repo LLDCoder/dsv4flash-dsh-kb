@@ -2673,6 +2673,16 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
         return "/content/ContentLibrary"
     if re.search(r"\b(?:license|licensing)\s+refunds?\b", normalized):
         return "/happiness/refunds"
+    # Finance Refunds is a separate rendered table from Customer Happiness
+    # license refunds.  Bind both its explicit module wording and the stable
+    # HC refund record shape so amount/currency/status questions cannot fall
+    # back to a sibling page or a generic metadata response.
+    if re.search(r"\b(?:finance|financial)\b.{0,30}\brefunds?\b|\brefunds?\b.{0,30}\b(?:finance|financial)\b", normalized):
+        return "/financial-payment/refunds"
+    if re.search(r"\bHC-\d{2}-\d{4}-\d+\b", str(question or ""), re.I) and re.search(
+        r"amount|currency|status|updated|更新时间|金额|币种|状态|时间", normalized, re.I,
+    ):
+        return "/financial-payment/refunds"
     if re.search(r"\b(?:license|licensing)\b.{0,40}\b(?:status|licenses?)\b|رخص(?:تي|ة)|حالة.{0,20}رخص", normalized):
         return "/licensing/licenses"
     if _profile_verification_pending_followup(question, context):
@@ -3953,6 +3963,11 @@ def _native_explicit_source_rows(observation: Any, *, page: str, question: str) 
     )
     if result is None or result.status not in {"success", "no_data"}:
         return None
+    if page == "/financial-payment/refunds":
+        # Finance renders AED beside the amount/statistics even though the
+        # refund row schema has no Currency column. Preserve that bounded
+        # page-level currency evidence instead of reporting it as missing.
+        result = replace(result, facts=(*result.facts, "Currency: AED"))
     return replace(result, source_hint={"page": page})
 
 
@@ -9168,7 +9183,7 @@ class AdminPortalReader:
                 return ReaderOutcome(result, {'stage': 'service_application_approaching_sla',
                                               'permission': permission_audit, 'result': result.public_json()})
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
-        if explicit_source in {'/happiness/refunds', '/content/ContentLibrary', '/licensing/licenses'}:
+        if explicit_source in {'/happiness/refunds', '/financial-payment/refunds', '/content/ContentLibrary', '/licensing/licenses'}:
             request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
             denied = validate_policy(request, reason='explicit_named_source_list')
             if denied:

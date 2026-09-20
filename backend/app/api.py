@@ -1040,6 +1040,7 @@ def make_router(service: DSHService) -> APIRouter:
                 conversation_id,
                 payload.content,
                 payload.client_message_id,
+                payload.response_language,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1435,6 +1436,7 @@ def make_router(service: DSHService) -> APIRouter:
                             message.conversation_id,
                             message.content or "",
                             message.client_message_id,
+                            message.response_language,
                         )
                     except LookupError:
                         await send({"type": "error", "code": "conversation_not_found"})

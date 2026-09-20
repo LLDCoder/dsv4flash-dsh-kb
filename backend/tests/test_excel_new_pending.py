@@ -44,6 +44,8 @@ def test_private_customer_request_is_refused_without_repeating_application_data(
 def test_explicit_object_phrases_bind_to_their_documented_surfaces() -> None:
     assert _explicit_reader_source("Show me books applications", {}) == "/content/ContentLibrary"
     assert _explicit_reader_source("Actually, show me license refunds instead", {}) == "/happiness/refunds"
+    assert _explicit_reader_source("Show Finance Refunds with amount and currency", {}) == "/financial-payment/refunds"
+    assert _explicit_reader_source("查询真实记录 HC-02-2026-5239576 的状态、金额、币种和最后更新时间", {}) == "/financial-payment/refunds"
     assert _explicit_reader_source("Show the current Profile Verification summary.", {}) == "/licensing/profile"
     profile_context = {"previousIntent": {"question": "Show the Profile Verification summary on my dashboard."}}
     assert _explicit_reader_source("How many are pending review?", profile_context) == "/licensing/profile"
@@ -172,3 +174,24 @@ def test_named_source_rows_use_only_one_current_rendered_table() -> None:
     assert result.status == "success"
     assert result.page == "/happiness/refunds"
     assert "REF-1" in " ".join(result.facts)
+
+
+def test_finance_refund_rows_keep_page_level_aed_currency_when_row_has_no_currency_column() -> None:
+    result = _native_explicit_source_rows({
+        "regions": ["Finance Refunds AED"],
+        "sectionSummaries": [{
+            "nodeId": "refunds-table",
+            "kind": "table",
+            "heading": "Refunds",
+            "columnHeaders": ["Application No.", "Amount", "Status", "Last Updated"],
+            "rowFields": [{
+                "Application No.": "HC-02-2026-5239576",
+                "Amount": "-200.00",
+                "Status": "Refunded",
+                "Last Updated": "15/09/2026 13:22:33",
+            }],
+        }],
+    }, page="/financial-payment/refunds", question="What are the amount, currency, status, and last updated time?")
+
+    assert result is not None
+    assert "Currency: AED" in result.facts

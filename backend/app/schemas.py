@@ -20,6 +20,10 @@ class ConversationCreate(APIModel):
 class MessageCreate(APIModel):
     content: str = Field(default="", max_length=MAX_CHAT_MESSAGE_CHARS)
     client_message_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
+    response_language: Literal["en", "ar", "zh"] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("responseLanguage", "response_language"),
+    )
 
     @model_validator(mode="after")
     def require_content(self):
@@ -91,6 +95,10 @@ class WSMessage(APIModel):
     after_seq: int = Field(default=0, validation_alias=AliasChoices("afterSeq", "after_seq"))
     seq: int | None = None
     umc_token: str | None = Field(default=None, validation_alias=AliasChoices("umctoken", "umcToken", "umc_token"))
+    response_language: Literal["en", "ar", "zh"] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("responseLanguage", "response_language"),
+    )
 
     @model_validator(mode="after")
     def require_message_payload(self):
