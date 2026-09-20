@@ -52,6 +52,31 @@ def test_refund_amount_presentation_keeps_rows_total_and_missing_currency_bounda
     )
 
 
+def test_explicit_refund_identity_not_confirmed_is_record_specific_in_english_and_arabic():
+    evidence = {
+        "result": "not_confirmed",
+        "facts": [],
+        "missing": ["evidence_not_confirmed"],
+    }
+    english = reader_evidence_only_response(
+        evidence,
+        "en",
+        question="For the real refund record HC-02-2026-5239576, provide its status, amount, currency, and last updated time in English.",
+    )
+    arabic = reader_evidence_only_response(
+        evidence,
+        "ar",
+        question="للسجل الحقيقي لطلب الاسترداد HC-02-2026-5239576، يرجى تزويدي بالحالة والمبلغ والعملة ووقت آخر تحديث باللغة العربية.",
+    )
+    assert "HC-02-2026-5239576" in english
+    assert "I could not find or confirm refund record" in english
+    assert "I have not substituted another refund record" in english
+    assert "HC-02-2026-5239576" in arabic
+    assert "لم أتمكن من العثور" in arabic
+    assert "سجل استرداد آخر" in arabic
+    assert "تعذر تأكيد المعلومات المطلوبة" not in arabic
+
+
 def test_websocket_message_limit_is_shared_with_the_browser_contract():
     assert MAX_CHAT_MESSAGE_CHARS == 10_000
     message = WSMessage(type="message", content="x" * MAX_CHAT_MESSAGE_CHARS, clientMessageId="m-1")

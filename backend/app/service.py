@@ -832,13 +832,35 @@ def reader_evidence_only_response(
         if len(identity_matches) == 1:
             record_identity = identity_matches[0]
     if status == "not_confirmed" and not facts and record_identity:
+        # Preserve the exact-record boundary even when the reader did not emit
+        # the optional follow-up marker. A user-supplied identifier must never
+        # fall through to the generic confirmation error, especially for Arabic
+        # queries where intent resolution can be less complete.
+        refund_query = bool(re.search(
+            r"\brefund(?:s|ed)?\b|استرداد|الاسترداد|مبالغ|المبلغ|عملة|عملات",
+            str(question or ""),
+            re.I,
+        ))
         detail_messages = {
-            "ar": f"وجدت طلب الترخيص {record_identity}، لكن لم تكتمل قراءة تفاصيله الحالية. لم أستبدل تفاصيله بسجل آخر.",
-            "zh": f"我已定位到申请 {record_identity}，但本次详情读取没有完整返回。我没有用其他申请的信息替代它。",
-            "en": f"I located application {record_identity}, but its current detail read did not finish. I have not substituted another application’s details.",
+            "ar": (
+                f"لم أتمكن من العثور على سجل الاسترداد {record_identity} أو تأكيده في الصفحة الحالية. "
+                "لم أستخدم سجل استرداد آخر بدلًا منه."
+                if refund_query else
+                f"وجدت الطلب {record_identity}، لكن لم تكتمل قراءة تفاصيله الحالية. لم أستبدل تفاصيله بسجل آخر."
+            ),
+            "zh": (
+                f"未能在当前页面找到或确认退款记录 {record_identity}，没有用其他退款记录替代它。"
+                if refund_query else
+                f"我已定位到申请 {record_identity}，但本次详情读取没有完整返回。我没有用其他申请的信息替代它。"
+            ),
+            "en": (
+                f"I could not find or confirm refund record {record_identity} in the current page. "
+                "I have not substituted another refund record."
+                if refund_query else
+                f"I located application {record_identity}, but its current detail read did not finish. I have not substituted another application’s details."
+            ),
         }
-        if "additional_portal_read_required" in {str(item) for item in reader_result.get("missing", [])}:
-            return detail_messages.get(language, detail_messages["en"])
+        return detail_messages.get(language, detail_messages["en"])
     if status in messages["en"]:
         fallback = messages.get(language, messages["en"])[status]
         if not facts and _script_conflicts_with_language(question, language):
