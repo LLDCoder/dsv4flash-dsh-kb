@@ -504,6 +504,22 @@ class DSHService:
         hints = DSHService.attachment_ocr_reference_hints(ocr_result)
         references = ", ".join(hints) if hints else "none"
         is_arabic = response_language == "ar"
+        result = ocr_result.get("result") if isinstance(ocr_result, dict) else None
+        if isinstance(result, dict) and result.get("provider") == "DSH-Text-Local":
+            text_lines = []
+            for page in result.get("pages", []):
+                for line in page.get("lines", []):
+                    value = str(line.get("text") or "").strip()
+                    if value:
+                        text_lines.append(value)
+            extracted = "\n".join(text_lines)[:12_000] or "（附件没有可读取的文本内容）"
+            return (
+                "تمت قراءة الملف النصي محلياً. لم يتم إرسال محتواه إلى أي نموذج لغوي خارجي.\n\nمحتوى الملف:\n"
+                + extracted
+                if is_arabic
+                else "已在本地读取文本附件，内容未发送到任何外部语言模型。\n\n附件内容：\n"
+                + extracted
+            )
         if not handoff_skill_id:
             return (
                 "تم تحليل الملف محلياً. ولحماية بياناتك، لم يتم إرسال نص المستند إلى أي نموذج لغوي خارجي. "
