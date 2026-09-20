@@ -850,6 +850,8 @@ def make_router(service: DSHService) -> APIRouter:
         but it is held only in the page and backend memory; it is not stored in
         conversation events or returned by the configuration API.
         """
+        if get_settings().kb_only_mode:
+            raise HTTPException(status_code=404, detail="UMC auto-login is disabled in KB-only mode")
         try:
             session = await service.umc_auth.get_session(force_refresh=refresh)
             token = session.get("token") if isinstance(session, dict) else None

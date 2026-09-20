@@ -1607,6 +1607,19 @@ class DSHService:
                     route, route_metadata = await self.choose_skill_route(
                         db, latest_content, keyword_route, conversation, principal.request_id, route_context
                     )
+                    if self.settings.kb_only_mode and not attachment_ocr_route:
+                        # The KB-only deployment must never let the generic
+                        # answer route bypass the configured knowledge base.
+                        # Keep the published general_knowledge Skill as the
+                        # execution contract, but force its knowledge tool.
+                        route = SkillRoute(
+                            "general_knowledge",
+                            "knowledge",
+                            "knowledge.search",
+                            "summary",
+                            routing_locked=True,
+                        )
+                        route_metadata["kbOnlyForcedKnowledgeRoute"] = True
                     if attachment_ocr_route:
                         route_metadata["attachmentOcrForced"] = True
                     if cross_skill_handoff:

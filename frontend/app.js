@@ -1,4 +1,5 @@
 const dshBasePath = /^\/DSH(?:\/|$)/i.test(window.location.pathname) ? "/DSH" : "";
+const kbOnlyMode = true;
 const nativeFetch = window.fetch.bind(window);
 window.fetch = (input, options) => {
   if (dshBasePath && typeof input === "string" && input.startsWith("/") && !input.startsWith(`${dshBasePath}/`)) {
@@ -205,9 +206,7 @@ function showAssistantStatus(data, meta = "") {
 }
 
 async function api(path, options = {}) {
-  const rawToken = state.umcToken || $("umcToken")?.value.trim() || "";
   const headers = { "Content-Type": "application/json", "X-User-Id": $("userId").value, "X-Tenant-Id": $("tenantId").value, ...(options.headers || {}) };
-  if (rawToken && !headers.Authorization) headers.Authorization = rawToken.toLowerCase().startsWith("bearer ") ? rawToken : `Bearer ${rawToken}`;
   const response = await fetch(path, { credentials: "same-origin", ...options, headers });
   if (response.status === 401 && !path.startsWith("/api/v1/console/")) {
     state.consoleAuthenticated = false;
@@ -268,7 +267,6 @@ async function loginConsole(event) {
     if (!response.ok) throw new Error("密码不正确或服务不可用");
     state.consoleAuthenticated = true;
     hideConsoleGate();
-    await loadUmcToken().catch(() => {});
   } catch (error) {
     status.textContent = error.message;
     $("consolePassword").select();
@@ -325,7 +323,6 @@ async function bootstrapConsole() {
     return;
   }
   hideConsoleGate();
-  await loadUmcToken().catch(() => {});
 }
 
 function setUmcSessionStatus(text, online = false) {
@@ -337,39 +334,13 @@ function setUmcSessionStatus(text, online = false) {
 }
 
 async function loadUmcToken(force = false) {
-  if (!force && state.umcToken) {
-    syncUmcIdentity(state.umcToken);
-    return { token: state.umcToken };
+  if (kbOnlyMode) {
+    state.umcToken = "";
+    $("umcToken").value = "";
+    setUmcSessionStatus("KB-only：不使用 UMC 自动登录", false);
+    return { token: "" };
   }
-  if (!state.umcTokenPromise || force) {
-    state.umcTokenPromise = (async () => {
-      setUmcSessionStatus("正在自动获取…");
-      try {
-        const data = await api(`/api/v1/umc/session${force ? "?refresh=true" : ""}`, { method: "POST", body: "{}" });
-        const token = String(data.token || "").trim();
-        if (!token) throw new Error("UMC 登录响应未返回 Token");
-        state.umcToken = token;
-        syncUmcIdentity(token, data);
-        // Keep this only in the current page memory. The hidden field exists
-        // solely for compatibility with the request header helper.
-        $("umcToken").value = token;
-        const minutes = Number(data.expiresInMinutes || 0);
-        const suffix = minutes > 0 ? `（约 ${minutes} 分钟有效）` : "";
-        setUmcSessionStatus(`已自动登录：${data.account || "UMC 账号"}${suffix}`, true);
-        return data;
-      } catch (error) {
-        state.umcToken = "";
-        $("umcToken").value = "";
-        setUmcSessionStatus(`自动登录失败：${error.message}`);
-        throw error;
-      }
-    })();
-  }
-  try {
-    return await state.umcTokenPromise;
-  } finally {
-    state.umcTokenPromise = null;
-  }
+  return { token: "" };
 }
 
 function setTab(tabId) {
@@ -1358,6 +1329,11 @@ async function postAttachment(file, token) {
 }
 
 async function uploadAttachment(file) {
+  if (kbOnlyMode) {
+    $("attachmentStatus").textContent = "KB-only 模式不启用 UMC 附件上传。";
+    $("attachmentPicker").value = "";
+    return;
+  }
   try {
     await loadUmcToken();
   } catch {
@@ -1504,7 +1480,6 @@ async function connect() {
   if (state.ws?.readyState === WebSocket.OPEN) return state.ws;
   if (state.connectPromise) return state.connectPromise;
   state.connectPromise = (async () => {
-    await loadUmcToken();
     const previous = state.ws;
     if (previous && previous.readyState <= 1) previous.close();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
@@ -1522,8 +1497,8 @@ async function connect() {
       ws.onopen = async () => {
         try {
           setConnection("已连接", true);
-          const umcToken = state.umcToken || $("umcToken")?.value.trim() || "";
-          if (umcToken) ws.send(JSON.stringify({ type: "auth", umctoken: umcToken }));
+          // KB-only mode connects directly; the knowledge gateway is public
+          // within the deployment and does not require a UMC bearer token.
           if (!state.conversationId && !$("conversationId").value) {
             await createConversation();
           } else {
