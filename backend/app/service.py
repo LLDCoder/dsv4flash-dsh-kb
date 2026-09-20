@@ -636,6 +636,14 @@ def reader_evidence_only_response(
                 "bank transfer": "تحويل مصرفي",
             },
         }
+        if "payment method" in normalized_key:
+            localized_payment = value
+            localized_payment = re.sub(r"\bCredit Card\b", "بطاقة ائتمانية", localized_payment, flags=re.I)
+            localized_payment = re.sub(r"\bDebit Card\b", "بطاقة خصم", localized_payment, flags=re.I)
+            localized_payment = re.sub(r"\bCredit\b", "ائتمانية", localized_payment, flags=re.I)
+            localized_payment = re.sub(r"\bPortal page\b", "صفحة البوابة", localized_payment, flags=re.I)
+            if localized_payment != value:
+                return localized_payment
         for field_name, values in enum_maps.items():
             if field_name in normalized_key and normalized_value in values:
                 return values[normalized_value]
