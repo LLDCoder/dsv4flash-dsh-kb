@@ -2696,7 +2696,12 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # planner path and return not_confirmed before any refund rows were read.
     if re.search(r"(?:المالية|مالي(?:ة)?|مدفوعات).{0,30}(?:استرداد|استردادات)|(?:استرداد|استردادات).{0,30}(?:المالية|مالي(?:ة)?|مدفوعات)", normalized):
         return "/financial-payment/refunds"
-    if re.search(r"استرداد|استردادات", normalized):
+    # Generic refund wording refers to the currently rendered Refunds page in
+    # both supported languages.  Keep the Finance route reserved for an
+    # explicit Finance/financial/مدفوعات qualifier; otherwise English could
+    # drift to the API-backed finance collection and return seven rows instead
+    # of the two records visible in the selected Completed view.
+    if re.search(r"\brefunds?\b|استرداد|استردادات", normalized):
         return "/happiness/refunds"
     if re.search(r"\bHC-\d{2}-\d{4}-\d+\b", str(question or ""), re.I) and re.search(
         r"amount|currency|status|updated|更新时间|金额|币种|状态|时间", normalized, re.I,
