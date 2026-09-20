@@ -1,3 +1,12 @@
+const dshBasePath = /^\/DSH(?:\/|$)/i.test(window.location.pathname) ? "/DSH" : "";
+const nativeFetch = window.fetch.bind(window);
+window.fetch = (input, options) => {
+  if (dshBasePath && typeof input === "string" && input.startsWith("/") && !input.startsWith(`${dshBasePath}/`)) {
+    input = `${dshBasePath}${input}`;
+  }
+  return nativeFetch(input, options);
+};
+
 const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
 
@@ -1499,7 +1508,7 @@ async function connect() {
     const previous = state.ws;
     if (previous && previous.readyState <= 1) previous.close();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${protocol}://${location.host}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
+    const ws = new WebSocket(`${protocol}://${location.host}${dshBasePath}/api/v1/ws?userId=${encodeURIComponent($("userId").value)}&tenantId=${encodeURIComponent($("tenantId").value)}`);
     state.ws = ws;
     const generation = ++state.wsGeneration;
     const ready = new Promise((resolve, reject) => {
