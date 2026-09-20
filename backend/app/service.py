@@ -556,6 +556,64 @@ class DSHService:
         return "\n".join(f"- {item}" for item in deduped[:36])
 
     @staticmethod
+    def attachment_llm_messages(
+        messages: list[dict[str, str]],
+        *,
+        question: str,
+        ocr_result: dict[str, Any],
+        max_chars: int,
+        history_messages: int,
+    ) -> tuple[list[dict[str, str]], dict[str, int]]:
+        """Build a bounded attachment prompt while preserving recent history.
+
+        The attachment's extracted text is deliberately added only to the
+        outbound LLM request.  Callers must use ``attachment_llm_audit_messages``
+        when recording that request so the OCR text is not persisted in audit.
+        """
+
+        limit = min(max(int(max_chars or 10_000), 1_000), 30_000)
+        history_limit = min(max(int(history_messages or 12), 0), 40)
+        extracted = "\n".join(DSHService.attachment_text_lines(ocr_result)).strip()[:limit]
+        if not extracted:
+            return [], {"attachmentChars": 0, "historyMessages": 0}
+        system_messages = [dict(item) for item in messages if item.get("role") == "system"]
+        conversation_messages = [dict(item) for item in messages if item.get("role") in {"user", "assistant"}]
+        # The latest user question is replaced with an enriched message below;
+        # use preceding conversation turns only as the historical context.
+        history = conversation_messages[:-1][-history_limit:] if conversation_messages else []
+        enriched_question = (question or "请根据附件内容回答问题。").strip()
+        attachment_message = {
+            "role": "user",
+            "content": (
+                f"当前问题：\n{enriched_question}\n\n"
+                "附件 OCR 文本（用户明确授权发送给当前配置的模型，仅用于回答本次问题）：\n"
+                f"{extracted}\n\n"
+                "请基于附件和上述会话历史作答；如果附件没有足够依据，请明确说明。"
+            ),
+        }
+        return [*system_messages, *history, attachment_message], {
+            "attachmentChars": len(extracted),
+            "historyMessages": len(history),
+        }
+
+    @staticmethod
+    def attachment_llm_audit_messages(messages: list[dict[str, str]], metadata: dict[str, int]) -> list[dict[str, str]]:
+        """Remove attachment OCR text from the persisted LLM request audit."""
+
+        marker = "附件 OCR 文本（用户明确授权发送给当前配置的模型，仅用于回答本次问题）："
+        redacted: list[dict[str, str]] = []
+        for item in messages:
+            copy = dict(item)
+            content = str(copy.get("content") or "")
+            if marker in content:
+                prefix = content.split(marker, 1)[0].rstrip()
+                copy["content"] = (
+                    f"{prefix}\n\n[附件 OCR 文本未写入审计；本次已发送 {metadata.get('attachmentChars', 0)} 个字符。]"
+                )
+            redacted.append(copy)
+        return redacted
+
+    @staticmethod
     def attachment_ocr_local_response(
         *,
         response_language: str,
@@ -2033,6 +2091,7 @@ class DSHService:
                         else None
                     )
                     attachment_local_response: str | None = None
+                    attachment_llm_metadata: dict[str, int] | None = None
                     attachment_handoff_skill_id: str | None = None
                     attachment_handoff_result: dict[str, Any] | None = None
                     profile_action: dict[str, str] | None = None
@@ -2338,17 +2397,30 @@ class DSHService:
                                 else "I could not read the attached file because document analysis is unavailable right now. Please try again after the OCR service is available."
                             )
                         elif latest_attachment:
-                            # Attachment turns are completed by the local OCR
-                            # and deterministic read-only formatter.  Neither
-                            # OCR text nor the resulting business evidence is
-                            # passed to the external answer LLM.
-                            attachment_local_response = self.attachment_ocr_local_response(
-                                response_language=response_language,
-                                ocr_result=tool_result,
-                                question=latest_content,
-                                handoff_skill_id=attachment_handoff_skill_id,
-                                handoff_result=attachment_handoff_result,
-                            )
+                            if self.settings.attachment_llm_enabled:
+                                attachment_messages, attachment_llm_metadata = self.attachment_llm_messages(
+                                    messages,
+                                    question=latest_content,
+                                    ocr_result=tool_result,
+                                    max_chars=self.settings.attachment_llm_max_chars,
+                                    history_messages=self.settings.attachment_llm_history_messages,
+                                )
+                                if attachment_messages:
+                                    messages = attachment_messages
+                                else:
+                                    forced_response_message = (
+                                        "تعذر استخراج نص قابل للقراءة من الملف المرفق."
+                                        if response_language == "ar"
+                                        else "未能从附件中提取可供模型分析的文本。"
+                                    )
+                            else:
+                                attachment_local_response = self.attachment_ocr_local_response(
+                                    response_language=response_language,
+                                    ocr_result=tool_result,
+                                    question=latest_content,
+                                    handoff_skill_id=attachment_handoff_skill_id,
+                                    handoff_result=attachment_handoff_result,
+                                )
                     if forced_response_message:
                         await publish_answer_text(forced_response_message)
                         await self.append_event(
@@ -2406,7 +2478,10 @@ class DSHService:
                                 "model": self.settings.llm_model,
                                 "baseUrl": self.settings.llm_base_url,
                                 "stream": True,
-                                "messages": messages,
+                                "messages": self.attachment_llm_audit_messages(messages, attachment_llm_metadata)
+                                if attachment_llm_metadata
+                                else messages,
+                                **({"attachmentLlm": attachment_llm_metadata} if attachment_llm_metadata else {}),
                             },
                             request_id=principal.request_id,
                             runtime_id=conversation.runtime_id,

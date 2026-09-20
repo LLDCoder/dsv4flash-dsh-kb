@@ -93,6 +93,27 @@ class AttachmentOcrHandoffTests(unittest.TestCase):
         self.assertIn("local summary", response)
         self.assertIn("未发送到任何外部语言模型", response)
 
+    def test_attachment_llm_prompt_keeps_bounded_history_and_redacts_audit_text(self):
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "此前的问题"},
+            {"role": "assistant", "content": "此前的回答"},
+            {"role": "user", "content": "总结附件"},
+        ]
+        ocr = {"result": {"pages": [{"lines": [{"text": "secret attachment text"}]}]}}
+        prompt, metadata = DSHService.attachment_llm_messages(
+            messages,
+            question="总结附件",
+            ocr_result=ocr,
+            max_chars=100,
+            history_messages=2,
+        )
+        self.assertEqual(metadata["historyMessages"], 2)
+        self.assertIn("secret attachment text", prompt[-1]["content"])
+        audit = DSHService.attachment_llm_audit_messages(prompt, metadata)
+        self.assertNotIn("secret attachment text", str(audit))
+        self.assertIn("附件 OCR 文本未写入审计", str(audit))
+
     def test_attachment_turn_does_not_append_ocr_evidence_to_llm_messages(self):
         source = inspect.getsource(DSHService._run_turn)
         start = source.index('if latest_attachment and tool_result.get("ok") and latest_content.strip():')

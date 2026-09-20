@@ -1003,7 +1003,8 @@ def make_router(service: DSHService) -> APIRouter:
             raise HTTPException(status_code=415, detail="仅支持 PDF、图片、CSV、JSON、TXT 或 Markdown 附件")
         content = await file.read(settings.local_attachment_max_bytes + 1)
         if len(content) > settings.local_attachment_max_bytes:
-            raise HTTPException(status_code=413, detail="附件不能超过 20MB")
+            limit_mb = max(1, round(settings.local_attachment_max_bytes / (1024 * 1024)))
+            raise HTTPException(status_code=413, detail=f"附件不能超过 {limit_mb}MB")
         directory = Path(settings.local_attachment_dir).resolve()
         directory.mkdir(parents=True, exist_ok=True)
         stored_name = f"{secrets.token_urlsafe(18)}{suffix or '.bin'}"

@@ -39,7 +39,12 @@ class Settings(BaseSettings):
     ocr_gateway_url: str = "http://ocr-gateway:8100"
     ocr_timeout_seconds: float = 300.0
     local_attachment_dir: str = "/tmp/dsh-attachments"
-    local_attachment_max_bytes: int = 20 * 1024 * 1024
+    # Attachment content can optionally be sent to the configured answer LLM.
+    # Keep the default upload size conservative for that mode.
+    local_attachment_max_bytes: int = 5 * 1024 * 1024
+    attachment_llm_enabled: bool = False
+    attachment_llm_max_chars: int = 10_000
+    attachment_llm_history_messages: int = 12
     # UMC ships separate customer, public and admin portals. Keep the selected
     # portal in one environment switch so every backend call uses the same
     # upstream base URL. A base URL may include the customer portal's `/login`
@@ -163,6 +168,9 @@ CONFIG_CATALOG: tuple[dict[str, object], ...] = (
     {"key": "knowledge_timeout_seconds", "label": "知识库超时（秒）", "env": "KNOWLEDGE_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "group": "外部 Tool"},
     {"key": "platform_timeout_seconds", "label": "业务 Tool 超时（秒）", "env": "PLATFORM_TIMEOUT_SECONDS", "secret": False, "restartRequired": False, "description": "业务 Tool 通过内部 Platform Gateway 调用当前 UMC Portal；这里只控制请求超时。", "group": "外部 Tool"},
     {"key": "ocr_gateway_url", "label": "OCR Tool URL", "env": "OCR_GATEWAY_URL", "secret": False, "restartRequired": False, "group": "外部 Tool"},
+    {"key": "attachment_llm_enabled", "label": "附件发送给模型", "env": "ATTACHMENT_LLM_ENABLED", "secret": False, "restartRequired": True, "options": ["false", "true"], "description": "开启后，附件 OCR 文本会与当前会话历史一起发送至已配置的 LLM；审计日志不保存附件原文。", "group": "模型"},
+    {"key": "attachment_llm_max_chars", "label": "附件模型文本上限", "env": "ATTACHMENT_LLM_MAX_CHARS", "secret": False, "restartRequired": True, "description": "单次发送给模型的 OCR 文本字符数，建议不超过 10000。", "group": "模型"},
+    {"key": "attachment_llm_history_messages", "label": "附件模型历史消息数", "env": "ATTACHMENT_LLM_HISTORY_MESSAGES", "secret": False, "restartRequired": True, "description": "发送附件时带入的最近用户/助手消息数，默认 12 条。", "group": "模型"},
     {"key": "umc_portal", "label": "UMC Portal 环境", "env": "UMC_PORTAL", "secret": False, "restartRequired": False, "options": ["customer", "admin", "public"], "description": "选择 customer、admin 或 public；切换后登录、用户信息、上传和下载请求统一使用对应 Portal。", "group": "UMC Portal"},
     {"key": "umc_customer_base_url", "label": "Customer Portal Base URL", "env": "UMC_CUSTOMER_BASE_URL", "secret": False, "restartRequired": False, "group": "UMC Portal"},
     {"key": "umc_admin_base_url", "label": "Admin Portal Base URL", "env": "UMC_ADMIN_BASE_URL", "secret": False, "restartRequired": False, "group": "UMC Portal"},
