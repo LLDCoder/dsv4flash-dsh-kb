@@ -1,4 +1,10 @@
-from app.portal_reader import _native_metric_trend_fallback, reader_answer_shape
+from app.portal_reader import (
+    _explicit_reader_source,
+    _native_metric_trend_fallback,
+    _refund_completed_view_requested,
+    _state_control_label_matches,
+    reader_answer_shape,
+)
 from app.schemas import MAX_CHAT_MESSAGE_CHARS, WSMessage
 from app.service import _response_language_for, reader_evidence_only_response, reader_natural_answer_is_grounded
 
@@ -76,6 +82,14 @@ def test_arabic_refund_list_localizes_dynamic_field_names_and_enum_values():
     assert "العملة: AED" in answer
     assert "Items Status" not in answer
     assert "Items Amount" not in answer
+
+
+def test_arabic_completed_refund_list_binds_the_refund_surface_and_completed_view():
+    question = "ما مبالغ وعملات طلبَي الاسترداد المكتملين الظاهرين في هذه الصفحة؟ اذكر مبلغ كل طلب ثم الإجمالي."
+    assert _explicit_reader_source(question, {}) == "/happiness/refunds"
+    assert _refund_completed_view_requested(question)
+    assert _state_control_label_matches("مكتمل", "Completed")
+    assert reader_answer_shape(question, {}) == "list"
 
 
 def test_explicit_refund_identity_not_confirmed_is_record_specific_in_english_and_arabic():

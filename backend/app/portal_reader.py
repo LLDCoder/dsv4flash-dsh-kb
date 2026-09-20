@@ -964,6 +964,17 @@ def _state_control_label_matches(observed: object, requested: object) -> bool:
     requested_text = re.sub(r"\s+", " ", str(requested or "")).strip().casefold()
     if not observed_text or not requested_text:
         return False
+    # Portal tab labels are localized, while the Reader's semantic actions use
+    # stable state names. Treat these labels as the same state so Arabic turns
+    # can enter the completed refund view instead of remaining on the default
+    # in-progress tab.
+    aliases = {
+        "completed": {"completed", "مكتمل", "المكتمل", "المكتملين", "مكتملة", "المكتملة"},
+        "to do": {"to do", "todo", "قيد التنفيذ", "قيد العمل"},
+    }
+    for canonical, values in aliases.items():
+        if observed_text in values and requested_text in values | {canonical}:
+            return True
     if observed_text == requested_text:
         return True
     if re.search(r"\d$", requested_text):
@@ -1643,7 +1654,7 @@ def reader_answer_shape(
         ),
         ("detail", r"\bdetails?\b|详情|明细"),
         ("overview", r"\boverview\b|\bsummary\b|\bwhat (?:is shown|can i see)\b|概览|概况|总览"),
-        ("list", r"\bshow\b|\blist\b|\bwhich\b|\bwhat are\b|\b(?:check|view|find)\b.*\b(?:tasks?|items?|records?|applications?)\b|显示|列出|哪些|有什么"),
+        ("list", r"\bshow\b|\blist\b|\bwhich\b|\bwhat are\b|\b(?:check|view|find)\b.*\b(?:tasks?|items?|records?|applications?)\b|显示|列出|哪些|有什么|(?:مبالغ|عملات|طلبات|سجلات).*(?:استرداد|مكتمل|الظاهر)|(?:استرداد|مكتمل|الظاهر).*(?:مبالغ|عملات|طلبات|سجلات)|اذكر.*(?:كل|الإجمالي)"),
     )
     for shape, pattern in patterns:
         if re.search(pattern, normalized):
@@ -2679,6 +2690,13 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # back to a sibling page or a generic metadata response.
     if re.search(r"\b(?:finance|financial)\b.{0,30}\brefunds?\b|\brefunds?\b.{0,30}\b(?:finance|financial)\b", normalized):
         return "/financial-payment/refunds"
+    # Keep an Arabic refund-list question on the rendered refund surface.
+    # The prior English-only route binding let such turns fall into a generic
+    # planner path and return not_confirmed before any refund rows were read.
+    if re.search(r"(?:المالية|مالي(?:ة)?|مدفوعات).{0,30}(?:استرداد|استردادات)|(?:استرداد|استردادات).{0,30}(?:المالية|مالي(?:ة)?|مدفوعات)", normalized):
+        return "/financial-payment/refunds"
+    if re.search(r"استرداد|استردادات", normalized):
+        return "/happiness/refunds"
     if re.search(r"\bHC-\d{2}-\d{4}-\d+\b", str(question or ""), re.I) and re.search(
         r"amount|currency|status|updated|更新时间|金额|币种|状态|时间", normalized, re.I,
     ):
@@ -2688,6 +2706,13 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     if _profile_verification_pending_followup(question, context):
         return "/licensing/profile"
     return ""
+
+
+def _refund_completed_view_requested(question: str) -> bool:
+    """Recognize completed-refund wording in supported portal languages."""
+
+    normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    return bool(re.search(r"\bcompleted\b|(?:ال)?مكتمل[\u0600-\u06ff]*", normalized))
 
 
 def _question_needs_native_surface(question: str) -> bool:
@@ -9211,6 +9236,25 @@ class AdminPortalReader:
                     tool = await portal_read_stage(replace(request, actions=actions),
                                                    timeout_stage='explicit_named_source_books',
                                                    attempt='explicit_named_source_books')
+                    if not tool.get('ok'):
+                        raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
+                    observation = (tool.get('result') or {}).get('observation') or {}
+                elif explicit_source in {'/happiness/refunds', '/financial-payment/refunds'} and _refund_completed_view_requested(question):
+                    # Refund pages open on the in-progress tab by default. A
+                    # completed-refund question must replay the observed,
+                    # localized Completed tab before projecting rows.
+                    action = _observed_switch_tab_action({'name': 'Completed'}, observation)
+                    if action is None:
+                        result = ReaderResult(status='not_confirmed', page=explicit_source, answer_shape='list',
+                            summary='The completed refund view was not visible in the current rendered page.',
+                            missing=('completed_refund_view_not_visible',))
+                        return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
+                                                      'permission': permission_audit, 'observation': observation,
+                                                      'actions': actions, 'result': result.public_json()})
+                    actions = (action,)
+                    tool = await portal_read_stage(replace(request, actions=actions),
+                                                   timeout_stage='explicit_named_source_completed',
+                                                   attempt='explicit_named_source_completed')
                     if not tool.get('ok'):
                         raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
                     observation = (tool.get('result') or {}).get('observation') or {}
