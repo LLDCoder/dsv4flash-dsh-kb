@@ -84,6 +84,33 @@ def test_arabic_refund_list_localizes_dynamic_field_names_and_enum_values():
     assert "Items Amount" not in answer
 
 
+def test_arabic_refund_list_localizes_secondary_fields_and_selected_view():
+    evidence = {
+        "result": "success",
+        "answerShape": "list",
+        "completeness": "bounded",
+        "selectedState": "Completed",
+        "facts": [
+            '{"Refund Category":"Application","Reference No":"MC-2-203-1599216","Apply For":"Commercial DP","SLA":"Exceeded","Status":"Refunded"}',
+        ],
+    }
+    answer = reader_evidence_only_response(
+        evidence,
+        "ar",
+        question="ما تفاصيل طلب الاسترداد المكتمل؟",
+    )
+    assert "العرض المحدد حاليًا: مكتمل" in answer
+    assert "فئة الاسترداد: طلب" in answer
+    assert "الرقم المرجعي: MC-2-203-1599216" in answer
+    assert "الغرض من الطلب: تجاري - DP" in answer
+    assert "اتفاقية مستوى الخدمة: متجاوز" in answer
+    assert "الحالة: تم رد المبلغ" in answer
+    assert "Refund Category" not in answer
+    assert "Reference No" not in answer
+    assert "Apply For" not in answer
+    assert "SLA" not in answer
+
+
 def test_arabic_completed_refund_list_binds_the_refund_surface_and_completed_view():
     question = "ما مبالغ وعملات طلبَي الاسترداد المكتملين الظاهرين في هذه الصفحة؟ اذكر مبلغ كل طلب ثم الإجمالي."
     assert _explicit_reader_source(question, {}) == "/happiness/refunds"

@@ -280,10 +280,15 @@ def reader_evidence_only_response(
     raw_facts = reader_result.get("facts")
     selected_view = str(reader_result.get('selectedState') or '').strip()
     if reader_result.get('result') == 'success' and selected_view and isinstance(raw_facts, list) and raw_facts:
+        selected_view_label = {
+            "completed": "مكتمل",
+            "to do": "قيد التنفيذ",
+            "todo": "قيد التنفيذ",
+        }.get(selected_view.casefold(), selected_view)
         view_fact = {
             'en': f'Current selected view: {selected_view}.',
             'zh': f'当前选中的视图：{selected_view}。',
-            'ar': f'العرض المحدد حاليًا: {selected_view}.',
+            'ar': f'العرض المحدد حاليًا: {selected_view_label}.',
         }.get(language, f'Current selected view: {selected_view}.')
         if not any(f'The current selected view is {selected_view}.' in str(fact) for fact in raw_facts):
             raw_facts = [*raw_facts[:19], view_fact]
@@ -584,6 +589,12 @@ def reader_evidence_only_response(
         "items currency": "العملة",
         "apply for icon key": "رمز نوع الطلب",
         "items apply for icon key": "رمز نوع الطلب",
+        "refund category": "فئة الاسترداد",
+        "reference no": "الرقم المرجعي",
+        "reference number": "الرقم المرجعي",
+        "apply for": "الغرض من الطلب",
+        "sla": "اتفاقية مستوى الخدمة",
+        "last update": "آخر تحديث",
         "last updated": "آخر تحديث",
         "updated at": "وقت التحديث",
         "application no": "رقم الطلب",
@@ -624,9 +635,19 @@ def reader_evidence_only_response(
                 "rejected": "مرفوض",
                 "cancelled": "ملغى",
                 "canceled": "ملغى",
+                "refunded": "تم رد المبلغ",
+                "department processed": "تمت المعالجة من القسم",
             },
+            "refund category": {"application": "طلب"},
             "type": {"refund": "استرداد"},
             "refund scope": {"full": "كامل", "partial": "جزئي"},
+            "apply for": {
+                "commercial dp": "تجاري - DP",
+                "commercial entity": "كيان تجاري",
+                "commercial": "تجاري",
+                "individual": "فردي",
+            },
+            "sla": {"exceeded": "متجاوز", "met": "مستوفى"},
             "apply for icon key": {"commercial": "تجاري", "individual": "فردي"},
             "payment method": {
                 "credit debit card": "بطاقة ائتمانية/خصم",
