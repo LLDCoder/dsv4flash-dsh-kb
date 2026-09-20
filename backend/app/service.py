@@ -611,7 +611,9 @@ def reader_evidence_only_response(
         """Translate bounded portal enum values without changing business identifiers."""
         if language != "ar":
             return value
-        normalized_key = re.sub(r"\s+", " ", display_name(key).casefold()).strip()
+        raw_key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(key))
+        raw_key = re.sub(r"[_\-.]+", " ", raw_key)
+        normalized_key = re.sub(r"\s+", " ", raw_key.casefold()).strip()
         normalized_value = re.sub(r"\s+", " ", value.casefold()).strip()
         enum_maps = {
             "status": {
