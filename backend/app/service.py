@@ -4,6 +4,7 @@ import json
 import math
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -217,6 +218,14 @@ def reader_evidence_only_response(
         if not any(f'The current selected view is {selected_view}.' in str(fact) for fact in raw_facts):
             raw_facts = [*raw_facts[:19], view_fact]
     workflow = str(reader_result.get('workflowState') or '')
+    if workflow == "metric_trend_unavailable" and facts:
+        metric = facts[0]
+        no_history = {
+            "en": "No historical data is available in the current portal view to compare a trend over the requested period.",
+            "zh": "当前门户视图没有可用于比较所请求时段趋势的历史数据。",
+            "ar": "لا تتوفر بيانات تاريخية في عرض البوابة الحالي لمقارنة الاتجاه خلال الفترة المطلوبة.",
+        }.get(language, "No historical data is available in the current portal view to compare the requested trend.")
+        return f"{metric}\n{no_history}"
     if isinstance(raw_facts, list) and workflow.startswith('The Search input was explicitly cleared and verified empty in the freshly read view.'):
         raw_facts = [*raw_facts, workflow]
  
@@ -292,6 +301,40 @@ def reader_evidence_only_response(
     facts = [fact for fact in (
         deliverable_fact(value) for value in raw_facts[:20]
     ) if fact] if isinstance(raw_facts, list) else []
+
+    def observed_amounts(values: list[str]) -> list[Decimal]:
+        amounts: list[Decimal] = []
+        for fact in values:
+            try:
+                fields = json.loads(fact)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(fields, dict):
+                continue
+            for key, value in fields.items():
+                if "amount" not in re.sub(r"[^a-z0-9]", "", str(key).casefold()):
+                    continue
+                try:
+                    amount = Decimal(str(value).replace(",", ""))
+                except (InvalidOperation, TypeError, ValueError):
+                    continue
+                if amount.is_finite():
+                    amounts.append(amount)
+        return amounts
+
+    def displayed_amount_total_note(values: list[str]) -> str:
+        if not re.search(r"\b(?:total|sum)\b|总额|合计|الإجمالي|المجموع", question, re.I):
+            return ""
+        amounts = observed_amounts(values)
+        if len(amounts) < 2:
+            return ""
+        total = sum(amounts, Decimal("0")).quantize(Decimal("0.01"))
+        label = {
+            "en": "Total of the displayed records",
+            "zh": "当前显示记录合计",
+            "ar": "إجمالي السجلات المعروضة",
+        }.get(language, "Total of the displayed records")
+        return f"{label}: {total:.2f}."
     status = str(reader_result.get("result") or "")
     if status == 'load_failed' and not facts and reader_result.get('missing') == ['model_payment_required']:
         return {
@@ -658,6 +701,17 @@ def reader_evidence_only_response(
                       'zh': '以下仅为部分匹配记录，并非完整列表。',
                       'ar': 'هذه بعض السجلات المطابقة وليست القائمة الكاملة.'}
             rendered_facts = sample.get(language, sample['en']) + '\n\n' + rendered_facts
+        if re.search(r'\b(?:currenc(?:y|ies))\b|币种|عملة|عملات', question, re.I):
+            if not re.search(r'\b(?:USD|AED|EUR|GBP|CNY|SAR)\b|[$€£¥]', " ".join(str(item) for item in raw_facts), re.I):
+                missing_currency = {
+                    "en": "The current data does not provide a currency field.",
+                    "zh": "当前数据未提供币种字段。",
+                    "ar": "لا تتضمن البيانات الحالية حقل العملة.",
+                }.get(language, "The current data does not provide a currency field.")
+                rendered_facts = f"{rendered_facts}\n\n{missing_currency}"
+        total_note = displayed_amount_total_note(facts)
+        if total_note:
+            rendered_facts = f"{rendered_facts}\n\n{total_note}"
         if status == "success":
             return f"**{fact_prefix.get(language, fact_prefix['en'])}**\n\n{rendered_facts}"
         if status in messages["en"]:
@@ -743,6 +797,31 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
             return False
     for currency in re.findall(r'\b(?:USD|AED|EUR|GBP|CNY|SAR)\b', answer):
         if currency.casefold() not in verified_text.casefold():
+            return False
+    # Field-oriented amount questions must not be reduced to a heading or
+    # configuration metadata. If a decimal amount was observed, at least one
+    # exact observed amount must survive the natural-language presentation.
+    if re.search(r'\b(?:amount|amounts|total)\b|金额|总额|مبلغ|الإجمالي', question, re.I):
+        observed_amounts = [
+            amount
+            for line in verified_text.splitlines()
+            if not re.search(r'\b(?:total|sum)\b|总额|合计|الإجمالي|المجموع', line, re.I)
+            for amount in re.findall(r'(?<![\w-])[-+]?\d[\d,]*\.\d{2}(?!\w)', line)
+        ]
+        if observed_amounts and not any(amount in answer for amount in observed_amounts):
+            return False
+        if re.search(r'\b(?:total|sum)\b|总额|合计|الإجمالي|المجموع', question, re.I) and len(observed_amounts) >= 2:
+            try:
+                total = sum((Decimal(item.replace(",", "")) for item in observed_amounts), Decimal("0")).quantize(Decimal("0.01"))
+            except (InvalidOperation, ValueError):
+                total = None
+            if total is not None:
+                total_text = f"{total:.2f}"
+                if total_text not in answer and total_text.rstrip("0").rstrip(".") not in answer:
+                    return False
+    if re.search(r'\b(?:currenc(?:y|ies))\b|币种|عملة|عملات', question, re.I):
+        observed_currencies = set(re.findall(r'\b(?:USD|AED|EUR|GBP|CNY|SAR)\b', verified_text, re.I))
+        if observed_currencies and not any(code.casefold() in answer.casefold() for code in observed_currencies):
             return False
     # Layout applicability and isolated UI state are material facts, not
     # optional prose that the formatter may turn into current-user access.

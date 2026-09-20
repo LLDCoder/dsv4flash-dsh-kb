@@ -1589,6 +1589,32 @@ def reader_answer_shape(
     if resolved in {"overview", "count", "list", "attention", "due", "detail", "unspecified"}:
         return resolved  # type: ignore[return-value]
     normalized = re.sub(r"\s+", " ", str(question or "").casefold()).strip()
+    previous_question = str(
+        (_bounded_conversation_context(conversation_context).get("previousIntent") or {}).get("question") or ""
+    ).casefold()
+    # Keep a named metric bound when a follow-up changes language. This is
+    # label-based rather than route-based, so a unit/trend question cannot
+    # silently fall through to a neighbouring KPI.
+    metric_label = re.search(
+        r"\b(?:sla\s+compliance|avg\.?\s+processing\s+time|average\s+processing\s+time)\b",
+        normalized + " " + previous_question,
+        re.I,
+    )
+    metric_follow_up = re.search(
+        r"\b(?:unit|units|trend|history|historical|changed|change|last\s+\d+\s+days?)\b"
+        r"|الوحدة|وحدته|وحدتها|اتجاه|تاريخ|تاريخي|تغي(?:رت|ر)"
+        r"|نفس\s+(?:المؤشر|المقياس)",
+        normalized,
+        re.I,
+    )
+    if metric_label and metric_follow_up:
+        return "overview"
+    if metric_label and re.search(
+        r"\b(?:value|rate|percentage|metric|compliance)\b|قيمة|نسبة|معدل|مؤشر|مقياس",
+        normalized,
+        re.I,
+    ):
+        return "count"
     if re.fullmatch(
         r"(?:show|display)(?: me)? my tasks?[?!.]*|(?:显示|查看)(?:一下)?我的任务[？。!！]*",
         normalized,
@@ -5897,6 +5923,55 @@ def _native_metric_count_fallback(
     )
 
 
+def _native_metric_trend_fallback(
+    observation: Any,
+    *,
+    page: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+    question: str,
+    conversation_context: Any = None,
+) -> ReaderResult | None:
+    """Bind a unit/trend follow-up to one visible metric, never a sibling KPI."""
+    if not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return None
+    if not re.search(
+        r"\b(?:unit|units|trend|history|historical|changed|change|last\s+\d+\s+days?)\b"
+        r"|الوحدة|وحدته|وحدتها|اتجاه|تاريخ|تاريخي|تغي(?:رت|ر)|نفس\s+(?:المؤشر|المقياس)",
+        question,
+        re.I,
+    ):
+        return None
+    previous = (_bounded_conversation_context(conversation_context).get("previousIntent") or {})
+    query_text = " ".join((str(question or ""), str(previous.get("question") or "")))
+    query_tokens = _api_query_tokens(query_text)
+    metrics = [{"label": label, "value": value} for label, value, _source in _observed_metric_pairs(observation)]
+    ranked = [
+        (len(set(_api_query_tokens(str(metric["label"]))).intersection(query_tokens)), metric)
+        for metric in metrics
+    ]
+    ranked = [item for item in ranked if item[0] > 0]
+    if not ranked:
+        return None
+    best_score = max(score for score, _metric in ranked)
+    best = [metric for score, metric in ranked if score == best_score]
+    if len(best) != 1:
+        return None
+    metric = best[0]
+    label, value = str(metric["label"]).strip(), str(metric["value"]).strip()
+    return ReaderResult(
+        status="success",
+        summary="The current metric is visible, but no historical series is available for comparison.",
+        page=str(page)[:500],
+        section="metrics",
+        source_section="metrics",
+        answer_shape="overview",
+        completeness="bounded",
+        scope=scope,
+        workflow_state="metric_trend_unavailable",
+        facts=(f"{label}: {value}", "No historical data is available in the current portal view to compare a trend."),
+    )
+
+
 def _observed_metric_pairs(observation: Any) -> tuple[tuple[str, str, str], ...]:
     """Extract conservative label/value pairs from rendered metric regions."""
     if not isinstance(observation, dict):
@@ -8367,15 +8442,25 @@ class AdminPortalReader:
                 )
                 if native is not None:
                     return native, "native_row_fallback"
-            if answer_shape == "count":
-                metric = _native_metric_count_fallback(
+            if answer_shape in {"count", "overview"}:
+                trend = _native_metric_trend_fallback(
                     observation,
                     page=page,
                     scope=scope,
                     question=question,
+                    conversation_context=bounded_conversation_context,
                 )
-                if metric is not None:
-                    return metric, "metric_semantic_match"
+                if trend is not None:
+                    return trend, "metric_trend_unavailable"
+                if answer_shape == "count":
+                    metric = _native_metric_count_fallback(
+                        observation,
+                        page=page,
+                        scope=scope,
+                        question=question,
+                    )
+                    if metric is not None:
+                        return metric, "metric_semantic_match"
             fallback_intent = _observation_fallback_intent(question, answer_shape)
             if fallback_intent is None and answer_shape == "list":
                 selected_view = _selected_view_list_fallback(

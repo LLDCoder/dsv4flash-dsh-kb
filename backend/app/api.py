@@ -31,7 +31,7 @@ from .config import config_catalog, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
 from .db import AuditOperator, AuditOperatorEvent, AuditOperatorSession, AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
-from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
+from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MAX_CHAT_MESSAGE_CHARS, MessageCreate, MessageFeedbackCreate, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
 from .testcases import generate_test_cases, run_test_cases
 
@@ -1350,6 +1350,19 @@ def make_router(service: DSHService) -> APIRouter:
         try:
             while True:
                 raw = await websocket.receive_json()
+                if (
+                    isinstance(raw, dict)
+                    and raw.get("type") == "message"
+                    and isinstance(raw.get("content"), str)
+                    and len(raw["content"]) > MAX_CHAT_MESSAGE_CHARS
+                ):
+                    await send({
+                        "type": "error",
+                        "code": "message_too_long",
+                        "message": f"Message exceeds the {MAX_CHAT_MESSAGE_CHARS}-character limit; shorten it before sending.",
+                        "maxChars": MAX_CHAT_MESSAGE_CHARS,
+                    })
+                    continue
                 message = WSMessage.model_validate(raw)
                 if message.type == "auth":
                     # Browser WebSocket clients cannot set an Authorization

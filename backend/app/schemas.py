@@ -5,6 +5,10 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from .audit_auth import validate_password_policy
 
 
+# Keep browser, REST, and WebSocket callers on one user-visible input bound.
+MAX_CHAT_MESSAGE_CHARS = 10_000
+
+
 class APIModel(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -14,7 +18,7 @@ class ConversationCreate(APIModel):
 
 
 class MessageCreate(APIModel):
-    content: str = Field(default="", max_length=50_000)
+    content: str = Field(default="", max_length=MAX_CHAT_MESSAGE_CHARS)
     client_message_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
 
     @model_validator(mode="after")
@@ -82,7 +86,7 @@ class TestCaseRunRequest(APIModel):
 class WSMessage(APIModel):
     type: Literal["auth", "subscribe", "message", "resume", "ack", "cancel"]
     conversation_id: str | None = Field(default=None, validation_alias=AliasChoices("conversationId", "conversation_id"))
-    content: str | None = Field(default=None, max_length=50_000)
+    content: str | None = Field(default=None, max_length=MAX_CHAT_MESSAGE_CHARS)
     client_message_id: str | None = Field(default=None, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
     after_seq: int = Field(default=0, validation_alias=AliasChoices("afterSeq", "after_seq"))
     seq: int | None = None
