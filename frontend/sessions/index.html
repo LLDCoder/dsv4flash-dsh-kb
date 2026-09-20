@@ -37,7 +37,7 @@
             <div id="streamStatus" class="stream-status" aria-live="polite"><span id="streamStatusText"></span><span id="loadingDots" class="loading-dots" hidden aria-label="正在处理"><i></i><i></i><i></i></span></div>
             <form id="messageForm" class="composer">
               <div class="composer-main"><textarea id="message" rows="3" placeholder="输入问题，回答将实时显示…"></textarea><div id="attachmentPreview" class="attachment-preview" hidden><span class="attachment-icon">↗</span><span id="attachmentName"></span><button id="clearAttachmentBtn" type="button" class="attachment-clear" aria-label="移除附件">×</button></div></div>
-              <div class="composer-actions"><input id="attachmentPicker" type="file" accept=".pdf,image/*" hidden /><button id="attachBtn" type="button" class="secondary attach-button">附件</button><button id="sendBtn" type="submit">发送问题</button></div>
+              <div class="composer-actions"><input id="attachmentPicker" class="file-picker" type="file" accept=".pdf,image/*" /><button id="attachBtn" type="button" class="secondary attach-button">附件</button><button id="sendBtn" type="submit">发送问题</button></div>
             </form>
           </div>
         </section>
