@@ -1,8 +1,9 @@
 name: dsh-kb-only
 
 # Minimal Customer DSH deployment. It keeps chat/session storage and the LLM
-# response layer, but only exposes the knowledge-base tool. OCR, UMC Portal,
-# Platform Gateway, and local GPU services are intentionally absent.
+# response layer, exposes the knowledge-base tool, and includes the CPU OCR
+# pair from the full Customer DSH build. UMC Portal, Platform Gateway, and
+# local GPU services remain intentionally absent.
 services:
   postgres:
     image: public.ecr.aws/docker/library/postgres:16-alpine
@@ -27,6 +28,42 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
+      retries: 10
+
+  ocr-cpu:
+    image: dsh-admin-service-ocr-cpu:latest
+    environment:
+      OCR_MODEL_NAME: ${OCR_MODEL_NAME:-tesseract-lstm}
+      OCR_LANG: ${OCR_LANG:-eng}
+    expose:
+      - "8080"
+    command: uvicorn app:app --host 0.0.0.0 --port 8080
+    restart: unless-stopped
+    cpus: "2.0"
+    mem_limit: 8g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  ocr-gateway:
+    image: dsh-admin-service-ocr-gateway:latest
+    environment:
+      OCR_VL_URL: ${OCR_VL_URL:-http://ocr-cpu:8080}
+      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
+      OCR_MODEL_NAME: ${OCR_MODEL_NAME:-tesseract-lstm}
+    depends_on:
+      ocr-cpu:
+        condition: service_healthy
+    expose:
+      - "8100"
+    command: uvicorn app:app --host 0.0.0.0 --port 8100
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/readyz')"]
+      interval: 10s
+      timeout: 5s
       retries: 10
 
   knowledge-gateway:
@@ -66,7 +103,8 @@ services:
       SKILL_ROUTER_TIMEOUT_SECONDS: ${SKILL_ROUTER_TIMEOUT_SECONDS:-10}
       KB_ONLY_MODE: "true"
       EXTERNAL_TOOLS_ENABLED: "true"
-      OCR_GATEWAY_URL: ""
+      OCR_GATEWAY_URL: ${OCR_GATEWAY_URL:-http://ocr-gateway:8100}
+      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
       PLATFORM_GATEWAY_URL: ""
       KNOWLEDGE_GATEWAY_URL: http://knowledge-gateway:8101
       KNOWLEDGE_DEFAULT_FOLDER_ID: ${KNOWLEDGE_DEFAULT_FOLDER_ID:-}
@@ -82,6 +120,8 @@ services:
       redis:
         condition: service_healthy
       knowledge-gateway:
+        condition: service_healthy
+      ocr-gateway:
         condition: service_healthy
     ports:
       - "127.0.0.1:${DSH_BACKEND_PORT:-19086}:8000"
