@@ -5871,8 +5871,6 @@ def _result_from_structured_observation(
         answer_shape not in {"count", "list", "attention", "due"}
     ):
         return None
-    if _category_control_requiring_children(question, observation, None, answer_shape, current_page=page):
-        return None
     section = _observation_evidence_for_section(observation, section_name)
     if section is None or _observation_has_error_state(section):
         return None
@@ -5889,6 +5887,15 @@ def _result_from_structured_observation(
         return None
     rows = _bounded_observation_field(section, "rowSummaries", limit=8)
     native_rows = _bounded_native_row_facts(section, limit=8)
+    # A completed-refund list can expose the requested child rows directly
+    # even when the page has no rendered status-tab control.  Do not reject
+    # those already-observed rows merely because the planner classified the
+    # wording as a category request.
+    if (
+        _category_control_requiring_children(question, observation, None, answer_shape, current_page=page)
+        and not native_rows and not rows
+    ):
+        return None
     controls = _bounded_observation_field(section, "controls", limit=20)
     card_summaries = _bounded_observation_field(section, "cardSummaries", limit=20)
     summaries = _bounded_observation_field(section, "summaries", limit=20)
