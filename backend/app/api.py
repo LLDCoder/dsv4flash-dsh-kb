@@ -3,9 +3,11 @@ import base64
 import hmac
 import json
 import logging
+import secrets
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -830,8 +832,9 @@ def make_router(service: DSHService) -> APIRouter:
         """
         payload = await request.json()
         content = str(payload.get("message") or "").strip()
-        if not content:
-            raise HTTPException(status_code=422, detail="message is required")
+        attachment = payload.get("attachment")
+        if not content and not attachment:
+            raise HTTPException(status_code=422, detail="message or attachment is required")
         conversation_id = request.headers.get("X-FF-Conversation-ID") or payload.get("conversation_id")
         if conversation_id:
             try:
@@ -844,7 +847,7 @@ def make_router(service: DSHService) -> APIRouter:
         client_message_id = str(payload.get("request_id") or uuid4())
         queue = service.broker.subscribe(str(conversation_id))
         try:
-            accepted = await service.submit_message(principal, str(conversation_id), content, client_message_id)
+            accepted = await service.submit_message(principal, str(conversation_id), content, client_message_id, attachment)
         except LookupError as exc:
             service.broker.unsubscribe(str(conversation_id), queue)
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -986,6 +989,32 @@ def make_router(service: DSHService) -> APIRouter:
             detail = payload if isinstance(payload, (dict, list, str)) else "UMC upload failed"
             raise HTTPException(status_code=status_code, detail=detail)
         return payload if isinstance(payload, (dict, list)) else {"data": payload}
+
+    @router.post("/attachments/upload", tags=["Chatbot compatibility"])
+    async def upload_local_attachment(file: UploadFile = File(...), principal: Principal = Depends(chat_principal)):
+        """Store a short-lived local attachment for the KB-only OCR flow."""
+        settings = get_settings()
+        content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+        name = (file.filename or "attachment").strip() or "attachment"
+        suffix = Path(name).suffix.lower()
+        allowed_types = {"application/pdf", "image/png", "image/jpeg", "image/webp", "image/tiff", "image/bmp"}
+        if content_type not in allowed_types and suffix not in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}:
+            raise HTTPException(status_code=415, detail="仅支持 PDF 或常见图片附件")
+        content = await file.read(settings.local_attachment_max_bytes + 1)
+        if len(content) > settings.local_attachment_max_bytes:
+            raise HTTPException(status_code=413, detail="附件不能超过 20MB")
+        directory = Path(settings.local_attachment_dir).resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{secrets.token_urlsafe(18)}{suffix or '.bin'}"
+        (directory / stored_name).write_bytes(content)
+        normalized_type = content_type or ("application/pdf" if suffix == ".pdf" else "application/octet-stream")
+        return {
+            "fileRef": f"local:{stored_name}",
+            "fileName": name[:512],
+            "mimeType": normalized_type,
+            "fileType": 0 if normalized_type == "application/pdf" or suffix == ".pdf" else 1,
+            "size": len(content),
+        }
 
     def pagination_json(total: int, page: int, page_size: int) -> dict[str, int]:
         return {

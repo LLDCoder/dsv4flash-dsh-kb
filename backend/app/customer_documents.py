@@ -1,4 +1,5 @@
 import base64
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from typing import Any
 
@@ -17,6 +18,7 @@ class CustomerDocumentClient:
     def __init__(self, settings: Settings) -> None:
         self.base_url = settings.umc_document_service_base_url.rstrip("/")
         self.timeout = settings.umc_document_timeout_seconds
+        self.local_attachment_dir = Path(settings.local_attachment_dir).resolve()
 
     @staticmethod
     def _upload_reference(value: Any, depth: int = 0) -> str:
@@ -94,6 +96,16 @@ class CustomerDocumentClient:
         ``base64.b64decode``.  A ``data:<mime>;base64,`` prefix therefore
         corrupts the bytes instead of being treated as a data URL.
         """
+        if file_ref.startswith("local:"):
+            file_name = file_ref.removeprefix("local:").strip()
+            if not file_name or Path(file_name).name != file_name:
+                raise ValueError("local attachment reference is invalid")
+            path = (self.local_attachment_dir / file_name).resolve()
+            if path.parent != self.local_attachment_dir or not path.is_file():
+                raise ValueError("local attachment was not found")
+            content = path.read_bytes()
+            path.unlink(missing_ok=True)
+            return base64.b64encode(content).decode("ascii")
         if not self.base_url:
             raise CustomerDocumentNotConfigured("UMC document service is not configured")
         if not umc_token:

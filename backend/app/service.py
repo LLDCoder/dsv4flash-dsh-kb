@@ -1684,6 +1684,12 @@ class DSHService:
                         name for name in (list(selected_skill.allowed_tools) if selected_skill else [])
                         if name not in SYSTEM_DEFAULT_TOOL_NAMES or name in configured_system_tools
                     ]
+                    if attachment_ocr_route and system_tool_map.get("ocr.layout_parsing", {}).get("enabled"):
+                        # KB-only deployments may intentionally seed only the
+                        # knowledge Skill. An uploaded attachment still has a
+                        # deterministic OCR route, so grant this one read-only
+                        # system tool without enabling any UMC/Platform tool.
+                        allowed_tool_names = ["ocr.layout_parsing"]
                     selected_tool_docs: list[dict[str, Any]] = [
                         {
                             "name": item["toolName"],

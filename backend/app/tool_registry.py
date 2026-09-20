@@ -221,7 +221,10 @@ def system_default_tool_definitions(settings: Any) -> list[dict[str, Any]]:
 
     knowledge_enabled = bool(str(getattr(settings, "knowledge_gateway_url", "") or "").strip())
     kb_only = bool(getattr(settings, "kb_only_mode", False))
-    ocr_enabled = not kb_only and bool(str(getattr(settings, "ocr_gateway_url", "") or "").strip())
+    # KB-only keeps UMC/Platform tools disabled, but local attachment OCR is
+    # explicitly supported by the document_ocr Skill and needs to remain
+    # available without a UMC login.
+    ocr_enabled = bool(str(getattr(settings, "ocr_gateway_url", "") or "").strip())
     platform_enabled = not kb_only and bool(str(getattr(settings, "platform_gateway_url", "") or "").strip())
     knowledge_folder = str(getattr(settings, "knowledge_default_folder_id", "") or "")
     knowledge_top_k = int(getattr(settings, "knowledge_top_k", 32) or 32)

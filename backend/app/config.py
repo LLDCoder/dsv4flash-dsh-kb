@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     skill_router_mode: str = "llm"
     skill_router_timeout_seconds: float = 10.0
     skill_router_fallback_skill_id: str = DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID
-    # Restrict a deployment to knowledge-base retrieval. This disables OCR and
-    # UMC/Platform capabilities and lets the database seed only knowledge
-    # Skills, while keeping the general DSH conversation flow available.
+    # Restrict a deployment to knowledge-base retrieval and attachment OCR.
+    # UMC/Platform capabilities remain disabled while document attachments can
+    # use the local OCR service without a UMC login.
     kb_only_mode: bool = False
     # Operator-editable instructions are added to each generated system
     # prompt. Built-in language, safety, and evidence rules remain enforced.
@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     external_tools_enabled: bool = True
     ocr_gateway_url: str = "http://ocr-gateway:8100"
     ocr_timeout_seconds: float = 300.0
+    local_attachment_dir: str = "/tmp/dsh-attachments"
+    local_attachment_max_bytes: int = 20 * 1024 * 1024
     # UMC ships separate customer, public and admin portals. Keep the selected
     # portal in one environment switch so every backend call uses the same
     # upstream base URL. A base URL may include the customer portal's `/login`

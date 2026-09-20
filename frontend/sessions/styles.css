@@ -86,6 +86,7 @@ h2 { margin-bottom: 0; color: var(--ink); font-size: 16px; letter-spacing: -.01e
 .copy-message:disabled, .refresh-message:disabled { opacity: .48; cursor: not-allowed; }
 .copy-message.is-copied { color: var(--success); }
 .message strong { color: #b7a3ff; font-weight: 800; }
+.message-attachment { display: inline-flex; margin-top: 8px; padding: 5px 8px; border: 1px solid #4c4567; border-radius: 6px; background: #211d35; color: #c7bbff; font-size: 11px; }
 .stream-status { display: flex; align-items: center; gap: 8px; width: min(100%, 980px); align-self: center; min-height: 21px; color: var(--accent-bright); font-size: 11px; }
 .stream-status.is-loading { color: #a7a0d7; }
 .loading-dots { display: inline-flex; align-items: center; gap: 4px; }
@@ -93,10 +94,18 @@ h2 { margin-bottom: 0; color: var(--ink); font-size: 16px; letter-spacing: -.01e
 .loading-dots i:nth-child(2) { animation-delay: .14s; }
 .loading-dots i:nth-child(3) { animation-delay: .28s; }
 @keyframes pulse-dot { 0%, 80%, 100% { opacity: .28; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
-.composer { display: flex; align-items: flex-end; gap: 10px; width: min(100%, 980px); align-self: center; min-height: 70px; border: 1px solid var(--line-strong); border-radius: 8px; background: #131620; padding: 7px 8px 7px 13px; }
+.composer { display: flex; align-items: flex-end; gap: 10px; width: min(100%, 980px); align-self: center; min-height: 86px; border: 1px solid var(--line-strong); border-radius: 8px; background: #131620; padding: 8px; }
 .composer:focus-within { border-color: #5e4ba8; box-shadow: 0 0 0 3px rgba(134,103,255,.08); }
-.composer textarea { flex: 1; min-width: 0; min-height: 52px; max-height: 110px; resize: vertical; border: 0; border-radius: 6px; background: transparent; padding: 10px 0; color: var(--ink); outline: none; line-height: 1.5; }
-.composer button { flex: 0 0 104px; height: 40px; margin-bottom: 1px; }
+.composer-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.composer textarea { width: 100%; min-height: 52px; max-height: 110px; resize: vertical; border: 0; border-radius: 6px; background: transparent; padding: 8px 4px; color: var(--ink); outline: none; line-height: 1.5; }
+.composer-actions { display: flex; align-items: center; gap: 7px; padding-bottom: 1px; }
+.composer button { flex: 0 0 104px; height: 40px; }
+.composer .attach-button { flex: 0 0 auto; height: 34px; padding: 7px 10px; font-size: 11px; }
+.attachment-preview { display: flex; align-items: center; gap: 7px; min-height: 26px; width: fit-content; max-width: 100%; padding: 4px 7px; border: 1px solid #4a3e79; border-radius: 6px; background: #211c3c; color: #c7bbff; font-size: 11px; }
+.attachment-icon { color: var(--accent-bright); font-weight: 900; }
+.attachment-preview #attachmentName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-clear { flex: 0 0 auto !important; width: 20px; height: 20px !important; padding: 0 !important; border: 0; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; }
+.attachment-clear:hover { background: transparent; color: var(--danger); transform: none; }
 .composer.is-busy textarea { border-color: #493e77; }
 .empty { color: var(--subtle); text-align: center; padding: 28px 12px; font-size: 12px; }
 * { scrollbar-width: thin; scrollbar-color: #3b4052 transparent; }

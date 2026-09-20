@@ -1,6 +1,6 @@
 const basePath = /^\/DSH(?:\/|$)/i.test(window.location.pathname) ? "/DSH" : "";
 const $ = (id) => document.getElementById(id);
-const state = { sessions: [], selectedId: "", messages: [], busy: false };
+const state = { sessions: [], selectedId: "", messages: [], busy: false, attachment: null, attachmentBusy: false };
 const principal = { userId: "demo-user", tenantId: "kb-only" };
 function requestId() {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return globalThis.crypto.randomUUID();
@@ -137,18 +137,18 @@ async function deleteSession() {
   try { await request(`/api/v1/ai-chat/conversations/${encodeURIComponent(state.selectedId)}`, { method: "DELETE" }); state.selectedId = ""; await loadSessions(); } catch (error) { setStatus(error.message, true); }
 }
 
-function appendUserMessage(content) { const node = document.createElement("article"); node.className = "message user"; const role = document.createElement("span"); role.className = "role"; role.textContent = "问题"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); scrollMessagesToBottom(true); }
+function appendUserMessage(content, attachment = null) { const node = document.createElement("article"); node.className = "message user"; const role = document.createElement("span"); role.className = "role"; role.textContent = "问题"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); if (attachment?.fileName) { const file = document.createElement("div"); file.className = "message-attachment"; file.textContent = `附件：${attachment.fileName}`; node.append(file); } $("messages").append(node); scrollMessagesToBottom(true); }
 function appendStreamMessage(content, question) { const node = document.createElement("article"); node.className = "message assistant streaming"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); addAnswerActions(node, () => body.textContent, question, true); $("messages").append(node); scrollMessagesToBottom(true); return body; }
 function parseSseData(raw) { try { return JSON.parse(raw); } catch { return raw; } }
 function dispatchSseBlock(block, onEvent) {
   const lines = block.split(/\r?\n/); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
   if (!type) return; const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n"); onEvent(type, parseSseData(data));
 }
-async function runQuestion(content) {
-  if (!content || !state.selectedId || state.busy) return; state.busy = true; $("sendBtn").disabled = true; $("message").value = ""; $("messageForm").classList.add("is-busy"); appendUserMessage(content); setStreamStatus("正在检索知识库并生成回答…", true);
+async function runQuestion(content, attachment = null) {
+  if ((!content && !attachment) || !state.selectedId || state.busy || state.attachmentBusy) return; state.busy = true; $("sendBtn").disabled = true; $("attachBtn").disabled = true; $("message").value = ""; $("messageForm").classList.add("is-busy"); appendUserMessage(content, attachment); clearAttachment(false); setStreamStatus("正在检索知识库并生成回答…", true);
   let assistant = ""; let body = null;
   try {
-    const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), Accept: "text/event-stream", "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, conversation_id: state.selectedId, request_id: requestId() }) });
+    const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), Accept: "text/event-stream", "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, attachment, conversation_id: state.selectedId, request_id: requestId() }) });
     if (!response.ok || !response.body) throw new Error(`流式请求失败（${response.status}）`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
     const handleEvent = (type, data) => { if (type === "token") { const token = typeof data === "string" ? data : String(data?.content || ""); assistant += token; if (!body) body = appendStreamMessage("", content); renderRichText(body, assistant); scrollMessagesToBottom(); setStreamStatus("正在接收回答…", false); } else if (type === "status") { setStreamStatus(data?.message || "正在处理…", true); } else if (type === "error") { throw new Error(data?.detail || "回答失败"); } else if (type === "end") { setStreamStatus("回答完成", false); } };
@@ -157,11 +157,24 @@ async function runQuestion(content) {
     if (!body) { body = appendStreamMessage(assistant || "未收到回答内容", content); }
     setStreamStatus("回答完成", false); await loadSessions(state.selectedId);
   } catch (error) { setStreamStatus(error.message, false); setStatus(error.message, true); }
-  finally { state.busy = false; $("sendBtn").disabled = false; $("messageForm").classList.remove("is-busy"); }
+  finally { state.busy = false; $("sendBtn").disabled = false; $("attachBtn").disabled = false; $("messageForm").classList.remove("is-busy"); }
 }
 
 async function retryAnswer(question) { await runQuestion(String(question || "").trim()); }
-async function sendMessage(event) { event.preventDefault(); await runQuestion($("message").value.trim()); }
+async function uploadAttachment(file) {
+  state.attachmentBusy = true; $("attachBtn").disabled = true; $("attachmentPreview").hidden = false; $("attachmentName").textContent = `正在上传 ${file.name}…`;
+  try {
+    const form = new FormData(); form.append("file", file, file.name);
+    const response = await fetch(apiUrl("/api/v1/attachments/upload"), { method: "POST", credentials: "same-origin", headers: { "X-User-Id": principal.userId, "X-Tenant-Id": principal.tenantId }, body: form });
+    const text = await response.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text }; }
+    if (!response.ok) throw new Error(data.detail || `附件上传失败（${response.status}）`);
+    state.attachment = data; $("attachmentName").textContent = `${data.fileName}（${Math.ceil((data.size || file.size) / 1024)} KB）`; setStatus("附件已上传，可以发送问题");
+  } catch (error) { clearAttachment(false); setStatus(error.message, true); }
+  finally { state.attachmentBusy = false; $("attachBtn").disabled = false; }
+}
+function clearAttachment(showStatus = true) { state.attachment = null; $("attachmentPicker").value = ""; $("attachmentPreview").hidden = true; $("attachmentName").textContent = ""; if (showStatus) setStatus("附件已移除"); }
+function onAttachmentPicked(event) { const file = event.target.files?.[0]; if (file) uploadAttachment(file); }
+async function sendMessage(event) { event.preventDefault(); await runQuestion($("message").value.trim(), state.attachment); }
 
-$("refreshBtn").addEventListener("click", () => loadSessions()); $("newBtn").addEventListener("click", createSession); $("newSmallBtn").addEventListener("click", createSession); $("search").addEventListener("input", renderSessions); $("saveTitleBtn").addEventListener("click", saveTitle); $("deleteBtn").addEventListener("click", deleteSession); $("messageForm").addEventListener("submit", sendMessage);
+$("refreshBtn").addEventListener("click", () => loadSessions()); $("newBtn").addEventListener("click", createSession); $("newSmallBtn").addEventListener("click", createSession); $("search").addEventListener("input", renderSessions); $("saveTitleBtn").addEventListener("click", saveTitle); $("deleteBtn").addEventListener("click", deleteSession); $("messageForm").addEventListener("submit", sendMessage); $("attachBtn").addEventListener("click", () => $("attachmentPicker").click()); $("attachmentPicker").addEventListener("change", onAttachmentPicked); $("clearAttachmentBtn").addEventListener("click", () => clearAttachment());
 loadSessions();

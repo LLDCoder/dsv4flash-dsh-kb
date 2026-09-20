@@ -105,6 +105,8 @@ services:
       EXTERNAL_TOOLS_ENABLED: "true"
       OCR_GATEWAY_URL: ${OCR_GATEWAY_URL:-http://ocr-gateway:8100}
       OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
+      LOCAL_ATTACHMENT_DIR: ${LOCAL_ATTACHMENT_DIR:-/tmp/dsh-attachments}
+      LOCAL_ATTACHMENT_MAX_BYTES: ${LOCAL_ATTACHMENT_MAX_BYTES:-20971520}
       PLATFORM_GATEWAY_URL: ""
       KNOWLEDGE_GATEWAY_URL: http://knowledge-gateway:8101
       KNOWLEDGE_DEFAULT_FOLDER_ID: ${KNOWLEDGE_DEFAULT_FOLDER_ID:-}
@@ -123,6 +125,8 @@ services:
         condition: service_healthy
       ocr-gateway:
         condition: service_healthy
+    volumes:
+      - dsh_kb_only_attachments:/tmp/dsh-attachments
     ports:
       - "127.0.0.1:${DSH_BACKEND_PORT:-19086}:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -144,3 +148,4 @@ services:
 volumes:
   dsh_kb_only_postgres_data:
   dsh_kb_only_redis_data:
+  dsh_kb_only_attachments:

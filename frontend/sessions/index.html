@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH · 会话记录</title>
     <link rel="icon" type="image/svg+xml" href="chat-favicon.svg?v=2" />
-    <link rel="stylesheet" href="styles.css?v=20260920-1825" />
+    <link rel="stylesheet" href="styles.css?v=20260920-attachments" />
   </head>
   <body>
     <main id="workspace" class="workspace">
@@ -35,11 +35,14 @@
             </div>
             <div id="messages" class="messages"></div>
             <div id="streamStatus" class="stream-status" aria-live="polite"><span id="streamStatusText"></span><span id="loadingDots" class="loading-dots" hidden aria-label="正在处理"><i></i><i></i><i></i></span></div>
-            <form id="messageForm" class="composer"><textarea id="message" rows="3" placeholder="输入问题，回答将实时显示…" required></textarea><button id="sendBtn" type="submit">发送问题</button></form>
+            <form id="messageForm" class="composer">
+              <div class="composer-main"><textarea id="message" rows="3" placeholder="输入问题，回答将实时显示…"></textarea><div id="attachmentPreview" class="attachment-preview" hidden><span class="attachment-icon">↗</span><span id="attachmentName"></span><button id="clearAttachmentBtn" type="button" class="attachment-clear" aria-label="移除附件">×</button></div></div>
+              <div class="composer-actions"><input id="attachmentPicker" type="file" accept=".pdf,image/*" hidden /><button id="attachBtn" type="button" class="secondary attach-button">附件</button><button id="sendBtn" type="submit">发送问题</button></div>
+            </form>
           </div>
         </section>
       </section>
     </main>
-    <script src="app.js?v=20260920-1825" type="module"></script>
+    <script src="app.js?v=20260920-attachments" type="module"></script>
   </body>
 </html>
