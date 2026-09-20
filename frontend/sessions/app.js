@@ -61,6 +61,43 @@ function renderRichText(target, value) {
   if (cursor < text.length) target.append(document.createTextNode(text.slice(cursor)));
 }
 
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const helper = document.createElement("textarea");
+  helper.value = text;
+  helper.setAttribute("readonly", "");
+  helper.style.position = "fixed";
+  helper.style.opacity = "0";
+  document.body.append(helper);
+  helper.select();
+  const copied = document.execCommand("copy");
+  helper.remove();
+  if (!copied) throw new Error("浏览器未允许复制操作");
+}
+
+function addCopyButton(node, getText) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "copy-message";
+  button.setAttribute("aria-label", "复制回答");
+  button.textContent = "复制";
+  button.addEventListener("click", async () => {
+    const original = button.textContent;
+    try {
+      await copyText(String(getText() || ""));
+      button.textContent = "已复制";
+      button.classList.add("is-copied");
+    } catch {
+      button.textContent = "复制失败";
+    }
+    window.setTimeout(() => { button.textContent = original; button.classList.remove("is-copied"); }, 1500);
+  });
+  node.querySelector(".role").append(button);
+}
+
 function scrollMessagesToBottom(force = false) {
   const list = $("messages");
   if (!list) return;
@@ -71,7 +108,7 @@ function scrollMessagesToBottom(force = false) {
 function renderMessages() {
   const list = $("messages"); list.replaceChildren();
   if (!state.messages.length) { list.innerHTML = '<div class="empty">该会话还没有问题，发送第一条问题开始测试。</div>'; return; }
-  state.messages.forEach((item) => { const node = document.createElement("article"); node.className = `message ${item.role === "user" ? "user" : "assistant"}`; const role = document.createElement("span"); role.className = "role"; role.textContent = item.role === "user" ? "问题" : "回答"; const content = document.createElement("div"); renderRichText(content, item.content); node.append(role, content); list.append(node); }); scrollMessagesToBottom(true);
+  state.messages.forEach((item) => { const node = document.createElement("article"); node.className = `message ${item.role === "user" ? "user" : "assistant"}`; const role = document.createElement("span"); role.className = "role"; role.textContent = item.role === "user" ? "问题" : "回答"; const content = document.createElement("div"); renderRichText(content, item.content); node.append(role, content); if (item.role !== "user") addCopyButton(node, () => content.textContent); list.append(node); }); scrollMessagesToBottom(true);
 }
 
 async function createSession() {
@@ -87,7 +124,7 @@ async function deleteSession() {
 }
 
 function appendUserMessage(content) { const node = document.createElement("article"); node.className = "message user"; const role = document.createElement("span"); role.className = "role"; role.textContent = "问题"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); scrollMessagesToBottom(true); }
-function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant streaming"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); $("messages").append(node); scrollMessagesToBottom(true); return body; }
+function appendStreamMessage(content) { const node = document.createElement("article"); node.className = "message assistant streaming"; const role = document.createElement("span"); role.className = "role"; role.textContent = "回答 · 流式输出"; const body = document.createElement("div"); renderRichText(body, content); node.append(role, body); addCopyButton(node, () => body.textContent); $("messages").append(node); scrollMessagesToBottom(true); return body; }
 function parseSseData(raw) { try { return JSON.parse(raw); } catch { return raw; } }
 function dispatchSseBlock(block, onEvent) {
   const lines = block.split(/\r?\n/); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();

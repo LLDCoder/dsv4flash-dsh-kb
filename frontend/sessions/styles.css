@@ -78,7 +78,10 @@ h2 { margin-bottom: 0; color: var(--ink); font-size: 16px; letter-spacing: -.01e
 .message.assistant { justify-self: start; border-color: #34384b; background: #151821; color: #d9dbe5; }
 .message.assistant + .message.user { margin-top: 16px; }
 .message.streaming { border-color: #59499f; box-shadow: 0 0 0 1px rgba(134,103,255,.08); }
-.message .role { display: block; margin-bottom: 5px; color: var(--subtle); font-size: 10px; font-weight: 850; letter-spacing: .05em; }
+.message .role { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 5px; color: var(--subtle); font-size: 10px; font-weight: 850; letter-spacing: .05em; }
+.copy-message { flex: 0 0 auto; min-height: 22px; padding: 3px 7px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--subtle); font-size: 10px; font-weight: 700; letter-spacing: 0; }
+.copy-message:hover { border-color: var(--line-strong); background: #202433; color: var(--ink); transform: none; }
+.copy-message.is-copied { color: var(--success); }
 .message strong { color: #b7a3ff; font-weight: 800; }
 .stream-status { display: flex; align-items: center; gap: 8px; width: min(100%, 980px); align-self: center; min-height: 21px; color: var(--accent-bright); font-size: 11px; }
 .stream-status.is-loading { color: #a7a0d7; }
