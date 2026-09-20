@@ -2,6 +2,10 @@ const basePath = /^\/DSH(?:\/|$)/i.test(window.location.pathname) ? "/DSH" : "";
 const $ = (id) => document.getElementById(id);
 const state = { sessions: [], selectedId: "", messages: [], busy: false };
 const principal = { userId: "demo-user", tenantId: "kb-only" };
+function requestId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return globalThis.crypto.randomUUID();
+  return `kb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function apiUrl(path) { return `${basePath}${path}`; }
 function headers() { return { "Content-Type": "application/json", "X-User-Id": principal.userId, "X-Tenant-Id": principal.tenantId }; }
@@ -63,7 +67,7 @@ async function sendMessage(event) {
   event.preventDefault(); const content = $("message").value.trim(); if (!content || !state.selectedId || state.busy) return; state.busy = true; $("sendBtn").disabled = true; $("message").value = ""; $("streamStatus").textContent = "正在检索知识库并生成回答…";
   let assistant = ""; let body = null;
   try {
-    const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, conversation_id: state.selectedId, request_id: crypto.randomUUID() }) });
+    const response = await fetch(apiUrl("/api/v1/ai-chat/messages/stream"), { method: "POST", credentials: "same-origin", headers: { ...headers(), "X-FF-Conversation-ID": state.selectedId }, body: JSON.stringify({ message: content, conversation_id: state.selectedId, request_id: requestId() }) });
     if (!response.ok || !response.body) throw new Error(`流式请求失败（${response.status}）`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
     while (true) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); const blocks = buffer.split("\n\n"); buffer = blocks.pop() || ""; for (const block of blocks) { const lines = block.split("\n"); const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim(); const raw = lines.find((line) => line.startsWith("data:"))?.slice(5).trim() || ""; if (type === "token") { assistant += raw; if (!body) body = appendStreamMessage(""); body.textContent = assistant; $("streamStatus").textContent = "正在接收回答…"; } else if (type === "status") { try { $("streamStatus").textContent = JSON.parse(raw).message || "正在处理…"; } catch {} } else if (type === "error") { throw new Error(JSON.parse(raw).detail || "回答失败"); } } }
