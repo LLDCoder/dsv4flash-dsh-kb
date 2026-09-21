@@ -2839,7 +2839,8 @@ def _ticket_team_summary_requested(question: str) -> bool:
     ))
     has_rollup = bool(re.search(
         r"\b(?:pending|overdue|closed|completed|unhandled|open)\b"
-        r"|(?:未处理|未處理|逾期|关闭|關閉|已关闭|قيد الانتظار|بالانتظار|معل[قةق]|متأخر|مغلق|غير معالجة|مفتوح)",
+        r"|(?:未处理|未處理|逾期|关闭|關閉|已关闭|قيد الانتظار|بالانتظار|معل[قةق]|متأخر|مغلق|"
+        r"غير معالجة|غير المعالجة|بدون معالجة|لم تتم معالجتها|مفتوح|مفتوحة)",
         normalized,
     ))
     return has_people and has_ticket_scope and has_rollup
@@ -2856,8 +2857,41 @@ def _ticket_member_query(question: str) -> str:
         value,
         re.I,
     )
-    selected = chinese.group(1) if chinese else english.group(1) if english else ""
-    return re.sub(r"\s+", " ", selected).strip(" .,-")[:100]
+    have_form = None
+    if not chinese and not english:
+        have_form = re.search(
+            r"(?<![\w.])([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})"
+            r"(?=\s+(?:have|has|owns)\b)",
+            value,
+            re.I,
+        )
+    arabic = None
+    if not chinese and not english:
+        arabic = re.search(
+            r"(?:لدى|للموظف|الموظف|عضو الفريق|المكلف|المسؤول عن)\s+"
+            r"([A-Za-z][A-Za-z .'-]{1,80}?)"
+            r"(?=\s*(?:في|قيد|التذاكر|تذاكر|تذكرة|المتأخرة|المغلقة|$|[؟?.,!]))",
+            value,
+            re.I,
+        )
+    selected = (
+        chinese.group(1) if chinese
+        else english.group(1) if english
+        else arabic.group(1) if arabic
+        else have_form.group(1) if have_form
+        else ""
+    )
+    words = re.sub(r"\s+", " ", selected).split()
+    noise = {
+        "how", "many", "much", "does", "do", "did", "is", "are", "the", "a", "an", "my", "our",
+        "in", "of", "for", "and", "to", "tickets", "ticket", "tasks", "task", "cases", "case",
+        "unhandled", "pending", "open", "overdue", "closed", "completed", "total", "count", "number",
+    }
+    while words and re.sub(r"[^a-z]", "", words[0].casefold()) in noise:
+        words.pop(0)
+    while words and re.sub(r"[^a-z]", "", words[-1].casefold()) in noise:
+        words.pop()
+    return " ".join(words).strip(" .,-")[:100]
 
 
 def _ticket_team_summary_result(
