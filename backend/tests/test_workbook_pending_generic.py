@@ -1,4 +1,5 @@
 from app.portal_reader import (
+    _content_confirmed_count_navigation_result,
     _explicit_reader_source,
     _native_metric_trend_fallback,
     _financial_daily_status_summary,
@@ -244,6 +245,7 @@ def test_pending_workbook_ticket_queries_bind_to_the_ticket_page():
     assert _explicit_reader_source(
         "For transaction TRX-2026-0001, give amount, currency, status, and application.", {},
     ) == "/financial-payment/transactions"
+    assert _explicit_reader_source("Where can I find the confirmed count results?", {}) == "/content/ContentLibrary"
 
 
 def test_team_ticket_summary_uses_both_visible_views_and_exact_member():
@@ -293,3 +295,15 @@ def test_financial_daily_summary_counts_only_rows_dated_today():
     assert result and result.status == "success"
     assert '"Source":"Payments"' in result.facts[0]
     assert '"Source":"Refunds"' in result.facts[1]
+
+
+def test_confirmed_count_location_explains_metric_and_navigation():
+    from app.portal_reader import ReaderResult
+    result = ReaderResult(
+        status="success", page="/content/ContentLibrary", source_section="Books",
+        answer_shape="count", facts=("Confirmed Count: 4",),
+    )
+    guided = _content_confirmed_count_navigation_result(result)
+    assert guided.answer_shape == "detail"
+    assert any("Content Module" in fact and "Content Library" in fact for fact in guided.facts)
+    assert guided.source_hint["page"] == "/content/ContentLibrary"

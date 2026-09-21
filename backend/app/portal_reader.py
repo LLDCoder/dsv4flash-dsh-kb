@@ -2684,6 +2684,12 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
         return "/licensing/profile"
     if re.search(r"\b(?:books?|book)\s+applications?\b", normalized):
         return "/content/ContentLibrary"
+    # A confirmed-count location question belongs to the rendered Content
+    # Library surface.  Bind it before generic planning so the response can
+    # explain the metric and give a verifiable navigation path, rather than
+    # returning only a bare count.
+    if re.search(r"\bconfirmed\s+count(?:\s+results?)?\b|\bcount\s+results?\b|确认的数量|确认数量|العدد\s+المؤكد|نتائج\s+العدد", normalized, re.I):
+        return "/content/ContentLibrary"
     # Customer Happiness work orders are rendered on Enquiries & Complaints,
     # rather than on the refund workflow.  HC-01 is the stable ticket-number
     # family observed on that page.  Bind it before planning so an exact ticket
@@ -4434,6 +4440,23 @@ def _native_explicit_source_rows(observation: Any, *, page: str, question: str) 
         # page-level currency evidence instead of reporting it as missing.
         result = replace(result, facts=(*result.facts, "Currency: AED"))
     return replace(result, source_hint={"page": page})
+
+
+def _content_confirmed_count_navigation_result(result: ReaderResult) -> ReaderResult:
+    """Explain the confirmed-count metric and guide the user to its source page."""
+
+    facts = (
+        "Confirmed Count is the total displayed for the selected Content Library category and status view; it is not just the number of sample rows shown in the answer.",
+        "To verify it, open Admin Portal > Content Module > Content Library, select the relevant category and status view, then check the summary or pagination area on that page.",
+        "The current verified source page is /content/ContentLibrary. A new read is required if the category, status, or count has changed.",
+    )
+    return replace(
+        result,
+        answer_shape="detail",
+        completeness="bounded",
+        facts=(*result.facts, *facts),
+        source_hint={"page": "/content/ContentLibrary", "section": result.source_section or "Content Library"},
+    )
 
 
 def _native_status_filter_rows(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
@@ -9871,6 +9894,12 @@ class AdminPortalReader:
                     observation = (tool.get('result') or {}).get('observation') or {}
                 result = _native_explicit_source_rows(observation, page=explicit_source, question=question)
                 if result is not None:
+                    if explicit_source == '/content/ContentLibrary' and re.search(
+                        r"\bconfirmed\s+count(?:\s+results?)?\b|\bcount\s+results?\b|确认的数量|确认数量|العدد\s+المؤكد|نتائج\s+العدد",
+                        normalized_question,
+                        re.I,
+                    ):
+                        result = _content_confirmed_count_navigation_result(result)
                     return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
                                                   'permission': permission_audit, 'observation': observation,
                                                   'actions': actions, 'result': result.public_json()})
