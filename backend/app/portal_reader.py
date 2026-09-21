@@ -2986,8 +2986,7 @@ def _refund_overdue_sorted_result(
 
     if not isinstance(observation, dict) or _observation_has_error_state(observation):
         return None
-    if (observation.get("readHealth") or {}).get("healthy") is not True:
-        return None
+    read_health = observation.get("readHealth") if isinstance(observation.get("readHealth"), dict) else {}
     tables = [
         node for node in _observation_semantic_nodes(observation)
         if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")
@@ -2996,6 +2995,13 @@ def _refund_overdue_sorted_result(
         return None
     table = tables[0]
     headers = [str(header) for header in table.get("columnHeaders") or []]
+    sla_headers = [header for header in headers if "sla" in re.sub(r"[^a-z0-9]", "", header.casefold())]
+    if read_health.get("healthy") is not True and not (sla_headers and table.get("rowFields")):
+        # A partially unhealthy read (for example one blocked lookup endpoint on
+        # the same page) still renders the refund table together with its SLA
+        # column.  Reporting only rows that literally carry an SLA value is
+        # safe; an unhealthy read without that rendered evidence is refused.
+        return None
     rows: list[tuple[float, dict[str, Any]]] = []
     for raw_row in table.get("rowFields") or []:
         if not isinstance(raw_row, dict):
