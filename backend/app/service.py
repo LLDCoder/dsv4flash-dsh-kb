@@ -284,6 +284,7 @@ def reader_evidence_only_response(
             "completed": "مكتمل",
             "to do": "قيد التنفيذ",
             "todo": "قيد التنفيذ",
+            "to do / completed": "قيد التنفيذ / مكتمل",
         }.get(selected_view.casefold(), selected_view)
         view_fact = {
             'en': f'Current selected view: {selected_view}.',
@@ -566,6 +567,25 @@ def reader_evidence_only_response(
         "en": "Confirmed details:",
     })
 
+    # Reader-produced reconciliation notes are rendered verbatim, so the
+    # bounded-scope caveats that accompany Arabic answers need their own
+    # translation instead of leaking English sentences into an Arabic reply.
+    arabic_notes = {
+        "Each group counts only rows rendered in that source view for the signed-in account.":
+            "كل مجموعة تحتسب فقط الصفوف الظاهرة في ذلك العرض للحساب المسجّل.",
+        "Each group counts only rows rendered in that source view for the signed-in account":
+            "كل مجموعة تحتسب فقط الصفوف الظاهرة في ذلك العرض للحساب المسجّل.",
+        "This is the bounded set of status metrics rendered in one current portal region; it is not a historical trend.":
+            "هذه هي مجموعة مؤشرات الحالة الظاهرة في منطقة واحدة من البوابة حاليًا، وليست اتجاهًا تاريخيًا.",
+        "No historical data is available in the current portal view to compare a trend.":
+            "لا تتوفر بيانات تاريخية في عرض البوابة الحالي لمقارنة الاتجاه.",
+    }
+
+    def localize_note(text: str) -> str:
+        if language != "ar":
+            return text
+        return arabic_notes.get(re.sub(r"\s+", " ", str(text)).strip(), text)
+
     arabic_field_names = {
         "page index": "رقم الصفحة",
         "page size": "حجم الصفحة",
@@ -659,6 +679,10 @@ def reader_evidence_only_response(
                 "canceled": "ملغى",
                 "refunded": "تم رد المبلغ",
                 "department processed": "تمت المعالجة من القسم",
+            },
+            "source": {
+                "payments": "المدفوعات",
+                "refunds": "الاستردادات",
             },
             "refund category": {"application": "طلب"},
             "type": {"refund": "استرداد"},
@@ -882,7 +906,7 @@ def reader_evidence_only_response(
                 except (TypeError, ValueError):
                     parsed = None
                 if not isinstance(parsed, dict):
-                    blocks.append(f"- {fact}")
+                    blocks.append(f"- {localize_note(fact)}")
                 continue
             if answer_shape == "due":
                 for raw_key, _key, value in fields:

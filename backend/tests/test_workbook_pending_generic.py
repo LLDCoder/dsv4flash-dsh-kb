@@ -475,3 +475,30 @@ def test_refund_rows_marked_sla_exceeded_are_returned_sorted_by_amount():
     assert len(result.facts) == 2
     assert "-7,000.00" in result.facts[0]
     assert "-200.00" in result.facts[1]
+
+
+def test_arabic_transaction_question_binds_to_the_payments_surface():
+    arabic = "بالنسبة للمعاملة 202609181617069397، ما المبلغ والعملة وحالة الدفع والطلب المرتبط بها؟"
+    assert _explicit_reader_source(arabic, {}) == "/financial-payment/transactions"
+
+
+def test_arabic_status_breakdown_has_no_english_leftovers():
+    evidence = {
+        "result": "success",
+        "answerShape": "count",
+        "completeness": "bounded",
+        "facts": [
+            '{"Source":"Payments","Status":"Completed","Count":4}',
+            '{"Source":"Refunds","Status":"Refunded","Count":3}',
+            "Each group counts only rows rendered in that source view for the signed-in account.",
+        ],
+    }
+    answer = reader_evidence_only_response(
+        evidence, "ar",
+        question="كم عدد المدفوعات وطلبات الاسترداد الظاهرة لهذا الحساب؟ يرجى تلخيصها حسب الحالة.",
+    )
+    assert "المصدر: المدفوعات" in answer
+    assert "المصدر: الاستردادات" in answer
+    assert "كل مجموعة تحتسب فقط الصفوف" in answer
+    assert "Each group counts" not in answer
+    assert "0 / 10000" not in answer

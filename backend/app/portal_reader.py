@@ -2707,7 +2707,8 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     if re.search(r"\bTRX-[A-Za-z0-9-]+\b", str(question or ""), re.I) or re.search(
         r"\b(?:transaction|transactions|payment|payments)\b.{0,40}"
         r"\b(?:amount|currency|status|application|details?)\b"
-        r"|(?:交易|付款).{0,30}(?:金额|币种|状态|申请|详情)",
+        r"|(?:交易|付款).{0,30}(?:金额|币种|状态|申请|详情)"
+        r"|(?:معاملة|معاملات|مدفوعات|الدفع).{0,40}(?:المبلغ|العملة|الحالة|الطلب|المرتبط|مرتبط)",
         normalized,
         re.I,
     ):
