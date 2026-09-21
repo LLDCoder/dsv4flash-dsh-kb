@@ -2,7 +2,10 @@ from app.portal_reader import (
     _content_confirmed_count_navigation_result,
     _explicit_reader_source,
     _explicit_record_identity,
+    _finance_combined_summary_requested,
     _financial_status_breakdown,
+    _refund_overdue_sorted_result,
+    _refund_sla_requested,
     _identity_lookup_sources,
     _native_exact_identity_row_result,
     _sibling_refund_source,
@@ -431,3 +434,44 @@ def test_finance_refund_exact_row_merges_observed_currency_and_next_step():
         question="For transaction 202609151003461207 give the amount and status.",
     )
     assert by_transaction is not None and "HC-02-2026-5239576" in by_transaction.facts[0]
+
+
+def test_past_sla_refund_question_binds_to_the_sla_rendering_surface():
+    english = "List the refunds that are past SLA, sorted by amount."
+    arabic = "اعرض طلبات الاسترداد المتجاوزة لاتفاقية مستوى الخدمة مرتبة حسب المبلغ."
+    assert _refund_sla_requested(english)
+    assert _refund_sla_requested(arabic)
+    assert _explicit_reader_source(english, {}) == "/happiness/refunds"
+    assert _explicit_reader_source(arabic, {}) == "/happiness/refunds"
+    assert not _refund_sla_requested("List the refunds with amount and status.")
+
+
+def test_combined_summary_never_replaces_a_single_record_lookup():
+    rollup = "How many payments and refunds are visible to this account? Please summarize them by status."
+    lookup = ("For transaction 202609151003461207, which refund record does it belong to, "
+              "and what are its status, amount, and currency?")
+    assert _finance_combined_summary_requested(rollup)
+    assert not _finance_combined_summary_requested(lookup)
+    assert not _finance_combined_summary_requested(
+        "For refund HC-02-2026-5239576, what are its status, amount, and currency?"
+    )
+
+
+def test_refund_rows_marked_sla_exceeded_are_returned_sorted_by_amount():
+    observation = {
+        "readHealth": {"healthy": True},
+        "sectionSummaries": [{
+            "nodeId": "ch-refunds", "kind": "table", "heading": "Refunds",
+            "columnHeaders": ["Application No.", "Amount", "SLA", "Status"],
+            "rowFields": [
+                {"Application No.": "HC-1", "Amount": "-200.00", "SLA": "Exceeded", "Status": "Refunded"},
+                {"Application No.": "HC-2", "Amount": "-7,000.00", "SLA": "Exceeded", "Status": "Refunded"},
+                {"Application No.": "HC-3", "Amount": "-100.00", "SLA": "Met", "Status": "Pending Refund"},
+            ],
+        }],
+    }
+    result = _refund_overdue_sorted_result(observation, page="/happiness/refunds", scope="global")
+    assert result is not None and result.status == "success"
+    assert len(result.facts) == 2
+    assert "-7,000.00" in result.facts[0]
+    assert "-200.00" in result.facts[1]
