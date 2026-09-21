@@ -2696,7 +2696,8 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # question cannot be redirected to an unrelated application/detail API.
     if re.search(r"\bHC-01-\d{4}-\d+\b", str(question or ""), re.I) or re.search(
         r"\b(?:ticket|tickets|work\s*orders?|enquir(?:y|ies)|complaints?|cases?)\b"
-        r"|(?:工单|工單|票据|案件|投诉|諮詢)",
+        r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|投诉|諮詢)"
+        r"|(?:تذاكر|تذكرة|شكاوى|شكوى|استفسارات|استفسار)",
         normalized,
         re.I,
     ):
@@ -2831,8 +2832,16 @@ def _ticket_team_summary_requested(question: str) -> bool:
 
     normalized = re.sub(r"\s+", " ", str(question or "").casefold())
     has_people = bool(re.search(r"\b(?:team|staff|member|employee|handler)s?\b|(?:团队|團隊|员工|員工|部门|部門|فريق|موظف)", normalized))
-    has_ticket_scope = bool(re.search(r"\b(?:ticket|work\s*order|case|complaint|enquir(?:y|ies))s?\b|(?:工单|工單|票据|案件|تذاكر|طلبات)", normalized))
-    has_rollup = bool(re.search(r"\b(?:pending|overdue|closed|completed|unhandled|open)\b|(?:未处理|未處理|逾期|关闭|關閉|已关闭|معل[قةق]|متأخر|مغلق)", normalized))
+    has_ticket_scope = bool(re.search(
+        r"\b(?:ticket|work\s*order|case|complaint|enquir(?:y|ies))s?\b"
+        r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|تذاكر|تذكرة|شكاوى|استفسار|طلبات)",
+        normalized,
+    ))
+    has_rollup = bool(re.search(
+        r"\b(?:pending|overdue|closed|completed|unhandled|open)\b"
+        r"|(?:未处理|未處理|逾期|关闭|關閉|已关闭|قيد الانتظار|بالانتظار|معل[قةق]|متأخر|مغلق|غير معالجة|مفتوح)",
+        normalized,
+    ))
     return has_people and has_ticket_scope and has_rollup
 
 
@@ -2904,8 +2913,13 @@ def _ticket_team_summary_result(
 
     totals: dict[str, dict[str, int]] = {}
     labels: dict[str, str] = {}
+    # The completed view can render without an owner column.  A zero that was
+    # never attributed would read as "this member closed nothing", so the
+    # closed count is only reported when the owner column was really observed.
+    closed_owner_observed = False
 
     def add(rows: list[dict[str, Any]], *, completed_view: bool) -> None:
+        nonlocal closed_owner_observed
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -2920,6 +2934,7 @@ def _ticket_team_summary_result(
             status = field(row, "Status").casefold()
             sla = field(row, "SLA").casefold()
             if completed_view:
+                closed_owner_observed = True
                 if status in {"completed", "closed", "cancelled", "canceled", "resolved"} or status:
                     bucket["Closed Tickets"] += 1
             else:
@@ -2948,9 +2963,21 @@ def _ticket_team_summary_result(
         totals = {key: totals[key] for key in matching}
 
     facts = tuple(
-        json.dumps({"Team Member": labels[key], **totals[key]}, ensure_ascii=False, separators=(",", ":"))
+        json.dumps(
+            {
+                "Team Member": labels[key],
+                "Pending Tickets": totals[key]["Pending Tickets"],
+                "Overdue Tickets": totals[key]["Overdue Tickets"],
+                **({"Closed Tickets": totals[key]["Closed Tickets"]} if closed_owner_observed else {}),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         for key in sorted(totals, key=lambda item: labels[item].casefold())
     )
+    if not closed_owner_observed:
+        facts = (*facts, "The completed ticket view for this account does not render a handler column, "
+                        "so closed tickets are not attributed to individual members.")
     if not facts:
         return ReaderResult(
             status="not_confirmed",
@@ -5699,9 +5726,15 @@ def _section_observation(section: Any) -> dict[str, Any] | None:
     if isinstance(section.get("rowFields"), list):
         normalized["rowFields"] = [
             {str(key)[:120]: str(value)[:300] for key, value in list(row.items())[:12] if isinstance(value, str)}
-            for row in section["rowFields"][:4] if isinstance(row, dict)
+            for row in section["rowFields"][:SEMANTIC_ROW_LIMIT] if isinstance(row, dict)
         ]
     return normalized
+
+
+# A rendered page holds ten rows.  Keeping only four structured rows made a
+# per-assignee roll-up impossible, because the remaining handlers were dropped
+# before the aggregation ever saw them.
+SEMANTIC_ROW_LIMIT = 10
 
 
 def _observation_semantic_nodes(observation: Any) -> tuple[dict[str, Any], ...]:
@@ -7348,6 +7381,18 @@ def _structured_row_supports_fact(fact: str, observation: dict[str, Any]) -> boo
     ) == 1
 
 
+_ADMIN_ROLE = re.compile(
+    r"\b(?:super\s*admin|system\s*admin|it\s*admin|administrator|superadmin|super\s*administrator)\b"
+    r"|مسؤول النظام|مدير النظام|超级管理员",
+    re.I,
+)
+_LEADER_ROLE = re.compile(
+    r"\b(?:manager|leader|supervisor|head|director|chief|lead)\b"
+    r"|مدير|قائد|مشرف|رئيس قسم|主管|经理",
+    re.I,
+)
+
+
 def _permission_result_scope(context: UserPermissionContext) -> Literal["personal", "team", "global", "unknown"]:
     values = {re.sub(r"[^a-z]", "", value.casefold()) for value in _strings(context.data_scope, limit=20)}
     matches: set[str] = set()
@@ -7363,6 +7408,17 @@ def _permission_result_scope(context: UserPermissionContext) -> Literal["persona
         return "team"
     if matches == {"global"}:
         return "global"
+    # Some deployments do not return a data-scope field at all, so the portal's
+    # own role name is the remaining evidence for the visible working scope.
+    # A department role such as "Happiness Center Manager" is exactly what the
+    # portal uses to render the department/team view; without this fallback the
+    # reader refused a team request it could plainly answer from the same page.
+    role_text = " ".join((context.current_role, *context.roles)).strip()
+    if role_text:
+        if _ADMIN_ROLE.search(role_text):
+            return "global"
+        if _LEADER_ROLE.search(role_text):
+            return "team"
     return "unknown"
 
 

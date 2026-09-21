@@ -582,6 +582,10 @@ def reader_evidence_only_response(
             "هذه هي مجموعة مؤشرات الحالة الظاهرة في منطقة واحدة من البوابة حاليًا، وليست اتجاهًا تاريخيًا.",
         "No historical data is available in the current portal view to compare a trend.":
             "لا تتوفر بيانات تاريخية في عرض البوابة الحالي لمقارنة الاتجاه.",
+        "The completed ticket view for this account does not render a handler column, so closed tickets are not attributed to individual members.":
+            "لا يعرض العرض المكتمل للتذاكر عمود المسؤول لهذا الحساب، لذلك لا يتم نسب التذاكر المغلقة إلى أعضاء الفريق.",
+        "Each group counts only rows rendered in that source view for the signed-in account": 
+            "كل مجموعة تحتسب فقط الصفوف الظاهرة في ذلك العرض للحساب المسجّل.",
     }
 
     def localize_note(text: str) -> str:

@@ -3,6 +3,7 @@ from app.portal_reader import (
     _explicit_reader_source,
     _explicit_record_identity,
     _finance_combined_summary_requested,
+    _permission_result_scope,
     _financial_status_breakdown,
     _refund_overdue_sorted_result,
     _refund_sla_requested,
@@ -574,3 +575,55 @@ def test_amount_composition_question_states_the_limitation():
         question="What is the status and amount of refund HC-02-2026-5239576?",
     )
     assert "cannot be verified" not in plain
+
+
+def test_department_leader_role_resolves_to_team_scope_without_a_data_scope_field():
+    from app.portal_reader import UserPermissionContext
+    leader = UserPermissionContext(
+        account="text-000@gmail.com",
+        current_role="Happiness Center Manager",
+        roles=("Happiness Center Manager",),
+        departments=("8",),
+    )
+    assert _permission_result_scope(leader) == "team"
+    super_admin = UserPermissionContext(current_role="Super Admin", roles=("Super Admin",))
+    assert _permission_result_scope(super_admin) == "global"
+    explicit = UserPermissionContext(current_role="Happiness Center Manager", data_scope={"values": ["personal"]})
+    assert _permission_result_scope(explicit) == "personal"
+    unknown = UserPermissionContext(current_role="", roles=())
+    assert _permission_result_scope(unknown) == "unknown"
+
+
+def test_chinese_team_ticket_follow_up_binds_to_the_ticket_surface():
+    question = "我部门 shiting zhao 这个员工，未处理的单子还有多少个？"
+    assert _ticket_team_summary_requested(question)
+    assert _explicit_reader_source(question, {}) == "/happiness/tickets"
+
+
+def test_team_ticket_summary_reports_the_closed_ticket_limitation():
+    todo = _ticket_observation([
+        {"Ticket No.": "HC-01-1", "Current Handler": "Happiness Leader", "Status": "Open", "SLA": "2d Overdue"},
+        {"Ticket No.": "HC-01-2", "Current Handler": "tiezhu ye", "Status": "Open", "SLA": "Due in 1d"},
+    ], "To Do")
+    completed_without_owner = {
+        "readHealth": {"healthy": True},
+        "tabControls": [
+            {"name": "To Do", "selected": False},
+            {"name": "Completed", "selected": True},
+        ],
+        "sectionSummaries": [{
+            "nodeId": "tickets-completed", "kind": "table", "heading": "Enquiries & Complaints",
+            "selectedState": "Completed",
+            "columnHeaders": ["Ticket No.", "Status", "SLA"],
+            "rowFields": [{"Ticket No.": "HC-01-3", "Status": "Cancelled", "SLA": "Exceeded"}],
+        }],
+    }
+    result = _ticket_team_summary_result(
+        todo, completed_without_owner,
+        question="Summarize each staff member's pending, overdue, and closed tickets in my team.",
+        scope="team",
+    )
+    assert result and result.status == "success"
+    assert any("Pending Tickets" in fact for fact in result.facts)
+    assert not any("Closed Tickets" in fact for fact in result.facts)
+    assert any("does not render a handler column" in fact for fact in result.facts)

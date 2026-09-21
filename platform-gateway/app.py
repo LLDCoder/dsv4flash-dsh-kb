@@ -1741,6 +1741,11 @@ async def _settle_page(page: Page) -> None:
     await _settle_reader_requests(page)
 
 
+# Structured rows answer "who owns this record" questions, so the sample has to
+# cover a whole rendered page. Keeping only the first four hid the other
+# assignees on a department queue and made a per-member roll-up impossible.
+READER_STRUCTURED_ROW_LIMIT = 10
+
 READER_TABLE_SNAPSHOT_SCRIPT = """element => {
     const visible = node => !!node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
     const cell = node => ({text: (node.innerText || '').slice(0, 1000), visible: visible(node),
@@ -1801,7 +1806,7 @@ def _reader_table_snapshot_values(snapshot: Any, row_limit: int):
         if value in rows:
             continue
         rows.append(value)
-        if (safe and len(cells) == len(names) and len(rows) <= 4
+        if (safe and len(cells) == len(names) and len(rows) <= READER_STRUCTURED_ROW_LIMIT
                 and all(cell['visible'] and cell['colSpan'] == 1 and cell['rowSpan'] == 1
                         for i, cell in enumerate(cells) if i not in excluded_indexes)):
             fields.append({names[i]: _sanitize_reader_text(cell['text'], max_chars=300)
@@ -2184,7 +2189,7 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
                 continue
             if value not in rows:
                 rows.append(value)
-                if structured_row is not None and len(rows) <= 4:
+                if structured_row is not None and len(rows) <= READER_STRUCTURED_ROW_LIMIT:
                     row_fields.append(structured_row)
             if len(rows) >= row_limit:
                 break
@@ -2220,9 +2225,13 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
         if await container.get_attribute("aria-busy") == "true":
             continue
         container_kind = "grid" if await container.get_attribute("role") == "grid" else "table"
+        # Every rendered table keeps the same bounded sample. The previous
+        # split (8 rows for the first table, 4 for the rest) silently cut a
+        # department queue to four rows, so a per-assignee roll-up could not
+        # see the other handlers that the same page displays.
         headers, rows, row_fields, empty_state = await table_values(
             container,
-            row_limit=min(limit, 8) if not first_rows else min(limit, 4),
+            row_limit=min(limit, 10),
         )
         if not rows and not empty_state:
             continue
@@ -2275,8 +2284,11 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
             "heading": heading,
             "sourceSection": heading,
             "columnHeaders": headers[:12],
-            "rowSummaries": rows[:4],
-            "rowFields": row_fields[:4],
+            # A department queue renders ten rows per page; keeping only four
+            # made a per-member roll-up impossible, because the remaining
+            # assignees were cut before the reader ever saw them.
+            "rowSummaries": rows[:10],
+            "rowFields": row_fields[:10],
             "emptyState": empty_state,
         }
         # A pagination total belongs only to its unique, settled table wrapper.
