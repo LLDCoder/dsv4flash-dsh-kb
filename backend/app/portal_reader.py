@@ -2712,6 +2712,10 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
         re.I,
     ):
         return "/financial-payment/transactions"
+    # Only the Customer Happiness refund view renders an SLA column, so a
+    # past-SLA refund question has to be read there.
+    if _refund_sla_requested(question):
+        return "/happiness/refunds"
     # A concrete refund record number (HC-02-...) is a Finance Refunds row:
     # that rendered list exposes the record together with its Transaction No.,
     # amount, currency and status.  Bind it before the generic "refund"
@@ -2758,6 +2762,62 @@ def _refund_completed_view_requested(question: str) -> bool:
 
     normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
     return bool(re.search(r"\bcompleted\b|(?:ال)?مكتمل[\u0600-\u06ff]*", normalized))
+
+
+def _refund_sla_requested(question: str) -> bool:
+    """True when the question asks for refunds past / over the SLA.
+
+    Workbook row 52 asks for the refunds that are past SLA.  The reader only
+    understood "overdue" and "past due", so that wording silently fell back to
+    a list of every refund row on a page that does not even render an SLA
+    column.
+    """
+
+    text = str(question or "")
+    if re.search(
+        r"\b(?:past|over|exceed(?:ed|ing)?|breach(?:ed)?|beyond|missed)\s*(?:the\s*)?sla\b"
+        r"|\bsla\b[^.]{0,25}\b(?:past|over|exceed(?:ed|ing)?|breach(?:ed)?|beyond|missed|violat)",
+        text,
+        re.I,
+    ):
+        return True
+    return bool(re.search(
+        r"(?:تجاوز|متجاوز).{0,20}(?:اتفاقية مستوى الخدمة|SLA)"
+        r"|(?:اتفاقية مستوى الخدمة|SLA).{0,20}(?:تجاوز|متجاوز)",
+        text,
+        re.I,
+    ))
+
+
+def _finance_combined_summary_requested(question: str) -> bool:
+    """Payments-and-refunds status roll-up, but never a single-record lookup.
+
+    An exact record question can mention a transaction, a refund and a status
+    at the same time, so the presence of those words alone is not a roll-up
+    request.  A named identifier or an explicit "which record does it belong
+    to" question is a lookup and stays on the exact-record path.
+    """
+
+    if _explicit_record_identity(question):
+        return False
+    if re.search(
+        r"\b(?:which|what)\b.{0,40}\b(?:refund|payment|transaction)\s+record\b"
+        r"|\bdoes\s+(?:it|this|that)\s+belong\b"
+        r"|أي سجل|ينتمي",
+        str(question or ""),
+        re.I,
+    ):
+        return False
+    normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    return bool(
+        re.search(r"\b(?:payments?|transactions?)\b|付款|支付|المدفوعات|المعاملات|معاملات", normalized)
+        and re.search(r"\brefunds?\b|退款|استرداد", normalized)
+        and re.search(
+            r"\b(?:status|statuses|count|counts|how many|breakdown|summar(?:y|ise|ize)|visible)\b"
+            r"|按状态|汇总|كم|الظاهرة|حسب الحالة",
+            normalized,
+        )
+    )
 
 
 def _ticket_team_summary_requested(question: str) -> bool:
@@ -2942,7 +3002,9 @@ def _refund_overdue_sorted_result(
             continue
         row = {key: raw_row[key] for key in headers if key in raw_row}
         sla = " ".join(str(value) for key, value in row.items() if "sla" in re.sub(r"[^a-z0-9]", "", str(key).casefold()))
-        if not re.search(r"overdue|past\s+due|متأخر|逾期", sla, re.I):
+        # The portal renders a breached SLA as "Exceeded" on the refund rows,
+        # alongside the "overdue"/"past due" wording used elsewhere.
+        if not re.search(r"overdue|past\s+due|exceed(?:ed|ing)?|breach(?:ed)?|متأخر|逾期|متجاوز|تجاوز", sla, re.I):
             continue
         amount = None
         for key, value in row.items():
@@ -9956,15 +10018,7 @@ class AdminPortalReader:
                 })
 
         financial_combined_summary = bool(
-            not financial_daily_summary
-            and re.search(r"\b(?:payments?|transactions?)\b|付款|支付|المدفوعات|المعاملات|معاملات", normalized_question, re.I)
-            and re.search(r"\brefunds?\b|退款|استرداد", normalized_question, re.I)
-            and re.search(
-                r"\b(?:status|statuses|count|counts|how many|breakdown|summar(?:y|ise|ize)|visible)\b|"
-                r"按状态|汇总|كم|الظاهرة|حسب الحالة",
-                normalized_question,
-                re.I,
-            )
+            not financial_daily_summary and _finance_combined_summary_requested(question)
         )
         if financial_combined_summary:
             # Workbook row 52 asks for the payments and refunds visible to the
@@ -10113,22 +10167,52 @@ class AdminPortalReader:
                                     'primaryObservation': observation,
                                     'result': sibling_exact.public_json(),
                                 })
-                if explicit_source in {'/happiness/refunds', '/financial-payment/refunds'} and re.search(
-                    r"\b(?:overdue|past\s+due)\b.{0,30}\brefunds?\b|\brefunds?\b.{0,30}\b(?:overdue|past\s+due)\b|逾期.*(?:退款|استرداد)|(?:退款|استرداد).*逾期",
-                    normalized_question,
-                    re.I,
-                ) and re.search(r"\b(?:sort|sorted|order)\b.{0,30}\bamount\b|按金额|حسب المبلغ", normalized_question, re.I):
-                    sorted_result = _refund_overdue_sorted_result(
+                if explicit_source in {'/happiness/refunds', '/financial-payment/refunds'} and (
+                    _refund_sla_requested(question)
+                    or (
+                        re.search(r"\b(?:overdue|past\s+due)\b|逾期|متأخر", normalized_question, re.I)
+                        and re.search(r"\brefunds?\b|退款|استرداد", normalized_question, re.I)
+                    )
+                ):
+                    sla_result = _refund_overdue_sorted_result(
                         observation,
                         page=explicit_source,
                         scope=_permission_result_scope(permission_context),
                     )
-                    if sorted_result is not None:
-                        return ReaderOutcome(sorted_result, {
+                    if sla_result is None or sla_result.status != 'success':
+                        # Completed refund rows are the ones that carry an SLA
+                        # value, so replay that observed view before answering.
+                        completed_action = _observed_switch_tab_action({'name': 'Completed'}, observation)
+                        if completed_action is not None:
+                            try:
+                                completed_tool = await portal_read_stage(
+                                    replace(request, actions=(*actions, completed_action)),
+                                    timeout_stage='explicit_named_source_refund_sla_view',
+                                    attempt='explicit_named_source_refund_sla_view',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                completed_tool = {}
+                            if completed_tool.get('ok'):
+                                completed_observation = (completed_tool.get('result') or {}).get('observation') or {}
+                                completed_result = _refund_overdue_sorted_result(
+                                    completed_observation,
+                                    page=explicit_source,
+                                    scope=_permission_result_scope(permission_context),
+                                )
+                                if completed_result is not None and completed_result.status == 'success':
+                                    return ReaderOutcome(completed_result, {
+                                        'stage': 'explicit_named_source_refund_sla_view',
+                                        'permission': permission_audit,
+                                        'observation': completed_observation,
+                                        'actions': (*actions, completed_action),
+                                        'result': completed_result.public_json(),
+                                    })
+                    if sla_result is not None:
+                        return ReaderOutcome(sla_result, {
                             'stage': 'explicit_named_source_overdue_refunds',
                             'permission': permission_audit,
                             'observation': observation,
-                            'result': sorted_result.public_json(),
+                            'result': sla_result.public_json(),
                         })
                 if explicit_source == '/happiness/tickets' and _ticket_team_summary_requested(question):
                     # The team roll-up requires both visible queue states.  A
@@ -10221,7 +10305,7 @@ class AdminPortalReader:
                 # report the sibling surface rather than claiming the records
                 # cannot be confirmed.
                 sibling = _sibling_refund_source(explicit_source)
-                if sibling:
+                if sibling and not _refund_sla_requested(question):
                     sibling_request = PortalReadRequest(start_path=sibling, actions=({'type': 'observe'},))
                     if not validate_policy(sibling_request, reason='refund_list_sibling_source'):
                         try:
