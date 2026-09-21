@@ -582,6 +582,8 @@ def reader_evidence_only_response(
             "هذه هي مجموعة مؤشرات الحالة الظاهرة في منطقة واحدة من البوابة حاليًا، وليست اتجاهًا تاريخيًا.",
         "No historical data is available in the current portal view to compare a trend.":
             "لا تتوفر بيانات تاريخية في عرض البوابة الحالي لمقارنة الاتجاه.",
+        "The Admin Portal has no forecasting data, so next month's volume cannot be predicted. The values below are the counts currently rendered in your dashboard, not a prediction.":
+            "لا تتوفر بيانات تنبؤية في بوابة الإدارة، لذلك لا يمكن التنبؤ بحجم الطلبات للشهر القادم. القيم أدناه هي الأعداد الظاهرة حاليًا في لوحة التحكم وليست تنبؤًا.",
         "The completed ticket view for this account does not render a handler column, so closed tickets are not attributed to individual members.":
             "لا يعرض العرض المكتمل للتذاكر عمود المسؤول لهذا الحساب، لذلك لا يتم نسب التذاكر المغلقة إلى أعضاء الفريق.",
         "Each group counts only rows rendered in that source view for the signed-in account": 
@@ -650,6 +652,7 @@ def reader_evidence_only_response(
         "next step": "الخطوة التالية",
         "source": "المصدر",
         "count": "العدد",
+        "dashboard metric": "المؤشر",
     }
 
     def display_name(key: str) -> str:

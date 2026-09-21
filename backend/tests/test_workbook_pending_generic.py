@@ -6,6 +6,7 @@ from app.portal_reader import (
     _content_category_from_question,
     _finance_combined_summary_requested,
     _permission_result_scope,
+    _prediction_requested,
     _financial_status_breakdown,
     _refund_overdue_sorted_result,
     _refund_sla_requested,
@@ -652,3 +653,32 @@ def test_content_section_follow_up_selects_the_named_section():
         assert _content_category_from_question(question) == expected, question
         assert _explicit_reader_source(question, {}) == "/content/ContentLibrary"
     assert _content_category_from_question("Show me my dashboard summary.") == ""
+
+
+def test_prediction_questions_state_the_limitation_instead_of_listing_tasks():
+    assert _prediction_requested(
+        "Predict how many applications/complaints/inspections you will receive next month."
+    )
+    assert _prediction_requested("توقع عدد الطلبات والشكاوى الشهر القادم.")
+    assert _prediction_requested("下个月会收到多少申请？")
+    assert not _prediction_requested("How many applications did we receive last month?")
+
+    evidence = {
+        "result": "success",
+        "answerShape": "count",
+        "completeness": "bounded",
+        "workflowState": "prediction_unavailable",
+        "facts": [
+            "The Admin Portal has no forecasting data, so next month's volume cannot be predicted. "
+            "The values below are the counts currently rendered in your dashboard, not a prediction.",
+            '{"Dashboard Metric":"Enquiries & Complaints","Count":"1"}',
+        ],
+    }
+    english = reader_evidence_only_response(
+        evidence, "en", question="Predict how many applications/complaints/inspections you will receive next month."
+    )
+    arabic = reader_evidence_only_response(evidence, "ar", question="توقع عدد الطلبات الشهر القادم.")
+    assert "no forecasting data" in english
+    assert "لا تتوفر بيانات تنبؤية" in arabic
+    assert "Dashboard Metric" not in arabic
+    assert "المؤشر" in arabic

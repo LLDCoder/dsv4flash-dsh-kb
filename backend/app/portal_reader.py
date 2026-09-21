@@ -2688,6 +2688,20 @@ _CONTENT_CATEGORY_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
+_PREDICTION_REQUEST = re.compile(
+    r"\b(?:predict|prediction|forecast|project(?:ion|ed)?|expect(?:ed)?\s+to\s+(?:receive|get))\b"
+    r"|预测|预估|预计|预判|会收到多少"
+    r"|توقع|تنبؤ|متوقع",
+    re.I,
+)
+
+
+def _prediction_requested(question: str) -> bool:
+    """True when the user asks for a forecast rather than a rendered record."""
+
+    return bool(_PREDICTION_REQUEST.search(str(question or "")))
+
+
 def _content_categories_from_question(question: str) -> tuple[str, ...]:
     """Return every Content Library category the question names, in order.
 
@@ -10213,6 +10227,48 @@ class AdminPortalReader:
                     'observations': {label: observation for label, observation in combined_observations},
                     'result': combined_result.public_json(),
                 })
+
+        if _prediction_requested(question):
+            # The portal has no forecasting surface.  Answering with a task list
+            # would look like a prediction, so state the limitation first and
+            # only then offer the rendered current counts.
+            prediction_request = PortalReadRequest(start_path='/dashboard', actions=({'type': 'observe'},))
+            denied = validate_policy(prediction_request, reason='prediction_unavailable')
+            if denied:
+                result = ReaderResult(status='no_permission', page='/dashboard',
+                    summary='The dashboard counts are not readable for this account.', missing=(denied,))
+                return ReaderOutcome(result, {'stage': 'prediction_unavailable', 'permission': permission_audit,
+                                              'result': result.public_json()})
+            try:
+                prediction_tool = await portal_read_stage(
+                    prediction_request,
+                    timeout_stage='prediction_unavailable',
+                    attempt='prediction_unavailable',
+                )
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                prediction_tool = {}
+            prediction_observation = (prediction_tool.get('result') or {}).get('observation') or {}
+            disclaimer = (
+                "The Admin Portal has no forecasting data, so next month's volume cannot be predicted. "
+                "The values below are the counts currently rendered in your dashboard, not a prediction."
+            )
+            count_facts: list[str] = []
+            for label, value, _source in _observed_metric_pairs(prediction_observation):
+                if re.fullmatch(r"\d[\d,]*", str(value).strip()):
+                    count_facts.append(json.dumps(
+                        {"Dashboard Metric": label, "Count": value},
+                        ensure_ascii=False, separators=(",", ":"),
+                    ))
+            facts = (disclaimer, *count_facts[:10])
+            result = ReaderResult(
+                status='success', page='/dashboard', answer_shape='count', completeness='bounded',
+                scope=_permission_result_scope(permission_context),
+                workflow_state='prediction_unavailable',
+                summary='Forecasting is not available; current dashboard counts are reported instead.',
+                facts=facts,
+            )
+            return ReaderOutcome(result, {'stage': 'prediction_unavailable', 'permission': permission_audit,
+                                          'observation': prediction_observation, 'result': result.public_json()})
 
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
         if explicit_source in {
