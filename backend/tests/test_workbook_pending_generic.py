@@ -549,3 +549,28 @@ def test_arabic_field_card_localises_status_card_labels():
     assert "الحالة: تم رد المبلغ" in arabic
     assert "العدد: 3" in arabic
     assert "Each group counts" not in arabic
+
+
+def test_amount_composition_question_states_the_limitation():
+    evidence = {
+        "result": "success",
+        "answerShape": "detail",
+        "completeness": "bounded",
+        "facts": ['{"Application No.":"HC-02-2026-5239576","Amount":"-200.00","Currency":"AED","Status":"Refunded"}'],
+    }
+    english = reader_evidence_only_response(
+        evidence, "en",
+        question="Why is the amount for refund HC-02-2026-5239576 what it is? Explain using the visible fee configuration, service details, and taxes.",
+    )
+    arabic = reader_evidence_only_response(
+        evidence, "ar",
+        question="لماذا مبلغ طلب الاسترداد HC-02-2026-5239576 بهذا الشكل؟ يرجى التوضيح باستخدام إعدادات الرسوم وتفاصيل الخدمة والضرائب الظاهرة.",
+    )
+    assert "cannot be verified" in english
+    assert "لا يمكن التحقق" in arabic
+
+    plain = reader_evidence_only_response(
+        evidence, "en",
+        question="What is the status and amount of refund HC-02-2026-5239576?",
+    )
+    assert "cannot be verified" not in plain

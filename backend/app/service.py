@@ -963,6 +963,31 @@ def reader_evidence_only_response(
                     "ar": "لا تتضمن البيانات الحالية حقل العملة.",
                 }.get(language, "The current data does not provide a currency field.")
                 rendered_facts = f"{rendered_facts}\n\n{missing_currency}"
+        if re.search(
+            r"\bwhy\b[^.]{0,60}\b(?:amount|fee|charge|price|total)\b"
+            r"|\b(?:fee|charge|tax|vat|price|pricing)s?\b[^.]{0,40}\b(?:breakdown|composition|composed|calculated|derived|formed)\b"
+            r"|لماذا[^.]{0,40}(?:مبلغ|رسوم|رسم|ضريبة)"
+            r"|(?:تكوين|تفكيك|احتساب)[^.]{0,20}(?:المبلغ|الرسوم|الضريبة)"
+            r"|(?:الرسوم|الضرائب)[^.]{0,20}(?:المبلغ|تكوين|تفكيك)"
+            r"|为什么[^。]{0,20}(?:金额|费用|税)",
+            question,
+            re.I,
+        ):
+            # A fee-composition question needs the fee configuration, and the
+            # refund row does not carry it. The field card alone would look
+            # like an answer, so state the limitation explicitly.
+            fee_evidence = " ".join(str(item) for item in raw_facts)
+            if not re.search(
+                r"\b(?:fee|fees|charge|charges|tax|taxes|vat|price|pricing|tariff)\b|رسوم|رسم|ضريبة|ضرائب|费用|税费|税",
+                fee_evidence,
+                re.I,
+            ):
+                fee_note = {
+                    "en": "The record confirms the amount, but the current data provides no fee configuration, service pricing breakdown or tax detail, so how the amount was composed cannot be verified.",
+                    "ar": "يؤكد السجل المبلغ، لكن البيانات الحالية لا توفر إعدادات الرسوم ولا تفصيل تسعير الخدمة ولا تفاصيل الضرائب، لذلك لا يمكن التحقق من كيفية تكوين المبلغ.",
+                    "zh": "记录本身确认了金额，但当前数据未提供费用配置、服务计价明细或税费明细，因此无法核实该金额的构成。",
+                }.get(language, "The record confirms the amount, but its composition cannot be verified from the current data.")
+                rendered_facts = f"{rendered_facts}\n\n{fee_note}"
         total_note = displayed_amount_total_note(facts)
         if total_note:
             rendered_facts = f"{rendered_facts}\n\n{total_note}"
