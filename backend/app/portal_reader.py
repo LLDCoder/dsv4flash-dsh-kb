@@ -2673,6 +2673,44 @@ def _profile_verification_pending_followup(question: str, context: dict[str, Any
     return bool(re.search(r"profile\s+verification", text, re.I))
 
 
+# Latin keywords use a "not followed by another Latin letter" guard instead of
+# \b, because a question can continue straight into CJK or Arabic text such as
+# "Video Games等等" where a Unicode word boundary never occurs.
+_CONTENT_CATEGORY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("Blocked Authors", r"\bblocked\s+authors?(?![A-Za-z])|受限作者|被封作者|مؤلفون\s+محظورون"),
+    ("Regulate Entry Items", r"\bregulate\s+entry\s+items?(?![A-Za-z])|规管条目|عناصر\s+تنظيم\s+الدخول"),
+    ("Newspapers / Magazines",
+     r"\bnewspapers?(?![A-Za-z])|\bmagazines?(?![A-Za-z])|\bperiodicals?(?![A-Za-z])|报刊|报纸|杂志|صحف|مجلات"),
+    ("Video Games",
+     r"\bvideo\s*games?(?![A-Za-z])|\bgames?(?![A-Za-z])|电子游戏|视频游戏|游戏|ألعاب\s+الفيديو|ألعاب"),
+    ("Movies", r"\bmovies?(?![A-Za-z])|\bfilms?(?![A-Za-z])|\bcinemas?(?![A-Za-z])|电影|影片|أفلام|فيلم"),
+    ("Books", r"\bbooks?(?![A-Za-z])|图书|书籍|كتب|كتاب"),
+)
+
+
+def _content_categories_from_question(question: str) -> tuple[str, ...]:
+    """Return every Content Library category the question names, in order.
+
+    A follow-up can list several sections at once, for example
+    "How about movies (Newspapers / Magazines, Video Games ...)?".  The reader
+    answers the section named first and says so, instead of leaving the page on
+    the previous category and reporting that the requested columns are missing.
+    """
+
+    text = str(question or "")
+    found: list[tuple[int, str]] = []
+    for label, pattern in _CONTENT_CATEGORY_PATTERNS:
+        match = re.search(pattern, text, re.I)
+        if match is not None:
+            found.append((match.start(), label))
+    return tuple(label for _start, label in sorted(found, key=lambda item: item[0]))
+
+
+def _content_category_from_question(question: str) -> str:
+    categories = _content_categories_from_question(question)
+    return categories[0] if categories else ""
+
+
 def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     """Bind distinctive object names to documented read surfaces before planning."""
 
@@ -2689,6 +2727,11 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # explain the metric and give a verifiable navigation path, rather than
     # returning only a bare count.
     if re.search(r"\bconfirmed\s+count(?:\s+results?)?\b|\bcount\s+results?\b|确认的数量|确认数量|العدد\s+المؤكد|نتائج\s+العدد", normalized, re.I):
+        return "/content/ContentLibrary"
+    # Any named Content Library section belongs to the same rendered surface, so
+    # "How about movies?" style follow-ups are read there instead of falling
+    # through to a planner that may not switch the rendered section.
+    if _content_category_from_question(question):
         return "/content/ContentLibrary"
     # Customer Happiness work orders are rendered on Enquiries & Complaints,
     # rather than on the refund workflow.  HC-01 is the stable ticket-number
@@ -10352,7 +10395,10 @@ class AdminPortalReader:
                             'result': team_result.public_json(),
                         })
                 if explicit_source == '/content/ContentLibrary':
-                    action = _observed_switch_tab_action({'name': 'Books'}, observation)
+                    requested_category = _content_category_from_question(question) or 'Books'
+                    action = _observed_switch_tab_action({'name': requested_category}, observation)
+                    if action is None and requested_category != 'Books':
+                        action = _observed_switch_tab_action({'name': 'Books'}, observation)
                     if action is None:
                         result = ReaderResult(status='not_confirmed', page=explicit_source, answer_shape='list',
                             summary='The Books category was not visible in the current Content Library view.',
@@ -10394,6 +10440,14 @@ class AdminPortalReader:
                         re.I,
                     ):
                         result = _content_confirmed_count_navigation_result(result, observation)
+                    if explicit_source == '/content/ContentLibrary' and len(
+                        _content_categories_from_question(question)
+                    ) > 1:
+                        result = replace(result, facts=(
+                            *result.facts,
+                            "Only the section named first is answered here; ask again for each remaining "
+                            "section to see its records.",
+                        ))
                     return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
                                                   'permission': permission_audit, 'observation': observation,
                                                   'actions': actions, 'result': result.public_json()})

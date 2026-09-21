@@ -2,6 +2,8 @@ from app.portal_reader import (
     _content_confirmed_count_navigation_result,
     _explicit_reader_source,
     _explicit_record_identity,
+    _content_categories_from_question,
+    _content_category_from_question,
     _finance_combined_summary_requested,
     _permission_result_scope,
     _financial_status_breakdown,
@@ -627,3 +629,26 @@ def test_team_ticket_summary_reports_the_closed_ticket_limitation():
     assert any("Pending Tickets" in fact for fact in result.facts)
     assert not any("Closed Tickets" in fact for fact in result.facts)
     assert any("does not render a handler column" in fact for fact in result.facts)
+
+
+def test_content_section_follow_up_selects_the_named_section():
+    workbook_row = ("How about movies（其他板块如：Newspapers / Magazines、Video Games等等）? "
+                    "Show them with their statuses and identifying information.")
+    assert _content_category_from_question(workbook_row) == "Movies"
+    assert _content_categories_from_question(workbook_row)[:3] == (
+        "Movies", "Newspapers / Magazines", "Video Games",
+    )
+    assert _explicit_reader_source(workbook_row, {}) == "/content/ContentLibrary"
+    for question, expected in (
+        ("How about blocked authors?", "Blocked Authors"),
+        ("How about regulate entry items?", "Regulate Entry Items"),
+        ("How about video games?", "Video Games"),
+        ("How about magazines?", "Newspapers / Magazines"),
+        ("How about newspapers?", "Newspapers / Magazines"),
+        ("ماذا عن الأفلام؟ اعرض حالتها.", "Movies"),
+        ("ماذا عن الصحف والمجلات؟", "Newspapers / Magazines"),
+        ("那电子游戏呢？", "Video Games"),
+    ):
+        assert _content_category_from_question(question) == expected, question
+        assert _explicit_reader_source(question, {}) == "/content/ContentLibrary"
+    assert _content_category_from_question("Show me my dashboard summary.") == ""
