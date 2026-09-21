@@ -502,3 +502,50 @@ def test_arabic_status_breakdown_has_no_english_leftovers():
     assert "كل مجموعة تحتسب فقط الصفوف" in answer
     assert "Each group counts" not in answer
     assert "0 / 10000" not in answer
+
+
+def test_reader_answers_use_the_structured_field_card_in_every_language():
+    from app.service import READER_NATURAL_PROSE_ENABLED
+    assert READER_NATURAL_PROSE_ENABLED is False
+
+    evidence = {
+        "result": "success",
+        "answerShape": "list",
+        "completeness": "bounded",
+        "facts": [
+            '{"Transaction No.":"202609181617069397","Type":"Service Application",'
+            '"Apply For":"Commercial DP","Payment Method":"Magnati","Amount":"1500.00",'
+            '"Status":"Completed","Transaction Time":"18/09/2026 16:17:08"}',
+        ],
+    }
+    english = reader_evidence_only_response(
+        evidence, "en", question="For transaction 202609181617069397, what are the amount and status?",
+    )
+    arabic = reader_evidence_only_response(
+        evidence, "ar", question="بالنسبة للمعاملة 202609181617069397، ما المبلغ والحالة؟",
+    )
+    assert "Confirmed details:" in english and "Transaction No: 202609181617069397" in english
+    assert "التفاصيل المؤكدة:" in arabic
+    assert "رقم المعاملة: 202609181617069397" in arabic
+    assert "وقت المعاملة: 18/09/2026 16:17:08" in arabic
+    assert "Transaction No:" not in arabic
+    assert "Transaction Time:" not in arabic
+
+
+def test_arabic_field_card_localises_status_card_labels():
+    evidence = {
+        "result": "success",
+        "answerShape": "count",
+        "completeness": "bounded",
+        "facts": [
+            '{"Source":"Refunds","Status":"Refunded","Count":3}',
+            "Each group counts only rows rendered in that source view for the signed-in account.",
+        ],
+    }
+    arabic = reader_evidence_only_response(
+        evidence, "ar", question="كم عدد المدفوعات وطلبات الاسترداد الظاهرة لهذا الحساب؟",
+    )
+    assert "المصدر: الاستردادات" in arabic
+    assert "الحالة: تم رد المبلغ" in arabic
+    assert "العدد: 3" in arabic
+    assert "Each group counts" not in arabic

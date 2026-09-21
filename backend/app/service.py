@@ -285,6 +285,9 @@ def reader_evidence_only_response(
             "to do": "قيد التنفيذ",
             "todo": "قيد التنفيذ",
             "to do / completed": "قيد التنفيذ / مكتمل",
+            "payments": "المدفوعات",
+            "refunds": "الاستردادات",
+            "transactions": "المعاملات",
         }.get(selected_view.casefold(), selected_view)
         view_fact = {
             'en': f'Current selected view: {selected_view}.',
@@ -595,6 +598,9 @@ def reader_evidence_only_response(
         "items refund no": "رقم الاسترداد",
         "original transaction no": "رقم المعاملة الأصلية",
         "items original transaction no": "رقم المعاملة الأصلية",
+        "transaction no": "رقم المعاملة",
+        "transaction number": "رقم المعاملة",
+        "transaction time": "وقت المعاملة",
         "status": "الحالة",
         "items status": "الحالة",
         "type": "النوع",
@@ -685,7 +691,10 @@ def reader_evidence_only_response(
                 "refunds": "الاستردادات",
             },
             "refund category": {"application": "طلب"},
-            "type": {"refund": "استرداد"},
+            "type": {
+                "refund": "استرداد",
+                "service application": "طلب خدمة",
+            },
             "refund scope": {"full": "كامل", "partial": "جزئي"},
             "apply for": {
                 "commercial dp": "تجاري - DP",
@@ -694,6 +703,14 @@ def reader_evidence_only_response(
                 "individual": "فردي",
             },
             "sla": {"exceeded": "متجاوز", "met": "مستوفى"},
+            "next step": {
+                "refund already completed.": "تم رد المبلغ بالفعل.",
+                "refund already completed": "تم رد المبلغ بالفعل.",
+                "a refund action is still available for this record.":
+                    "لا يزال بإمكانك تنفيذ إجراء الاسترداد لهذا السجل.",
+                "a refund action is still available for this record":
+                    "لا يزال بإمكانك تنفيذ إجراء الاسترداد لهذا السجل.",
+            },
             "apply for icon key": {"commercial": "تجاري", "individual": "فردي"},
             "payment method": {
                 "credit debit card": "بطاقة ائتمانية/خصم",
@@ -1024,6 +1041,33 @@ def reader_evidence_only_response(
     return fallback
  
  
+_PARTIAL_LIST_MARKERS = re.compile(
+    r"\b(?:some|sample|partial|subset|not (?:the |a )?(?:full|complete)|may be more|not exhaustive|among)\b"
+    r"|部分|并非完整|بعض|ليست.*الكاملة|جزئي",
+    re.I,
+)
+
+_PARTIAL_LIST_NOTES = {
+    "en": "This is a partial view of the records currently rendered for this account, not the complete queue.",
+    "ar": "هذا عرض جزئي للسجلات الظاهرة حاليًا لهذا الحساب، وليس القائمة الكاملة.",
+    "zh": "这是当前账号可见记录的部分视图，并非完整队列。",
+}
+
+
+def ensure_partial_list_note(answer: str, language: str) -> str:
+    """Keep the natural answer and add the bounded-scope note only if missing.
+
+    The previous rule rejected an otherwise correct English answer whenever it
+    omitted the words "some" or "partial", which pushed English turns onto the
+    field-by-field fallback while the Arabic turns stayed natural.
+    """
+
+    if not answer.strip() or _PARTIAL_LIST_MARKERS.search(answer):
+        return answer
+    note = _PARTIAL_LIST_NOTES.get(language, _PARTIAL_LIST_NOTES["en"])
+    return answer.rstrip() + "\n\n" + note
+
+
 def reader_natural_answer_is_grounded(answer: str, verified_text: str, question: str, *, completeness: str = "") -> bool:
     """Reject drafts that introduce identifiers or numeric facts absent from the evidence."""
  
@@ -1050,12 +1094,10 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
         lowered,
     ):
         return False
-    if completeness != 'complete' and 'not the full list' in verified_text.casefold():
-        sample = r'\b(?:some|sample|partial|not (?:the |a )?(?:full|complete)|may be more|not exhaustive)\b|部分|并非完整|بعض|ليست.*الكاملة'
-        if not re.search(sample, answer, re.I):
-            return False
-        if re.search(r'\bthere are (?:\d+|one|two|three|four|five) (?:applications|tasks|records)\b', answer, re.I):
-            return False
+    if completeness != 'complete' and re.search(
+        r'\bthere are (?:\d+|one|two|three|four|five) (?:applications|tasks|records)\b', answer, re.I,
+    ):
+        return False
     # Formatting an amount must not silently assign a currency.
     for symbol in ('$', '€', '£', '¥'):
         if symbol in answer and symbol not in verified_text:
@@ -1107,7 +1149,14 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
         answer,
         flags=re.IGNORECASE,
     )
-    return all(token.casefold() in support for token in factual_tokens)
+
+    def _flat(text: str) -> str:
+        """Compare numbers without thousands separators or stray spacing."""
+
+        return re.sub(r"[\s,]", "", str(text)).casefold()
+
+    flat_support = _flat(support)
+    return all(_flat(token) in flat_support for token in factual_tokens)
  
  
 def _reader_semantic_anchors(result: dict[str, Any]) -> dict[str, Any]:
@@ -1590,6 +1639,13 @@ class EventBroker:
             except asyncio.QueueFull:
                 # Slow clients can resume from PostgreSQL using afterSeq.
                 pass
+
+
+# Workbook decision (2026-09-21): the Admin Portal Reader answers in the
+# structured field card in every language, so an English answer and an Arabic
+# answer about the same record stay directly comparable.  Flip this switch to
+# re-enable model-written prose for the reader.
+READER_NATURAL_PROSE_ENABLED = False
 
 
 class DSHService:
@@ -2166,11 +2222,13 @@ class DSHService:
             return fallback, False, 'deterministic_filter_return'
         if evidence.get('workflowState') == 'metric_trend_unavailable':
             return fallback, False, 'deterministic_metric_trend'
+        if not READER_NATURAL_PROSE_ENABLED:
+            # The structured card is the standard presentation for the portal
+            # reader; the model draft is only used when prose is re-enabled.
+            return fallback, False, "deterministic_reader_card"
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
             return fallback, False, "status_guard"
-        if evidence.get('answerShape') == 'count':
-            return fallback, False, "deterministic_count"
         if re.search(r'\bidentify one [A-Za-z ]+ ID\b.*\bwithout\b.*\bpersonal\b', question, re.I):
             return fallback, False, 'deterministic_requested_identifier'
         scoped_sources = {str(fact).split(' scope:', 1)[0] for fact in facts if ' scope:' in str(fact)}
@@ -2203,7 +2261,9 @@ class DSHService:
             "Do not add a number, identifier, date, status, cause, business rule, or action that it does not support. "
             "A bounded list is a sample: never describe it as the full queue or infer that no more records exist. "
             "Do not mention evidence, APIs, fields, JSON, tools, or verification. Do not use a 'Confirmed details' "
-            "heading or reproduce a field-by-field dump. Answer the question directly in one short paragraph, "
+            "or 'Confirmed count' heading, do not print 'Source:', 'Status:' or 'Count:' style label lines, and do not "
+            "reproduce a field-by-field dump. Write the answer as ordinary prose in the response language. "
+            "Answer the question directly in one short paragraph, "
             "optionally followed by a small bullet list only when it materially improves clarity. It is acceptable "
             "to omit irrelevant verified details. Describe role/layout applicability and current portal scope naturally "
             "when they help the user understand the answer. A documented Manager layout is not the current user's "
@@ -2233,6 +2293,8 @@ class DSHService:
             draft = "".join(chunks).strip()
         except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError):
             return fallback, True, "deterministic_formatting_fallback"
+        if str(evidence.get('completeness') or '') != 'complete' and evidence.get('answerShape') in {'list', 'overview', 'attention', 'due'}:
+            draft = ensure_partial_list_note(draft, language)
         if not reader_natural_answer_is_grounded(draft, fallback, question, completeness=str(evidence.get('completeness') or '')):
             return fallback, True, "deterministic_formatting_fallback"
         return draft, False, "llm_organized"
