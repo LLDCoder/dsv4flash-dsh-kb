@@ -4442,9 +4442,15 @@ def _native_explicit_source_rows(observation: Any, *, page: str, question: str) 
     return replace(result, source_hint={"page": page})
 
 
-def _content_confirmed_count_navigation_result(result: ReaderResult) -> ReaderResult:
-    """Explain the confirmed-count metric and guide the user to its source page."""
+def _content_confirmed_count_navigation_result(result: ReaderResult, observation: Any = None) -> ReaderResult:
+    """Return the visible total first, then explain and locate that metric."""
 
+    total_facts: list[str] = []
+    for label, value, _source in _observed_metric_pairs(observation):
+        normalized_label = re.sub(r"[^a-z0-9]", "", label.casefold())
+        if normalized_label in {"total", "totalcount", "confirmedcount"} and re.fullmatch(r"\d[\d,.]*", value):
+            total_facts.append(f"Confirmed Count: {value}")
+            break
     facts = (
         "Confirmed Count is the total displayed for the selected Content Library category and status view; it is not just the number of sample rows shown in the answer.",
         "To verify it, open Admin Portal > Content Module > Content Library, select the relevant category and status view, then check the summary or pagination area on that page.",
@@ -4454,7 +4460,7 @@ def _content_confirmed_count_navigation_result(result: ReaderResult) -> ReaderRe
         result,
         answer_shape="detail",
         completeness="bounded",
-        facts=(*result.facts, *facts),
+        facts=(*total_facts, *result.facts, *facts),
         source_hint={"page": "/content/ContentLibrary", "section": result.source_section or "Content Library"},
     )
 
@@ -9899,7 +9905,7 @@ class AdminPortalReader:
                         normalized_question,
                         re.I,
                     ):
-                        result = _content_confirmed_count_navigation_result(result)
+                        result = _content_confirmed_count_navigation_result(result, observation)
                     return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
                                                   'permission': permission_audit, 'observation': observation,
                                                   'actions': actions, 'result': result.public_json()})

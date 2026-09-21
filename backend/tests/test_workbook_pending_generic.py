@@ -303,7 +303,11 @@ def test_confirmed_count_location_explains_metric_and_navigation():
         status="success", page="/content/ContentLibrary", source_section="Books",
         answer_shape="count", facts=("Confirmed Count: 4",),
     )
-    guided = _content_confirmed_count_navigation_result(result)
+    guided = _content_confirmed_count_navigation_result(
+        result,
+        {"metrics": [{"label": "Total", "value": 125}]},
+    )
     assert guided.answer_shape == "detail"
+    assert guided.facts[0] == "Confirmed Count: 125"
     assert any("Content Module" in fact and "Content Library" in fact for fact in guided.facts)
     assert guided.source_hint["page"] == "/content/ContentLibrary"
