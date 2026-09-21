@@ -2712,6 +2712,20 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
         re.I,
     ):
         return "/financial-payment/transactions"
+    # A concrete refund record number (HC-02-...) is a Finance Refunds row:
+    # that rendered list exposes the record together with its Transaction No.,
+    # amount, currency and status.  Bind it before the generic "refund"
+    # wording so an exact-record question cannot be sent to the Customer
+    # Happiness refund queue, where the same number is a different workflow
+    # row and the requested record looks unavailable.
+    if re.search(r"\bHC-\d{2}-\d{4}-\d+\b", str(question or ""), re.I) and re.search(
+        r"amount|currency|status|updated|next\s*step|action|"
+        r"金额|币种|状态|更新时间|下一步|"
+        r"مبلغ|عملة|حالة|خطوة|تحديث",
+        normalized,
+        re.I,
+    ):
+        return "/financial-payment/refunds"
     if re.search(r"\b(?:license|licensing)\s+refunds?\b", normalized):
         return "/happiness/refunds"
     # Finance Refunds is a separate rendered table from Customer Happiness
@@ -2732,10 +2746,6 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # of the two records visible in the selected Completed view.
     if re.search(r"\brefunds?\b|استرداد|استردادات", normalized):
         return "/happiness/refunds"
-    if re.search(r"\bHC-\d{2}-\d{4}-\d+\b", str(question or ""), re.I) and re.search(
-        r"amount|currency|status|updated|更新时间|金额|币种|状态|时间", normalized, re.I,
-    ):
-        return "/financial-payment/refunds"
     if re.search(r"\b(?:license|licensing)\b.{0,40}\b(?:status|licenses?)\b|رخص(?:تي|ة)|حالة.{0,20}رخص", normalized):
         return "/licensing/licenses"
     if _profile_verification_pending_followup(question, context):
@@ -3054,6 +3064,70 @@ def _financial_daily_status_summary(
         completeness="bounded",
         scope=scope,
         missing=("today_date_not_observed",),
+    )
+
+
+def _financial_status_breakdown(
+    observations: tuple[tuple[str, Any], ...],
+    *,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult | None:
+    """Group every currently rendered payment/refund row by source and status.
+
+    Workbook row 52 asks for the payments and refunds visible to the account
+    by status.  The earlier reader answered it from the Customer Happiness
+    refund queue alone and then called those rows "payments", so the counts
+    could not be reconciled with the Finance pages.  This helper keeps the two
+    rendered sources separate and labels each group, and it never claims a
+    date window that was not requested.
+    """
+
+    grouped: dict[tuple[str, str], int] = defaultdict(int)
+    for source_label, observation in observations:
+        if not isinstance(observation, dict) or _observation_has_error_state(observation):
+            continue
+        if (observation.get("readHealth") or {}).get("healthy") is not True:
+            continue
+        tables = [
+            node for node in _observation_semantic_nodes(observation)
+            if node.get("kind") in {"table", "grid"} and node.get("rowFields")
+        ]
+        if not tables:
+            tables = [
+                node for node in observation.get("sectionSummaries", [])
+                if isinstance(node, dict) and node.get("kind") in {"table", "grid"} and node.get("rowFields")
+            ]
+        if len(tables) != 1:
+            continue
+        sampled = False
+        for raw_row in tables[0].get("rowFields") or []:
+            if not isinstance(raw_row, dict):
+                continue
+            status_value = ""
+            for key, value in raw_row.items():
+                normalized_key = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                if normalized_key == "status" or normalized_key.endswith("status"):
+                    status_value = str(value or "").strip()
+            grouped[(source_label, status_value or "Unknown")] += 1
+            sampled = True
+        if not sampled:
+            continue
+    if not grouped:
+        return None
+    facts = tuple(
+        json.dumps({"Source": source, "Status": status, "Count": count}, ensure_ascii=False, separators=(",", ":"))
+        for (source, status), count in sorted(grouped.items())
+    )
+    facts = (*facts, "Each group counts only rows rendered in that source view for the signed-in account.")
+    return ReaderResult(
+        status="success",
+        summary="The rendered payment and refund rows were grouped by source and status.",
+        page="/financial-payment/transactions",
+        section="Transactions and Finance Refunds",
+        answer_shape="count",
+        completeness="bounded",
+        scope=scope,
+        facts=facts,
     )
 
 
@@ -3673,6 +3747,111 @@ def _native_identity_search_result(outcome: ReaderOutcome, question: str, intent
     return ReaderOutcome(result, {**outcome.audit_evidence, 'nativeIdentityMatch': identity, 'result': result.public_json()})
 
 
+def _sibling_refund_source(page: str) -> str:
+    """The other rendered surface that carries the same refund records."""
+
+    return {
+        "/happiness/refunds": "/financial-payment/refunds",
+        "/financial-payment/refunds": "/happiness/refunds",
+    }.get(str(page or ""), "")
+
+
+def _identity_lookup_sources(page: str) -> tuple[str, ...]:
+    """Fallback pages that may hold one concrete Finance/refund identifier."""
+
+    if page == "/financial-payment/transactions":
+        # A payment transaction number can be the refund's own Transaction No.
+        return ("/financial-payment/refunds",)
+    if page == "/financial-payment/refunds":
+        return ("/happiness/refunds",)
+    if page == "/happiness/refunds":
+        return ("/financial-payment/refunds",)
+    return ()
+
+
+def _explicit_record_identity(question: str) -> str:
+    """Return the single record identifier named by the question.
+
+    Hyphenated numbers (``HC-02-2026-5239576``) were the original case.
+    Finance also renders bare numeric transaction numbers, so a lone
+    ten-digit-or-longer number is accepted when the question is about a
+    transaction, payment or refund.  Two candidate identifiers are ambiguous
+    and therefore return nothing rather than guessing one.
+    """
+
+    text = str(question or "")
+    hyphenated = re.findall(
+        r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"
+        r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9])",
+        text,
+    )
+    if len(hyphenated) == 1:
+        return hyphenated[0]
+    if hyphenated:
+        return ""
+    numeric = re.findall(r"(?<!\d)(\d{10,})(?!\d)", text)
+    if len(numeric) == 1 and re.search(
+        r"\b(?:transaction|transactions|payment|payments|refund|refunds|order|receipt)s?\b|"
+        r"交易|付款|退款|معاملة|استرداد|دفع",
+        text,
+        re.I,
+    ):
+        return numeric[0]
+    return ""
+
+
+def _discovered_finance_refund_fields(observation: Any, identity: str) -> dict[str, Any]:
+    """Merge API-backed fields for one exact Finance refund record.
+
+    The rendered Finance Refunds table repeats the refund number, transaction
+    number, amount, status and last update, but not the currency or the refund
+    action state.  The page's own API evidence for that same identifier does
+    carry them, so only the one record whose identifier matches is merged; no
+    sibling record and no default value is ever substituted.
+    """
+
+    if not isinstance(observation, dict):
+        return {}
+    wanted = _detail_identity(identity).casefold()
+    if not wanted:
+        return {}
+    merged: dict[str, Any] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            identifiers = {
+                _detail_identity(child).casefold()
+                for key, child in value.items()
+                if _key(key) in {"refundno", "applicationno", "transactionno", "originaltransactionno"}
+                and child not in (None, "")
+            }
+            if wanted in identifiers:
+                currency = value.get("currency")
+                if currency and "Currency" not in merged:
+                    merged["Currency"] = str(currency).upper()
+                original = value.get("originalTransactionNo")
+                if original and "Original Transaction No." not in merged:
+                    merged["Original Transaction No."] = str(original)
+                updated = value.get("lastUpdatedOn")
+                if updated and "Last Updated" not in merged:
+                    merged["Last Updated"] = str(updated)
+                if "canExecuteRefund" in value and "Next Step" not in merged:
+                    if value.get("canExecuteRefund") is False:
+                        merged["Next Step"] = str(
+                            value.get("unsupportedReason") or "No further refund action is available for this record."
+                        )
+                    else:
+                        merged["Next Step"] = "A refund action is still available for this record."
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    visit((observation.get("apiDiscovery") or {}).get("candidates") or [])
+    return merged
+
+
 def _native_exact_identity_row_result(
     observation: Any,
     *,
@@ -3718,6 +3897,9 @@ def _native_exact_identity_row_result(
     if len(matches) != 1:
         return None
     table, fields = matches[0]
+    if page == "/financial-payment/refunds":
+        for key, value in _discovered_finance_refund_fields(observation, identity).items():
+            fields.setdefault(key, value)
     if page == "/financial-payment/refunds" and not any(
         re.sub(r"[^a-z0-9]", "", str(key).casefold()) in {"currency", "currencycode", "itemscurrency"}
         for key in fields
@@ -9773,6 +9955,71 @@ class AdminPortalReader:
                     'result': daily_result.public_json(),
                 })
 
+        financial_combined_summary = bool(
+            not financial_daily_summary
+            and re.search(r"\b(?:payments?|transactions?)\b|付款|支付|المدفوعات|المعاملات|معاملات", normalized_question, re.I)
+            and re.search(r"\brefunds?\b|退款|استرداد", normalized_question, re.I)
+            and re.search(
+                r"\b(?:status|statuses|count|counts|how many|breakdown|summar(?:y|ise|ize)|visible)\b|"
+                r"按状态|汇总|كم|الظاهرة|حسب الحالة",
+                normalized_question,
+                re.I,
+            )
+        )
+        if financial_combined_summary:
+            # Workbook row 52 asks for the payments and refunds visible to the
+            # account, by status.  Both rendered Finance surfaces are read and
+            # reported separately, so the answer can no longer label Customer
+            # Happiness refund rows as "payments".
+            combined_pages = (
+                ("Payments", "/financial-payment/transactions"),
+                ("Refunds", "/financial-payment/refunds"),
+            )
+            combined_observations: list[tuple[str, Any]] = []
+            combined_permission_error = ""
+            for label, page in combined_pages:
+                request = PortalReadRequest(start_path=page, actions=({'type': 'observe'},))
+                denied = validate_policy(request, reason='financial_status_breakdown')
+                if denied:
+                    combined_permission_error = denied
+                    continue
+                try:
+                    tool = await portal_read_stage(
+                        request,
+                        timeout_stage='financial_status_breakdown',
+                        attempt=f'financial_status_breakdown_{label.casefold()}',
+                    )
+                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                    result = ReaderResult(
+                        status='load_failed', page=page, answer_shape='count',
+                        summary='The payment/refund status breakdown could not be read.',
+                        missing=(type(exc).__name__,),
+                    )
+                    return ReaderOutcome(result, {
+                        'stage': 'financial_status_breakdown',
+                        'permission': permission_audit,
+                        'result': result.public_json(),
+                    })
+                combined_observations.append((label, (tool.get('result') or {}).get('observation') or {}))
+            if combined_permission_error and not combined_observations:
+                result = ReaderResult(
+                    status='no_permission', page='/financial-payment/transactions', answer_shape='count',
+                    summary='The current account cannot read the requested payment/refund pages.',
+                    missing=(combined_permission_error,),
+                )
+                return ReaderOutcome(result, {'stage': 'financial_status_breakdown', 'permission': permission_audit,
+                                              'result': result.public_json()})
+            combined_result = _financial_status_breakdown(
+                tuple(combined_observations), scope=_permission_result_scope(permission_context),
+            )
+            if combined_result is not None:
+                return ReaderOutcome(combined_result, {
+                    'stage': 'financial_status_breakdown',
+                    'permission': permission_audit,
+                    'observations': {label: observation for label, observation in combined_observations},
+                    'result': combined_result.public_json(),
+                })
+
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
         if explicit_source in {
             '/happiness/tickets', '/happiness/refunds', '/financial-payment/refunds',
@@ -9781,10 +10028,25 @@ class AdminPortalReader:
             request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
             denied = validate_policy(request, reason='explicit_named_source_list')
             if denied:
-                result = ReaderResult(status='no_permission', page=explicit_source, source_hint={'page': explicit_source},
-                    summary='The current permissions do not allow reading the requested named page.', missing=(denied,))
-                return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
-                                              'permission': permission_audit, 'result': result.public_json()})
+                # The same refund records are rendered on both refund surfaces.
+                # When the account cannot read the preferred page, use the
+                # sibling refund surface instead of refusing a record the
+                # current role can still see.
+                alternate = _sibling_refund_source(explicit_source)
+                alternate_request = (
+                    PortalReadRequest(start_path=alternate, actions=({'type': 'observe'},)) if alternate else None
+                )
+                if alternate_request is not None and not validate_policy(
+                    alternate_request, reason='explicit_named_source_alternate'
+                ):
+                    explicit_source = alternate
+                    request = alternate_request
+                    denied = ""
+                else:
+                    result = ReaderResult(status='no_permission', page=explicit_source, source_hint={'page': explicit_source},
+                        summary='The current permissions do not allow reading the requested named page.', missing=(denied,))
+                    return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
+                                                  'permission': permission_audit, 'result': result.public_json()})
             try:
                 tool = await portal_read_stage(request, timeout_stage='explicit_named_source_list',
                                                attempt='explicit_named_source_list')
@@ -9797,16 +10059,12 @@ class AdminPortalReader:
                 # the named-source list branch could return the first four
                 # unrelated rows and make a real record look unavailable.
                 if explicit_source in {'/happiness/tickets', '/financial-payment/transactions', '/financial-payment/refunds'}:
-                    identity_matches = re.findall(
-                        r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"
-                        r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9])",
-                        str(question or ''),
-                    )
-                    if len(identity_matches) == 1:
+                    record_identity = _explicit_record_identity(question)
+                    if record_identity:
                         exact = _native_exact_identity_row_result(
                             observation,
                             page=explicit_source,
-                            record_identity=identity_matches[0],
+                            record_identity=record_identity,
                             scope=_permission_result_scope(permission_context),
                             question=question,
                         )
@@ -9817,6 +10075,44 @@ class AdminPortalReader:
                                 'observation': observation,
                                 'result': exact.public_json(),
                             })
+                        # A Finance transaction number can be the refund's own
+                        # Transaction No., and a refund number can be rendered
+                        # on the other refund surface.  Look in the sibling
+                        # surface before reporting the record as unavailable.
+                        for sibling in _identity_lookup_sources(explicit_source):
+                            if sibling == explicit_source:
+                                continue
+                            sibling_request = PortalReadRequest(
+                                start_path=sibling, actions=({'type': 'observe'},)
+                            )
+                            if validate_policy(sibling_request, reason='explicit_identity_sibling_source'):
+                                continue
+                            try:
+                                sibling_tool = await portal_read_stage(
+                                    sibling_request,
+                                    timeout_stage='explicit_identity_sibling_source',
+                                    attempt='explicit_identity_sibling_source',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                sibling_tool = {}
+                            if not sibling_tool.get('ok'):
+                                continue
+                            sibling_observation = (sibling_tool.get('result') or {}).get('observation') or {}
+                            sibling_exact = _native_exact_identity_row_result(
+                                sibling_observation,
+                                page=sibling,
+                                record_identity=record_identity,
+                                scope=_permission_result_scope(permission_context),
+                                question=question,
+                            )
+                            if sibling_exact is not None:
+                                return ReaderOutcome(sibling_exact, {
+                                    'stage': 'explicit_named_source_exact_record_sibling',
+                                    'permission': permission_audit,
+                                    'observation': sibling_observation,
+                                    'primaryObservation': observation,
+                                    'result': sibling_exact.public_json(),
+                                })
                 if explicit_source in {'/happiness/refunds', '/financial-payment/refunds'} and re.search(
                     r"\b(?:overdue|past\s+due)\b.{0,30}\brefunds?\b|\brefunds?\b.{0,30}\b(?:overdue|past\s+due)\b|逾期.*(?:退款|استرداد)|(?:退款|استرداد).*逾期",
                     normalized_question,
@@ -9920,6 +10216,35 @@ class AdminPortalReader:
                     return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
                                                   'permission': permission_audit, 'observation': observation,
                                                   'actions': actions, 'result': result.public_json()})
+                # A refund question that named no page lands on one of the two
+                # refund surfaces.  When that surface renders no usable rows,
+                # report the sibling surface rather than claiming the records
+                # cannot be confirmed.
+                sibling = _sibling_refund_source(explicit_source)
+                if sibling:
+                    sibling_request = PortalReadRequest(start_path=sibling, actions=({'type': 'observe'},))
+                    if not validate_policy(sibling_request, reason='refund_list_sibling_source'):
+                        try:
+                            sibling_tool = await portal_read_stage(
+                                sibling_request,
+                                timeout_stage='refund_list_sibling_source',
+                                attempt='refund_list_sibling_source',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            sibling_tool = {}
+                        if sibling_tool.get('ok'):
+                            sibling_observation = (sibling_tool.get('result') or {}).get('observation') or {}
+                            sibling_rows = _native_explicit_source_rows(
+                                sibling_observation, page=sibling, question=question,
+                            )
+                            if sibling_rows is not None:
+                                return ReaderOutcome(sibling_rows, {
+                                    'stage': 'explicit_named_source_sibling_list',
+                                    'permission': permission_audit,
+                                    'observation': sibling_observation,
+                                    'actions': actions,
+                                    'result': sibling_rows.public_json(),
+                                })
                 result = ReaderResult(status='not_confirmed', page=explicit_source, answer_shape='list',
                     summary='The requested named-page list could not be verified from the current rendered view.',
                     missing=('named_source_list_not_visible',))

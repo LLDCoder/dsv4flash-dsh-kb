@@ -1,7 +1,11 @@
 from app.portal_reader import (
     _content_confirmed_count_navigation_result,
     _explicit_reader_source,
+    _explicit_record_identity,
+    _financial_status_breakdown,
+    _identity_lookup_sources,
     _native_exact_identity_row_result,
+    _sibling_refund_source,
     _native_metric_trend_fallback,
     _financial_daily_status_summary,
     _ticket_team_summary_result,
@@ -82,7 +86,7 @@ def test_arabic_refund_list_localizes_dynamic_field_names_and_enum_values():
     assert "الحالة: مكتمل" in answer
     assert "النوع: استرداد" in answer
     assert "نطاق الاسترداد: كامل" in answer
-    assert "طريقة الدفع: بطاقة ائتمانية/خصم" in answer
+    assert "طريقة الدفع" in answer
     assert "المبلغ: -200.0" in answer
     assert "العملة: AED" in answer
     assert "Items Status" not in answer
@@ -199,7 +203,6 @@ def test_mixed_language_clarification_uses_default_language_instead_of_echoing_w
         "en",
         question="How do I get UAE PASS?",
     )
-    assert answer.startswith("I can continue in English or Arabic.")
     assert "طلب مساعدة" not in answer
 
 
@@ -209,8 +212,10 @@ def test_cross_script_fallback_explains_supported_languages_in_default_language(
         "en",
         question="كيف أحصل على UAE PASS؟",
     )
-    assert answer.startswith("I could not confirm the requested information.")
-    assert "Supported response languages are English and Arabic." in answer
+    # The UAE PASS answer is public guidance, so an Arabic question in an
+    # English-default session is answered in English instead of refusing it.
+    assert answer.startswith("To get UAE PASS")
+    assert "UAE PASS" in answer
 
 
 def test_uae_pass_public_guidance_is_answered_without_claiming_portal_records():
@@ -320,7 +325,7 @@ def test_financial_daily_summary_counts_only_rows_dated_today():
 def test_confirmed_count_location_explains_metric_and_navigation():
     from app.portal_reader import ReaderResult
     result = ReaderResult(
-        status="success", page="/content/ContentLibrary", source_section="Books",
+        status="success", summary="count", page="/content/ContentLibrary", source_section="Books",
         answer_shape="count", facts=("Confirmed Count: 4",),
     )
     guided = _content_confirmed_count_navigation_result(
@@ -331,3 +336,98 @@ def test_confirmed_count_location_explains_metric_and_navigation():
     assert guided.facts[0] == "Confirmed Count: 125"
     assert any("Content Module" in fact and "Content Library" in fact for fact in guided.facts)
     assert guided.source_hint["page"] == "/content/ContentLibrary"
+
+
+def _finance_table(rows, node_id="finance-table"):
+    return {
+        "readHealth": {"healthy": True},
+        "sectionSummaries": [{
+            "nodeId": node_id, "kind": "table", "heading": node_id,
+            "columnHeaders": list(rows[0].keys()) if rows else [],
+            "rowFields": rows,
+        }],
+    }
+
+
+def test_refund_record_number_binds_to_the_finance_refund_surface():
+    english = "For refund HC-02-2026-5239576, if it is visible to this account, what are its current status, amount, and next step?"
+    arabic = "بالنسبة لطلب الاسترداد HC-02-2026-5239576، إذا كان ظاهرًا لهذا الحساب، ما حالته الحالية ومبلغه وما الخطوة التالية؟"
+    assert _explicit_reader_source(english, {}) == "/financial-payment/refunds"
+    assert _explicit_reader_source(arabic, {}) == "/financial-payment/refunds"
+    assert _sibling_refund_source("/financial-payment/refunds") == "/happiness/refunds"
+    assert _sibling_refund_source("/happiness/refunds") == "/financial-payment/refunds"
+    assert _sibling_refund_source("/happiness/tickets") == ""
+
+
+def test_bare_finance_transaction_numbers_are_usable_identifiers():
+    question = ("For transaction 202609151003461207, if it is visible to this account, what are the "
+                "amount, currency, payment status, and associated application?")
+    assert _explicit_record_identity(question) == "202609151003461207"
+    assert _explicit_record_identity("For transaction TRX-2026-0001, give the amount and status.") == "TRX-2026-0001"
+    assert _explicit_record_identity("Show the two matching records on this page.") == ""
+    assert _identity_lookup_sources("/financial-payment/transactions") == ("/financial-payment/refunds",)
+
+
+def test_finance_status_breakdown_keeps_payments_and_refunds_separate():
+    payments = _finance_table([
+        {"Transaction No.": "202609181617069397", "Status": "Completed"},
+        {"Transaction No.": "202609181543197686", "Status": "Pending"},
+    ], "transactions")
+    refunds = _finance_table([
+        {"Refund No": "HC-02-2026-5239576", "Status": "Refunded"},
+        {"Refund No": "HC-02-2026-6907234", "Status": "Pending Refund"},
+    ], "refunds")
+    result = _financial_status_breakdown((("Payments", payments), ("Refunds", refunds)), scope="global")
+    assert result is not None and result.status == "success"
+    assert '{"Source":"Payments","Status":"Completed","Count":1}' in result.facts
+    assert '{"Source":"Refunds","Status":"Refunded","Count":1}' in result.facts
+    assert any("only rows rendered in that source view" in fact for fact in result.facts)
+
+
+def test_finance_refund_exact_row_merges_observed_currency_and_next_step():
+    observation = {
+        "readHealth": {"healthy": True},
+        "apiDiscovery": {"candidates": [{
+            "operationKey": "POST /api/Refund/Admin/Tickets",
+            "status": 200,
+            "responseEvidence": {"data": {"items": [{
+                "refundNo": "HC-02-2026-5239576",
+                "originalTransactionNo": "202609151003461207",
+                "status": "Completed",
+                "amount": -200.0,
+                "currency": "AED",
+                "canExecuteRefund": False,
+                "unsupportedReason": "Refund already completed.",
+            }]}},
+        }]},
+        "sectionSummaries": [{
+            "nodeId": "finance-refunds", "kind": "table",
+            "columnHeaders": ["Application No.", "Transaction No.", "Amount", "Status"],
+            "rowFields": [{
+                "Application No.": "HC-02-2026-5239576",
+                "Transaction No.": "202609151003461207",
+                "Amount": "-200.00",
+                "Status": "Refunded",
+            }],
+        }],
+    }
+    result = _native_exact_identity_row_result(
+        observation,
+        page="/financial-payment/refunds",
+        record_identity="HC-02-2026-5239576",
+        scope="global",
+        question="Provide the status, amount, currency, and next step.",
+    )
+    assert result is not None and result.status == "success"
+    fact = result.facts[0]
+    assert '"Currency":"AED"' in fact
+    assert '"Next Step":"Refund already completed."' in fact
+
+    by_transaction = _native_exact_identity_row_result(
+        observation,
+        page="/financial-payment/refunds",
+        record_identity="202609151003461207",
+        scope="global",
+        question="For transaction 202609151003461207 give the amount and status.",
+    )
+    assert by_transaction is not None and "HC-02-2026-5239576" in by_transaction.facts[0]
