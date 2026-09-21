@@ -3718,6 +3718,17 @@ def _native_exact_identity_row_result(
     if len(matches) != 1:
         return None
     table, fields = matches[0]
+    if page == "/financial-payment/refunds" and not any(
+        re.sub(r"[^a-z0-9]", "", str(key).casefold()) in {"currency", "currencycode", "itemscurrency"}
+        for key in fields
+    ):
+        # Finance renders the currency at page/statistics level even when the
+        # exact refund row omits a Currency column. Reuse only an explicitly
+        # observed currency code; never default a missing value.
+        observed_text = json.dumps(observation, ensure_ascii=False)
+        currency = re.search(r"\b(?:AED|USD|EUR|GBP|CNY|SAR)\b", observed_text, re.I)
+        if currency:
+            fields["Currency"] = currency.group(0).upper()
     return ReaderResult(
         status="success",
         summary="The exact requested record was matched in the current native table.",

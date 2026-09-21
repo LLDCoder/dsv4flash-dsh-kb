@@ -1,6 +1,7 @@
 from app.portal_reader import (
     _content_confirmed_count_navigation_result,
     _explicit_reader_source,
+    _native_exact_identity_row_result,
     _native_metric_trend_fallback,
     _financial_daily_status_summary,
     _ticket_team_summary_result,
@@ -146,6 +147,25 @@ def test_explicit_refund_identity_not_confirmed_is_record_specific_in_english_an
     assert "لم أتمكن من العثور" in arabic
     assert "سجل استرداد آخر" in arabic
     assert "تعذر تأكيد المعلومات المطلوبة" not in arabic
+
+
+def test_finance_exact_refund_reuses_observed_page_currency():
+    observation = {
+        "readHealth": {"healthy": True},
+        "currencyEvidence": "AED",
+        "sectionSummaries": [{
+            "kind": "table", "nodeId": "finance-refunds", "columnHeaders": ["Refund No", "Amount", "Status"],
+            "rowFields": [{"Refund No": "HC-02-2026-5239576", "Amount": -200.0, "Status": "Refunded"}],
+        }],
+    }
+    result = _native_exact_identity_row_result(
+        observation,
+        page="/financial-payment/refunds",
+        record_identity="HC-02-2026-5239576",
+        scope="team",
+        question="Provide status, amount, currency, and last updated time.",
+    )
+    assert result and '"Currency":"AED"' in result.facts[0]
 
 
 def test_websocket_message_limit_is_shared_with_the_browser_contract():
