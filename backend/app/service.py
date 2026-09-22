@@ -264,9 +264,11 @@ def _reader_next_step_sentence(reader_result: dict[str, Any], language: str) -> 
 
     status = str(reader_result.get("result") or "")
     page = str(reader_result.get("page") or "").strip()
-    target = page or {
-        "en": "the relevant module", "zh": "对应模块", "ar": "الوحدة المعنية",
-    }.get(language, "the relevant module")
+    if not page:
+        # No page was read for this turn (for example an unreadable or
+        # low-signal question): a concrete next step would be misleading.
+        return ""
+    target = page
     templates = {
         "no_data": {
             "en": f"Nothing matching was rendered in the view that was read. Check the selected tab or filters on {target}, "
