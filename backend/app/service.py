@@ -40,7 +40,7 @@ from .reader_limits import (
     effective_platform_timeout,
 )
 from .runtime import RuntimeManager
-from .skills import response_language_for
+from .skills import detect_unsupported_message_language, message_language_notice, response_language_for
 from .tool_gateway import ToolGateway
 
 
@@ -89,6 +89,14 @@ def _response_language_for(text: str, preferred_language: str | None = None) -> 
     """Choose the reply language: explicit request, then the message, then the portal language."""
 
     return response_language_for(text, preferred_language)
+
+
+def _language_notice_for(question: str, language: str) -> str:
+    """Return the supported-language note for a question written in another language."""
+
+    if not detect_unsupported_message_language(question):
+        return ""
+    return message_language_notice(language)
 
 
 def _script_conflicts_with_language(text: str, language: str) -> bool:
@@ -2482,6 +2490,9 @@ class DSHService:
                         skill_content=str(getattr(selected_skill, "content", "") or ""),
                         prior_answer_coverage=audit_evidence.get("stage") == "prior_answer_coverage",
                     )
+                    notice = _language_notice_for(latest_content, language)
+                    if content and notice:
+                        content = f"{content}\n\n{notice}"
                     guarded_facts = evidence.get("facts") if isinstance(evidence.get("facts"), list) else []
                     await self.append_audit(
                         db,

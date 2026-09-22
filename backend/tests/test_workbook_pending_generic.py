@@ -22,6 +22,7 @@ from app.portal_reader import (
     reader_answer_shape,
 )
 from app.schemas import MAX_CHAT_MESSAGE_CHARS, WSMessage
+from app.skills import detect_unsupported_message_language, message_language_notice
 from app.service import _response_language_for, reader_evidence_only_response, reader_natural_answer_is_grounded
 
 
@@ -691,3 +692,46 @@ def test_prediction_questions_state_the_limitation_instead_of_listing_tasks():
     assert "لا تتوفر بيانات تنبؤية" in arabic
     assert "Dashboard Metric" not in arabic
     assert "المؤشر" in arabic
+
+LANGUAGE_BATCH = [
+    ("Show me my license status.", "ar", "en", False),
+    ("What can you do for me?", "ar", "en", False),
+    ("ما الذي يمكنك فعله من أجلي؟", "en", "ar", False),
+    ("اعرض طلبات الاسترداد المتأخرة", "en", "ar", False),
+    ("Please answer in English.", "ar", "en", False),
+    ("أعطني التفاصيل باللغة الإنجليزية", "ar", "en", False),
+    ("Answer in Arabic, please.", "en", "ar", False),
+    ("请给我看看许可证状态", "en", "en", True),
+    ("请给我看看许可证状态", "ar", "ar", True),
+    ("ライセンスの状態を教えてください", "en", "en", True),
+    ("라이선스 상태를 알려주세요", "en", "en", True),
+    ("Покажите статус лицензии", "en", "en", True),
+    ("Δείξε μου την κατάσταση άδειας", "en", "en", True),
+    ("הצג את מצב הרישיון", "en", "en", True),
+    ("मेरा लाइसेंस स्टेटस दिखाएं", "en", "en", True),
+    ("แสดงสถานะใบอนุญาต", "en", "en", True),
+    ("Montrez-moi l'état de ma licence", "en", "en", True),
+    ("Muéstrame el estado de mi licencia", "en", "en", True),
+    ("Zeigen Sie mir meinen Lizenzstatus", "en", "en", True),
+    ("Mostrami lo stato della mia licenza", "en", "en", True),
+    ("Laat mijn licentiestatus zien", "en", "en", True),
+    ("Show me the record for café Milano", "en", "en", False),
+    ("Show me the record for 北京公司", "en", "en", False),
+    ("HC-02-2026-5239576", "ar", "ar", False),
+    ("HC-02-2026-5239576", "en", "en", False),
+    ("$$!!%% @@## 😂🔥", "ar", "ar", False),
+    ("$$!!%% @@## 😂🔥", "en", "en", False),
+]
+
+
+def test_language_batch_matrix_matches_the_supported_language_policy():
+    """English and Arabic are the supported languages; anything else is flagged."""
+
+    for question, portal_language, expected_language, expected_notice in LANGUAGE_BATCH:
+        answer_language = _response_language_for(question, portal_language)
+        assert answer_language == expected_language, f"{question!r} -> {answer_language}"
+        flagged = bool(detect_unsupported_message_language(question))
+        assert flagged is expected_notice, f"{question!r} notice={flagged}"
+        if expected_notice:
+            notice = message_language_notice(answer_language)
+            assert ("English and Arabic" in notice) if answer_language == "en" else ("الإنجليزية والعربية" in notice)

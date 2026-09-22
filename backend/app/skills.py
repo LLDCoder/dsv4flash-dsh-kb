@@ -55,6 +55,90 @@ def detect_message_language(text: str) -> str:
     return winners[0] if len(winners) == 1 else ""
 
 
+# Scripts outside the supported English/Arabic pair.  Kana is checked before
+# Han so a Japanese sentence is reported as Japanese, not Chinese.  Two or more
+# characters are required, so a quoted foreign name inside an English question
+# does not trigger the supported-language note.
+_UNSUPPORTED_SCRIPT_RANGES: tuple[tuple[str, str, str], ...] = (
+    ("ja", "\u3040", "\u30ff"),
+    ("ko", "\uac00", "\ud7af"),
+    ("zh", "\u3400", "\u4dbf"),
+    ("zh", "\u4e00", "\u9fff"),
+    ("ru", "\u0400", "\u04ff"),
+    ("el", "\u0370", "\u03ff"),
+    ("he", "\u0590", "\u05ff"),
+    ("hi", "\u0900", "\u097f"),
+    ("th", "\u0e00", "\u0e7f"),
+)
+
+# A Latin-script message can still be French, Spanish, German, Italian or Dutch.
+# Only function words and accented letters are used, and words that also exist
+# in English ("die", "de") are deliberately excluded.
+_NON_ENGLISH_LATIN = re.compile(
+    r"\b(?:le|les|des|une|est|pour|avec|merci|bonjour|salut|montrez|affichez|vous|pla[iî]t|"
+    r"el|los|las|una|para|con|gracias|hola|mu[eé]strame|muestra|estado|"
+    r"der|das|und|nicht|bitte|danke|sie|mir|meinen|meine|zeigen|"
+    r"lo|gli|grazie|ciao|mostrami|mostra|stato|"
+    r"het|een|niet|bedankt|mijn|laat|zien|tonen)\b"
+    r"|[äöüßñáéíóúãõçèêëïîôû]",
+    re.I,
+)
+
+
+def detect_unsupported_message_language(text: str) -> str:
+    """Return a code when the message is written outside English and Arabic.
+
+    The reader answers in English or Arabic only, so this decides whether the
+    reply needs the short note about the supported languages.
+    """
+
+    value = str(text or "")
+    counts = _message_language_counts(value)
+    supported_letters = counts["en"] + counts["ar"]
+    for code, start, end in _UNSUPPORTED_SCRIPT_RANGES:
+        script_count = sum(1 for char in value if start <= char <= end)
+        # Two characters minimum, and the foreign script has to dominate: a
+        # quoted foreign name inside an English question is not a language.
+        if script_count >= 2 and script_count >= supported_letters:
+            return code
+    if counts["en"] >= _MIN_LANGUAGE_LETTERS:
+        stopword = re.search(
+            r"\b(?:le|les|des|une|est|pour|avec|merci|bonjour|salut|montrez|affichez|vous|pla[iî]t|"
+            r"el|los|las|una|para|con|gracias|hola|mu[eé]strame|muestra|estado|"
+            r"der|das|und|nicht|bitte|danke|sie|mir|meinen|meine|zeigen|"
+            r"lo|gli|grazie|ciao|mostrami|mostra|stato|"
+            r"het|een|niet|bedankt|mijn|laat|zien|tonen)\b",
+            value,
+            re.I,
+        )
+        accents = len(re.findall(r"[äöüßñáéíóúãõçèêëïîôû]", value, re.I))
+        if stopword or accents >= 2:
+            return "latin-other"
+    return ""
+
+
+def message_language_notice(language: str) -> str:
+    """The note appended when the question arrived in an unsupported language."""
+
+    return {
+        "ar": (
+            "ملاحظة: يدعم هذا المساعد اللغتين الإنجليزية والعربية فقط، وقد أُجيب هنا بالعربية. "
+            "يمكنك إعادة السؤال بالإنجليزية أو العربية للتفاصيل نفسها."
+        ),
+        "en": (
+            "Note: this assistant answers in English and Arabic only, and the reply above is in English. "
+            "Please re-ask in English or Arabic for the same detail."
+        ),
+        "zh": (
+            "提示：该助手仅支持英文和阿拉伯文回答，以上内容以英文给出。"
+            "如需同一细节，请用英文或阿拉伯文重新提问。"
+        ),
+    }.get(language, (
+        "Note: this assistant answers in English and Arabic only, and the reply above is in English. "
+        "Please re-ask in English or Arabic for the same detail."
+    ))
+
+
 def response_language_for(text: str, preferred_language: str | None = None) -> str:
     """Choose the output language.
 
@@ -68,6 +152,12 @@ def response_language_for(text: str, preferred_language: str | None = None) -> s
     explicit = requested_response_language(text)
     if explicit:
         return explicit
+
+    # A question written in an unsupported language is still answered, but only
+    # in English or Arabic: keep the portal's supported language when it is one
+    # of those, otherwise use English.
+    if detect_unsupported_message_language(text):
+        return preferred_language if preferred_language in {"en", "ar"} else "en"
 
     detected = detect_message_language(text)
     if detected:

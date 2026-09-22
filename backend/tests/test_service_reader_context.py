@@ -69,8 +69,12 @@ def test_runtime_prompt_makes_language_and_permission_precedence_explicit() -> N
     assert "do not say 'observed portion', 'visible rows'" in prompt
 
 
-def test_response_language_detects_chinese_follow_ups() -> None:
-    assert _response_language_for("那只显示我的申请") == "zh"
+def test_response_language_treats_chinese_as_an_unsupported_language() -> None:
+    # Chinese is outside the supported pair, so the reply stays English (or the
+    # Arabic portal language) and the caller adds the supported-language note.
+    assert _response_language_for("那只显示我的申请") == "en"
+    assert _response_language_for("那只显示我的申请", "ar") == "ar"
+    assert _response_language_for("请用中文回答我的申请") == "zh"  # explicit request still wins
     assert "Required response language: CHINESE." in DSHService._runtime_system_prompt("admin_portal_reader", "zh", "", "")
 
 
