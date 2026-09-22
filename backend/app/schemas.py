@@ -58,6 +58,7 @@ class MessageCreate(APIModel):
     client_message_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
     attachment: MessageAttachment | None = None
     profile_context: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("profileContext", "profile_context"))
+    language: str | None = Field(default=None, max_length=32)
 
     @model_validator(mode="after")
     def require_content_or_attachment(self):
@@ -216,6 +217,7 @@ class WSMessage(APIModel):
     seq: int | None = None
     umc_token: str | None = Field(default=None, validation_alias=AliasChoices("umctoken", "umcToken", "umc_token"))
     profile_context: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("profileContext", "profile_context"))
+    language: str | None = Field(default=None, max_length=32)
 
     @model_validator(mode="after")
     def require_message_payload(self):

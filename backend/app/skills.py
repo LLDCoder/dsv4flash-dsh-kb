@@ -4,8 +4,16 @@ from dataclasses import dataclass
 from typing import Any
 
 
-def response_language_for(text: str) -> str:
-    """Choose the user's predominant supported script for customer responses."""
+SUPPORTED_RESPONSE_LANGUAGES = ("ar", "en", "zh")
+
+# A few letters are the minimum evidence that the message is written in a
+# language at all. A bare number, an identifier, a symbol or an emoji is not,
+# so those turns fall back to the portal language instead of guessing English.
+MIN_SCRIPT_LETTERS = 3
+
+
+def response_language_for(text: str) -> str | None:
+    """Detect the language of the message; None when it carries no signal."""
 
     arabic_count = sum(
         1
@@ -18,11 +26,29 @@ def response_language_for(text: str) -> str:
     )
     latin_count = sum(1 for char in text if ("A" <= char <= "Z") or ("a" <= char <= "z"))
     chinese_count = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
-    if arabic_count > max(latin_count, chinese_count):
+    if arabic_count >= MIN_SCRIPT_LETTERS and arabic_count > max(latin_count, chinese_count):
         return "ar"
-    if chinese_count > latin_count:
+    if chinese_count >= MIN_SCRIPT_LETTERS and chinese_count > latin_count:
         return "zh"
-    return "en"
+    if latin_count >= MIN_SCRIPT_LETTERS and latin_count > max(arabic_count, chinese_count):
+        return "en"
+    return None
+
+
+def normalize_response_language(value: object) -> str | None:
+    """Map a portal language tag such as ``ar-AE`` onto a supported language."""
+
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    primary = text.replace("_", "-").split("-", 1)[0]
+    return primary if primary in SUPPORTED_RESPONSE_LANGUAGES else None
+
+
+def resolve_response_language(text: str, system_language: object = None, default: str = "en") -> str:
+    """Prefer the language of the message, then the portal language, then English."""
+
+    return response_language_for(text) or normalize_response_language(system_language) or default
 
 
 @dataclass(frozen=True)
@@ -1098,10 +1124,9 @@ def build_system_prompt(
     target = {"ar": "ARABIC", "zh": "CHINESE"}.get(response_language, "ENGLISH")
     language_policy = [
         "LANGUAGE POLICY (mandatory and higher priority than the language used by tools, retrieved documents, or internal instructions):",
-        "- Answer in Arabic when the user's latest message is primarily Arabic.",
-        "- Answer in English when the user's latest message is English.",
-        "- Answer in Chinese when the user's latest message is primarily Chinese.",
-        "- Answer in English for every other language. English is the default response language.",
+        "- Identify the response language from the user's latest message first: Arabic for primarily Arabic text, Chinese for primarily Chinese text, English for primarily English text.",
+        "- Only when the latest message carries no identifiable language - for example a bare number, a reference code, a symbol or an emoji - fall back to the portal's system language, and to English when that is unavailable.",
+        "- Never mix languages inside one answer and never follow the language of a Tool, a retrieved document or an internal instruction.",
         f"- Required response language for this turn: {target}. Use only {target} for explanatory prose, while preserving necessary proper nouns, identifiers, and verbatim quotations.",
     ]
     prompt_parts = [

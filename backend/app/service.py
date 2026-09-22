@@ -35,7 +35,8 @@ from .skills import (
     exact_quote_source_sufficient,
     resolve_configured_skill,
     resolve_skill,
-    response_language_for,
+    normalize_response_language,
+    resolve_response_language,
 )
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, system_default_tool_definitions
 from .tool_gateway import ToolGateway, parse_tool_request
@@ -1425,6 +1426,7 @@ class DSHService:
         client_message_id: str,
         attachment: dict[str, Any] | None = None,
         profile_context: dict[str, Any] | None = None,
+        language: str | None = None,
     ) -> dict[str, Any]:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
@@ -1446,6 +1448,9 @@ class DSHService:
                     "clientMessageId": client_message_id,
                     "requestId": principal.request_id,
                 }
+                portal_language = normalize_response_language(language)
+                if portal_language:
+                    event_payload["language"] = portal_language
                 audit_identity = {
                     "account": principal.audit_account,
                     "currentRole": principal.audit_current_role,
@@ -1479,7 +1484,8 @@ class DSHService:
                     latest_content = latest_user.event_json.get("content", "") if latest_user else ""
                     raw_attachment = latest_user.event_json.get("attachment") if latest_user else None
                     latest_attachment = raw_attachment if isinstance(raw_attachment, dict) else None
-                    response_language = response_language_for(latest_content)
+                    portal_language = latest_user.event_json.get("language") if latest_user else None
+                    response_language = resolve_response_language(latest_content, portal_language)
                     # Send a first visible update before deterministic routing,
                     # external calls, or the LLM request can spend time waiting.
                     await self.append_status(

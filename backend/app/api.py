@@ -804,7 +804,13 @@ def make_router(service: DSHService) -> APIRouter:
         client_message_id = str(payload.get("request_id") or uuid4())
         queue = service.broker.subscribe(str(conversation_id))
         try:
-            accepted = await service.submit_message(principal, str(conversation_id), content, client_message_id)
+            accepted = await service.submit_message(
+                principal,
+                str(conversation_id),
+                content,
+                client_message_id,
+                language=str(payload.get("language") or "") or None,
+            )
         except LookupError as exc:
             service.broker.unsubscribe(str(conversation_id), queue)
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1970,6 +1976,7 @@ def make_router(service: DSHService) -> APIRouter:
                 payload.client_message_id,
                 payload.attachment.model_dump(by_alias=True) if payload.attachment else None,
                 payload.profile_context,
+                payload.language,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -2612,6 +2619,7 @@ def make_router(service: DSHService) -> APIRouter:
                             message.client_message_id,
                             message.attachment.model_dump(by_alias=True) if message.attachment else None,
                             message.profile_context,
+                            message.language,
                         )
                     except LookupError:
                         await send({"type": "error", "code": "conversation_not_found"})
