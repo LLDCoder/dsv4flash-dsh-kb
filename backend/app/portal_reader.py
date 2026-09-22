@@ -8226,6 +8226,138 @@ def _guard_requested_team_scope(outcome: ReaderOutcome, intent_state: dict[str, 
                                   "result": guarded.public_json()})
 
 
+_SELF_PROFILE_PATTERNS: tuple[str, ...] = (
+    r"\bwhat can you (?:do|help)\b",
+    r"\bwhat are you able to do\b",
+    r"\bwhat can i do\b",
+    r"\bwho am i\b",
+    r"\bmy (?:role|department|scope|permissions|data scope)\b",
+    r"\bwhat (?:is|are) my (?:role|department|scope|permissions)\b",
+    r"\bdata (?:scope|range)\b",
+    r"\bscope and limits?\b",
+    r"\blimits?\b[^.]{0,30}\b(?:query|read|access)\b",
+    r"数据范围",
+    r"(?:查询|读取|访问)[^。]{0,12}(?:范围|限制)",
+    r"\bwhich (?:role|department) am i\b",
+    r"你能(?:做|帮|干什么)",
+    r"我可以做什么",
+    r"我的(?:部门|角色|权限|数据范围)",
+    r"我当前(?:登录的)?(?:部门|角色)",
+    r"你(?:是|知道)(?:谁|我的)",
+    r"ماذا يمكنك",
+    r"ما (?:دوري|صلاحياتي|نطاق)",
+    r"من أنا",
+    r"ما (?:القسم|الدور)",
+)
+
+
+def _self_profile_requested(question: str) -> bool:
+    """True when the user asks who they are or what the assistant can do."""
+
+    text = str(question or "")
+    return any(re.search(pattern, text, re.I) for pattern in _SELF_PROFILE_PATTERNS)
+
+
+def _self_profile_result(question: str, context: UserPermissionContext, page_hint: str = "") -> ReaderResult | None:
+    """Answer identity/capability questions from the verified GetUserInfo context."""
+
+    if not _self_profile_requested(question):
+        return None
+    scope = _permission_result_scope(context)
+    role = (context.current_role or (context.roles[0] if context.roles else "")).strip()
+    departments = ", ".join(str(value) for value in context.departments[:6]) or "not returned by the portal"
+    facts = (
+        f"Signed-in portal account: {context.account or context.user_id}.",
+        f"Business role: {role or 'not returned by GetUserInfo'}.",
+        f"Roles returned by GetUserInfo: {', '.join(str(value) for value in context.roles[:6]) or 'none'}.",
+        f"Portal department identifiers for this account: {departments}.",
+        f"Data scope: {scope} (derived from the GetUserInfo roles, departments and any data-scope field).",
+        "Read-only capabilities: dashboard summaries; licensing applications, licenses and profile verification; "
+        "content library and content applications; customer-happiness enquiries, refunds and the team view; "
+        "inspection tasks and violations; finance transactions and refunds. Each one is limited to the pages this "
+        "account is authorized to open.",
+        "Not supported in chat: approvals, rejections, assignment, refunds or payment changes, closing or deleting "
+        "records, exports and downloads.",
+        "Access is always taken from the signed-in account; a claim inside the question never widens it.",
+    )
+    return ReaderResult(
+        status="success",
+        summary="The signed-in account, role and scope were read from GetUserInfo.",
+        page=page_hint,
+        answer_shape="detail",
+        completeness="bounded",
+        scope=scope,
+        facts=facts,
+    )
+
+
+def _guard_unfound_record_identity(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """A named record number that is not visible must never be answered with aggregates."""
+
+    identity = _explicit_record_identity(question)
+    if not identity:
+        return outcome
+    result = outcome.result
+    if result.status not in {"success", "no_data"}:
+        return outcome
+    if result.answer_shape not in {"list", "detail", "count", "overview"}:
+        return outcome
+    if identity.casefold() in " ".join(str(fact) for fact in result.facts).casefold():
+        return outcome
+    page = result.page or (result.source_hint or {}).get("page") or ""
+    facts = (
+        f"No record matching {identity} is visible in the current view"
+        + (f" ({page})" if page else "") + ".",
+        "The requested identifier was not replaced with another record, and no aggregate statistic is used as its answer.",
+    )
+    guarded = replace(
+        result,
+        status="no_data",
+        answer_shape="list",
+        facts=facts,
+        missing=("record_identity_not_found",),
+        completeness="bounded",
+    )
+    return ReaderOutcome(guarded, {
+        **outcome.audit_evidence,
+        "unfoundRecordIdentity": identity,
+        "result": guarded.public_json(),
+    })
+
+
+_MUTATION_REQUEST_PATTERNS: tuple[str, ...] = (
+    r"\b(?:please\s+)?(?:approve|reject|assign|reassign|refund|close|delete|remove|export|send|pay|waive|"
+    r"reset|disable|merge|cancel|change|update|set)\b[^.]{0,30}\b(?:application|licen[cs]e|content|ticket|refund|payment|transaction|task|case|record|account|user|photo|note|fine|penalt(?:y|ies)|fee|profile|complaint|enquir(?:y|ies)|report)\b",
+    r"\b(?:approve|reject|assign|refund|close|delete|export|send|waive|reset|disable|merge|cancel)\b"
+    r"[^.]{0,20}\b(?:it|this|that|them|the record)\b",
+    r"(?:帮我|请|直接|把)[^。]{0,14}(?:批准|驳回|分派|指派|退款|关闭|删除|修改|改成|导出|发送|免除|重置|停用|合并|跳过|执行)",
+    r"(?:批准|驳回|分派|退款|关闭|删除|修改|导出|发送|免除|重置|停用|合并|改为|改成)(?:这|该|此|本)?"
+    r"(?:个|项|张|条|笔)?(?:申请|内容|投诉|工单|退款|付款|交易|任务|案件|记录|账号|用户|罚单|报告|备注)",
+    r"(?:跳过|绕过|规避)[^。]{0,16}(?:检查|审批|审核|现场|复核|流程|审计)",
+    r"(?:وافق|ارفض|عيّن|استرد|أغلق|احذف|عدّل|صدّر|أرسل|تجاوز|ألغِ|صفّر)[^.]{0,24}"
+    r"(?:الطلب|الرخصة|المحتوى|التذكرة|الاسترداد|الدفع|المهمة|السجل|الحساب|المراجعة|التدقيق)",
+)
+
+
+def _mutation_request_refusal_result(question: str) -> ReaderResult | None:
+    """Refuse an explicit business-change request before any page read.
+
+    The planner is not the only entry point for these turns, so the intent is
+    detected from the wording itself.  Only imperative change verbs aimed at a
+    business object match; read questions that merely mention a state do not.
+    """
+
+    text = str(question or "")
+    if not any(re.search(pattern, text, re.I) for pattern in _MUTATION_REQUEST_PATTERNS):
+        return None
+    return ReaderResult(
+        status="not_confirmed",
+        summary="The request asks for a business change, which the read-only reader cannot perform.",
+        answer_shape="detail",
+        missing=("action_not_read_only",),
+    )
+
+
 class AdminPortalReader:
     """GetUserInfo-first orchestration for one serialized Admin reader turn."""
 
@@ -8316,6 +8448,7 @@ class AdminPortalReader:
         outcome = _native_metric_overview(outcome, question)
         outcome = _native_queue_counts(outcome, question)
         outcome = _native_profile_type_count(outcome, question)
+        outcome = _guard_unfound_record_identity(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
@@ -9563,6 +9696,23 @@ class AdminPortalReader:
                 "buttonCount": len(permission_context.buttons),
             },
         )
+        mutation_refusal = _mutation_request_refusal_result(question)
+        if mutation_refusal is not None:
+            return ReaderOutcome(mutation_refusal, {
+                "stage": "mutation_request_refused",
+                "permission": permission_audit,
+                "result": mutation_refusal.public_json(),
+            })
+        # Identity and capability questions need no page read: the verified
+        # GetUserInfo context is exactly the answer the portal can support.
+        profile_result = _self_profile_result(question, permission_context)
+        if profile_result is not None:
+            return ReaderOutcome(profile_result, {
+                "stage": "self_profile",
+                "permission": permission_audit,
+                "identityMatch": True,
+                "result": profile_result.public_json(),
+            })
         prior_identity_match = ""
         prior_identity_tokens = re.findall(
             r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"

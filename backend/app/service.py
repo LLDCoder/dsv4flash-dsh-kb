@@ -505,10 +505,20 @@ def reader_evidence_only_response(
         for reason in reader_result.get("missing", [])
     ):
         return {
-            "en": "I can help read and check information, but I cannot perform business changes, approvals, payments, exports, or downloads. No such action was performed.",
-            "zh": "我可以查询和核实信息，但不能执行业务修改、审批、付款、导出或下载。未执行这些操作。",
-            "ar": "يمكنني قراءة المعلومات والتحقق منها، لكن لا يمكنني تنفيذ تغييرات أو موافقات أو مدفوعات أو تصدير أو تنزيل. لم يتم تنفيذ أي من هذه الإجراءات.",
-        }.get(language, "I can read information but cannot perform business changes, exports, or downloads. No such action was performed.")
+            "en": "I can help read and check information, but I cannot perform business changes, approvals, payments, "
+                  "exports, or downloads. No such action was performed. For a change, use the portal's own workflow: "
+                  "open the record in its module and use the page's action buttons, so the normal review and audit steps "
+                  "still apply. I can point you to the page, check the record's current state, and tell you which "
+                  "documented step comes next.",
+            "zh": "我可以查询和核实信息，但不能执行业务修改、审批、付款、导出或下载，也未执行这些操作。"
+                  "如需变更，请在门户对应模块中打开该记录并使用页面的操作按钮，这样正常的审核与审计流程仍然生效；"
+                  "我可以帮你定位页面、核对该记录的当前状态，并说明下一步应走哪个正式步骤。",
+            "ar": "يمكنني قراءة المعلومات والتحقق منها، لكن لا يمكنني تنفيذ تغييرات أو موافقات أو مدفوعات أو تصدير أو "
+                  "تنزيل، ولم يتم تنفيذ أي من هذه الإجراءات. لإجراء أي تغيير، استخدم مسار البوابة نفسه: افتح السجل في "
+                  "وحدته واستخدم أزرار الإجراءات في الصفحة، لتبقى خطوات المراجعة والتدقيق المعتادة سارية. يمكنني "
+                  "إرشادك إلى الصفحة والتحقق من الحالة الحالية وبيان الخطوة الرسمية التالية.",
+        }.get(language, "I can read information but cannot perform business changes, exports, or downloads. "
+                        "No such action was performed. Use the portal's own workflow for any change.")
     intent = reader_result.get("intentContext")
     options = reader_result.get("clarificationOptions")
     if (
