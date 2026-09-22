@@ -1743,6 +1743,138 @@ def knowledge_search_query(
     return (required + (". " + optional[: max(0, 1_998 - len(required))] if optional else ""))[:2_000]
 
 
+
+# Wording that asks for a business rule rather than a page description.  The
+# page manuals answer "where is this shown"; these questions need the
+# regulation, fee schedule, standard or requirement document as well.
+_RULE_EVIDENCE_REQUEST = re.compile(
+    r"\b(?:why|basis|based on|according to|which (?:policy|rule|regulation|article)|"
+    r"polic\w+|regulation|legislation|decree|clause|article|requirement|requirements|"
+    r"criteria|criteri\w+|threshold|standard|standards|penalt\w+|fee|fees|charge|charges|"
+    r"composition|breakdown|entitle|eligib\w+|allowed|permitted|prohibited|violat\w+|"
+    r"checklist|documents?|materials?|required\b)\b"
+    r"|依据|政策|规则|法规|条款|第.{1,4}条|要求|条件|标准|违规|处罚|罚款|费用|构成|明细|材料|清单|"
+    r"为什么|能否|是否可以|需要哪些|要准备|依据是什么"
+    r"|سياسة|قاعدة|لائحة|قانون|مادة|شرط|شروط|متطلبات|معيار|غرامة|مخالفة|رسوم|أسباب|لماذا",
+    re.I,
+)
+
+
+_POLICY_DOCUMENT_ANCHORS = (
+    "regulation cabinet resolution law by decree article clause requirement checklist standard "
+    "法规 条款 第几条 要求 条件 材料 清单 依据 政策 规则 标准 "
+    "لائحة قانون مادة شرط متطلبات معيار"
+)
+
+# One policy question is about content standards, another about licence renewal,
+# another about a fee.  Anchoring with the wrong domain pushes the right
+# document out of the result set, so the vocabulary follows the question.
+_POLICY_DOMAIN_ANCHORS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"content|standards?|prohibited|classif\w+|violat\w+|penalt\w+"
+                   r"|内容|标准|违规|违反|禁止|处罚|محتوى|معيار|مخالفة", re.I),
+        "media content standards prohibited content classification media violations and penalties administrative",
+    ),
+    (
+        re.compile(r"licen[cs]e|permit|application|renew\w*|cancel\w*|suspend\w*|restore|revoke\w*"
+                   r"|许可|许可申请|许可证|续期|取消|恢复|吊销|暂停|رخصة|تجديد|إلغاء|استعادة", re.I),
+        "media executive regulation licensing approving the license application license term and renewal "
+        "cancellation suspension conditions requirements",
+    ),
+    (
+        re.compile(r"fee|fees|charge|refund|refunded|amount|tax|price|payment"
+                   r"|费用|收费|退款|金额|税费|罚款|价格|رسوم|استرداد|مبلغ|غرامة", re.I),
+        "media services fees fee schedule free zone media fees refund amount tax",
+    ),
+    (
+        re.compile(r"inspection|inspector|visit|checklist|site\b|检查|巡检|走访|تفتيش|جولة", re.I),
+        "inspection report requirements media violations and penalties site visit checklist",
+    ),
+)
+
+
+def policy_domain_anchors(question: str) -> str:
+    """Vocabulary of the policy documents that answer this question's topic."""
+
+    text = str(question or "")
+    matched = [anchor for pattern, anchor in _POLICY_DOMAIN_ANCHORS if pattern.search(text)]
+    if not matched:
+        matched = [
+            "media executive regulation cabinet resolution regulating the media",
+            "media services fees media content standards media violations and penalties",
+        ]
+    return " ".join(matched[:2])
+
+
+def knowledge_search_queries(
+    question: str,
+    context: UserPermissionContext,
+    conversation_context: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """One page-manual query, plus a regulation-first query for rule questions.
+
+    The manual-biased query keeps page/route questions precise, but its
+    "Admin Portal user manual" prefix dominates the semantic index and pushes
+    the regulation, fee schedule and standards documents out of the result set.
+    A second, unbiased query restores them without changing the first.
+    """
+
+    manual_query = knowledge_search_query(question, context, conversation_context)
+    text = str(question or "").strip()
+    if not text or not _RULE_EVIDENCE_REQUEST.search(text):
+        return (manual_query,)
+    # A generic "find the rule" wrapper loses to the manual corpus; anchoring the
+    # question with the vocabulary of the governing documents keeps the
+    # regulation, fee schedule, standards and penalty texts in range.
+    policy_query = (
+        text[:900] + " " + policy_domain_anchors(text) + " " + _POLICY_DOCUMENT_ANCHORS
+    )
+    if policy_query.casefold() == manual_query.casefold():
+        return (manual_query,)
+    return (manual_query, policy_query[:2_000])
+
+
+def merge_knowledge_results(results: list[Any], *, limit: int) -> dict[str, Any]:
+    """Combine several knowledge searches into one bounded evidence set.
+
+    Chunks are de-duplicated by source and text, ordered by their own retrieval
+    score, and truncated to the reader's budget so the planner sees one
+    coherent set of passages.
+    """
+
+    usable = [item for item in results if isinstance(item, dict) and isinstance(item.get("result"), dict)]
+    if not usable:
+        first = results[0] if results else {"ok": False, "code": "knowledge_unavailable"}
+        return first if isinstance(first, dict) else {"ok": False, "code": "knowledge_unavailable"}
+    if len(usable) == 1:
+        return usable[0]
+    base = usable[0]
+    payload = base["result"]
+    chunks: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in usable:
+        for chunk in (item["result"].get("chunks") or []):
+            if not isinstance(chunk, dict):
+                continue
+            nested = chunk.get("chunk") if isinstance(chunk.get("chunk"), dict) else chunk
+            content = str(nested.get("content") or "")
+            source = str(nested.get("source_name") or "")
+            key = (source, content[:200])
+            if not content or key in seen:
+                continue
+            seen.add(key)
+            chunks.append(nested)
+    chunks.sort(key=lambda entry: float(entry.get("score") or 0), reverse=True)
+    merged_payload = {
+        **payload,
+        "chunks": chunks[:limit],
+        "total": max(int((item["result"].get("total") or 0)) for item in usable),
+        "degraded": any(bool(item["result"].get("degraded")) for item in usable),
+        "queryCount": sum(1 for item in usable),
+    }
+    return {**base, "result": merged_payload}
+
+
 def portal_request_paths(request: PortalReadRequest) -> frozenset[str]:
     return frozenset(
         {request.start_path}
@@ -9133,6 +9265,25 @@ class AdminPortalReader:
         knowledge_context = outcome.audit_evidence.get("knowledge")
         if not isinstance(knowledge_context, dict):
             knowledge_context = {}
+        rule_facts = await self._rule_evidence_facts(principal, question, outcome, knowledge_context)
+        if rule_facts:
+            # The rule text is quoted from the governing document, so it can sit
+            # beside the page values instead of replacing them.
+            merged = replace(
+                outcome.result,
+                status="success",
+                facts=(*outcome.result.facts, *rule_facts)[:24],
+                missing=tuple(
+                    code for code in outcome.result.missing
+                    if code not in {"knowledge_not_grounded", "portal_read_required"}
+                ),
+            )
+            outcome = ReaderOutcome(merged, {
+                **outcome.audit_evidence,
+                "stage": "answer_with_rule_evidence",
+                "ruleEvidence": {"factCount": len(rule_facts)},
+                "result": merged.public_json(),
+            })
         guidance = documented_guidance_result(
             question,
             knowledge_context,
@@ -9174,6 +9325,109 @@ class AdminPortalReader:
         if api_audit:
             evidence["apiSelection"] = bounded_json(api_audit, max_depth=5, max_items=30, max_string=300)
         return ReaderOutcome(outcome.result, evidence)
+
+    async def _rule_evidence_facts(
+        self,
+        principal: Principal,
+        question: str,
+        outcome: ReaderOutcome,
+        knowledge_context: Any,
+    ) -> tuple[str, ...]:
+        """Quote the governing rule when the question asks for one.
+
+        A question such as "which rule is this decision based on" or "does this
+        content meet the media content standard" needs the regulation, fee
+        schedule or standard text.  The retrieved documents are supplied to one
+        bounded planning pass that may return only quoted rule facts; anything
+        the documents do not state is left unconfirmed rather than invented.
+        """
+
+        text = str(question or "")
+        if not _RULE_EVIDENCE_REQUEST.search(text):
+            return ()
+        if _SENSITIVE_GUIDANCE_QUESTION.search(text) or question_requests_business_mutation(text):
+            return ()
+        if not isinstance(knowledge_context, dict) or not knowledge_context.get("chunks"):
+            # Several questions are answered by an early exact-record path that
+            # never retrieved documents.  The rule part still needs them, so
+            # retrieve here with the same two-query strategy.
+            knowledge_context = await self._rule_evidence_retrieval(principal, question)
+        permission_context = getattr(self, "_turn_permission_context", None)
+        permission_payload = (
+            {
+                "currentRole": permission_context.current_role,
+                "roles": list(permission_context.roles),
+                "departments": list(permission_context.departments),
+            }
+            if isinstance(permission_context, UserPermissionContext)
+            else {}
+        )
+        directive = {
+            "ruleEvidenceOnly": True,
+            "reason": "question_asks_for_a_business_rule",
+            "instruction": (
+                "Return the rule that governs this question, not a statement about one record. "
+                "The user is asking which policy, regulation, standard, requirement or checklist applies. "
+                "Return 1-4 facts. Every fact must copy a sentence that actually appears in a retrieved document, "
+                "and must start with that document's file name followed by ': '. Keep any article, clause or section "
+                "label that appears next to the copied sentence. "
+                "A governing rule that applies to this type of application, licence, fee, violation or content is a "
+                "correct answer even when the document never names the specific record, so do not refuse for that "
+                "reason. Only return knowledge_only not_confirmed with no facts when no retrieved document contains "
+                "any rule relevant to the question's topic. "
+                "Do not repeat portal row values and never invent a rule, clause number, amount or decision."
+            ),
+            "allowedFallback": "knowledge_only:not_confirmed",
+        }
+        try:
+            plan = await asyncio.wait_for(
+                self.planner.plan_admin_portal_read(
+                    question,
+                    permission_payload,
+                    {**knowledge_context, "planningDirective": directive},
+                    None,
+                ),
+                timeout=min(20.0, self.timeout_budget.planner_seconds),
+            )
+        except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError, AttributeError):
+            return ()
+        candidate = knowledge_result_from_plan(plan)
+        if candidate is None or candidate.status != "success" or not candidate.facts:
+            return ()
+        if not knowledge_supports_result(candidate, knowledge_context):
+            return ()
+        existing = {re.sub(r"\s+", " ", str(fact)).strip().casefold() for fact in outcome.result.facts}
+        facts = [
+            str(fact).strip()
+            for fact in candidate.facts
+            if re.sub(r"\s+", " ", str(fact)).strip().casefold() not in existing
+        ]
+        return tuple(facts[:5])
+
+    async def _rule_evidence_retrieval(self, principal: Principal, question: str) -> dict[str, Any]:
+        """Retrieve the rule documents for a question answered elsewhere."""
+
+        context = getattr(self, "_turn_permission_context", None)
+        if not self.knowledge_folder_id or not isinstance(context, UserPermissionContext):
+            return {}
+        queries = knowledge_search_queries(question, context, None)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*[
+                    self.gateway.invoke(
+                        principal,
+                        "knowledge.search",
+                        {"query": query, "folder_id": self.knowledge_folder_id, "top_k": self.knowledge_top_k},
+                        allowed_tools=self.allowed_tools,
+                    )
+                    for query in queries
+                ]),
+                timeout=min(20.0, self.timeout_budget.knowledge_search_seconds + 5.0),
+            )
+        except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError):
+            return {}
+        merged = merge_knowledge_results(list(results), limit=self.knowledge_top_k)
+        return project_knowledge_result(merged, max_chunks=self.knowledge_top_k)
 
     async def _run(
         self,
@@ -11762,21 +12016,31 @@ class AdminPortalReader:
                 bounded_conversation_context = resolution.planner_context(bounded_conversation_context)
         knowledge_result: dict[str, Any] = {"ok": False, "code": "knowledge_not_configured"}
         knowledge_trace_recorded = False
+        search_queries: tuple[str, ...] = ()
         if self.knowledge_folder_id:
-            search_query = knowledge_search_query(question, permission_context, bounded_conversation_context)
+            search_queries = knowledge_search_queries(question, permission_context, bounded_conversation_context)
+            search_query = search_queries[0]
             knowledge_started_at = time.perf_counter()
             try:
                 knowledge_result = await _await_reader_stage(
-                    self.gateway.invoke(
-                        principal,
-                        "knowledge.search",
-                        {"query": search_query, "folder_id": self.knowledge_folder_id, "top_k": self.knowledge_top_k},
-                        allowed_tools=self.allowed_tools,
-                    ),
+                    asyncio.gather(*[
+                        self.gateway.invoke(
+                            principal,
+                            "knowledge.search",
+                            {"query": query, "folder_id": self.knowledge_folder_id, "top_k": self.knowledge_top_k},
+                            allowed_tools=self.allowed_tools,
+                        )
+                        for query in search_queries
+                    ]),
                     stage="knowledge_search",
                     cap_seconds=budget.knowledge_search_seconds,
                     deadline=deadline,
                 )
+                if isinstance(knowledge_result, (list, tuple)):
+                    search_queries_result = list(knowledge_result)
+                    knowledge_result = merge_knowledge_results(
+                        search_queries_result, limit=self.knowledge_top_k,
+                    )
             except ReaderStageTimeout as exc:
                 if exc.total_budget:
                     trace.record(
@@ -11893,7 +12157,10 @@ class AdminPortalReader:
                 "knowledge_retrieval",
                 "passed" if retrieval_ok else "degraded" if self.knowledge_folder_id else "skipped",
                 started_at=knowledge_started_at if self.knowledge_folder_id else None,
-                input_summary={"topK": self.knowledge_top_k} if self.knowledge_folder_id else {},
+                input_summary={
+                    "topK": self.knowledge_top_k,
+                    "queries": [query[:120] for query in (search_queries or (search_query,))],
+                } if self.knowledge_folder_id else {},
                 output_summary={
                     "toolCode": str(knowledge_result.get("code") or "")[:120],
                     "chunkCount": len(knowledge_context.get("chunks") or []),
