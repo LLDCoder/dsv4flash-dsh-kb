@@ -8637,6 +8637,85 @@ def _queue_row_label(row: dict[str, str]) -> str:
     return " | ".join(parts)
 
 
+_PERSON_ROLLUP_REQUEST = re.compile(
+    r"\b(?:per|by|each|every)\s+(?:officer|inspector|staff|member|handler|employee)s?\b"
+    r"|\b(?:officer|inspector|staff|member|handler|employee)s?\s+(?:breakdown|roll[- ]?up|summary)\b"
+    r"|(?:按|每位|每个|各个)\s*(?:officer|inspector|员工|成员|处理人|人员)"
+    r"|(?:حسب|لكل)\s*(?:الموظف|المفتش|العضو|الفريق)",
+    re.I,
+)
+_OVERDUE_RENDERED = re.compile(r"\boverdue\b|逾期|متأخر", re.I)
+_RETURNED_RENDERED = re.compile(r"退回|rejected|returned|sent back", re.I)
+
+
+def _native_person_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Group the visible queue rows by their rendered assignee.
+
+    Several workbook rows ask for a per-Officer or per-Inspector roll-up.  The
+    pages render one bounded page of rows with an assignee column and no
+    per-person aggregate, so the answer groups exactly the rows that are on
+    screen and states that limit instead of returning a bare page total.
+    """
+
+    if not _PERSON_ROLLUP_REQUEST.search(str(question or "")):
+        return outcome
+    if outcome.result.status not in {"success", "not_confirmed", "no_data"}:
+        return outcome
+    observation = outcome.audit_evidence.get("observation") or (
+        (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
+    ).get("observation")
+    rows = _queue_rows_for_advice(observation)
+    if not rows:
+        return outcome
+    grouped: dict[str, dict[str, int]] = {}
+    for row in rows:
+        person = (
+            str(row.get("Assigned To") or row.get("Inspector") or row.get("Current Handler") or "").strip()
+            or "unassigned"
+        )
+        bucket = grouped.setdefault(person, {"total": 0, "overdue": 0, "returned": 0})
+        bucket["total"] += 1
+        sla = str(row.get("SLA") or "")
+        if _OVERDUE_RENDERED.search(sla):
+            bucket["overdue"] += 1
+        status = f"{row.get('Status', '')}"
+        if _RETURNED_RENDERED.search(status):
+            bucket["returned"] += 1
+    if not grouped:
+        return outcome
+    def order(item: tuple[str, dict[str, int]]) -> tuple[int, int, str]:
+        person, bucket = item
+        return (-bucket["overdue"], -bucket["total"], person)
+
+    facts = [
+        json.dumps(
+            {
+                "Assignee": person,
+                "Visible rows": bucket["total"],
+                "Visible rows past SLA": bucket["overdue"],
+                "Visible rows returned": bucket["returned"],
+            },
+            ensure_ascii=False, separators=(",", ":"),
+        )
+        for person, bucket in sorted(grouped.items(), key=order)[:10]
+    ]
+    facts.append(
+        "Counts cover only the rows rendered on this page for this account; the page does not render a per-person "
+        "aggregate, so these are visible-row totals and not the complete team workload."
+    )
+    result = replace(
+        outcome.result,
+        status="success",
+        answer_shape="count",
+        completeness="bounded",
+        facts=tuple(facts),
+        missing=(),
+    )
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativePersonRollup": {
+        "people": len(grouped), "rows": len(rows),
+    }, "result": result.public_json()})
+
+
 def _personal_task_counter_pairs(observation: Any) -> tuple[tuple[str, str], ...]:
     """Read the rendered My Tasks per-category counters from the dashboard region."""
 
@@ -9029,6 +9108,7 @@ class AdminPortalReader:
         outcome = _native_profile_type_count(outcome, question)
         outcome = _native_personal_task_counts(outcome, question)
         outcome = _native_queue_priority_advice(outcome, question)
+        outcome = _native_person_rollup(outcome, question)
         outcome = _guard_unfound_record_identity(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
         outcome = _guard_requested_queue_view(outcome, question)
@@ -11636,12 +11716,33 @@ class AdminPortalReader:
                 intent_state.update(resolution.public_json())
             except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
                 model_failure = _model_http_failure(exc)
-                failure = model_failure.missing[0] if model_failure else "intent_resolution_timeout" if isinstance(exc, ReaderStageTimeout) else "intent_resolution_invalid"
-                trace.record("intent_resolution", "failed", started_at=intent_started_at, failure_code=failure)
-                return ReaderOutcome(
-                    model_failure or ReaderResult(status="not_confirmed", summary="The current task scope could not be resolved.", missing=(failure,)),
-                    {"stage": "intent_resolution", "permission": permission_audit,
-                     "validationError": str(exc)[:200] if isinstance(exc, ValueError) else type(exc).__name__},
+                if model_failure is not None:
+                    trace.record("intent_resolution", "failed", started_at=intent_started_at,
+                                 failure_code=model_failure.missing[0])
+                    return ReaderOutcome(
+                        model_failure,
+                        {"stage": "intent_resolution", "permission": permission_audit},
+                    )
+                if isinstance(exc, ReaderStageTimeout):
+                    trace.record("intent_resolution", "failed", started_at=intent_started_at,
+                                 failure_code="intent_resolution_timeout")
+                    return ReaderOutcome(
+                        ReaderResult(status="not_confirmed",
+                                     summary="The current task scope could not be resolved.",
+                                     missing=("intent_resolution_timeout",)),
+                        {"stage": "intent_resolution", "permission": permission_audit},
+                    )
+                # An unusable resolution is a resolution failure, not a portal
+                # failure.  The turn continues with the question exactly as the
+                # user wrote it and without an inherited resolved scope, so a
+                # follow-up still gets a real read instead of "not confirmed".
+                bounded_conversation_context = {
+                    key: value for key, value in bounded_conversation_context.items() if key != "resolvedIntent"
+                }
+                trace.record(
+                    "intent_resolution", "degraded", started_at=intent_started_at,
+                    output_summary={"strategy": "unresolved_question_used"},
+                    failure_code="intent_resolution_invalid",
                 )
             trace.record(
                 "intent_resolution", "passed", started_at=intent_started_at,
