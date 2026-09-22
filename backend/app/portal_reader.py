@@ -8896,6 +8896,53 @@ _PERIOD_COMPARISON_REQUEST = re.compile(
 )
 
 
+_RULE_CLAUSE_MARKER = re.compile(r"\bArticle\s*\(?\d+\)?|第\s*\d+\s*条|\bالمادة\s*\(?\d+\)?", re.I)
+
+
+def _deterministic_rule_clauses(question: str, knowledge_context: Any, *, limit: int = 3) -> tuple[str, ...]:
+    """Verbatim article sentences from the retrieved documents, chosen by topic.
+
+    Some rule questions depend on the planner volunteering a quote.  This
+    fallback copies the governing sentence straight out of a retrieved chunk, so
+    the citation does not depend on a model decision.
+    """
+
+    if not isinstance(knowledge_context, dict):
+        return ()
+    tokens = _api_query_tokens(question)
+    han = {seq[index:index + 2] for seq in _HAN_SEQUENCE.findall(str(question or "")) for index in range(max(0, len(seq) - 1))}
+    arabic = set(_ARABIC_SEQUENCE.findall(str(question or "")))
+    scored: list[tuple[int, str]] = []
+    for chunk in knowledge_context.get("chunks") or ():
+        if not isinstance(chunk, dict):
+            continue
+        source = str(chunk.get("source_name") or "").strip()
+        text = re.sub(r"\s+", " ", str(chunk.get("content") or "")).strip()
+        if not source or not text:
+            continue
+        for sentence in re.split(r"(?<=[.;])\s+", text):
+            if not _RULE_CLAUSE_MARKER.search(sentence):
+                continue
+            if len(sentence) < 40 or len(sentence) > 600:
+                continue
+            score = len(tokens & _api_query_tokens(sentence))
+            score += sum(1 for token in han if token in sentence)
+            score += len(arabic & set(_ARABIC_SEQUENCE.findall(sentence)))
+            if score:
+                scored.append((score, f"{source}: {sentence.strip()}"))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    chosen: list[str] = []
+    seen: set[str] = set()
+    for _score, fact in scored:
+        key = fact[:120].casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append(fact)
+        if len(chosen) >= limit:
+            break
+    return tuple(chosen)
+
 def _native_sla_performance_metrics(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Report the rendered SLA figures instead of a ranking the page cannot give."""
 
@@ -9672,7 +9719,7 @@ class AdminPortalReader:
             return ()
         candidate = knowledge_result_from_plan(plan)
         if candidate is None or candidate.status != "success" or not candidate.facts:
-            return ()
+            return _deterministic_rule_clauses(question, knowledge_context)
         if not knowledge_supports_result(candidate, knowledge_context):
             return ()
         existing = {re.sub(r"\s+", " ", str(fact)).strip().casefold() for fact in outcome.result.facts}
@@ -9681,6 +9728,11 @@ class AdminPortalReader:
             for fact in candidate.facts
             if re.sub(r"\s+", " ", str(fact)).strip().casefold() not in existing
         ]
+        if not facts:
+            facts = [
+                fact for fact in _deterministic_rule_clauses(question, knowledge_context)
+                if fact.casefold() not in existing
+            ]
         return tuple(facts[:5])
 
     async def _rule_evidence_retrieval(self, principal: Principal, question: str) -> dict[str, Any]:
