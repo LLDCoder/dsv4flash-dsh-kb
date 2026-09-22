@@ -2951,6 +2951,15 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # pending-review count from silently switching to Application tasks.
     if re.search(r"\bprofile\s+verification\b", normalized):
         return "/licensing/profile"
+    # A question about one customer's accounts, phone, address or history
+    # belongs to the rendered Customer Management surface; without this the
+    # planner occasionally started from Customer Happiness analytics instead.
+    if re.search(r"customer|客户|客戶|عميل", normalized) and re.search(
+        r"\baccounts?\b|account\s+details|账号|账户|電話|电话|手机|地址|历史申请|\bmobile\b|\baddress\b",
+        normalized,
+        re.I,
+    ):
+        return "/happiness/customerManagement"
     if re.search(r"\b(?:books?|book)\s+applications?\b", normalized):
         return "/content/ContentLibrary"
     # A confirmed-count location question belongs to the rendered Content
