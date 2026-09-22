@@ -2996,10 +2996,17 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # rather than on the refund workflow.  HC-01 is the stable ticket-number
     # family observed on that page.  Bind it before planning so an exact ticket
     # question cannot be redirected to an unrelated application/detail API.
-    # An inspection or compliance-committee question uses the inspection
-    # surfaces even when it says "case"; the ticket page holds no such queue.
+    # Violation and committee-decision questions are rendered on the
+    # Violations surface, which is also where the committee queue and the fine
+    # amounts appear.  Other inspection questions use the task queue.
     if re.search(
-        r"\b(?:inspection|inspector|compliance\s+committee|committee)\b|检查|巡检|委员会|تفتيش|المفتش|لجنة",
+        r"\b(?:violations?|fines?|penalt\w+|committee\s+decision|compliance\s+committee)\b"
+        r"|违规|罚款|罚金|处罚|委员会|تفتيش|مخالفة|غرامة|لجنة",
+        normalized,
+    ):
+        return "/inspection/violations"
+    if re.search(
+        r"\b(?:inspection|inspector)\b|检查|巡检|المفتش",
         normalized,
     ):
         return "/inspection/tasks"
@@ -8943,6 +8950,122 @@ def _deterministic_rule_clauses(question: str, knowledge_context: Any, *, limit:
             break
     return tuple(chosen)
 
+_FINE_DECISION_REQUEST = re.compile(
+    r"\bfines?\b|\bpenalt\w+\b|\bcommittee\s+decision\b|罚款|罚金|处罚|罚款金额|委员会.{0,12}决定|"
+    r"غرامة|مخالفة",
+    re.I,
+)
+
+
+def _native_fine_decision_result(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Report the fine a violation record carries, or state plainly that none exists.
+
+    The committee queue and the fine amounts are rendered on the Violations
+    surface.  When the requested case has no violation record, the empty result
+    is stated as empty with the page to open, never as a generic failure.
+    """
+
+    if not _FINE_DECISION_REQUEST.search(str(question or "")):
+        return outcome
+    page = str(outcome.result.page or "")
+    if "violations" not in page:
+        return outcome
+    observation = outcome.audit_evidence.get("observation") or (
+        (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
+    ).get("observation")
+    rows = _api_candidate_rows(observation, "GET /api/admin/inspection/violations")
+    if not rows:
+        rendered = [
+            row for row in _observation_text_rows(observation)
+            if re.search(r"\bVN-\d|\bIN-\d", row)
+        ]
+        if rendered:
+            result = replace(
+                outcome.result,
+                status="success",
+                answer_shape="list",
+                facts=tuple(rendered[:8]) + (
+                    "These are the violation rows the page renders for this account; open Violations to filter by "
+                    "case or status.",
+                ),
+                missing=(),
+            )
+            return ReaderOutcome(result, {**outcome.audit_evidence, "nativeFineDecision": "rendered",
+                                          "result": result.public_json()})
+        searched = re.findall(r"\b(?:IN|VN)-\d{4}-\d+\b", str(question or ""), re.I)
+        if searched:
+            note = (
+                "No violation or fine record matches " + ", ".join(searched[:3]) + " in the records this account can "
+                "read. That means no fine decision has been recorded for the case - it is not that the amount is zero. "
+                "Open Inspection > Violations and filter by the case number to confirm."
+            )
+        else:
+            note = (
+                "The Violations list is empty for this account: no violation or fine record is visible at all. "
+                "Open Inspection > Violations to confirm the empty list."
+            )
+        result = replace(
+            outcome.result,
+            status="no_data",
+            answer_shape="list",
+            facts=(note,),
+            missing=(),
+        )
+        return ReaderOutcome(result, {**outcome.audit_evidence, "nativeFineDecision": "empty",
+                                      "result": result.public_json()})
+    identities = re.findall(r"\b(?:IN|VN)-\d{4}-\d+\b", str(question or ""), re.I)
+    matched = [
+        row for row in rows
+        if identities and any(identity.casefold() in json.dumps(row, ensure_ascii=False).casefold() for identity in identities)
+    ]
+    if matched:
+        facts = tuple(
+            "Fine record: "
+            + json.dumps(
+                {
+                    "Violation No.": row.get("violationNo"),
+                    "Task No.": row.get("taskNo"),
+                    "Violation Type": row.get("violationTypeName"),
+                    "Status": row.get("statusName"),
+                    "Fine Amount": row.get("fineAmount"),
+                    "Reported By": row.get("reportedByName"),
+                    "Created On": str(row.get("createdOn") or "")[:19],
+                    "Last Updated": str(row.get("lastUpdatedOn") or "")[:19],
+                },
+                ensure_ascii=False, separators=(",", ":"),
+            )
+            for row in matched[:3]
+        )
+        note = (
+            "These are the fine records recorded for the requested case in the Violations surface this account reads. "
+            "The decision itself and any appeal stay with the responsible committee through the portal workflow."
+        )
+    else:
+        visible = [
+            " | ".join(str(part) for part in (
+                row.get("violationNo"), row.get("violationTypeName"), row.get("statusName"),
+                f"fine {row.get('fineAmount')}" if row.get("fineAmount") is not None else "",
+                row.get("taskNo"),
+            ) if part)
+            for row in rows[:5]
+        ]
+        facts = ()
+        note = (
+            "No fine decision is recorded for the requested case in this account's readable violation records, so the "
+            "amount is not that it is zero - it is that no record exists yet. Open Inspection > Violations and filter by "
+            "the case number to confirm."
+            + (" Records currently visible there: " + "; ".join(visible) + "." if visible else "")
+        )
+    merged = replace(
+        outcome.result,
+        status="success",
+        answer_shape="list",
+        facts=(*outcome.result.facts, *facts, note)[:24],
+        missing=(),
+    )
+    return ReaderOutcome(merged, {**outcome.audit_evidence, "nativeFineDecision": bool(facts),
+                                  "result": merged.public_json()})
+
 def _native_sla_performance_metrics(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Report the rendered SLA figures instead of a ranking the page cannot give."""
 
@@ -9006,7 +9129,8 @@ def _native_observed_api_enrichment(outcome: ReaderOutcome, question: str) -> Re
         elif any("inspectorName" in row for row in rows):
             facts.append(
                 "The page's own task data returns no inspector for the tasks in this view (the inspector field is "
-                "empty), so no per-inspector split can be made from these rows."
+                "empty), so no per-inspector split can be made from these rows. Open Task Management and select a task "
+                "row, or use its Inspector filter, to see whether an inspector has been assigned to that task."
             )
 
     if _FINANCE_CURRENCY_REQUEST.search(text):
@@ -9564,6 +9688,7 @@ class AdminPortalReader:
         if not isinstance(knowledge_context, dict):
             knowledge_context = {}
         outcome = _native_sla_performance_metrics(outcome, question)
+        outcome = _native_fine_decision_result(outcome, question)
         # These run last: they add fields the page's own read API returned and
         # the scope/history notes, which earlier repairs would otherwise drop.
         outcome = _native_observed_api_enrichment(outcome, question)
