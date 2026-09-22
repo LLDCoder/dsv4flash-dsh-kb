@@ -18,26 +18,73 @@ def requested_response_language(text: str) -> str | None:
     return None
 
 
+def _message_language_counts(text: str) -> dict[str, int]:
+    """Count the letters of each supported script; digits and emoji are ignored."""
+
+    value = str(text or "")
+    return {
+        "ar": sum(
+            1
+            for char in value
+            if "\u0600" <= char <= "\u06ff"
+            or "\u0750" <= char <= "\u077f"
+            or "\u08a0" <= char <= "\u08ff"
+            or "\ufb50" <= char <= "\ufdff"
+            or "\ufe70" <= char <= "\ufeff"
+        ),
+        "en": sum(1 for char in value if ("A" <= char <= "Z") or ("a" <= char <= "z")),
+        "zh": sum(1 for char in value if "\u3400" <= char <= "\u4dbf" or "\u4e00" <= char <= "\u9fff"),
+    }
+
+
+# A script needs at least this many letters before it can decide the reply
+# language.  Bare identifiers such as "HC-02-2026-5239576" carry two Latin
+# letters and are not evidence that the user wrote English.
+_MIN_LANGUAGE_LETTERS = 3
+
+
+def detect_message_language(text: str) -> str:
+    """Return the message's own language when one script clearly dominates, else ""."""
+
+    counts = _message_language_counts(text)
+    eligible = {code: count for code, count in counts.items() if count >= _MIN_LANGUAGE_LETTERS}
+    if not eligible:
+        return ""
+    top = max(eligible.values())
+    winners = [code for code, count in eligible.items() if count == top]
+    return winners[0] if len(winners) == 1 else ""
+
+
 def response_language_for(text: str, preferred_language: str | None = None) -> str:
-    """Choose output language using explicit request, profile preference, then script."""
+    """Choose the output language.
+
+    Order: an explicit request inside the message, then the language the message
+    itself is written in, then the portal language the caller selected.  The
+    portal language is a fallback only: it decides when the message carries no
+    decidable language (identifiers, digits, symbols or emoji only) or when two
+    scripts are equally represented.
+    """
 
     explicit = requested_response_language(text)
     if explicit:
         return explicit
+
+    detected = detect_message_language(text)
+    if detected:
+        return detected
+
+    counts = _message_language_counts(text)
+    eligible = {code: count for code, count in counts.items() if count >= _MIN_LANGUAGE_LETTERS}
+    if eligible:
+        top = max(eligible.values())
+        winners = [code for code, count in eligible.items() if count == top]
+        if preferred_language in winners:
+            return preferred_language
+        return "ar" if "ar" in winners else winners[0]
+
     if preferred_language in {"en", "ar", "zh"}:
         return preferred_language
-
-    arabic_count = sum(
-        1
-        for char in text
-        if "\u0600" <= char <= "\u06ff"
-        or "\u0750" <= char <= "\u077f"
-        or "\u08a0" <= char <= "\u08ff"
-        or "\ufb50" <= char <= "\ufdff"
-        or "\ufe70" <= char <= "\ufeff"
-    )
-    latin_count = sum(1 for char in text if ("A" <= char <= "Z") or ("a" <= char <= "z"))
-    return "ar" if arabic_count > latin_count else "en"
+    return "en"
 
 
 # Runtime selection is fixed to these two generic capabilities.

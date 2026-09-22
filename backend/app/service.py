@@ -86,10 +86,8 @@ def recoverable_reader_failure(exc: Exception, *, timeout_seconds: float) -> tup
 
 
 def _response_language_for(text: str, preferred_language: str | None = None) -> str:
-    """Choose explicit request, then the verified profile language, then script."""
+    """Choose the reply language: explicit request, then the message, then the portal language."""
 
-    if any("\u4e00" <= char <= "\u9fff" for char in text) and preferred_language not in {"en", "ar"}:
-        return "zh"
     return response_language_for(text, preferred_language)
 
 

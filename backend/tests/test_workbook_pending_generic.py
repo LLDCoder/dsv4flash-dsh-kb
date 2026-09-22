@@ -186,14 +186,23 @@ def test_websocket_message_limit_is_shared_with_the_browser_contract():
     assert WSMessage(type="message", content="x", clientMessageId="m-2", responseLanguage="ar").response_language == "ar"
 
 
-def test_selected_portal_language_wins_for_each_turn_without_breaking_explicit_requests():
-    assert _response_language_for("Please show my license status.", "ar") == "ar"
-    # The current UI language is authoritative when the user does not
-    # explicitly request another output language, even if the prompt is in
-    # English (the regression covered by workbook item 45).
-    assert _response_language_for("What can you do for me?", "ar") == "ar"
-    assert _response_language_for("ما الذي يمكنك فعله من أجلي؟", "ar") == "ar"
+def test_message_language_wins_and_the_portal_language_is_only_a_fallback():
+    # The message's own language decides the reply language, whichever portal
+    # language happens to be selected.
+    assert _response_language_for("Please show my license status.", "ar") == "en"
+    assert _response_language_for("ما الذي يمكنك فعله من أجلي؟", "en") == "ar"
+    # An explicit request inside the message still overrides everything.
     assert _response_language_for("Please answer in English.", "ar") == "en"
+    assert _response_language_for("أعطني التفاصيل باللغة الإنجليزية", "ar") == "en"
+    # Identifiers, dates and emoji never decide the language on their own.
+    assert _response_language_for("HC-02-2026-5239576", "ar") == "ar"
+    assert _response_language_for("HC-02-2026-5239576", "en") == "en"
+    assert _response_language_for("202609151003461207", "en") == "en"
+    assert _response_language_for("اعرض HC-02-2026-5239576", "en") == "ar"
+    # Nothing decidable at all -> the selected portal language.
+    assert _response_language_for("$$!!%% @@## 😂🔥", "ar") == "ar"
+    assert _response_language_for("$$!!%% @@## 😂🔥", "en") == "en"
+    assert _response_language_for("$$!!%% @@## 😂🔥", None) == "en"
 
 
 def test_mixed_language_clarification_uses_default_language_instead_of_echoing_wrong_script():
