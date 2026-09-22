@@ -37,6 +37,8 @@ from .skills import (
     resolve_skill,
     normalize_response_language,
     resolve_response_language,
+    response_language_mismatch,
+    response_language_name,
 )
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, system_default_tool_definitions
 from .tool_gateway import ToolGateway, parse_tool_request
@@ -2291,6 +2293,16 @@ class DSHService:
                             request_id=principal.request_id,
                             runtime_id=conversation.runtime_id,
                         )
+                        messages.append(
+                            {
+                                "role": "system",
+                                "content": (
+                                    "FINAL LANGUAGE CHECK: the whole answer must be written in "
+                                    f"{response_language_name(response_language)}. This requirement overrides the language of "
+                                    "the user interface, of retrieved documents, of Tool output and of any earlier draft."
+                                ),
+                            }
+                        )
                         try:
                             async def draft_answer(prompt_messages: list[dict[str, str]]) -> tuple[str, str]:
                                 chunks: list[str] = []
@@ -2324,6 +2336,22 @@ class DSHService:
                                     if response_language == "ar"
                                     else "I could not format the requested result. Please try again."
                                 )
+                            if content and response_language_mismatch(content, response_language):
+                                corrected, correction_reasoning = await draft_answer(
+                                    [
+                                        *messages,
+                                        {
+                                            "role": "system",
+                                            "content": (
+                                                "LANGUAGE CORRECTION: the previous draft was written in the wrong language. "
+                                                f"Rewrite the same answer in {response_language_name(response_language)} only."
+                                            ),
+                                        },
+                                    ]
+                                )
+                                reasoning += correction_reasoning
+                                if corrected and not response_language_mismatch(corrected, response_language):
+                                    content = corrected
                             if content:
                                 await self.publish_stream_event(
                                     conversation,

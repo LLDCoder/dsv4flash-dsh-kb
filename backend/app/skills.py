@@ -5,6 +5,7 @@ from typing import Any
 
 
 SUPPORTED_RESPONSE_LANGUAGES = ("ar", "en", "zh")
+RESPONSE_LANGUAGE_NAMES = {"ar": "ARABIC", "en": "ENGLISH", "zh": "CHINESE"}
 
 # A few letters are the minimum evidence that the message is written in a
 # language at all. A bare number, an identifier, a symbol or an emoji is not,
@@ -12,8 +13,8 @@ SUPPORTED_RESPONSE_LANGUAGES = ("ar", "en", "zh")
 MIN_SCRIPT_LETTERS = 3
 
 
-def response_language_for(text: str) -> str | None:
-    """Detect the language of the message; None when it carries no signal."""
+def script_letter_counts(text: str) -> tuple[int, int, int]:
+    """Return the (arabic, latin, chinese) letter counts of a text."""
 
     arabic_count = sum(
         1
@@ -26,6 +27,37 @@ def response_language_for(text: str) -> str | None:
     )
     latin_count = sum(1 for char in text if ("A" <= char <= "Z") or ("a" <= char <= "z"))
     chinese_count = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    return arabic_count, latin_count, chinese_count
+
+
+def response_language_name(language: str) -> str:
+    """Return the upper-case name used by the system prompt."""
+
+    return RESPONSE_LANGUAGE_NAMES.get(language, "ENGLISH")
+
+
+# An answer that contains none of the required script is treated as a language
+# violation worth one rewrite. Short answers and identifiers are left alone.
+MIN_ANSWER_SCRIPT_LETTERS = 20
+
+
+def response_language_mismatch(text: str, expected: str) -> bool:
+    """True when a generated answer is written in another script entirely."""
+
+    arabic_count, latin_count, chinese_count = script_letter_counts(text)
+    if expected == "ar":
+        return arabic_count == 0 and max(latin_count, chinese_count) >= MIN_ANSWER_SCRIPT_LETTERS
+    if expected == "zh":
+        return chinese_count == 0 and max(arabic_count, latin_count) >= MIN_ANSWER_SCRIPT_LETTERS
+    if expected == "en":
+        return latin_count == 0 and max(arabic_count, chinese_count) >= MIN_ANSWER_SCRIPT_LETTERS
+    return False
+
+
+def response_language_for(text: str) -> str | None:
+    """Detect the language of the message; None when it carries no signal."""
+
+    arabic_count, latin_count, chinese_count = script_letter_counts(text)
     if arabic_count >= MIN_SCRIPT_LETTERS and arabic_count > max(latin_count, chinese_count):
         return "ar"
     if chinese_count >= MIN_SCRIPT_LETTERS and chinese_count > latin_count:
@@ -1121,7 +1153,7 @@ def build_system_prompt(
     if route.category == "knowledge" and not evidence_available:
         guardrails.append("When knowledge-base evidence is unavailable, do not present general knowledge as a verified UMC rule.")
 
-    target = {"ar": "ARABIC", "zh": "CHINESE"}.get(response_language, "ENGLISH")
+    target = response_language_name(response_language)
     language_policy = [
         "LANGUAGE POLICY (mandatory and higher priority than the language used by tools, retrieved documents, or internal instructions):",
         "- Identify the response language from the user's latest message first: Arabic for primarily Arabic text, Chinese for primarily Chinese text, English for primarily English text.",
