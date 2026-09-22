@@ -1760,6 +1760,16 @@ _RULE_EVIDENCE_REQUEST = re.compile(
 )
 
 
+_STAFF_PERFORMANCE_REQUEST = re.compile(
+    r"\bsla\s+compliance\b|\bcompliance\s+rate\b|\bbreach\s+rate\b"
+    r"|\bperformance\s+(?:rate|overview|metric)s?\b|\bworst\s+perform\w+\b"
+    r"|\bwho\s+performs?\s+worst\b"
+    r"|(?:表现|绩效)\s*最差|最差.{0,6}(?:员工|成员|人员)|SLA\s*合规率|合规率|违约率|完成率"
+    r"|أداء\s+الموظف|معدل\s+الالتزام",
+    re.I,
+)
+
+
 _POLICY_DOCUMENT_ANCHORS = (
     "regulation cabinet resolution law by decree article clause requirement checklist standard "
     "法规 条款 第几条 要求 条件 材料 清单 依据 政策 规则 标准 "
@@ -8886,6 +8896,40 @@ _PERIOD_COMPARISON_REQUEST = re.compile(
 )
 
 
+def _native_sla_performance_metrics(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Report the rendered SLA figures instead of a ranking the page cannot give."""
+
+    if not _STAFF_PERFORMANCE_REQUEST.search(str(question or "")):
+        return outcome
+    page = str(outcome.result.page or "")
+    if "reports-analytics" not in page and "/dashboard" not in page:
+        return outcome
+    observation = outcome.audit_evidence.get("observation") or (
+        (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
+    ).get("observation")
+    pairs = _observed_metric_pairs(observation)
+    chosen = [
+        (label, value) for label, value, _source in pairs
+        if re.search(r"sla|breach|compliant|completion|overdue|processing", label, re.I)
+    ]
+    if len(chosen) < 2:
+        return outcome
+    facts = tuple(f"{label}: {value}" for label, value in chosen[:10])
+    facts += (
+        "These are the SLA figures the page renders for this account's scope. An individual employee ranking is not "
+        "derived from them, and no employee is named.",
+    )
+    result = replace(
+        outcome.result,
+        status="success",
+        answer_shape="overview",
+        completeness="bounded",
+        facts=facts,
+        missing=(),
+    )
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativeSlaPerformance": True,
+                                  "result": result.public_json()})
+
 def _native_observed_api_enrichment(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Add fields the page's own read API returned but the table did not render.
 
@@ -9472,6 +9516,7 @@ class AdminPortalReader:
         knowledge_context = outcome.audit_evidence.get("knowledge")
         if not isinstance(knowledge_context, dict):
             knowledge_context = {}
+        outcome = _native_sla_performance_metrics(outcome, question)
         # These run last: they add fields the page's own read API returned and
         # the scope/history notes, which earlier repairs would otherwise drop.
         outcome = _native_observed_api_enrichment(outcome, question)
@@ -12340,6 +12385,17 @@ class AdminPortalReader:
             knowledge_context_hint = {'page': object_source}
             bounded_conversation_context['sourceHint'] = knowledge_context_hint
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
+        if not explicit_source and _STAFF_PERFORMANCE_REQUEST.search(str(question or "")):
+            # A question about staff performance or SLA compliance belongs to an
+            # analytics surface.  Bind it to the analytics page this account can
+            # actually read instead of letting the planner start from a team
+            # management page the role may not be allowed to open.
+            for module in ("content", "licensing", "inspection", "happiness", "financial-payment"):
+                candidate = f"/{module}/reports-analytics"
+                if any(permission_path_matches(candidate, path)
+                       for path in (*permission_context.pages, *permission_context.subpages)):
+                    explicit_source = candidate
+                    break
         if explicit_source:
             object_source = explicit_source
             bounded_conversation_context['sourceHint'] = {'page': explicit_source}
