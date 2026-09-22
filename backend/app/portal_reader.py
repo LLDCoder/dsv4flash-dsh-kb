@@ -8437,6 +8437,24 @@ def _knowledge_chunk_guidance(chunk: Any) -> dict[str, str]:
     }
 
 
+_HAN_SEQUENCE = re.compile(r"[\u3400-\u9fff]+")
+_ARABIC_SEQUENCE = re.compile(r"[\u0621-\u064a]{3,}")
+
+
+def _documented_guidance_score(question: str, guidance: dict[str, str]) -> int:
+    """Overlap score that also works for Chinese and Arabic wording."""
+
+    haystack = " ".join((guidance.get("section", ""), guidance.get("meaning", ""), guidance.get("use_when", "")))
+    score = len(_api_query_tokens(question) & _api_query_tokens(haystack))
+    han_question = {seq[index:index + 2] for seq in _HAN_SEQUENCE.findall(question) for index in range(max(0, len(seq) - 1))}
+    if han_question:
+        score += sum(1 for token in han_question if token in haystack)
+    arabic_question = set(_ARABIC_SEQUENCE.findall(question))
+    if arabic_question:
+        score += len(arabic_question & set(_ARABIC_SEQUENCE.findall(haystack)))
+    return score
+
+
 def documented_guidance_result(
     question: str,
     knowledge_context: Any,
@@ -8461,25 +8479,22 @@ def documented_guidance_result(
         return None
     if not isinstance(knowledge_context, dict) or knowledge_context.get("ok") is not True:
         return None
-    query_tokens = _api_query_tokens(text)
-    if not query_tokens:
-        return None
     permitted = (*permission_context.pages, *permission_context.subpages)
-    best: tuple[int, dict[str, str]] | None = None
-    for chunk in knowledge_context.get("chunks") or ():
+    candidates: list[tuple[int, int, dict[str, str]]] = []
+    for index, chunk in enumerate(knowledge_context.get("chunks") or ()):
         guidance = _knowledge_chunk_guidance(chunk)
         if not guidance.get("meaning"):
             continue
         if not any(permission_path_matches(guidance["page"], path) for path in permitted):
             continue
-        score = len(query_tokens & _api_query_tokens(
-            " ".join((guidance.get("section", ""), guidance.get("meaning", ""), guidance.get("use_when", "")))
-        ))
-        if score and (best is None or score > best[0]):
-            best = (score, guidance)
-    if best is None:
+        candidates.append((_documented_guidance_score(text, guidance), index, guidance))
+    if not candidates:
         return None
-    guidance = best[1]
+    # Retrieval order is the relevance order, so a question written in a script
+    # the token scorer cannot split still receives the best retrieved
+    # documented destination instead of an empty refusal.
+    best = max(candidates, key=lambda item: (item[0], -item[1]))
+    guidance = best[2]
     heading = guidance["section"] or guidance["page"]
     facts = [f"Documented destination: {heading} ({guidance['page']}).", f"{heading}: {guidance['meaning']}"]
     if guidance.get("use_when"):
@@ -8648,6 +8663,174 @@ def _native_personal_task_counts(outcome: ReaderOutcome, question: str) -> Reade
     return ReaderOutcome(result, {**outcome.audit_evidence, "nativePersonalTaskCounts": {
         "counters": len(facts),
     }, "result": result.public_json()})
+
+
+_LICENSE_MODULE = re.compile(r"\blicen[cs]es?\b|\bpermits?\b|许可|许可证|牌照|执照|رخصة|رخص|تصريح", re.I)
+_LICENSE_LIFECYCLE_VERB = re.compile(
+    r"restore|renew|reactivat|reinstate|reissue|恢复|续期|重新激活|补办|تجديد|استعادة|إعادة\s*إصدار",
+    re.I,
+)
+_LICENSE_SOON = re.compile(
+    r"expir\w*|expire\s+soon|expiring|即将到期|快到期|将要到期|快要到期|\d+\s*天(?:内|之内)|"
+    r"(?:الانتهاء|انتهاء|تنتهي|قريب\w*\s*من\s*الانتهاء)",
+    re.I,
+)
+_LICENSE_URGENCY = re.compile(
+    r"most\s+urgent|highest\s+priority|most\s+critical|\burgent\b|最紧急|最急|最优先|"
+    r"الأكثر\s+إلحاح\w*|عاجل",
+    re.I,
+)
+_LIST_CUE = re.compile(
+    r"\bwhich\b|\bhow\s+many\b|\blist\b|\bshow\b|\bcount\b|哪些|多少|列出|显示|所有|全部|"
+    r"كم|أي|اعرض|أظهر",
+    re.I,
+)
+
+
+def _license_module_focus(question: str) -> str:
+    """Classify a licensing question the rendered licence pages can answer."""
+
+    text = str(question or "")
+    if not _LICENSE_MODULE.search(text):
+        return ""
+    if _LICENSE_LIFECYCLE_VERB.search(text):
+        return ""
+    if _explicit_record_identity(text):
+        return ""
+    if _LIST_CUE.search(text) and _LICENSE_SOON.search(text):
+        return "expiry"
+    if _LICENSE_URGENCY.search(text) and re.search(r"application|applications|申请|طلب", text, re.I):
+        return "urgency"
+    return ""
+
+
+def _observation_text_rows(observation: Any) -> tuple[str, ...]:
+    """All rendered row texts, in page order and without duplicates."""
+
+    if not isinstance(observation, dict):
+        return ()
+    rows: list[str] = []
+    seen: set[str] = set()
+
+    def collect(values: Any) -> None:
+        if isinstance(values, (list, tuple)):
+            for item in values:
+                text = re.sub(r"\s+", " ", str(item or "")).strip()
+                if text and text.casefold() not in seen:
+                    seen.add(text.casefold())
+                    rows.append(text)
+
+    collect(observation.get("rowSummaries"))
+    for node in _observation_semantic_nodes(observation):
+        collect(node.get("rowSummaries"))
+    for section in observation.get("sectionSummaries") or ():
+        if isinstance(section, dict):
+            collect(section.get("rowSummaries"))
+    for key in ("headers", "columnHeaders"):
+        pass
+    for table in observation.get("tables") or ():
+        if isinstance(table, dict):
+            collect(table.get("rowSummaries"))
+    return tuple(rows)
+
+
+def _observed_status_option_action(observation: Any, wanted: str) -> dict[str, Any] | None:
+    """Build one observed Status-combobox filter for an exact displayed option."""
+
+    if not isinstance(observation, dict):
+        return None
+    for control in observation.get("filterControls") or ():
+        if not isinstance(control, dict) or control.get("role") != "combobox" or not control.get("selector"):
+            continue
+        for option in control.get("options") or ():
+            if str(option).strip().casefold() == wanted.casefold():
+                return {"type": "filter", "selector": str(control["selector"]), "value": str(option).strip()}
+    return None
+
+
+def _license_module_result(
+    observation: Any,
+    *,
+    question: str,
+    page: str,
+    focus: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+    filtered: bool,
+) -> ReaderResult | None:
+    """Answer a licence listing question from the rendered licence surface only."""
+
+    if not isinstance(observation, dict):
+        return None
+    rows = _observation_text_rows(observation)
+    if focus == "expiry":
+        if not rows:
+            if not filtered:
+                return None
+            return ReaderResult(
+                status="no_data",
+                summary="No licence currently renders under the selected Status value.",
+                page=page,
+                section="Licenses list",
+                answer_shape="list",
+                completeness="bounded",
+                scope=scope,
+                facts=(
+                    "The Licenses list was filtered with its own Status value for licences that are about to expire, "
+                    "and the resulting list rendered no rows.",
+                ),
+            )
+        note = (
+            "These rows come from the Licenses list"
+            + (" filtered with its own Status value for licences about to expire" if filtered else "")
+            + ". The portal does not document a fixed day threshold for what counts as expiring soon, so no day-count "
+              "is asserted; the Expiry Date column is reported exactly as rendered."
+        )
+        return ReaderResult(
+            status="success",
+            summary="Licences approaching expiry, read from the rendered Licenses list.",
+            page=page,
+            section="Licenses list",
+            answer_shape="list",
+            completeness="bounded",
+            scope=scope,
+            facts=(*rows[:8], note),
+        )
+    overdue: list[tuple[int, str]] = []
+    countdown: list[tuple[int, str]] = []
+    for row in rows:
+        match = re.search(r"\b(\d+)\s*d(?:ays?)?\s+overdue\b", row, re.I)
+        if match:
+            overdue.append((int(match.group(1)), row))
+            continue
+        match = re.search(r"\b(\d+)\s*d(?:ays?)?\b(?!\s+overdue)", row, re.I)
+        if match:
+            countdown.append((int(match.group(1)), row))
+    if overdue:
+        worst = max(days for days, _row in overdue)
+        selected = [row for days, row in overdue if days == worst]
+        note = (
+            "Ranked by the SLA value rendered in the current queue: this row carries the largest overdue duration "
+            f"({worst} days). It is the most urgent visible application on this bounded page."
+        )
+    elif countdown:
+        best = min(days for days, _row in countdown)
+        selected = [row for days, row in countdown if days == best]
+        note = (
+            "No visible row of this queue renders an overdue SLA. Ranked by the rendered SLA countdown, the "
+            f"shortest remaining value is {best} day(s)."
+        )
+    else:
+        return None
+    return ReaderResult(
+        status="success",
+        summary="The most urgent visible application and its SLA.",
+        page=page,
+        section="Application tasks",
+        answer_shape="detail",
+        completeness="bounded",
+        scope=scope,
+        facts=tuple(selected[:3]) + (note,),
+    )
 
 
 def _guard_unfound_record_identity(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
@@ -10818,6 +11001,61 @@ class AdminPortalReader:
             return ReaderOutcome(result, {'stage': 'prediction_unavailable', 'permission': permission_audit,
                                           'observation': prediction_observation, 'result': result.public_json()})
 
+        license_focus = _license_module_focus(question)
+        if license_focus:
+            license_page = "/licensing/applications" if license_focus == "urgency" else "/licensing/licenses"
+            license_request = PortalReadRequest(start_path=license_page, actions=({'type': 'observe'},))
+            license_denied = validate_policy(license_request, reason='license_module_read')
+            if license_denied:
+                result = ReaderResult(status='no_permission', page=license_page,
+                    summary='The licensing page needed for this question is not permitted.',
+                    missing=(license_denied,))
+                return ReaderOutcome(result, {'stage': 'license_module_read', 'permission': permission_audit,
+                                              'result': result.public_json()})
+            try:
+                license_tool = await portal_read_stage(license_request, timeout_stage='license_module_read',
+                                                       attempt='license_module_read')
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                license_tool = {}
+            if license_tool.get('ok'):
+                license_observation = (license_tool.get('result') or {}).get('observation') or {}
+                license_actions: tuple[dict[str, Any], ...] = ()
+                if license_focus == 'expiry':
+                    option = next(
+                        (str(candidate).strip() for control in (license_observation.get('filterControls') or ())
+                         if isinstance(control, dict) and control.get('role') == 'combobox'
+                         for candidate in (control.get('options') or ())
+                         if re.fullmatch(r"expiring soon|expire soon", str(candidate).strip(), re.I)),
+                        "",
+                    )
+                    observed_filter = _observed_status_option_action(license_observation, option) if option else None
+                    if observed_filter is not None:
+                        try:
+                            filtered_tool = await portal_read_stage(
+                                replace(license_request, actions=(observed_filter,)),
+                                timeout_stage='license_expiry_filter', attempt='license_expiry_filter')
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            filtered_tool = {}
+                        if filtered_tool.get('ok'):
+                            license_observation = (filtered_tool.get('result') or {}).get('observation') or {}
+                            license_actions = (observed_filter,)
+                license_result = _license_module_result(
+                    license_observation,
+                    question=question,
+                    page=license_page,
+                    focus=license_focus,
+                    scope=_permission_result_scope(permission_context),
+                    filtered=bool(license_actions),
+                )
+                if license_result is not None:
+                    return ReaderOutcome(license_result, {
+                        'stage': 'license_module_read',
+                        'permission': permission_audit,
+                        'observation': license_observation,
+                        'actions': license_actions,
+                        'result': license_result.public_json(),
+                    })
+
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
         if explicit_source in {
             '/happiness/tickets', '/happiness/refunds', '/financial-payment/refunds',
@@ -11105,8 +11343,41 @@ class AdminPortalReader:
                                     'actions': actions,
                                     'result': sibling_rows.public_json(),
                                 })
+                # Explain what the page actually renders instead of leaving the
+                # reader with a bare refusal: the requested condition is not a
+                # visible row, and the rendered tabs/filters prove which
+                # conditions were checked.
+                context_facts: list[str] = []
+                selected_tabs = [
+                    str(tab.get('name')) for tab in observation.get('tabControls') or []
+                    if isinstance(tab, dict) and tab.get('selected') is True and tab.get('name')
+                ]
+                if selected_tabs:
+                    context_facts.append(
+                        'The rendered view is the ' + ' / '.join(selected_tabs) + ' tab of ' + explicit_source + '.'
+                    )
+                available_tabs = [
+                    str(tab.get('name')) for tab in observation.get('tabControls') or []
+                    if isinstance(tab, dict) and tab.get('name')
+                ]
+                if available_tabs:
+                    context_facts.append('The page renders these tabs: ' + ', '.join(dict.fromkeys(available_tabs)) + '.')
+                option_values = [
+                    str(option) for control in observation.get('filterControls') or []
+                    if isinstance(control, dict)
+                    for option in (control.get('options') or [])
+                ]
+                if option_values:
+                    context_facts.append(
+                        'The page renders these filter values: ' + ', '.join(dict.fromkeys(option_values))[:400] + '.'
+                    )
+                context_facts.append(
+                    'No record matching the requested condition is visible in this bounded view, so no record was '
+                    'returned and no other row was substituted.'
+                )
                 result = ReaderResult(status='not_confirmed', page=explicit_source, answer_shape='list',
                     summary='The requested named-page list could not be verified from the current rendered view.',
+                    facts=tuple(context_facts[:5]),
                     missing=('named_source_list_not_visible',))
                 return ReaderOutcome(result, {'stage': 'explicit_named_source_list',
                                               'permission': permission_audit, 'observation': observation,
