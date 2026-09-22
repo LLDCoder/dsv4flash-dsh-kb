@@ -8240,7 +8240,14 @@ _SELF_PROFILE_PATTERNS: tuple[str, ...] = (
     r"(?:查询|读取|访问)[^。]{0,12}(?:范围|限制)",
     r"\bwhich (?:role|department) am i\b",
     r"你能(?:做|帮|干什么)",
+    r"你可以(?:做|帮|提供)",
+    r"能帮我(?:做|干)什么",
     r"我可以做什么",
+    r"你能帮我做什么",
+    r"\bwhat can you help\b",
+    r"\bhow can you help\b",
+    r"ماذا يمكنك أن تفعل",
+    r"ما الذي يمكنك فعله",
     r"我的(?:部门|角色|权限|数据范围)",
     r"我当前(?:登录的)?(?:部门|角色)",
     r"你(?:是|知道)(?:谁|我的)",
@@ -8330,7 +8337,7 @@ _MUTATION_REQUEST_PATTERNS: tuple[str, ...] = (
     r"reset|disable|merge|cancel|change|update|set)\b[^.]{0,30}\b(?:application|licen[cs]e|content|ticket|refund|payment|transaction|task|case|record|account|user|photo|note|fine|penalt(?:y|ies)|fee|profile|complaint|enquir(?:y|ies)|report)\b",
     r"\b(?:approve|reject|assign|refund|close|delete|export|send|waive|reset|disable|merge|cancel)\b"
     r"[^.]{0,20}\b(?:it|this|that|them|the record)\b",
-    r"(?:帮我|请|直接|把)[^。]{0,14}(?:批准|驳回|分派|指派|退款|关闭|删除|修改|改成|导出|发送|免除|重置|停用|合并|跳过|执行)",
+    r"(?:帮我|请|直接|把)[^。]{0,14}(?:批准|驳回|分派|指派|退款|关闭|删除|修改|改成|标记|标注|设为|判为|导出|发送|免除|重置|停用|合并|跳过|执行)",
     r"(?:批准|驳回|分派|退款|关闭|删除|修改|导出|发送|免除|重置|停用|合并|改为|改成)(?:这|该|此|本)?"
     r"(?:个|项|张|条|笔)?(?:申请|内容|投诉|工单|退款|付款|交易|任务|案件|记录|账号|用户|罚单|报告|备注)",
     r"(?:跳过|绕过|规避)[^。]{0,16}(?:检查|审批|审核|现场|复核|流程|审计)",
