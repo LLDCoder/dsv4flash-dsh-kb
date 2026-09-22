@@ -1,3 +1,4 @@
+from app.service import DSHService
 from app.skills import (
     normalize_response_language,
     resolve_response_language,
@@ -40,3 +41,15 @@ def test_generated_answer_must_use_the_resolved_language():
     assert response_language_mismatch("ML-3-7-5263529", "ar") is False
     assert response_language_mismatch("17", "ar") is False
     assert response_language_name("ar") == "ARABIC"
+
+
+def test_router_clarification_is_kept_only_in_the_resolved_language():
+    english_question = {"needsClarification": True, "clarifyingQuestion": "Which record do you mean?"}
+    assert DSHService.clarification_message(english_question, "en") == "Which record do you mean?"
+    assert DSHService.clarification_message(english_question, "ar").startswith("هل يمكنك توضيح")
+
+    arabic_question = {"needsClarification": True, "clarifyingQuestion": "أي سجل تقصد؟"}
+    assert DSHService.clarification_message(arabic_question, "ar") == "أي سجل تقصد؟"
+    assert DSHService.clarification_message(arabic_question, "en").startswith("Could you clarify")
+
+    assert DSHService.clarification_message({"needsClarification": False}, "ar") is None

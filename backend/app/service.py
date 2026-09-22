@@ -37,6 +37,7 @@ from .skills import (
     resolve_skill,
     normalize_response_language,
     resolve_response_language,
+    response_language_for,
     response_language_mismatch,
     response_language_name,
 )
@@ -1297,7 +1298,11 @@ class DSHService:
             return None
         question = " ".join(str(metadata.get("clarifyingQuestion") or "").split())[:300]
         if question and not is_internal_tool_protocol(question):
-            return question if question.endswith(("?", "؟")) else question + "?"
+            # The routing model proposes this question, so keep it only when it
+            # is written in the language the customer is being answered in.
+            detected = response_language_for(question)
+            if detected is None or detected == response_language:
+                return question if question.endswith(("?", "؟")) else question + "?"
         return (
             "هل يمكنك توضيح نوع السجلات أو معلومات الخدمة التي تريد مني التحقق منها؟"
             if response_language == "ar"
