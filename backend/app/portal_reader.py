@@ -11707,6 +11707,7 @@ class AdminPortalReader:
             )
         elif bounded_conversation_context and callable(resolver):
             intent_started_at = time.perf_counter()
+            intent_resolved = False
             try:
                 candidate = await _await_reader_stage(
                     resolver(question, bounded_conversation_context),
@@ -11714,6 +11715,7 @@ class AdminPortalReader:
                 )
                 resolution = parse_intent_resolution(candidate, question, bounded_conversation_context)
                 intent_state.update(resolution.public_json())
+                intent_resolved = True
             except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
                 model_failure = _model_http_failure(exc)
                 if model_failure is not None:
@@ -11744,19 +11746,20 @@ class AdminPortalReader:
                     output_summary={"strategy": "unresolved_question_used"},
                     failure_code="intent_resolution_invalid",
                 )
-            trace.record(
-                "intent_resolution", "passed", started_at=intent_started_at,
-                output_summary={"relation": intent_state["relation"], "sources": {
-                    name: slot["source"] for name, slot in intent_state["slots"].items()
-                }},
-            )
-            if intent_state["relation"] == "clarify":
-                return ReaderOutcome(
-                    ReaderResult(status="not_confirmed", summary="The requested scope needs clarification.",
-                                 missing=("intent_ambiguous",), clarification_options=tuple(intent_state["clarificationOptions"])),
-                    {"stage": "intent_clarification", "permission": permission_audit},
+            if intent_resolved:
+                trace.record(
+                    "intent_resolution", "passed", started_at=intent_started_at,
+                    output_summary={"relation": intent_state["relation"], "sources": {
+                        name: slot["source"] for name, slot in intent_state["slots"].items()
+                    }},
                 )
-            bounded_conversation_context = resolution.planner_context(bounded_conversation_context)
+                if intent_state["relation"] == "clarify":
+                    return ReaderOutcome(
+                        ReaderResult(status="not_confirmed", summary="The requested scope needs clarification.",
+                                     missing=("intent_ambiguous",), clarification_options=tuple(intent_state["clarificationOptions"])),
+                        {"stage": "intent_clarification", "permission": permission_audit},
+                    )
+                bounded_conversation_context = resolution.planner_context(bounded_conversation_context)
         knowledge_result: dict[str, Any] = {"ok": False, "code": "knowledge_not_configured"}
         knowledge_trace_recorded = False
         if self.knowledge_folder_id:
