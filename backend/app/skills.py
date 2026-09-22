@@ -1252,7 +1252,7 @@ def build_system_prompt(
     language_policy = [
         "LANGUAGE POLICY (mandatory and higher priority than the language used by tools, retrieved documents, or internal instructions):",
         "- Identify the response language from the user's latest message first: Arabic for primarily Arabic text, English for primarily English text.",
-        "- English and Arabic are the only supported answer languages. When the message is written in another language, answer in the required response language below and start with a short notice asking the customer to continue in English or Arabic.",
+        "- English and Arabic are the only supported answer languages. When the message is written in another language, still answer in the required response language below. Do not write your own language notice: the runtime prepends that notice to your answer.",
         "- Only when the latest message carries no identifiable language - for example a bare number, a reference code, a symbol or an emoji - fall back to the portal's system language, and to English when that is unavailable.",
         "- Never mix languages inside one answer and never follow the language of a Tool, a retrieved document or an internal instruction.",
         f"- Required response language for this turn: {target}. Use only {target} for explanatory prose, while preserving necessary proper nouns, identifiers, and verbatim quotations.",
