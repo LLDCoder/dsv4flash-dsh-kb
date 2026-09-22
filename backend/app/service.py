@@ -35,11 +35,13 @@ from .skills import (
     exact_quote_source_sufficient,
     resolve_configured_skill,
     resolve_skill,
+    needs_language_notice,
     normalize_response_language,
     resolve_response_language,
     response_language_for,
     response_language_mismatch,
     response_language_name,
+    unsupported_language_notice,
 )
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, build_legacy_tool_request, system_default_tool_definitions
 from .tool_gateway import ToolGateway, parse_tool_request
@@ -1310,6 +1312,14 @@ class DSHService:
         )
 
     @staticmethod
+    def with_language_notice(content: str | None, notice: str) -> str | None:
+        """Prepend the unsupported-language notice once."""
+
+        if not content or not notice or content.startswith(notice):
+            return content
+        return f"{notice}\n\n{content}"
+
+    @staticmethod
     def status_message(language: str, phase: str) -> str:
         """Return a short progress message without exposing prompts or reasoning."""
 
@@ -1493,6 +1503,11 @@ class DSHService:
                     latest_attachment = raw_attachment if isinstance(raw_attachment, dict) else None
                     portal_language = latest_user.event_json.get("language") if latest_user else None
                     response_language = resolve_response_language(latest_content, portal_language)
+                    language_notice = (
+                        unsupported_language_notice(response_language)
+                        if needs_language_notice(latest_content)
+                        else ""
+                    )
                     # Send a first visible update before deterministic routing,
                     # external calls, or the LLM request can spend time waiting.
                     await self.append_status(
@@ -1525,7 +1540,7 @@ class DSHService:
                             conversation,
                             "assistant.message",
                             {
-                                "content": scope_guard["content"],
+                                "content": self.with_language_notice(scope_guard["content"], language_notice),
                                 "requestId": principal.request_id,
                                 **(
                                     {"profileAction": scope_guard["profileAction"]}
@@ -2235,7 +2250,7 @@ class DSHService:
                             conversation,
                             "assistant.message",
                             {
-                                "content": forced_response_message,
+                                "content": self.with_language_notice(forced_response_message, language_notice),
                                 "requestId": principal.request_id,
                                 **({"profileAction": profile_action} if profile_action else {}),
                             },
@@ -2259,7 +2274,7 @@ class DSHService:
                             conversation,
                             "assistant.chunk",
                             {
-                                "content": attachment_local_response,
+                                "content": self.with_language_notice(attachment_local_response, language_notice),
                                 "requestId": principal.request_id,
                                 "runtimeId": conversation.runtime_id,
                             },
@@ -2269,7 +2284,7 @@ class DSHService:
                             conversation,
                             "assistant.message",
                             {
-                                "content": attachment_local_response,
+                                "content": self.with_language_notice(attachment_local_response, language_notice),
                                 "requestId": principal.request_id,
                                 **({"profileAction": profile_action} if profile_action else {}),
                             },
@@ -2358,6 +2373,7 @@ class DSHService:
                                 if corrected and not response_language_mismatch(corrected, response_language):
                                     content = corrected
                             if content:
+                                content = self.with_language_notice(content, language_notice) or content
                                 await self.publish_stream_event(
                                     conversation,
                                     "assistant.chunk",

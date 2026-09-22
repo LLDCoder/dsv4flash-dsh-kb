@@ -1,10 +1,13 @@
 from app.service import DSHService
 from app.skills import (
+    detect_message_language,
+    needs_language_notice,
     normalize_response_language,
     resolve_response_language,
     response_language_for,
     response_language_mismatch,
     response_language_name,
+    unsupported_language_notice,
 )
 
 
@@ -25,7 +28,8 @@ def test_messages_without_language_signal_fall_back_to_the_portal_language():
 
 def test_unknown_portal_language_falls_back_to_english():
     assert normalize_response_language("ar-AE") == "ar"
-    assert normalize_response_language("zh_CN") == "zh"
+    assert normalize_response_language("en-US") == "en"
+    assert normalize_response_language("zh_CN") is None
     assert normalize_response_language("fr-FR") is None
     assert resolve_response_language("17", "fr-FR") == "en"
 
@@ -53,3 +57,39 @@ def test_router_clarification_is_kept_only_in_the_resolved_language():
     assert DSHService.clarification_message(arabic_question, "en").startswith("Could you clarify")
 
     assert DSHService.clarification_message({"needsClarification": False}, "ar") is None
+
+
+def test_only_english_and_arabic_are_supported():
+    assert response_language_for("How many licenses do I have?") == "en"
+    assert response_language_for("كم عدد التراخيص المتاحة؟") == "ar"
+    assert response_language_for("你好，我有多少张许可证？") is None
+    assert response_language_for("Сколько у меня лицензий?") is None
+
+
+def test_other_languages_are_detected_and_noticed():
+    for text in (
+        "Bonjour, combien de licences ai-je ?",
+        "¿Cuántas licencias tengo?",
+        "Wie viele Lizenzen habe ich?",
+        "Combien de licences ai-je ?",
+        "Сколько у меня лицензий?",
+        "你好，我有多少张许可证？",
+        "こんにちは、ライセンスはいくつありますか？",
+    ):
+        assert detect_message_language(text) == "other", text
+        assert needs_language_notice(text) is True, text
+        assert response_language_for(text) is None, text
+
+    assert needs_language_notice("How many licenses do I have?") is False
+    assert unsupported_language_notice("en").startswith("Note: I can help in English or Arabic")
+    assert unsupported_language_notice("ar").startswith("ملاحظة")
+
+
+def test_plain_english_is_not_flagged_as_another_language():
+    for text in (
+        "Where can I pay this fine?",
+        "Show my violations and fines.",
+        "I received an inspection notice. What should I do?",
+        "What is the status of my application?",
+    ):
+        assert detect_message_language(text) == "en", text

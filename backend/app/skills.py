@@ -4,8 +4,55 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SUPPORTED_RESPONSE_LANGUAGES = ("ar", "en", "zh")
-RESPONSE_LANGUAGE_NAMES = {"ar": "ARABIC", "en": "ENGLISH", "zh": "CHINESE"}
+SUPPORTED_RESPONSE_LANGUAGES = ("ar", "en")
+RESPONSE_LANGUAGE_NAMES = {"ar": "ARABIC", "en": "ENGLISH"}
+
+# The assistant answers in English or Arabic only. A message written in any
+# other language still gets an answer, preceded by this short notice.
+LANGUAGE_NOTICES = {
+    "ar": "ملاحظة: يمكنني المساعدة بالعربية أو الإنجليزية فقط. يُرجى إرسال سؤالك بإحدى هاتين اللغتين.",
+    "en": "Note: I can help in English or Arabic only. Please send your question in one of these two languages.",
+}
+
+# Letter ranges of scripts that are neither Latin nor Arabic, excluding the CJK
+# range that script_letter_counts already counts.
+OTHER_SCRIPT_RANGES = (
+    (0x0370, 0x03FF),  # Greek
+    (0x0400, 0x04FF),  # Cyrillic
+    (0x0530, 0x058F),  # Armenian
+    (0x0590, 0x05FF),  # Hebrew
+    (0x0900, 0x097F),  # Devanagari
+    (0x0E00, 0x0E7F),  # Thai
+    (0x10A0, 0x10FF),  # Georgian
+    (0x1200, 0x137F),  # Ethiopic
+    (0x3040, 0x30FF),  # Japanese kana
+    (0xAC00, 0xD7AF),  # Hangul
+)
+
+# Markers that identify Latin-script text as a language other than English.
+# Deliberately narrow so ordinary English is never flagged.
+NON_ENGLISH_LATIN_MARKERS = "äöüßéèêëàâçîïôûùñáíóúãõ¿¡åøæœšžčřğşıłńőűđťď"
+NON_ENGLISH_LATIN_WORDS = (
+    # French
+    "bonjour", "merci", "salut", "vous", "nous", "avec", "pour", "combien",
+    "comment", "quand", "pourquoi", "je", "tu", "il", "elle", "ils", "suis",
+    # Spanish
+    "hola", "gracias", "por favor", "buenos", "buenas", "cuantas", "cuantos",
+    "tengo", "quiero", "necesito", "puedo", "donde", "cual",
+    # German
+    "danke", "bitte", "guten", "nicht", "und", "wir", "ist", "wie", "viele",
+    "habe", "ich", "mein", "meine", "kann", "sind", "mit",
+    # Portuguese and Italian
+    "obrigado", "obrigada", "voce", "nao", "bom dia", "quantas", "quantos",
+    "ciao", "grazie", "buongiorno", "prego", "quante", "quanti",
+    # Dutch
+    "bedankt", "alsjeblieft", "hoeveel",
+)
+
+NON_ENGLISH_LATIN_WORD_PATTERN = re.compile(
+    r"(?<![a-z])(" + "|".join(re.escape(word) for word in NON_ENGLISH_LATIN_WORDS) + r")(?![a-z])",
+    re.IGNORECASE,
+)
 
 # A few letters are the minimum evidence that the message is written in a
 # language at all. A bare number, an identifier, a symbol or an emoji is not,
@@ -54,17 +101,65 @@ def response_language_mismatch(text: str, expected: str) -> bool:
     return False
 
 
-def response_language_for(text: str) -> str | None:
-    """Detect the language of the message; None when it carries no signal."""
+def count_other_script_letters(text: str) -> int:
+    """Count letters written in a script that is neither Latin nor Arabic."""
+
+    total = 0
+    for char in text:
+        code = ord(char)
+        for start, end in OTHER_SCRIPT_RANGES:
+            if start <= code <= end:
+                total += 1
+                break
+    return total
+
+
+def looks_non_english_latin(text: str) -> bool:
+    """Detect Latin-script text that is written in another language."""
+
+    lowered = text.casefold()
+    if any(marker in lowered for marker in NON_ENGLISH_LATIN_MARKERS):
+        return True
+    return bool(NON_ENGLISH_LATIN_WORD_PATTERN.search(lowered))
+
+
+def detect_message_language(text: str) -> str | None:
+    """Return "ar", "en", "other", or None when the message has no signal."""
 
     arabic_count, latin_count, chinese_count = script_letter_counts(text)
-    if arabic_count >= MIN_SCRIPT_LETTERS and arabic_count > max(latin_count, chinese_count):
-        return "ar"
-    if chinese_count >= MIN_SCRIPT_LETTERS and chinese_count > latin_count:
-        return "zh"
-    if latin_count >= MIN_SCRIPT_LETTERS and latin_count > max(arabic_count, chinese_count):
-        return "en"
+    other_count = chinese_count + count_other_script_letters(text)
+
+    # A message in Arabic, Chinese or another non-Latin script often carries a
+    # Latin reference such as ML-3-13-5481772, so the non-Latin prose only has
+    # to reach half of the Latin letters before it defines the language.
+    if arabic_count >= other_count:
+        non_latin_language, non_latin_count = "ar", arabic_count
+    else:
+        non_latin_language, non_latin_count = "other", other_count
+    if non_latin_count >= MIN_SCRIPT_LETTERS and non_latin_count * 2 >= latin_count:
+        return non_latin_language
+    if latin_count >= MIN_SCRIPT_LETTERS:
+        return "other" if looks_non_english_latin(text) else "en"
     return None
+
+
+def response_language_for(text: str) -> str | None:
+    """Return a supported reply language, or None when the text is unusable."""
+
+    language = detect_message_language(text)
+    return language if language in SUPPORTED_RESPONSE_LANGUAGES else None
+
+
+def needs_language_notice(text: str) -> bool:
+    """True when the message is written in an unsupported language."""
+
+    return detect_message_language(text) == "other"
+
+
+def unsupported_language_notice(response_language: str) -> str:
+    """Notice asking the customer to continue in English or Arabic."""
+
+    return LANGUAGE_NOTICES.get(response_language, LANGUAGE_NOTICES["en"])
 
 
 def normalize_response_language(value: object) -> str | None:
@@ -1156,7 +1251,8 @@ def build_system_prompt(
     target = response_language_name(response_language)
     language_policy = [
         "LANGUAGE POLICY (mandatory and higher priority than the language used by tools, retrieved documents, or internal instructions):",
-        "- Identify the response language from the user's latest message first: Arabic for primarily Arabic text, Chinese for primarily Chinese text, English for primarily English text.",
+        "- Identify the response language from the user's latest message first: Arabic for primarily Arabic text, English for primarily English text.",
+        "- English and Arabic are the only supported answer languages. When the message is written in another language, answer in the required response language below and start with a short notice asking the customer to continue in English or Arabic.",
         "- Only when the latest message carries no identifiable language - for example a bare number, a reference code, a symbol or an emoji - fall back to the portal's system language, and to English when that is unavailable.",
         "- Never mix languages inside one answer and never follow the language of a Tool, a retrieved document or an internal instruction.",
         f"- Required response language for this turn: {target}. Use only {target} for explanatory prose, while preserving necessary proper nouns, identifiers, and verbatim quotations.",

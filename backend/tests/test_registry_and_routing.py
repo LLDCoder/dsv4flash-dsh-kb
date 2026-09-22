@@ -61,9 +61,12 @@ class RegistryAndRoutingTests(unittest.TestCase):
                 )
                 self.assertEqual(response_language_for(question), language)
 
-    def test_chinese_customer_questions_use_chinese_response_language(self):
-        self.assertEqual(response_language_for("显示我的支付记录"), "zh")
-        self.assertEqual(response_language_for("给我查一下Peter有几个申请"), "zh")
+    def test_non_supported_scripts_fall_back_to_the_portal_language(self):
+        # English and Arabic are the supported answer languages, so a Chinese
+        # question resolves to no reply language and uses the portal language
+        # with an unsupported-language notice.
+        self.assertIsNone(response_language_for("显示我的支付记录"))
+        self.assertIsNone(response_language_for("给我查一下Peter有几个申请"))
 
     def test_generic_violations_requests_are_not_fine_payment_requests(self):
         definitions = [{
