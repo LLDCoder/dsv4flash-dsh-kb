@@ -187,7 +187,11 @@ DEFAULT_SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "content": (
             "Read the current Admin Portal state using the caller's verified GetUserInfo permissions. "
             "Use only knowledge.search and admin.portal.read. Visit only pages needed for the question, "
-            "never perform a mutation, and distinguish success, no_data, no_permission, load_failed, and not_confirmed."
+            "never perform a mutation, and distinguish success, no_data, no_permission, load_failed, and not_confirmed.\n"
+            "RESPONSE RULES: every answer that reports portal information must also describe it - what the values mean, "
+            "which page, tab or area they come from, and the scope limit that applies. When the request cannot be "
+            "completed, explain what was checked, why it could not be confirmed, and the concrete next step instead of "
+            "returning a bare refusal."
         ),
     },
     {
