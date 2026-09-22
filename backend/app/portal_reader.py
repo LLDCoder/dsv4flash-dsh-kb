@@ -3643,6 +3643,22 @@ def _knowledge_claim_supported_by_chunk(fact: str, chunk: str) -> bool:
         if prefix and _knowledge_claim_supported_by_chunk(prefix[1], chunk):
             return True
 
+    # The planner may name the documented section before quoting it, as in
+    # "Service Operations Analytics: \"A headline total and a separate chart
+    # total are not proven to share an aggregation basis.\"".  The section name
+    # is retrieval metadata, so the quoted remainder is checked against this
+    # same chunk; the remainder still has to be present in it.
+    subject_prefix = re.match(r"^(.{1,80}?):\s*(.+)$", normalized_fact, re.DOTALL)
+    if subject_prefix:
+        subject_label = _key(subject_prefix.group(1))
+        subject_names = {_key(name) for name in subjects} | {
+            _key(field.split(":", 1)[0]) for field in _knowledge_content_fields(chunk)
+        }
+        remainder = subject_prefix.group(2).strip().strip('"').strip("'").strip()
+        if subject_label and remainder and subject_label in subject_names:
+            if _knowledge_claim_supported_by_chunk(remainder, chunk):
+                return True
+
     quote = normalized_fact.replace("`", "").rstrip(".!?。！？ ")
     sentences = tuple(sentence for body in _knowledge_content_fields(chunk).values()
                       for sentence in _knowledge_fact_clauses(body)) or _knowledge_fact_clauses(chunk)
@@ -8410,10 +8426,28 @@ _MONTH_NAMES = (
     "July", "August", "September", "October", "November", "December",
 )
 _SENSITIVE_GUIDANCE_QUESTION = re.compile(
-    r"system\s+prompt|internal\s+instructions|ignore\s+all\s+rules|passport\s+number|bank\s+details"
-    r"|كلمة\s+المرور|تعليمات\s+النظام|تجاهل\s+القواعد|جواز\s+السفر|بيانات\s+البنك",
+    r"system\s+prompt|internal\s+(?:instructions|polic\w+|notes?|review)|api\s*key|access\s+token|cookie|"
+    r"connection\s+string|creden\w+|pretend\s+(?:i|you)|act\s+as|impersonat|hidden\s+records?|"
+    r"other\s+departments?|all\s+supervisors?|passport\s+numbers?|bank\s+details|"
+    r"系统提示词|内部(?:政策|指令|审核|意见|备注|配置)|密钥|令牌|凭证|连接字符串|链接串|假装|扮演|隐藏记录|"
+    r"其他部门|所有主管|全部隐藏|护照号|银行信息|"
+    r"كلمة\s+المرور|تعليمات\s+النظام|تجاهل\s+القواعد|جواز\s+السفر|بيانات\s+البنك|تظاهر",
     re.I,
 )
+# The documented-guidance pass names a portal destination. It must only run for a
+# real business question, never for a credential, role-play or low-signal turn
+# whose correct answer is a refusal or a request to rephrase.
+_GUIDANCE_BUSINESS_TOPIC = re.compile(
+    r"licen[cs]e|permit|application|content|refund|ticket|inspection|dashboard|task|report|analytics|"
+    r"account|customer|payment|transaction|fine|violation|polic\w+|rule|standard|document|sla|status|"
+    r"queue|team|member|officer|book|isbn|wallet|fee|applicant|"
+    r"许可|申请|内容|退款|工单|检查|看板|仪表盘|任务|报表|报告|账户|客户|付款|交易|罚款|违规|政策|规则|"
+    r"标准|材料|状态|队列|团队|成员|员工|币种|金额|费用|机构|委员会|主管|"
+    r"رخصة|رخص|طلب|محتوى|استرداد|تذكرة|تفتيش|لوحة|مهمة|تقرير|حساب|عميل|دفع|معاملة|غرامة|مخالفة|"
+    r"سياسة|قاعدة|معيار|مستند|حالة|فريق|موظف",
+    re.I,
+)
+_GUIDANCE_LOW_SIGNAL = re.compile(r"(.)\1{9,}|^[\W_\d]+$")
 
 
 def _knowledge_chunk_guidance(chunk: Any) -> dict[str, str]:
@@ -8476,6 +8510,8 @@ def documented_guidance_result(
         return None
     text = str(question or "")
     if _SENSITIVE_GUIDANCE_QUESTION.search(text) or question_requests_business_mutation(text):
+        return None
+    if _GUIDANCE_LOW_SIGNAL.search(text) or not _GUIDANCE_BUSINESS_TOPIC.search(text):
         return None
     if not isinstance(knowledge_context, dict) or knowledge_context.get("ok") is not True:
         return None
