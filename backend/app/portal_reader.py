@@ -2977,6 +2977,13 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # rather than on the refund workflow.  HC-01 is the stable ticket-number
     # family observed on that page.  Bind it before planning so an exact ticket
     # question cannot be redirected to an unrelated application/detail API.
+    # An inspection or compliance-committee question uses the inspection
+    # surfaces even when it says "case"; the ticket page holds no such queue.
+    if re.search(
+        r"\b(?:inspection|inspector|compliance\s+committee|committee)\b|检查|巡检|委员会|تفتيش|المفتش|لجنة",
+        normalized,
+    ):
+        return "/inspection/tasks"
     if re.search(r"\bHC-01-\d{4}-\d+\b", str(question or ""), re.I) or re.search(
         r"\b(?:ticket|tickets|work\s*orders?|enquir(?:y|ies)|complaints?|cases?)\b"
         r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|投诉|諮詢)"
@@ -8764,7 +8771,8 @@ def _queue_rows_for_advice(observation: Any) -> list[dict[str, str]]:
 
     if not isinstance(observation, dict):
         return []
-    wanted = {"Task No.", "Task Category", "Apply For", "Assigned To", "SLA", "Status", "Last Updated"}
+    wanted = {"Task No.", "Task Category", "Apply For", "Assigned To", "SLA", "Status", "Last Updated",
+              "Inspector", "Current Handler"}
     rows: list[dict[str, str]] = []
     for node in _observation_semantic_nodes(observation):
         if node.get("kind") not in {"table", "grid"}:
@@ -8797,6 +8805,168 @@ _OVERDUE_RENDERED = re.compile(r"\boverdue\b|逾期|متأخر", re.I)
 _RETURNED_RENDERED = re.compile(r"退回|rejected|returned|sent back", re.I)
 
 
+def _api_candidate_rows(observation: Any, operation_key: str) -> tuple[dict[str, Any], ...]:
+    """Rows returned by one read API that the page itself already called."""
+
+    if not isinstance(observation, dict):
+        return ()
+    for candidate in (observation.get("apiDiscovery") or {}).get("candidates") or ():
+        if not isinstance(candidate, dict) or str(candidate.get("operationKey") or "") != operation_key:
+            continue
+        if candidate.get("status") != 200:
+            continue
+        evidence = candidate.get("responseEvidence")
+        payload = evidence.get("data") if isinstance(evidence, dict) and isinstance(evidence.get("data"), dict) else evidence
+        if not isinstance(payload, dict):
+            return ()
+        items = payload.get("items")
+        if isinstance(items, list):
+            return tuple(item for item in items if isinstance(item, dict))
+    return ()
+
+
+def _observed_api_rows(outcome: ReaderOutcome) -> tuple[dict[str, Any], ...]:
+    """Rows from the read APIs the page issued, across every recorded observation."""
+
+    evidence = outcome.audit_evidence
+    observations: list[Any] = []
+    if evidence.get("observation"):
+        observations.append(evidence["observation"])
+    recorded = evidence.get("observations")
+    if isinstance(recorded, dict):
+        observations.extend(value for value in recorded.values() if isinstance(value, dict))
+    portal_observation = ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
+    if isinstance(portal_observation, dict):
+        observations.append(portal_observation)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for observation in observations:
+        for operation in (
+            "GET /api/admin/inspection/tasks",
+            "GET /api/admin/finance/transactions",
+            "GET /api/admin/payments/refunds",
+        ):
+            for row in _api_candidate_rows(observation, operation):
+                identity = str(
+                    row.get("taskNo") or row.get("transactionNo") or row.get("refundNo") or json.dumps(
+                        row, sort_keys=True, ensure_ascii=False
+                    )
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                rows.append(row)
+        if rows:
+            break
+    return tuple(rows)
+
+
+_FINANCE_CURRENCY_REQUEST = re.compile(
+    r"\b(?:payments?|transactions?|refunds?|amount|currency|today)\b|今天|付款|交易|退款|金额|币种|عملات|مبلغ|اليوم",
+    re.I,
+)
+_OTHER_PEOPLE_TASK_REQUEST = re.compile(
+    r"\bother\s+(?:inspectors?|officers?|staff|members?|handlers?)\b|\ball\s+(?:inspectors?|officers?|staff|members?)\b"
+    r"|其他\s*(?:inspector|officer|检查员|员工|成员|处理人)|其他部门",
+    re.I,
+)
+_PERIOD_COMPARISON_REQUEST = re.compile(
+    r"\b(?:compared?\s+(?:with|to)|versus|vs\.?|change[sd]?\s+from|week\s+over\s+week|day\s+over\s+day|trend)\b"
+    r"|(?:与|和|跟).{0,6}(?:相比|对比)|相比.{0,6}(?:有什么|有何|变化)|(?:同比|环比|变化趋势)",
+    re.I,
+)
+
+
+def _native_observed_api_enrichment(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Add fields the page's own read API returned but the table did not render.
+
+    Two workbook rows are only missing values that the page already fetched:
+    the inspector name behind each inspection task, and the currency behind a
+    finance transaction or refund.  Both come from the page's own API response,
+    never from a default value.
+    """
+
+    if outcome.result.status not in {"success", "no_data", "not_confirmed"}:
+        return outcome
+    rows = _observed_api_rows(outcome)
+    if not rows:
+        return outcome
+    text = str(question or "")
+    facts: list[str] = []
+
+    if _OTHER_PEOPLE_TASK_REQUEST.search(text) or re.search(r"inspector|检查员|تفتيش|المفتش", text, re.I):
+        named = [
+            (str(row.get("taskNo") or ""), str(row.get("inspectorName") or ""))
+            for row in rows
+            if row.get("taskNo") and row.get("inspectorName")
+        ]
+        if named:
+            pairs = "; ".join(f"{number}: {name}" for number, name in named[:10])
+            facts.append("Inspector recorded for these tasks in the page's own task data: " + pairs + ".")
+        elif any("inspectorName" in row for row in rows):
+            facts.append(
+                "The page's own task data returns no inspector for the tasks in this view (the inspector field is "
+                "empty), so no per-inspector split can be made from these rows."
+            )
+
+    if _FINANCE_CURRENCY_REQUEST.search(text):
+        currencies = sorted({str(row.get("currency") or "").strip() for row in rows if str(row.get("currency") or "").strip()})
+        if currencies:
+            facts.append(
+                "Currencies returned with the matching rows: " + ", ".join(currencies[:5]) + "."
+            )
+        dates = sorted(
+            str(row.get(key) or "")[:10]
+            for row in rows
+            for key in ("createdOn", "updateOn", "lastUpdatedOn", "completedAt")
+            if str(row.get(key) or "")[:10]
+        )
+        if dates:
+            span = dates[0] if dates[0] == dates[-1] else f"{dates[0]} to {dates[-1]}"
+            facts.append(
+                "The rows returned by the page's own list query cover " + span
+                + "; this is the range actually returned, not a re-applied date filter."
+            )
+
+    if not facts:
+        return outcome
+    existing = {re.sub(r"\s+", " ", str(fact)).strip().casefold() for fact in outcome.result.facts}
+    additions = [fact for fact in facts if fact.casefold() not in existing]
+    if not additions:
+        return outcome
+    merged = replace(outcome.result, facts=(*outcome.result.facts, *additions)[:24])
+    return ReaderOutcome(merged, {**outcome.audit_evidence, "nativeObservedApiFields": len(additions),
+                                  "result": merged.public_json()})
+
+
+def _native_scope_and_comparison_notes(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Explain the scope of other people's rows and the absence of history."""
+
+    if outcome.result.status not in {"success", "no_data", "not_confirmed"}:
+        return outcome
+    text = str(question or "")
+    notes: list[str] = []
+    if _OTHER_PEOPLE_TASK_REQUEST.search(text):
+        notes.append(
+            "These rows are the ones the current account's role may read on this page; only the fields the page "
+            "renders are returned, and location or travel detail is limited to those rendered fields."
+        )
+    if _PERIOD_COMPARISON_REQUEST.search(text):
+        notes.append(
+            "The portal exposes preset periods such as Last 7 Days, which recompute the figures shown for the current "
+            "period. It stores no earlier-period snapshot, so a change against yesterday or last week cannot be "
+            "confirmed from this view."
+        )
+    if not notes:
+        return outcome
+    existing = {re.sub(r"\s+", " ", str(fact)).strip().casefold() for fact in outcome.result.facts}
+    additions = [note for note in notes if note.casefold() not in existing]
+    if not additions:
+        return outcome
+    merged = replace(outcome.result, facts=(*outcome.result.facts, *additions)[:24])
+    return ReaderOutcome(merged, {**outcome.audit_evidence, "nativeScopeNotes": len(additions),
+                                  "result": merged.public_json()})
+
 def _native_person_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Group the visible queue rows by their rendered assignee.
 
@@ -8816,12 +8986,23 @@ def _native_person_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcom
     rows = _queue_rows_for_advice(observation)
     if not rows:
         return outcome
+    api_inspectors = {
+        str(candidate.get("taskNo") or "").strip(): str(candidate.get("inspectorName") or "").strip()
+        for candidate in _api_candidate_rows(
+            outcome.audit_evidence.get("observation")
+            or ((outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}).get("observation"),
+            "GET /api/admin/inspection/tasks",
+        )
+        if str(candidate.get("taskNo") or "").strip()
+    }
     grouped: dict[str, dict[str, int]] = {}
     for row in rows:
         person = (
             str(row.get("Assigned To") or row.get("Inspector") or row.get("Current Handler") or "").strip()
-            or "unassigned"
         )
+        if not person or person == "-":
+            person = api_inspectors.get(str(row.get("Task No.") or "").strip(), "")
+        person = person or "unassigned"
         bucket = grouped.setdefault(person, {"total": 0, "overdue": 0, "returned": 0})
         bucket["total"] += 1
         sla = str(row.get("SLA") or "")
@@ -9282,6 +9463,10 @@ class AdminPortalReader:
         knowledge_context = outcome.audit_evidence.get("knowledge")
         if not isinstance(knowledge_context, dict):
             knowledge_context = {}
+        # These run last: they add fields the page's own read API returned and
+        # the scope/history notes, which earlier repairs would otherwise drop.
+        outcome = _native_observed_api_enrichment(outcome, question)
+        outcome = _native_scope_and_comparison_notes(outcome, question)
         rule_facts = await self._rule_evidence_facts(principal, question, outcome, knowledge_context)
         if rule_facts:
             # The rule text is quoted from the governing document, so it can sit
