@@ -1773,18 +1773,20 @@ _POLICY_DOMAIN_ANCHORS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"content|standards?|prohibited|classif\w+|violat\w+|penalt\w+"
                    r"|内容|标准|违规|违反|禁止|处罚|محتوى|معيار|مخالفة", re.I),
-        "media content standards prohibited content classification media violations and penalties administrative",
+        "media content standards media-content-standards.pdf 07_NMA_Media_Content_Standards_AR.pdf "
+        "the-uae-en-uae-media-content-standards prohibited content classification media violations and penalties administrative",
     ),
     (
         re.compile(r"licen[cs]e|permit|application|renew\w*|cancel\w*|suspend\w*|restore|revoke\w*"
                    r"|许可|许可申请|许可证|续期|取消|恢复|吊销|暂停|رخصة|تجديد|إلغاء|استعادة", re.I),
-        "media executive regulation licensing approving the license application license term and renewal "
-        "cancellation suspension conditions requirements",
+        "media executive regulation 03_Cabinet_68_2024_Media_Executive_Regulation.pdf licensing approving the "
+        "license application license term and renewal cancellation suspension expiry restoration conditions requirements",
     ),
     (
         re.compile(r"fee|fees|charge|refund|refunded|amount|tax|price|payment"
                    r"|费用|收费|退款|金额|税费|罚款|价格|رسوم|استرداد|مبلغ|غرامة", re.I),
-        "media services fees fee schedule free zone media fees refund amount tax",
+        "media services fees 04_Cabinet_41_2025_Media_Services_Fees.pdf 06_Cabinet_38_2016_Free_Zone_Media_Fees.pdf "
+        "fee schedule refund amount tax",
     ),
     (
         re.compile(r"inspection|inspector|visit|checklist|site\b|检查|巡检|走访|تفتيش|جولة", re.I),
@@ -3691,10 +3693,17 @@ def _knowledge_meaningful_terms(value: str) -> set[str]:
     }
 
 
+_FILE_NAME_DOT = re.compile(r"(?<=[A-Za-z0-9_])\.(?=[A-Za-z0-9]{1,5}\b)")
+
+
 def _knowledge_fact_clauses(value: str) -> tuple[str, ...]:
+    # A cited document name such as "the-uae-en-uae-media-content-standards.md"
+    # is not a sentence boundary, so a dot inside a file name must not split the
+    # fact into unverifiable fragments.
+    protected = _FILE_NAME_DOT.sub("\u0000", str(value))
     return tuple(
-        item.strip()
-        for item in re.split(r"[!?。！？;；]+|(?<!\d)\.+|\.+(?!\d)", value)
+        item.strip().replace("\u0000", ".")
+        for item in re.split(r"[!?。！？;；]+|\.(?=\s|$)", protected)
         if item.strip()
     )
 
@@ -3780,14 +3789,22 @@ def _knowledge_claim_supported_by_chunk(fact: str, chunk: str) -> bool:
     # total are not proven to share an aggregation basis.\"".  The section name
     # is retrieval metadata, so the quoted remainder is checked against this
     # same chunk; the remainder still has to be present in it.
-    subject_prefix = re.match(r"^(.{1,80}?):\s*(.+)$", normalized_fact, re.DOTALL)
+    subject_prefix = re.match(r"^(.{1,160}?)[:：]\s*(.+)$", normalized_fact, re.DOTALL)
     if subject_prefix:
         subject_label = _key(subject_prefix.group(1))
         subject_names = {_key(name) for name in subjects} | {
             _key(field.split(":", 1)[0]) for field in _knowledge_content_fields(chunk)
         }
         remainder = subject_prefix.group(2).strip().strip('"').strip("'").strip()
-        if subject_label and remainder and subject_label in subject_names:
+        # The planner usually cites the document or section before the quote,
+        # as in "Media Content Standards (standard.md): \"...\"".  Accept that
+        # label when it names - or is named by - a section of this same chunk,
+        # then verify the quoted remainder against the chunk as usual.
+        names_label = bool(subject_label) and any(
+            name and (name in subject_label or subject_label in name) for name in subject_names
+        )
+        cites_document = bool(re.search(r"\.(?:md|pdf|json|txt|csv|xlsx)\b", subject_prefix.group(1), re.I))
+        if remainder and (subject_label in subject_names or names_label or cites_document):
             if _knowledge_claim_supported_by_chunk(remainder, chunk):
                 return True
 
@@ -9284,6 +9301,29 @@ class AdminPortalReader:
                 "ruleEvidence": {"factCount": len(rule_facts)},
                 "result": merged.public_json(),
             })
+        elif (
+            _RULE_EVIDENCE_REQUEST.search(str(question or ""))
+            and outcome.result.status == "success"
+            and outcome.result.page
+            and not _SENSITIVE_GUIDANCE_QUESTION.search(str(question or ""))
+            and not question_requests_business_mutation(str(question or ""))
+        ):
+            # The question asks for a rule and the documents state none for it.
+            # Say that plainly and name the page where the case is handled,
+            # instead of leaving the answer looking like a complete rule lookup.
+            note = (
+                f"No retrieved policy or regulation states a rule for this specific case. "
+                f"{outcome.result.page} is the page where the portal records it, and the decision itself stays with "
+                "the responsible team through the portal's own workflow."
+            )
+            existing = {re.sub(r"\s+", " ", str(fact)).strip().casefold() for fact in outcome.result.facts}
+            if note.casefold() not in existing:
+                merged = replace(outcome.result, facts=(*outcome.result.facts, note)[:24])
+                outcome = ReaderOutcome(merged, {
+                    **outcome.audit_evidence,
+                    "stage": "rule_evidence_not_documented",
+                    "result": merged.public_json(),
+                })
         guidance = documented_guidance_result(
             question,
             knowledge_context,
