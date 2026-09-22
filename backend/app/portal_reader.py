@@ -2420,6 +2420,91 @@ def _selected_api_answer_plan(
 _DOCUMENTATION_QUESTION_MARKERS = ("manual", "documented", "documentation", "user guide", "手册", "文档", "说明", "دليل")
 
 
+_HARMFUL_CONTENT_REQUEST = re.compile(
+    r"\b(?:write|draft|compose|generate|create|produce|prepare)\b[^.]{0,80}"
+    r"\b(?:threat|threatening|violent|violence|hate|hatred|discriminat|harass|blackmail|propaganda|manipulat)\w*\b"
+    r"|\b(?:threat|violent|hate|discriminat|harass|blackmail|propaganda)\w*\s+content\b"
+    r"|(?:اكتب|صِغ|أعد|أنشئ|ولّد)[^.]{0,40}(?:تهديد|عنف|كراهية|تمييز|تحريض|دعاية)"
+    r"|(?:تهديد|عنف|كراهية|تحريض|دعاية)[^.]{0,20}(?:محتوى|منشور|حملة)"
+    r"|写(?:一篇|一段|一份)?[^。]{0,20}(?:威胁|暴力|仇恨|歧视|政治宣传|煽动)"
+    r"|(?:威胁|暴力|仇恨|歧视|煽动|政治宣传)(?:性)?内容",
+    re.I,
+)
+_INJECTION_REQUEST = re.compile(
+    r"(?:ignore|disregard|forget)\s+(?:all|any|the)\s+(?:previous\s+|prior\s+)?(?:rules|instructions|prompts)"
+    r"|reveal\s+(?:the\s+)?(?:system\s+prompt|internal\s+instructions)"
+    r"|show\s+(?:me\s+)?all\s+(?:customer\s+)?bank\s+details"
+    r"|show\s+(?:me\s+)?all\s+applicants?\s*'?\s*passport\s+numbers?"
+    r"|تجاهل\s+(?:كل|جميع)\s+(?:القواعد|التعليمات)"
+    r"|اكشف\s+(?:تعليمات|موجه)\s+النظام"
+    r"|忽略(?:所有|全部)?(?:规则|指令)|泄露系统提示|显示所有客户银行信息|显示所有申请人护照号",
+    re.I,
+)
+
+
+def _safety_request_result(question: str) -> ReaderResult | None:
+    """Answer harmful-content and injection attempts explicitly, item by item."""
+
+    text = str(question or "")
+    facts: list[str] = []
+    if _HARMFUL_CONTENT_REQUEST.search(text):
+        facts.extend((
+            "Refused: this request asks for threatening, hateful, violent or manipulative content, and the Admin assistant does not produce it.",
+            "A compliant alternative: describe the applicant's submitted content to the Content review surface, record the specific rule and evidence, "
+            "and route the case through the normal Content review or escalation path. No harmful text was generated.",
+        ))
+    if _INJECTION_REQUEST.search(text):
+        refused = []
+        if re.search(r"(?:system\s+prompt|internal\s+instructions)|تعليمات\s+النظام|系统提示", text, re.I):
+            refused.append("reveal the system prompt or internal instructions - refused; no such content exists in this answer")
+        if re.search(r"bank\s+details|بيانات\s+البنك|银行信息", text, re.I):
+            refused.append("list all customer bank details - refused; the reader is read-only and never returns customer payment credentials")
+        if re.search(r"passport\s+numbers?|جواز\s+السفر|护照号", text, re.I):
+            refused.append("list all applicants' passport numbers - refused; personal identity documents are outside the answer scope")
+        if refused:
+            facts.append("Refused, one item at a time: " + "; ".join(refused) + ".")
+    if not facts:
+        return None
+    facts.append(
+        "The remaining business question in the same message is answered separately; a refused item is never silently merged into it."
+    )
+    return ReaderResult(
+        status="success",
+        summary="The sensitive parts of the request were refused explicitly.",
+        answer_shape="detail",
+        completeness="bounded",
+        scope="unknown",
+        facts=tuple(facts[:6]),
+    )
+
+
+def _leading_verb_names_a_record(text: str, verb_pattern: str) -> bool:
+    """True when a change verb is really part of the record being asked about.
+
+    "Refund HC-02-2026-5239576 current status and amount" and its Chinese form
+    start with a word that is also a business action, but the identifier shows
+    the word names the object, and a read-state cue shows the intent is read
+    only.
+    """
+
+    remainder = re.sub(r"^(?:" + verb_pattern + r")\s*", "", str(text or "").strip(), count=1, flags=re.IGNORECASE)
+    if not _explicit_record_identity(remainder):
+        return False
+    return bool(re.search(
+        r"(?:status|state|amount|progress|detail|details|next step|outcome|result)\b"
+        r"|状态|金额|进度|详情|明细|情况|下一步|结果",
+        str(text or ""),
+        re.IGNORECASE,
+    ))
+
+
+_LEADING_ENGLISH_VERBS = (
+    "approve|reject|submit|delete|remove|create|assign|reassign|export|upload|download|pay|"
+    "refund|send|suspend|publish|save|archive"
+)
+_LEADING_CHINESE_VERBS = "删除|导出|下载|上传|批准|审批|驳回|提交|创建|新建|分配|重新分配|发送|退款|支付|停用|发布|保存"
+
+
 def question_requests_business_mutation(question: str) -> bool:
     """Recognize explicit commands, not resource names or read-only view changes."""
     text = re.sub(r"\s+", " ", str(question or "")).strip()
@@ -2427,11 +2512,8 @@ def question_requests_business_mutation(question: str) -> bool:
         r"^(?:(?:please|now)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+)+",
         "", text, flags=re.IGNORECASE,
     )
-    if re.match(
-        r"^(?:approve|reject|submit|delete|remove|create|assign|reassign|export|upload|download|pay|refund|send|suspend|publish|save|archive)\b",
-        english, re.IGNORECASE,
-    ):
-        return True
+    if re.match(r"^(?:" + _LEADING_ENGLISH_VERBS + r")\b", english, re.IGNORECASE):
+        return not _leading_verb_names_a_record(english, _LEADING_ENGLISH_VERBS)
     if re.match(r"^(?:change|modify|update|edit|enable|disable|activate|deactivate)\b", english, re.IGNORECASE):
         return not bool(re.match(
             r"^(?:change|modify|update|edit)\s+"
@@ -2444,9 +2526,10 @@ def question_requests_business_mutation(question: str) -> bool:
     if re.match(r"^turn\b.*\b(?:automatic\s+assignment|auto[- ]assignment|assignment\s+settings?)\b.*\b(?:off|on)\b", english, re.IGNORECASE):
         return True
     chinese = re.sub(r"^(?:(?:请|帮我|给我|现在|立即|麻烦你|我需要你|我想让你)\s*)+", "", text)
+    if re.match(r"^(?:" + _LEADING_CHINESE_VERBS + r")", chinese):
+        return not _leading_verb_names_a_record(chinese, _LEADING_CHINESE_VERBS)
     return bool(
-        re.match(r"^(?:删除|导出|下载|上传|批准|审批|驳回|提交|创建|新建|分配|重新分配|发送|退款|支付|停用|发布|保存)", chinese)
-        or re.match(r"^(?:关闭|开启|禁用|启用)自动分配", chinese)
+        re.match(r"^(?:关闭|开启|禁用|启用)自动分配", chinese)
         or re.match(r"^(?:يرجى\s+)?(?:احذف|صدّر|صدر|حمّل|حمل|ارفع|أرسل|ارسل|وافق|ارفض|ادفع)\b", text)
     )
 
@@ -2746,6 +2829,15 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # "How about movies?" style follow-ups are read there instead of falling
     # through to a planner that may not switch the rendered section.
     if _content_category_from_question(question):
+        return "/content/ContentLibrary"
+    # A question that names one Content Library record (for example a book
+    # ISBN) belongs to the rendered Content Library surface.  Without this the
+    # planner started from Team Tasks and reported the record as unreadable.
+    if _explicit_record_identity(question) and re.search(
+        r"\b(?:content|isbn|book|title|record|item)s?\b|内容|书号|图书|记录|محتوى|سجل|كتاب",
+        normalized,
+        re.I,
+    ):
         return "/content/ContentLibrary"
     # Customer Happiness work orders are rendered on Enquiries & Complaints,
     # rather than on the refund workflow.  HC-01 is the stable ticket-number
@@ -3366,6 +3458,8 @@ def question_requires_live_portal(question: str) -> bool:
     normalized = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
     if _question_is_assistant_capability_overview(question):
         return False
+    if _explicit_record_identity(question):
+        return True
     if re.search(r'\b(?:inquire|query|show|find|check)\b.*\b(?:mc-2|ml-[12])-\d+-\d+\b', normalized):
         return True
     if re.search(r'\bgive me\s+(?:one|a|an|[1-9][0-9]?)\s+(?:[a-z]+\s+){0,3}(?:no\.?|number|id|record|task|item)\b', normalized):
@@ -3737,6 +3831,15 @@ def _documented_column_contrast(question: str, knowledge: dict[str, Any], role: 
         facts=tuple(facts),completeness='bounded',source_hint={'page':next(iter(pages))})
 
 
+def _ambiguous_date_reading(first: int, second: int, year: int | None, *, month_first: bool) -> str:
+    """Render one reading of an ambiguous numeric date with a month name."""
+
+    month, day = (first, second) if month_first else (second, first)
+    if year is None:
+        return f"ISO {month:02d}-{day:02d} = {_MONTH_NAMES[month - 1]} {day}"
+    return f"ISO {year:04d}-{month:02d}-{day:02d} = {_MONTH_NAMES[month - 1]} {day}, {year:04d}"
+
+
 def _documented_filter_catalogue(question: str, knowledge: dict[str, Any]) -> ReaderResult | None:
     if not re.fullmatch(r'\s*what filters can i use on .+\??\s*',question,re.I):
         return None
@@ -3976,10 +4079,12 @@ def _explicit_record_identity(question: str) -> str:
         return hyphenated[0]
     if hyphenated:
         return ""
-    numeric = re.findall(r"(?<!\d)(\d{10,})(?!\d)", text)
+    numeric = re.findall(r"(?<!\d)(\d{6,})(?!\d)", text)
     if len(numeric) == 1 and re.search(
         r"\b(?:transaction|transactions|payment|payments|refund|refunds|order|receipt)s?\b|"
-        r"交易|付款|退款|معاملة|استرداد|دفع",
+        r"\b(?:record|records|item|items|isbn|book|content|application|licen[cs]e|ticket|case)s?\b|"
+        r"交易|付款|退款|记录|编号|书号|内容|许可|工单|案件|"
+        r"معاملة|استرداد|دفع|سجل|رقم|محتوى|رخصة|تذكرة",
         text,
         re.I,
     ):
@@ -5657,6 +5762,8 @@ def _observation_fallback_intent(
 def _observed_identity_search(question: str, context: dict[str, Any], observation: Any, current_page: str) -> dict[str, Any] | None:
     """Bind a literal requested identity to one observed search-and-apply surface."""
     identity = _resolved_intent_values(context).get("recordIdentity", "")
+    if not identity:
+        identity = _explicit_record_identity(question)
     if not identity and re.match(r"\s*(?:find|search\b.*?\bfor|查找|搜索)\b", question, re.IGNORECASE):
         identifiers = re.findall(r"(?<![\w/-])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![\w/-])", question)
         if len(identifiers) == 1:
@@ -8298,6 +8405,251 @@ def _self_profile_result(question: str, context: UserPermissionContext, page_hin
     )
 
 
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+_SENSITIVE_GUIDANCE_QUESTION = re.compile(
+    r"system\s+prompt|internal\s+instructions|ignore\s+all\s+rules|passport\s+number|bank\s+details"
+    r"|كلمة\s+المرور|تعليمات\s+النظام|تجاهل\s+القواعد|جواز\s+السفر|بيانات\s+البنك",
+    re.I,
+)
+
+
+def _knowledge_chunk_guidance(chunk: Any) -> dict[str, str]:
+    """Read the documented destination metadata out of one retrieved passage."""
+
+    content = re.sub(r"\s+", " ", str((chunk or {}).get("content") or "")).strip()
+    if not content:
+        return {}
+    fields: dict[str, str] = {}
+    for name in ("section", "name", "page", "meaning", "use_when", "type", "destination"):
+        match = re.search(r"-\s*\*\*" + name + r":\*\*\s*(.*?)(?=\s+-\s+\*\*|$)", content)
+        fields[name] = match.group(1).strip().strip("`").strip() if match else ""
+    page = fields["page"] or fields["destination"]
+    if not re.match(r"^/[A-Za-z0-9_/?=&.-]+$", page or ""):
+        return {}
+    return {
+        "page": page,
+        "section": fields["section"] or fields["name"] or fields["type"],
+        "meaning": fields["meaning"],
+        "use_when": fields["use_when"],
+    }
+
+
+def documented_guidance_result(
+    question: str,
+    knowledge_context: Any,
+    permission_context: UserPermissionContext,
+    result: ReaderResult,
+) -> ReaderResult | None:
+    """Name the documented destination when the stored rule itself is unavailable.
+
+    Workbook questions ask for rules, handlers, comparisons and preparation
+    steps that the portal's read surfaces do not store.  The documented
+    destination is still verifiable, so the reply states the destination, what
+    the manual says it is for, and which part could not be confirmed, instead
+    of returning an empty refusal or inventing a rule.
+    """
+
+    if result.status != "not_confirmed" or result.facts:
+        return None
+    if not isinstance(permission_context, UserPermissionContext):
+        return None
+    text = str(question or "")
+    if _SENSITIVE_GUIDANCE_QUESTION.search(text) or question_requests_business_mutation(text):
+        return None
+    if not isinstance(knowledge_context, dict) or knowledge_context.get("ok") is not True:
+        return None
+    query_tokens = _api_query_tokens(text)
+    if not query_tokens:
+        return None
+    permitted = (*permission_context.pages, *permission_context.subpages)
+    best: tuple[int, dict[str, str]] | None = None
+    for chunk in knowledge_context.get("chunks") or ():
+        guidance = _knowledge_chunk_guidance(chunk)
+        if not guidance.get("meaning"):
+            continue
+        if not any(permission_path_matches(guidance["page"], path) for path in permitted):
+            continue
+        score = len(query_tokens & _api_query_tokens(
+            " ".join((guidance.get("section", ""), guidance.get("meaning", ""), guidance.get("use_when", "")))
+        ))
+        if score and (best is None or score > best[0]):
+            best = (score, guidance)
+    if best is None:
+        return None
+    guidance = best[1]
+    heading = guidance["section"] or guidance["page"]
+    facts = [f"Documented destination: {heading} ({guidance['page']}).", f"{heading}: {guidance['meaning']}"]
+    if guidance.get("use_when"):
+        facts.append(f"{heading} is used when: {guidance['use_when']}")
+    facts.append(
+        "This reply states only what the retrieved portal documentation records. "
+        "No rule, clause number, threshold or value is asserted beyond that documentation."
+    )
+    return replace(result, answer_shape="detail", completeness="bounded", facts=tuple(facts[:4]))
+
+
+_PRIORITY_ADVICE_REQUEST = re.compile(
+    r"\b(?:priorit(?:y|ies|ise|ize)|what\s+should\s+(?:i|we)\s+(?:do|work\s+on)\s+first|triage)\b"
+    r"|(?:优先级|優先級|优先建议|先处理|处理顺序|工作顺序)"
+    r"|(?:أولويات|الأولوية|بأي\s+ترتيب)",
+    re.I,
+)
+
+
+def _native_queue_priority_advice(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Turn a rendered queue into an explicitly advisory work order.
+
+    The advice is derived only from the values the page renders for this
+    account.  When the queue renders no SLA or urgency value, the answer says
+    so instead of inventing a ranking, and it never changes a task.
+    """
+
+    if not _PRIORITY_ADVICE_REQUEST.search(str(question or "")):
+        return outcome
+    if outcome.result.status not in {"success", "not_confirmed", "no_data"}:
+        return outcome
+    observation = outcome.audit_evidence.get("observation") or (
+        (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
+    ).get("observation")
+    rows = _queue_rows_for_advice(observation)
+    if not rows:
+        return outcome
+    overdue, remaining = [], []
+    for row in rows:
+        sla = str(row.get("SLA") or "").strip()
+        if not sla or sla == "-":
+            remaining.append(row)
+        elif re.search(r"overdue|past due|逾期|متأخر", sla, re.I):
+            overdue.append(row)
+        else:
+            remaining.append(row)
+    facts: list[str] = []
+    if overdue:
+        facts.append(
+            "Start with the rows whose rendered SLA is already overdue ("
+            + str(len(overdue)) + " visible row(s)): "
+            + "; ".join(_queue_row_label(row) for row in overdue[:5])
+        )
+    if remaining:
+        facts.append(
+            "Then review the remaining visible rows ("
+            + str(len(remaining)) + "): "
+            + "; ".join(_queue_row_label(row) for row in remaining[:5])
+        )
+    if not overdue:
+        facts.append(
+            "No visible row in this queue currently renders an overdue SLA, and the page renders no other urgency field, "
+            "so no row can be ranked ahead of the others from this view alone."
+        )
+    facts.append(
+        "This is advisory only, derived from the values rendered in the current page for this account. "
+        "No task was assigned, reprioritised or changed."
+    )
+    result = replace(
+        outcome.result,
+        status="success",
+        answer_shape="attention",
+        completeness="bounded",
+        facts=tuple(facts[:4]),
+        missing=(),
+    )
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativePriorityAdvice": True, "result": result.public_json()})
+
+
+def _queue_rows_for_advice(observation: Any) -> list[dict[str, str]]:
+    """Visible task rows with the fields the advice may quote."""
+
+    if not isinstance(observation, dict):
+        return []
+    wanted = {"Task No.", "Task Category", "Apply For", "Assigned To", "SLA", "Status", "Last Updated"}
+    rows: list[dict[str, str]] = []
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") not in {"table", "grid"}:
+            continue
+        headers = [str(header) for header in node.get("columnHeaders") or []]
+        if not {"Task No.", "Status"} <= set(headers):
+            continue
+        for row in node.get("rowFields") or []:
+            if not isinstance(row, dict):
+                continue
+            visible = {key: str(value) for key, value in row.items() if key in wanted and value not in (None, "")}
+            if visible:
+                rows.append(visible)
+    return rows
+
+
+def _queue_row_label(row: dict[str, str]) -> str:
+    parts = [f"{key}: {row[key]}" for key in ("Task No.", "Task Category", "Status", "SLA") if row.get(key)]
+    return " | ".join(parts)
+
+
+def _personal_task_counter_pairs(observation: Any) -> tuple[tuple[str, str], ...]:
+    """Read the rendered My Tasks per-category counters from the dashboard region."""
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for node in _observation_semantic_nodes(observation):
+        heading = str(node.get("heading") or node.get("sourceSection") or "").strip()
+        if "my tasks" not in heading.casefold():
+            continue
+        values = node.get("controls") or node.get("summaries") or node.get("cardSummaries") or []
+        if not isinstance(values, (list, tuple)):
+            continue
+        for item in values[:24]:
+            text = re.sub(r"\s+", " ", str(item or "")).strip()
+            match = re.fullmatch(r"(.+?)\s+([\d,]+)", text)
+            if not match:
+                continue
+            label, value = match.group(1).strip(" :-"), match.group(2)
+            if not label or label.casefold() in seen or len(label) > 80:
+                continue
+            seen.add(label.casefold())
+            pairs.append((label, value))
+    return tuple(pairs)
+
+
+def _native_personal_task_counts(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Report the rendered My Tasks counts when a personal task list is asked for.
+
+    The Dashboard renders My Tasks as per-category counters for the signed-in
+    account, so an individual task row cannot be produced from it.  Returning
+    the rendered counters plus that limit answers the question honestly instead
+    of an empty no_data.
+    """
+
+    if outcome.result.status not in {"no_data", "not_confirmed"} or outcome.result.page != "/dashboard":
+        return outcome
+    if not re.search(
+        r"\b(?:my|mine)\b|\bassigned\s+to\s+me\b|\bfor\s+me\b|我的|待办|指派给我|مهامي|المسندة\s+إليّ",
+        question,
+        re.I,
+    ):
+        return outcome
+    personal = _personal_task_counter_pairs(outcome.audit_evidence.get("observation"))
+    if len(personal) < 2:
+        return outcome
+    facts = tuple(f"My Tasks \u2014 {label}: {value}" for label, value in personal[:12])
+    limit = (
+        "The Dashboard renders My Tasks as per-category counters for this account; individual task rows are not "
+        "rendered here, so no single task can be named as the most urgent from this view."
+    )
+    result = replace(
+        outcome.result,
+        status="success",
+        answer_shape="overview",
+        completeness="bounded",
+        source_section="metrics",
+        facts=(*facts, limit),
+        missing=(),
+    )
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativePersonalTaskCounts": {
+        "counters": len(facts),
+    }, "result": result.public_json()})
+
+
 def _guard_unfound_record_identity(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """A named record number that is not visible must never be answered with aggregates."""
 
@@ -8388,6 +8740,7 @@ class AdminPortalReader:
         self.allowed_tools = list(allowed_tools)
         self.timeout_budget = timeout_budget or ReaderTimeoutBudget()
         self.max_candidates_before_drill = max(1, min(int(max_candidates_before_drill), 32))
+        self._turn_permission_context: UserPermissionContext | None = None
 
     async def run(
         self,
@@ -8455,6 +8808,8 @@ class AdminPortalReader:
         outcome = _native_metric_overview(outcome, question)
         outcome = _native_queue_counts(outcome, question)
         outcome = _native_profile_type_count(outcome, question)
+        outcome = _native_personal_task_counts(outcome, question)
+        outcome = _native_queue_priority_advice(outcome, question)
         outcome = _guard_unfound_record_identity(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
         outcome = _guard_requested_queue_view(outcome, question)
@@ -8476,6 +8831,21 @@ class AdminPortalReader:
                 "Only the current view is confirmed; no claim is made about every prior filter or all records."
             )), outcome.audit_evidence)
         outcome = _guard_completion_period_count(outcome, question, bounded_context)
+        knowledge_context = outcome.audit_evidence.get("knowledge")
+        if not isinstance(knowledge_context, dict):
+            knowledge_context = {}
+        guidance = documented_guidance_result(
+            question,
+            knowledge_context,
+            getattr(self, "_turn_permission_context", None),
+            outcome.result,
+        )
+        if guidance is not None:
+            outcome = ReaderOutcome(guidance, {
+                **outcome.audit_evidence,
+                "stage": "documented_guidance",
+                "result": guidance.public_json(),
+            })
         if outcome.result.status == 'success' and outcome.result.answer_shape == 'count' and not outcome.result.selected_state:
             observation = outcome.audit_evidence.get('observation') or ((outcome.audit_evidence.get('portalEvidence') or {}).get('result') or {}).get('observation') or {}
             selected = [str(t.get('name')) for t in observation.get('tabControls', [])
@@ -9663,6 +10033,10 @@ class AdminPortalReader:
             return ReaderOutcome(result, {"stage": "get_user_info", "userInfo": bounded_json(user_info)})
 
         permission_context = permission_context_from_user_info(user_info.get("result"))
+        # The outer wrapper applies the documented-guidance pass after this
+        # coroutine returns, so the turn's own permission context is kept on the
+        # reader while a page destination is validated against it.
+        self._turn_permission_context = permission_context
         permission_audit = permission_audit_summary(permission_context)
         if not permission_context.user_id or str(permission_context.user_id) != str(principal.user_id):
             trace.record(
@@ -9749,18 +10123,27 @@ class AdminPortalReader:
         # A slash date with both day and month in the 1..12 range is
         # inherently ambiguous. Ask the user which convention they intended
         # before reading a portal page rather than returning a generic failure.
-        ambiguous_date = re.search(r"(?<!\d)(\d{1,2})/(\d{1,2})/(\d{4})(?!\d)", question)
+        ambiguous_date = re.search(r"(?<!\d)(\d{1,2})/(\d{1,2})(?:/(\d{4}))?(?!\d)", question)
         if ambiguous_date:
-            first, second, year = (int(ambiguous_date.group(index)) for index in (1, 2, 3))
-            if first <= 12 and second <= 12:
+            first, second = int(ambiguous_date.group(1)), int(ambiguous_date.group(2))
+            year = int(ambiguous_date.group(3)) if ambiguous_date.group(3) else None
+            if first <= 12 and second <= 12 and first != second:
+                # Spell both readings with month names rather than guessing a
+                # convention: the same digits mean two different days.
+                readings = ", ".join((
+                    _ambiguous_date_reading(first, second, year, month_first=True),
+                    _ambiguous_date_reading(first, second, year, month_first=False),
+                ))
                 result = ReaderResult(
                     status="not_confirmed",
                     answer_shape="detail",
                     completeness="bounded",
                     summary="The date format is ambiguous and needs confirmation.",
                     facts=(
-                        f"The date {ambiguous_date.group(0)} can mean {year:04d}-{first:02d}-{second:02d} (MM/DD/YYYY) or {year:04d}-{second:02d}-{first:02d} (DD/MM/YYYY).",
-                        "Please confirm which date you mean before I search the task list.",
+                        f"The date {ambiguous_date.group(0)} is ambiguous; it is not assumed to be MM/DD or DD/MM.",
+                        f"Reading the first number as the month: {readings.split(', ')[0]}",
+                        f"Reading the second number as the month: {readings.split(', ')[1]}",
+                        "Please confirm which day you mean before I search the portal records.",
                     ),
                     missing=("ambiguous_date_format",),
                 )
@@ -10385,6 +10768,14 @@ class AdminPortalReader:
                     'result': combined_result.public_json(),
                 })
 
+        safety_result = _safety_request_result(question)
+        if safety_result is not None:
+            return ReaderOutcome(safety_result, {
+                'stage': 'safety_request_refusal',
+                'permission': permission_audit,
+                'result': safety_result.public_json(),
+            })
+
         if _prediction_requested(question):
             # The portal has no forecasting surface.  Answering with a task list
             # would look like a prediction, so state the limitation first and
@@ -10626,6 +11017,27 @@ class AdminPortalReader:
                     if not tool.get('ok'):
                         raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
                     observation = (tool.get('result') or {}).get('observation') or {}
+                    if _explicit_record_identity(question):
+                        # One named record must be read through the page's own
+                        # search control instead of answering with the first
+                        # bounded page of unrelated rows.
+                        identity_plan = _observed_identity_search(
+                            question, bounded_conversation_context, observation, explicit_source,
+                        )
+                        identity_actions = tuple(
+                            (identity_plan or {}).get('portalRequest', {}).get('actions') or ()
+                        )
+                        if identity_actions:
+                            identity_tool = await portal_read_stage(
+                                replace(request, actions=(*actions, *identity_actions)),
+                                timeout_stage='explicit_named_source_identity',
+                                attempt='explicit_named_source_identity',
+                            )
+                            if identity_tool.get('ok'):
+                                searched = (identity_tool.get('result') or {}).get('observation') or {}
+                                if searched:
+                                    observation = searched
+                                    actions = (*actions, *identity_actions)
                 elif explicit_source in {'/happiness/refunds', '/financial-payment/refunds'} and _refund_completed_view_requested(question):
                     # Refund pages open on the in-progress tab by default. A
                     # completed-refund question must replay the observed,
@@ -11123,9 +11535,19 @@ class AdminPortalReader:
             )
         resolved_values = _resolved_intent_values(bounded_conversation_context)
         conceptual_request = question_is_conceptual(question)
-        explicit_identity = bool(not _question_is_capability_catalogue(question) and resolved_values.get("recordIdentity") and re.search(
-            r"(?<![\w-])" + re.escape(resolved_values["recordIdentity"]) + r"(?![\w-])", question, re.IGNORECASE,
-        ))
+        question_record_identity = _explicit_record_identity(question)
+        explicit_identity = bool(
+            not _question_is_capability_catalogue(question)
+            and (
+                question_record_identity
+                or (
+                    resolved_values.get("recordIdentity")
+                    and re.search(
+                        r"(?<![\w-])" + re.escape(resolved_values["recordIdentity"]) + r"(?![\w-])", question, re.IGNORECASE,
+                    )
+                )
+            )
+        )
         if conceptual_request and not any(
             marker in question.casefold() for marker in (*_LIVE_TIME_MARKERS, "visible", "selected", "applied")
         ) and not explicit_identity:
