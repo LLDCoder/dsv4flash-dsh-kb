@@ -508,19 +508,22 @@ def build_configured_tool_request(
     if isinstance(selection, dict):
         selection_filter = str(selection.get("filter") or "")
         value_field = str(selection.get("valueField") or "")
-        if selection_filter and value_field and not filters.get(selection_filter):
+        if value_field and not filters.get(value_field):
             for definition in workflow.get("requests", []):
                 if not isinstance(definition, dict) or definition.get("intentId") != intent_id:
                     continue
                 binds_selection = any(
-                    isinstance(binding, dict) and str(binding.get("filter") or "") == selection_filter
+                    isinstance(binding, dict)
+                    and str(binding.get("filter") or "") in {selection_filter, value_field}
                     for binding in definition.get("bindings", [])
                 )
                 if not binds_selection:
                     continue
                 item = _selection_item_from_context(text, history, selection, filters)
                 if item is not None and item.get(value_field) is not None:
-                    filters[selection_filter] = item[value_field]
+                    filters[value_field] = item[value_field]
+                    if selection_filter and selection_filter != value_field:
+                        filters.setdefault(selection_filter, item)
                     request = _request_from_definition(workflow, definition, allowed, filters)
                     if request:
                         return request
