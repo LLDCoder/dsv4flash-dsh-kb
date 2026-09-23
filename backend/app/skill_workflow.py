@@ -321,6 +321,47 @@ def _selected_item(selector: object, items: list[dict[str, Any]], selection: dic
     return None
 
 
+SELECTION_REFERENCE_TERMS_FALLBACK = (
+    "this record", "that record", "this one", "that one", "the same record",
+    "this item", "that item",
+)
+
+
+def _selection_reference_terms(selection: dict[str, Any]) -> tuple[str, ...]:
+    """Reference phrases that point at the record selected earlier."""
+
+    configured = selection.get("referenceTerms")
+    if isinstance(configured, list) and configured:
+        return tuple(str(term) for term in configured if str(term).strip())
+    return SELECTION_REFERENCE_TERMS_FALLBACK
+
+
+def _selection_item_from_context(
+    text: str,
+    history: list[Any],
+    selection: dict[str, Any],
+    filters: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve the record a follow-up refers to, beyond ordinals and identifiers."""
+
+    items = _selection_items(history, selection)
+    if not items:
+        return None
+    selection_filter = str(selection.get("filter") or "")
+    selector = filters.get(selection_filter) if selection_filter else None
+    item = _selected_item(selector if selector is not None else text, items, selection)
+    if item is not None:
+        return item
+    normalized = " ".join(str(text or "").casefold().split())
+    mentions_reference = any(
+        re.search(rf"(?<![a-z]){re.escape(term.casefold())}(?![a-z])", normalized)
+        for term in _selection_reference_terms(selection)
+    )
+    if mentions_reference and len(items) == 1:
+        return items[0]
+    return None
+
+
 def _coerce_argument_value(value: Any, value_type: object) -> Any:
     """Apply a declarative argument type without business-specific branching."""
 
@@ -459,6 +500,31 @@ def build_configured_tool_request(
                         item[value_field], selection_request.get("argumentValueType")
                     )
                 }
+
+    # A follow-up can refer to the record the previous list returned, for
+    # example "show the penalty orders for this violation". When the routed
+    # intent binds the same filter the selection resolves, reuse that record
+    # instead of asking the customer to repeat the identifier.
+    if isinstance(selection, dict):
+        selection_filter = str(selection.get("filter") or "")
+        value_field = str(selection.get("valueField") or "")
+        if selection_filter and value_field and not filters.get(selection_filter):
+            for definition in workflow.get("requests", []):
+                if not isinstance(definition, dict) or definition.get("intentId") != intent_id:
+                    continue
+                binds_selection = any(
+                    isinstance(binding, dict) and str(binding.get("filter") or "") == selection_filter
+                    for binding in definition.get("bindings", [])
+                )
+                if not binds_selection:
+                    continue
+                item = _selection_item_from_context(text, history, selection, filters)
+                if item is not None and item.get(value_field) is not None:
+                    filters[selection_filter] = item[value_field]
+                    request = _request_from_definition(workflow, definition, allowed, filters)
+                    if request:
+                        return request
+                break
 
     for definition in workflow.get("requests", []):
         if isinstance(definition, dict) and definition.get("intentId") == intent_id:
