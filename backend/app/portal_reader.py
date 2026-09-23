@@ -9205,6 +9205,73 @@ def _native_sla_performance_metrics(outcome: ReaderOutcome, question: str) -> Re
     return ReaderOutcome(result, {**outcome.audit_evidence, "nativeSlaPerformance": True,
                                   "result": result.public_json()})
 
+# Information families that a portal page may genuinely not carry.  When the
+# question asks for one and the answer carries no value for it, the reply says
+# what was read, why the item is not available, and where it can be seen.
+_UNAVAILABLE_FAMILIES: tuple[tuple[re.Pattern[str], re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\bmaterials?\b|\bdocuments?\b|\brequisites?\b|\battachments?\b|材料|资料|附件|مستندات|مرفقات", re.I),
+        re.compile(r"material|document|requisite|attachment|required item|items listed|"
+                   r"材料|资料|附件|مستند|مرفق", re.I),
+        "Required materials/attachments are not rendered on the page that was read. In the portal they appear on the "
+        "corresponding business page - the application record detail (Licensing > Applications) or the checklist step of "
+        "the inspection execution flow - so the list has to be read there.",
+    ),
+    (
+        re.compile(r"\bhistory\b|\bhandled by\b|\bhandler\b|处理人|处理过|历史|سجل", re.I),
+        re.compile(r"processed by|handler|history|approver|处理人|处理过|历史|المعالج", re.I),
+        "The handling history is not rendered on the page that was read. The portal shows it on the record's own detail "
+        "page, so open that record to see who processed it and when.",
+    ),
+    (
+        re.compile(r"\bpenalt\w+|\bviolations?\b|\bfines?\b|处罚|违规|罚款", re.I),
+        re.compile(r"violation|penalt|fine|处罚|违规|罚款", re.I),
+        "The portal does not publish a per-establishment history of penalties or violations. Violation records are listed "
+        "on Inspection > Violations for the cases this account may read.",
+    ),
+    (
+        re.compile(r"\bcontacts?\b|联系人", re.I),
+        re.compile(r"contact|联系人", re.I),
+        "Contact information for this record is not exposed by the portal pages or interfaces that were checked, so it "
+        "cannot be returned from this account's readable data.",
+    ),
+    (
+        re.compile(r"\bsla\b|\boverdue\b|逾期|超时", re.I),
+        re.compile(r"\bsla\b|overdue|逾期|超时", re.I),
+        "The list that was read does not render an SLA or overdue field. The Finance refund list has no SLA column; SLA is "
+        "shown on Customer Happiness > Refunds, so use that page for SLA-based questions.",
+    ),
+)
+
+
+def _native_unavailable_information_notes(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Explain genuinely unavailable information and point at the portal page."""
+
+    if outcome.result.status not in {"success", "no_data", "not_confirmed"}:
+        return outcome
+    text = str(question or "")
+    covered = " ".join(str(fact) for fact in outcome.result.facts).casefold()
+    page = str(outcome.result.page or "").strip()
+    notes: list[str] = []
+    for ask, have, explanation in _UNAVAILABLE_FAMILIES:
+        if not ask.search(text) or have.search(covered):
+            continue
+        notes.append("About the requested item: " + explanation)
+    if not notes:
+        return outcome
+    existing = {re.sub(r"\s+", " ", str(fact)).strip().casefold() for fact in outcome.result.facts}
+    additions = [note for note in notes if note.casefold() not in existing][:2]
+    if not additions:
+        return outcome
+    if page:
+        additions.append(
+            "This answer is based on what " + page + " renders for the signed-in account; that page stays the "
+            "authoritative place to check."
+        )
+    merged = replace(outcome.result, facts=(*outcome.result.facts, *additions)[:24])
+    return ReaderOutcome(merged, {**outcome.audit_evidence, "unavailableInformationNotes": len(additions),
+                                  "result": merged.public_json()})
+
 def _native_observed_api_enrichment(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Add fields the page's own read API returned but the table did not render.
 
@@ -9826,6 +9893,7 @@ class AdminPortalReader:
         # the scope/history notes, which earlier repairs would otherwise drop.
         outcome = _native_observed_api_enrichment(outcome, question)
         outcome = _native_scope_and_comparison_notes(outcome, question)
+        outcome = _native_unavailable_information_notes(outcome, question)
         rule_facts = await self._rule_evidence_facts(principal, question, outcome, knowledge_context)
         if rule_facts:
             # The rule text is quoted from the governing document, so it can sit
