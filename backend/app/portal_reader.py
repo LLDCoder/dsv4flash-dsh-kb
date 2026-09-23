@@ -8957,6 +8957,111 @@ _FINE_DECISION_REQUEST = re.compile(
 )
 
 
+_RECORD_DETAIL_REQUEST = re.compile(
+    r"\bhandler|\bhandled by|who (?:processed|handled|reviewed)|history|audit trail|"
+    r"materials?|documents?|required\s+(?:documents?|items?)|attachments?|"
+    r"next step|details?\b|"
+    r"处理人|谁处理|处理过|处理的|历史|处理记录|材料|资料|缺少哪些|需要哪些|必备|附件|下一步|详情|明细|"
+    r"المعالج|سجل|تاريخ|مستندات|مرفقات|الخطوة التالية|تفاصيل",
+    re.I,
+)
+_HISTORY_OPERATION_PREFIX = "GET /api/ContentLibrary/GetHistoryList"
+_REVIEW_DETAIL_OPERATION_PREFIX = "GET /api/Application/MyReviewDetail"
+_DOCUMENT_LABEL = re.compile(r"\"(?:label|title|name)\s*\"?\s*:\s*\"([^\"]{3,60})\"")
+
+
+def _api_rows_by_prefix(observation: Any, prefix: str) -> tuple[dict[str, Any], ...]:
+    """Rows returned by a parametrised read API the page issued."""
+
+    if not isinstance(observation, dict):
+        return ()
+    for candidate in (observation.get("apiDiscovery") or {}).get("candidates") or ():
+        if not isinstance(candidate, dict) or candidate.get("status") != 200:
+            continue
+        if not str(candidate.get("operationKey") or "").startswith(prefix):
+            continue
+        payload = candidate.get("responseEvidence")
+        # Unwrap a service envelope before treating the payload as rows.
+        while isinstance(payload, dict) and "data" in payload and (
+            "isSuccess" in payload or "statusCode" in payload or "message" in payload
+        ):
+            payload = payload["data"]
+        if isinstance(payload, list):
+            return tuple(item for item in payload if isinstance(item, dict))
+        if isinstance(payload, dict):
+            items = payload.get("items")
+            if isinstance(items, list):
+                return tuple(item for item in items if isinstance(item, dict))
+            return (payload,)
+    return ()
+
+
+def _review_detail_documents(observation: Any) -> tuple[str, ...]:
+    """Required-item names carried by the application review-detail payload."""
+
+    documents: list[str] = []
+    for row in _api_rows_by_prefix(observation, _REVIEW_DETAIL_OPERATION_PREFIX):
+        for value in row.values():
+            if not isinstance(value, str) or "label" not in value:
+                continue
+            for match in _DOCUMENT_LABEL.findall(value):
+                text = match.strip()
+                if text and text.casefold() not in {item.casefold() for item in documents}:
+                    documents.append(text)
+    for label in observation.get("labels") or []:
+        text = str(label).strip()
+        if text and text.casefold() not in {item.casefold() for item in documents}:
+            documents.append(text)
+    return tuple(documents[:20])
+
+
+def _record_detail_facts(question: str, observation: Any, identity: str) -> tuple[str, ...]:
+    """Project the record's own detail page into bounded answer facts."""
+
+    facts: list[str] = []
+    history = _api_rows_by_prefix(observation, _HISTORY_OPERATION_PREFIX)
+    if history:
+        for row in history[:5]:
+            facts.append(json.dumps({
+                "Processed By": row.get("approverName"),
+                "Step": row.get("nodeName"),
+                "Date": str(row.get("approverDate") or "")[:19],
+                "Source Application": row.get("applicationNum"),
+            }, ensure_ascii=False, separators=(",", ":")))
+        facts.append(
+            "These are the handling steps the record's own detail page shows for " + identity
+            + "; no unrelated employee record is included."
+        )
+        return tuple(facts)
+    if _REVIEW_DETAIL_OPERATION_PREFIX in json.dumps(
+        ((observation.get("apiDiscovery") or {}).get("candidates") or [])[:8], ensure_ascii=False, default=str
+    ) or _api_rows_by_prefix(observation, _REVIEW_DETAIL_OPERATION_PREFIX):
+        documents = _review_detail_documents(observation)
+        if documents:
+            facts.append(
+                "Required items listed on this application's detail page: " + "; ".join(documents[:12]) + "."
+            )
+        for node in _observation_semantic_nodes(observation):
+            rows = [str(row) for row in (node.get("rowSummaries") or [])[:4]]
+            if rows:
+                facts.append(
+                    (str(node.get("heading") or "Detail record") + ": ") + " | ".join(rows)
+                )
+        if not facts:
+            facts.append(
+                "The application detail page for " + identity + " rendered no additional fields in this read."
+            )
+        return tuple(facts[:6])
+    rows: list[str] = []
+    for node in _observation_semantic_nodes(observation):
+        rows.extend(str(row) for row in (node.get("rowSummaries") or [])[:4])
+    labels = [str(label) for label in (observation.get("labels") or [])[:12]]
+    if labels:
+        facts.append("Items shown on the record's detail page: " + "; ".join(labels) + ".")
+    if rows:
+        facts.append("Detail rows: " + " | ".join(rows[:5]))
+    return tuple(facts[:6])
+
 def _native_fine_decision_result(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Report the fine a violation record carries, or state plainly that none exists.
 
@@ -9689,6 +9794,34 @@ class AdminPortalReader:
             knowledge_context = {}
         outcome = _native_sla_performance_metrics(outcome, question)
         outcome = _native_fine_decision_result(outcome, question)
+        # A question about one record's own history, requisites or next step
+        # needs the record's detail page, which the list surface does not load.
+        detail_identity = _explicit_record_identity(question)
+        detail_page = str(outcome.result.page or "")
+        if (detail_identity and detail_page and _RECORD_DETAIL_REQUEST.search(str(question or ""))
+                ):
+            detail_observation = await self._open_record_detail(principal, detail_page, detail_identity)
+            if detail_observation:
+                detail_facts = _record_detail_facts(question, detail_observation, detail_identity)
+                if detail_facts:
+                    existing = {re.sub(r"\s+", " ", str(fact)).strip().casefold() for fact in outcome.result.facts}
+                    additions = [fact for fact in detail_facts if fact.casefold() not in existing]
+                    if additions:
+                        merged = replace(
+                            outcome.result,
+                            status="success",
+                            facts=(*outcome.result.facts, *additions)[:24],
+                            missing=tuple(
+                                code for code in outcome.result.missing
+                                if code not in {"knowledge_not_grounded"}
+                            ),
+                        )
+                        outcome = ReaderOutcome(merged, {
+                            **outcome.audit_evidence,
+                            "stage": "record_detail_read",
+                            "recordDetail": {"identity": detail_identity, "factCount": len(additions)},
+                            "result": merged.public_json(),
+                        })
         # These run last: they add fields the page's own read API returned and
         # the scope/history notes, which earlier repairs would otherwise drop.
         outcome = _native_observed_api_enrichment(outcome, question)
@@ -9859,6 +9992,42 @@ class AdminPortalReader:
                 if fact.casefold() not in existing
             ]
         return tuple(facts[:5])
+
+    async def _open_record_detail(
+        self,
+        principal: Principal,
+        page: str,
+        identity: str,
+    ) -> dict[str, Any]:
+        """Open one record's own detail page through the page's row/cell click.
+
+        A list surface often renders only summary columns while the record's
+        detail route holds the history, requisites and next step.  The click is
+        performed by the page itself, so permissions and the read-only network
+        policy apply exactly as they do for a user.
+        """
+
+        if not page or not identity:
+            return {}
+        try:
+            result = await asyncio.wait_for(
+                self.gateway.invoke(
+                    principal,
+                    "admin.portal.read",
+                    {"startPath": page, "actions": [
+                        {"type": "show_detail", "role": "cell", "name": identity, "value": identity},
+                    ]},
+                    allowed_tools=self.allowed_tools,
+                ),
+                timeout=min(45.0, self.timeout_budget.portal_read_seconds),
+            )
+        except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+            return {}
+        if not result.get("ok"):
+            return {}
+        payload = result.get("result") or {}
+        observation = payload.get("observation")
+        return observation if isinstance(observation, dict) else {}
 
     async def _rule_evidence_retrieval(self, principal: Principal, question: str) -> dict[str, Any]:
         """Retrieve the rule documents for a question answered elsewhere."""
