@@ -1432,16 +1432,25 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
             raise RuntimeError("reader_detail_row_not_visible")
         if not _reader_detail_identity(await row.inner_text()):
             raise RuntimeError("reader_detail_row_unverifiable")
-    descriptor = " ".join(
-        filter(
-            None,
-            [
-                await locator.get_attribute("aria-label"),
-                await locator.get_attribute("title"),
-                (await locator.inner_text())[:200],
-            ],
-        )
-    )
+    descriptor_parts = [
+        await locator.get_attribute("aria-label"),
+        await locator.get_attribute("title"),
+        (await locator.inner_text())[:200],
+    ]
+    # Ant Design renders the pagination control's accessible name on the
+    # surrounding `.ant-pagination-next` container while the native button
+    # itself is exposed as the icon name (for example, `right`).  Include the
+    # validated parent descriptor so semantic actions such as `Next Page` can
+    # still be matched without weakening ordinary click verification.
+    if action_type == "paginate":
+        parent_descriptor = await locator.evaluate("""element => {
+            const parent = element.closest(".ant-pagination-next, [title*='Next' i], [aria-label*='Next' i]");
+            if (!parent) return '';
+            return [parent.getAttribute('aria-label'), parent.getAttribute('title'), (parent.innerText || '').trim().slice(0, 200)]
+                .filter(Boolean).join(' ');
+        }""")
+        descriptor_parts.append(parent_descriptor)
+    descriptor = " ".join(filter(None, descriptor_parts))
     if _reader_contains_mutation_command(descriptor) and not _reader_is_safe_overlay_dismissal_descriptor(descriptor, action):
         raise RuntimeError("action_not_read_only")
     if not descriptor.strip():
@@ -1459,7 +1468,9 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
     if action_type == "switch_tab" and role != "tab":
         raise RuntimeError("reader_click_target_not_tab")
     if action_type == "paginate" and rel != "next" and not await locator.get_attribute("aria-controls"):
-        raise RuntimeError("reader_click_target_not_pagination")
+        native_next = await locator.evaluate("""element => Boolean(element.closest('.ant-pagination-next'))""")
+        if not native_next:
+            raise RuntimeError("reader_click_target_not_pagination")
     if action_type == "expand_details" and aria_expanded not in {"true", "false"}:
         raise RuntimeError("reader_click_target_not_expandable")
     before_tab = await _reader_tab_selection(locator) if action_type == "switch_tab" else {}
@@ -1496,6 +1507,17 @@ async def _visible_overlay_count(page: Page) -> int:
 def _semantic_locator(page: Page, action: PortalReadAction, *, prefer_overlay: bool = False):
     action_type = action.type.strip().casefold().replace("-", "_")
     root = _visible_overlay(page) if prefer_overlay or action_type == "dismiss_overlay" else page
+    if action_type == "paginate" and not action.selector and not action.field:
+        # Pagination controls frequently expose the icon name (`right`) on
+        # the button while the enclosing Ant container carries `Next Page`.
+        # Locate the native next button from that container, keeping the
+        # subsequent role/descriptor/disabled checks in `_safe_click`.
+        return root.locator(
+            ".ant-pagination-next:not(.ant-pagination-disabled) button:visible,"
+            ".ant-pagination-next:not(.ant-pagination-disabled) a:visible,"
+            "[title='Next Page']:not([disabled]) button:visible,"
+            "[aria-label='Next Page']:not([disabled]) button:visible"
+        )
     if action.selector:
         return root.locator(action.selector)
     if action.field:
@@ -1920,8 +1942,17 @@ READER_TABLE_PAGINATION_SCRIPT = """element => {
     if (tables.length !== 1 || tables[0] !== element) return [];
     const totals = Array.from(root.querySelectorAll('.ant-pagination-total-text')).filter(visible);
     if (totals.length !== 1) return [];
-    return totals[0].innerText.split(/\\r?\\n/).map(text => text.trim())
-        .filter(text => text && !/^[\\d\\s/.,-]+$/.test(text)).slice(0, 4);
+    const pager = totals[0].closest('.ant-pagination') || totals[0].parentElement;
+    const current = pager && pager.querySelector('.ant-pagination-item-active,[aria-current="page"]');
+    const pageItems = pager ? Array.from(pager.querySelectorAll('.ant-pagination-item')).filter(visible) : [];
+    const currentText = current && (current.innerText || '').trim();
+    const pageCount = pageItems.reduce((max, item) => {
+        const value = Number.parseInt((item.innerText || '').trim(), 10);
+        return Number.isFinite(value) ? Math.max(max, value) : max;
+    }, 0);
+    const totalText = (totals[0].innerText || '').trim();
+    const summary = currentText && pageCount > 0 ? `${totalText} ${currentText} / ${pageCount}` : totalText;
+    return summary ? [summary] : [];
 }"""
 
 

@@ -1539,6 +1539,67 @@ _PAGE_CONTEXT_TERMS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _question_requests_all_pages(question: str) -> bool:
+    """Identify collection/list requests that must cover every rendered page."""
+
+    text = re.sub(r"\s+", " ", str(question or "").casefold()).strip()
+    if not text:
+        return False
+    # Explicitly bounded wording keeps the user's requested scope.
+    if re.search(r"\b(?:current|visible|this|that)\s+page\b|当前页|本页|这一页|next page|下一页", text):
+        return False
+    if re.search(r"\b(?:first|top|up to|at most)\s+\d+\b|前\s*\d+|最多\s*\d+", text):
+        return False
+    return bool(re.search(
+        r"\b(?:all|every|each|list|show|count|how many|total|summary|summarize|records?|items?|tickets?|tasks?)\b"
+        r"|所有|全部|每个|各个|列表|清单|总数|多少|汇总|统计|全部分页|全量",
+        text,
+    ))
+
+
+def _pagination_total_pages(observation: Any) -> int:
+    if not isinstance(observation, dict):
+        return 1
+    pages = 1
+    for node in _observation_semantic_nodes(observation):
+        for summary in node.get("summaries") or ():
+            value = str(summary or "")
+            match = re.search(r"(?:total|共)\s*[\d,]+[^\d]{0,20}(\d+)\s*/\s*(\d+)", value, re.I)
+            if match:
+                pages = max(pages, min(int(match.group(2)), 50))
+    return pages
+
+
+def _merge_paged_observations(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge same-page table observations while retaining bounded semantic evidence."""
+
+    if not observations:
+        return {}
+    merged = dict(observations[0])
+    merged["paginationComplete"] = True
+    merged["paginationPagesRead"] = len(observations)
+    merged["paginationPages"] = list(range(1, len(observations) + 1))
+    merged_nodes: dict[str, dict[str, Any]] = {}
+    for observation in observations:
+        for node in _observation_semantic_nodes(observation):
+            key = str(node.get("nodeId") or node.get("heading") or "table")
+            target = merged_nodes.setdefault(key, dict(node))
+            for field_name in ("rowSummaries", "rowFields"):
+                values = list(target.get(field_name) or [])
+                seen = {json.dumps(item, ensure_ascii=False, sort_keys=True) for item in values}
+                for item in node.get(field_name) or []:
+                    marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
+                    if marker not in seen and len(values) < 3000:
+                        values.append(item)
+                        seen.add(marker)
+                target[field_name] = values
+            if node.get("summaries"):
+                target["summaries"] = list(dict.fromkeys([*(target.get("summaries") or []), *node["summaries"]]))[:4]
+    if merged_nodes:
+        merged["sectionSummaries"] = list(merged_nodes.values())[:4]
+    return merged
+
+
 def _bounded_page_context(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -3360,6 +3421,28 @@ def _ticket_team_summary_result(
     completed = table_rows(completed_observation)
     if todo is None or completed is None:
         return None
+    all_pages_requested = _question_requests_all_pages(question)
+    pagination_complete = all(
+        isinstance(observation, dict)
+        and (
+            int(observation.get("paginationTotalPages") or 1) <= 1
+            or observation.get("paginationComplete") is True
+        )
+        for observation in (todo_observation, completed_observation)
+    )
+    if all_pages_requested and not pagination_complete:
+        return ReaderResult(
+            status="not_confirmed",
+            summary="The requested list spans multiple pages, but all pages could not be verified.",
+            page=page,
+            section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
+            source_section=todo[1],
+            answer_shape="overview",
+            completeness="unknown",
+            scope=scope,
+            missing=("pagination_incomplete",),
+        )
+    result_completeness = "complete" if all_pages_requested and pagination_complete else "bounded"
 
     def field(row: dict[str, Any], *names: str) -> str:
         wanted = {re.sub(r"[^a-z0-9]", "", name.casefold()) for name in names}
@@ -3414,7 +3497,7 @@ def _ticket_team_summary_result(
                 section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
                 source_section=todo[1],
                 answer_shape="overview",
-                completeness="bounded",
+                completeness=result_completeness,
                 scope=scope,
                 facts=(f"No visible Current Handler matches {requested_member} in the current To Do and Completed ticket views.",),
             )
@@ -3444,18 +3527,22 @@ def _ticket_team_summary_result(
             section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
             source_section=todo[1],
             answer_shape="overview",
-            completeness="bounded",
+            completeness=result_completeness,
             scope=scope,
             missing=("ticket_current_handler_not_observed",),
         )
     return ReaderResult(
         status="success",
-        summary="Visible To Do and Completed ticket rows were aggregated by Current Handler.",
+        summary=(
+            "All rendered To Do and Completed ticket pages were aggregated by Current Handler."
+            if result_completeness == "complete"
+            else "Visible To Do and Completed ticket rows were aggregated by Current Handler."
+        ),
         page=page,
         section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
         source_section=todo[1],
         answer_shape="overview",
-        completeness="bounded",
+        completeness=result_completeness,
         scope=scope,
         selected_state="To Do / Completed",
         facts=facts,
@@ -6227,10 +6314,11 @@ def _section_observation(section: Any) -> dict[str, Any] | None:
         value = str(section.get(name) or "").strip()
         if value:
             normalized[name] = value[:max_length]
+    row_limit = 3000 if section.get("paginationComplete") is True else SEMANTIC_ROW_LIMIT
     if isinstance(section.get("rowFields"), list):
         normalized["rowFields"] = [
             {str(key)[:120]: str(value)[:300] for key, value in list(row.items())[:12] if isinstance(value, str)}
-            for row in section["rowFields"][:SEMANTIC_ROW_LIMIT] if isinstance(row, dict)
+            for row in section["rowFields"][:row_limit] if isinstance(row, dict)
         ]
     return normalized
 
@@ -11112,6 +11200,74 @@ class AdminPortalReader:
                 )
                 raise
             payload = tool_result.get("result") if isinstance(tool_result, dict) else None
+            if (
+                isinstance(tool_result, dict)
+                and tool_result.get("ok")
+                and isinstance(payload, dict)
+                and isinstance(payload.get("observation"), dict)
+                and _question_requests_all_pages(question)
+                and not any(str(action.get("type") or "").casefold() == "paginate" for action in request.actions)
+            ):
+                first_observation = payload["observation"]
+                total_pages = _pagination_total_pages(first_observation)
+                base_actions = tuple(
+                    action for action in request.actions
+                    if str(action.get("type") or "").casefold() != "observe"
+                )
+                if total_pages > 1 and all(
+                    str(action.get("type") or "").casefold() in {"observe", "switch_tab", "filter", "apply_filter", "sort"}
+                    for action in request.actions
+                ):
+                    observations = [first_observation]
+                    complete = True
+                    for page_number in range(2, total_pages + 1):
+                        page_observation: dict[str, Any] | None = None
+                        for role, name in (("button", "Next Page"), ("button", "Next"), ("link", "Next Page"), ("link", "Next")):
+                            page_actions = (*base_actions, *(
+                                {"type": "paginate", "role": role, "name": name}
+                                for _ in range(page_number - 1)
+                            ))
+                            candidate_request = replace(request, actions=page_actions)
+                            if len(page_actions) > self.policy.max_actions or validate_policy(candidate_request, reason="paginate_all_pages"):
+                                continue
+                            try:
+                                candidate_result = await _await_reader_stage(
+                                    self.gateway.invoke(
+                                        principal,
+                                        "admin.portal.read",
+                                        candidate_request.as_payload(),
+                                        allowed_tools=self.allowed_tools,
+                                    ),
+                                    stage=timeout_stage,
+                                    cap_seconds=budget.portal_read_seconds,
+                                    deadline=deadline,
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError):
+                                continue
+                            candidate_payload = candidate_result.get("result") if isinstance(candidate_result, dict) else None
+                            if candidate_result.get("ok") and isinstance(candidate_payload, dict) and isinstance(candidate_payload.get("observation"), dict):
+                                page_observation = candidate_payload["observation"]
+                                break
+                        if page_observation is None:
+                            complete = False
+                            break
+                        observations.append(page_observation)
+                    merged_observation = _merge_paged_observations(observations)
+                    merged_observation["paginationComplete"] = complete
+                    merged_observation["paginationPagesRead"] = len(observations)
+                    merged_observation["paginationTotalPages"] = total_pages
+                    for node in merged_observation.get("sectionSummaries") or []:
+                        if isinstance(node, dict):
+                            node["paginationComplete"] = complete
+                    payload = {**payload, "observation": merged_observation}
+                    tool_result = {**tool_result, "result": payload}
+                    trace.record(
+                        "pagination_all_pages",
+                        "passed" if complete else "degraded",
+                        input_summary={"totalPages": total_pages},
+                        output_summary={"pagesRead": len(observations), "complete": complete},
+                        failure_code="pagination_incomplete" if not complete else "",
+                    )
             if (tool_result.get('ok') and isinstance(payload, dict) and isinstance(payload.get('observation'), dict)):
                 last_portal_page = request.start_path
                 last_portal_observation = payload['observation']
