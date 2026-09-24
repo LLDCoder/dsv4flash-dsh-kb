@@ -2250,6 +2250,7 @@ class DSHService:
         content: str,
         client_message_id: str,
         response_language: str | None = None,
+        page_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
@@ -2271,6 +2272,8 @@ class DSHService:
                 }
                 if response_language in {"en", "ar", "zh"}:
                     event_payload["responseLanguage"] = response_language
+                if isinstance(page_context, dict):
+                    event_payload["pageContext"] = page_context
                 event = await self.append_event(db, conversation, "user.message", event_payload)
                 db.add(MessageIdempotency(conversation_id=conversation_id, client_message_id=client_message_id, user_event_seq=event["seq"]))
                 await db.commit()
@@ -2563,6 +2566,12 @@ class DSHService:
                         try:
                             total_timeout = bounded_reader_total_timeout(self.settings.reader_total_timeout_seconds)
                             conversation_context = _reader_conversation_context(history, latest_user)
+                            page_context = (latest_user.event_json if latest_user else {}).get("pageContext") or {}
+                            if isinstance(page_context, dict) and page_context:
+                                conversation_context = {
+                                    **conversation_context,
+                                    "pageContext": page_context,
+                                }
                             outcome = await asyncio.wait_for(
                                 reader.run(
                                     principal,
@@ -2571,6 +2580,36 @@ class DSHService:
                                 ),
                                 timeout=total_timeout,
                             )
+                            # A live page is only a bounded hint. If it cannot
+                            # answer the question, retry once without that hint
+                            # so the established semantic router remains the
+                            # authoritative fallback.
+                            if (
+                                isinstance(page_context, dict)
+                                and page_context
+                                and outcome.result.status not in {"success", "no_data"}
+                            ):
+                                fallback_context = dict(conversation_context)
+                                fallback_context.pop("pageContext", None)
+                                fallback = await asyncio.wait_for(
+                                    reader.run(
+                                        principal,
+                                        latest_content,
+                                        conversation_context=fallback_context,
+                                    ),
+                                    timeout=total_timeout,
+                                )
+                                if fallback.result.status in {"success", "no_data"}:
+                                    outcome = type(outcome)(
+                                        fallback.result,
+                                        {
+                                            **fallback.audit_evidence,
+                                            "pageContextFallback": {
+                                                "attempted": True,
+                                                "reason": outcome.result.missing[0] if outcome.result.missing else outcome.result.status,
+                                            },
+                                        },
+                                    )
                             evidence = _reader_select_requested_records(outcome.result.public_json(), latest_content)
                             audit_evidence = outcome.audit_evidence
                         except asyncio.TimeoutError:

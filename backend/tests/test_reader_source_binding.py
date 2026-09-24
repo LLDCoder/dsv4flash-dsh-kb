@@ -3,7 +3,7 @@ from copy import deepcopy
 import pytest
 
 from app.portal_reader import observation_result_from_plan
-from app.portal_reader import _explicit_reader_source
+from app.portal_reader import _explicit_reader_source, _bounded_conversation_context, _page_context_source
 from test_admin_portal_reader import Gateway, Planner, portal_plan_for, run_reader, user_info_for_paths
 from test_reader_evidence_retention import execute, result_plan
 
@@ -144,6 +144,29 @@ def test_team_ticket_rollup_binds_team_management_before_generic_ticket_route():
 
 def test_single_ticket_lookup_stays_on_happiness_tickets():
     assert _explicit_reader_source("Show ticket HC-01-2026-9762913", {}) == "/happiness/tickets"
+
+
+def test_current_page_context_is_bounded_and_matches_semantic_question():
+    context = _bounded_conversation_context({
+        "pageContext": {
+            "currentPage": "/happiness/team-management",
+            "selectedTabPath": ["Team Tasks"],
+            "visibleFields": ["Assigned To", "Status", "Task No."],
+        }
+    })
+    assert _page_context_source("How many pending tickets are assigned to each team member?", context) == "/happiness/team-management"
+    assert context["pageContext"]["currentPage"] == "/happiness/team-management"
+
+
+def test_unmatched_or_unallowlisted_current_page_does_not_override_router():
+    context = _bounded_conversation_context({
+        "pageContext": {
+            "currentPage": "/admin/arbitrary",
+            "visibleFields": ["Status"],
+        }
+    })
+    assert context == {}
+    assert _page_context_source("How many pending tickets are there?", context) == ""
 
 
 def test_count_fallback_with_category_label_stays_within_bound_region():

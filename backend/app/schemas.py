@@ -17,12 +17,34 @@ class ConversationCreate(APIModel):
     workspace: str = "default"
 
 
+class PageContext(APIModel):
+    """Bounded, non-authoritative hints about the Admin UI currently visible to the user."""
+
+    current_page: str = Field(default="", max_length=300, validation_alias=AliasChoices("currentPage", "current_page"))
+    selected_tab_path: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        validation_alias=AliasChoices("selectedTabPath", "selected_tab_path"),
+    )
+    visible_fields: list[str] = Field(
+        default_factory=list,
+        max_length=40,
+        validation_alias=AliasChoices("visibleFields", "visible_fields"),
+    )
+    filters: dict[str, Any] = Field(default_factory=dict)
+    pagination: dict[str, Any] = Field(default_factory=dict)
+
+
 class MessageCreate(APIModel):
     content: str = Field(default="", max_length=MAX_CHAT_MESSAGE_CHARS)
     client_message_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
     response_language: Literal["en", "ar", "zh"] | None = Field(
         default=None,
         validation_alias=AliasChoices("responseLanguage", "response_language"),
+    )
+    page_context: PageContext | None = Field(
+        default=None,
+        validation_alias=AliasChoices("pageContext", "page_context"),
     )
 
     @model_validator(mode="after")
@@ -98,6 +120,10 @@ class WSMessage(APIModel):
     response_language: Literal["en", "ar", "zh"] | None = Field(
         default=None,
         validation_alias=AliasChoices("responseLanguage", "response_language"),
+    )
+    page_context: PageContext | None = Field(
+        default=None,
+        validation_alias=AliasChoices("pageContext", "page_context"),
     )
 
     @model_validator(mode="after")

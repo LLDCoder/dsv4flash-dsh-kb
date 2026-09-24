@@ -1508,13 +1508,97 @@ def permission_audit_summary(context: UserPermissionContext) -> dict[str, Any]:
     }
 
 
+_PAGE_CONTEXT_ALLOWED_PATHS = frozenset({
+    "/dashboard",
+    "/happiness/tickets",
+    "/happiness/team-management",
+    "/happiness/refunds",
+    "/happiness/customerManagement",
+    "/inspection/tasks",
+    "/inspection/violations",
+    "/financial-payment/refunds",
+    "/financial-payment/transactions",
+    "/content/ContentLibrary",
+    "/licensing/applications",
+    "/licensing/licenses",
+})
+
+_PAGE_CONTEXT_TERMS: dict[str, tuple[str, ...]] = {
+    "/happiness/team-management": ("team", "member", "assigned", "task", "ticket", "pending", "overdue", "closed", "团队", "成员", "任务", "工单"),
+    "/happiness/tickets": ("ticket", "enquiry", "complaint", "case", "工单", "投诉", "案件"),
+    "/happiness/refunds": ("refund", "sla", "استرداد", "退款"),
+    "/happiness/customerManagement": ("customer", "account", "phone", "address", "客户", "账号", "账户"),
+    "/inspection/tasks": ("inspection", "inspector", "task", "检查", "巡检", "任务"),
+    "/inspection/violations": ("violation", "fine", "penalty", "committee", "违规", "罚款", "处罚"),
+    "/financial-payment/refunds": ("finance", "financial", "refund", "amount", "currency", "财务", "退款"),
+    "/financial-payment/transactions": ("transaction", "payment", "amount", "currency", "交易", "付款"),
+    "/content/ContentLibrary": ("content", "book", "movie", "game", "newspaper", "内容", "图书", "电影", "游戏"),
+    "/licensing/applications": ("application", "license", "approval", "申请", "许可", "审批"),
+    "/licensing/licenses": ("license", "expiry", "renew", "许可", "到期", "续期"),
+    "/dashboard": ("dashboard", "metric", "count", "overview", "仪表盘", "指标", "统计"),
+}
+
+
+def _bounded_page_context(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    raw_page = value.get("currentPage", value.get("current_page", ""))
+    page = _sanitize_untrusted_text(raw_page, max_length=300) if isinstance(raw_page, str) else ""
+    if page not in _PAGE_CONTEXT_ALLOWED_PATHS:
+        return {}
+    def bounded_list(name: str, limit: int) -> list[str]:
+        raw = value.get(name, [])
+        if not isinstance(raw, list):
+            return []
+        return [_sanitize_untrusted_text(item, max_length=120) for item in raw[:limit] if isinstance(item, str) and item.strip()]
+    context: dict[str, Any] = {
+        "currentPage": page,
+        "selectedTabPath": bounded_list("selectedTabPath", 8),
+        "visibleFields": bounded_list("visibleFields", 40),
+    }
+    for key in ("filters", "pagination"):
+        item = value.get(key)
+        if isinstance(item, dict):
+            context[key] = bounded_json(item, max_depth=2, max_items=12, max_string=120)
+    return context
+
+
+def _page_context_source(question: str, context: dict[str, Any]) -> str:
+    page_context = context.get("pageContext") if isinstance(context, dict) else None
+    page_context = _bounded_page_context(page_context)
+    page = str(page_context.get("currentPage") or "")
+    if not page:
+        return ""
+    question_text = str(question or "").casefold()
+    visible = " ".join(page_context.get("selectedTabPath", []) + page_context.get("visibleFields", [])).casefold()
+    terms = _PAGE_CONTEXT_TERMS.get(page, ())
+    if any(str(term).casefold() in question_text for term in terms):
+        return page
+    # A different module keyword is a hard mismatch; do not let a generic
+    # "how many/status/list" question borrow an unrelated page just because
+    # that page has a visible Status column.
+    other_terms = {
+        str(term).casefold()
+        for other_page, other_page_terms in _PAGE_CONTEXT_TERMS.items()
+        if other_page != page
+        for term in other_page_terms
+    }
+    if any(term in question_text for term in other_terms):
+        return ""
+    generic_question = bool(re.search(r"(?i)\b(?:how many|count|list|show|status|data|records?|items?)\b|多少|数量|状态|列表|数据|记录", question_text))
+    return page if generic_question and any(str(term).casefold() in visible for term in terms) else ""
+
+
 def _bounded_conversation_context(value: Any) -> dict[str, Any]:
     """Keep only non-authoritative continuity metadata needed by the Reader."""
 
     if not isinstance(value, dict):
         return {}
+    page_context = _bounded_page_context(value.get("pageContext"))
     if isinstance(value.get("resolvedIntent"), dict):
         resolved_context = {"resolvedIntent": bounded_json(value["resolvedIntent"], max_depth=4, max_items=10, max_string=500)}
+        if page_context:
+            resolved_context["pageContext"] = page_context
         options = value.get("resolvedChoiceOptions")
         if isinstance(options, list) and len(options) == 2 and all(isinstance(option, str) for option in options):
             resolved_context["resolvedChoiceOptions"] = [_sanitize_untrusted_text(option, max_length=120) for option in options]
@@ -1524,7 +1608,7 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
                                               if key in {"page", "section"} and isinstance(item, str)}
         return resolved_context
     if not isinstance(value.get("previousIntent"), dict):
-        return {}
+        return {"pageContext": page_context} if page_context else {}
     previous = value["previousIntent"]
     limits = {
         "question": 500,
@@ -1577,7 +1661,10 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
             _sanitize_untrusted_text(option, max_length=120)
             for option in previous["clarificationOptions"][:2] if isinstance(option, str)
         ]
-    return {"previousIntent": bounded} if any(bounded.values()) else {}
+    result = {"previousIntent": bounded} if any(bounded.values()) else {}
+    if page_context:
+        result["pageContext"] = page_context
+    return result
 
 
 def _resolved_intent_values(conversation_context: Any) -> dict[str, str]:
@@ -12148,10 +12235,24 @@ class AdminPortalReader:
                         'result': license_result.public_json(),
                     })
 
+        # A validated live-page hint can take precedence for semantically
+        # matching questions. Explicit identifiers/module names still win;
+        # the service retries without this hint when the page cannot answer.
+        page_context_source = _page_context_source(question, bounded_conversation_context)
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
+        if not explicit_source and page_context_source:
+            explicit_source = page_context_source
+            trace.record(
+                "page_context_routing",
+                "passed",
+                input_summary={"currentPage": page_context_source},
+                output_summary={"decision": "current_page_priority"},
+            )
         if explicit_source in {
             '/happiness/tickets', '/happiness/team-management', '/happiness/refunds', '/financial-payment/refunds',
             '/financial-payment/transactions', '/content/ContentLibrary', '/licensing/licenses',
+            '/happiness/customerManagement', '/inspection/tasks', '/inspection/violations',
+            '/licensing/applications', '/dashboard',
         }:
             request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
             denied = validate_policy(request, reason='explicit_named_source_list')
