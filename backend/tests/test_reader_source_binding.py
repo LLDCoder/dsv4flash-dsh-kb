@@ -3,6 +3,7 @@ from copy import deepcopy
 import pytest
 
 from app.portal_reader import observation_result_from_plan
+from app.portal_reader import _explicit_reader_source
 from test_admin_portal_reader import Gateway, Planner, portal_plan_for, run_reader, user_info_for_paths
 from test_reader_evidence_retention import execute, result_plan
 
@@ -134,6 +135,15 @@ def test_source_binding_does_not_relax_field_or_number_grounding():
     assert result.status == "not_confirmed"
     assert result.source_section == "active"
     assert result.facts == ("Pending Review 2d Overdue REF-101",)
+
+
+def test_team_ticket_rollup_binds_team_management_before_generic_ticket_route():
+    question = "Summarize each staff member's pending, overdue, and closed tickets in my team."
+    assert _explicit_reader_source(question, {}) == "/happiness/team-management"
+
+
+def test_single_ticket_lookup_stays_on_happiness_tickets():
+    assert _explicit_reader_source("Show ticket HC-01-2026-9762913", {}) == "/happiness/tickets"
 
 
 def test_count_fallback_with_category_label_stays_within_bound_region():

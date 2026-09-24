@@ -3010,6 +3010,12 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
         normalized,
     ):
         return "/inspection/tasks"
+    # Team roll-ups are answered from the Team Management surface, where the
+    # Team Members roster and Team Tasks tabs establish the member scope.  Do
+    # this before the generic ticket keyword rule below: a question can contain
+    # "tickets" and still be a Team Management question.
+    if _ticket_team_summary_requested(question):
+        return "/happiness/team-management"
     if re.search(r"\bHC-01-\d{4}-\d+\b", str(question or ""), re.I) or re.search(
         r"\b(?:ticket|tickets|work\s*orders?|enquir(?:y|ies)|complaints?|cases?)\b"
         r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|投诉|諮詢)"
@@ -3216,6 +3222,7 @@ def _ticket_team_summary_result(
     *,
     question: str,
     scope: Literal["personal", "team", "global", "unknown"],
+    page: str = "/happiness/tickets",
 ) -> ReaderResult | None:
     """Aggregate only visible ticket rows by their rendered owner field.
 
@@ -3229,7 +3236,7 @@ def _ticket_team_summary_result(
         return ReaderResult(
             status="not_confirmed",
             summary="A team-scoped ticket view was not verified for this account.",
-            page="/happiness/tickets",
+            page=page,
             answer_shape="overview",
             scope=scope,
             missing=("requested_team_scope_unverified",),
@@ -3244,6 +3251,20 @@ def _ticket_team_summary_result(
             node for node in _observation_semantic_nodes(observation)
             if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")
         ]
+        if page == "/happiness/team-management":
+            # Team Management can expose dashboard tables alongside the Team
+            # Tasks table. Select the table whose rendered schema identifies
+            # task ownership instead of rejecting the observation as
+            # ambiguous or falling through to the generic person roll-up.
+            task_tables = []
+            for node in tables:
+                headers = {str(header).strip().casefold() for header in node.get("columnHeaders") or []}
+                path = " ".join(str(value) for value in node.get("selectedTabPath") or []).casefold()
+                if {"assigned to", "task no."}.issubset(headers) or "team tasks" in path:
+                    task_tables.append(node)
+            if len(task_tables) == 1:
+                node = task_tables[0]
+                return list(node.get("rowFields") or []), str(node.get("nodeId") or "")
         if len(tables) != 1:
             return None
         return list(tables[0].get("rowFields") or []), str(tables[0].get("nodeId") or "")
@@ -3302,8 +3323,8 @@ def _ticket_team_summary_result(
             return ReaderResult(
                 status="no_data",
                 summary="The named staff member was not visible in the current ticket rows.",
-                page="/happiness/tickets",
-                section="Enquiries & Complaints",
+                page=page,
+                section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
                 source_section=todo[1],
                 answer_shape="overview",
                 completeness="bounded",
@@ -3332,8 +3353,8 @@ def _ticket_team_summary_result(
         return ReaderResult(
             status="not_confirmed",
             summary="The current ticket views did not expose a usable owner field.",
-            page="/happiness/tickets",
-            section="Enquiries & Complaints",
+            page=page,
+            section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
             source_section=todo[1],
             answer_shape="overview",
             completeness="bounded",
@@ -3343,8 +3364,8 @@ def _ticket_team_summary_result(
     return ReaderResult(
         status="success",
         summary="Visible To Do and Completed ticket rows were aggregated by Current Handler.",
-        page="/happiness/tickets",
-        section="Enquiries & Complaints",
+        page=page,
+        section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
         source_section=todo[1],
         answer_shape="overview",
         completeness="bounded",
@@ -9376,6 +9397,14 @@ def _native_person_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcom
         return outcome
     if outcome.result.status not in {"success", "not_confirmed", "no_data"}:
         return outcome
+    # A Team Management team-summary result already has the requested
+    # Pending/Overdue/Closed shape and source scope. Do not replace it with
+    # the generic bounded visible-row projection below.
+    if (
+        outcome.result.page == "/happiness/team-management"
+        and outcome.audit_evidence.get("stage") == "ticket_team_summary"
+    ):
+        return outcome
     observation = outcome.audit_evidence.get("observation") or (
         (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
     ).get("observation")
@@ -12121,7 +12150,7 @@ class AdminPortalReader:
 
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
         if explicit_source in {
-            '/happiness/tickets', '/happiness/refunds', '/financial-payment/refunds',
+            '/happiness/tickets', '/happiness/team-management', '/happiness/refunds', '/financial-payment/refunds',
             '/financial-payment/transactions', '/content/ContentLibrary', '/licensing/licenses',
         }:
             request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
@@ -12259,7 +12288,7 @@ class AdminPortalReader:
                             'observation': observation,
                             'result': sla_result.public_json(),
                         })
-                if explicit_source == '/happiness/tickets' and _ticket_team_summary_requested(question):
+                if explicit_source in {'/happiness/tickets', '/happiness/team-management'} and _ticket_team_summary_requested(question):
                     # The team roll-up requires both visible queue states.  A
                     # single fresh To Do read is insufficient evidence for
                     # closed-ticket counts, so switch only after the observed
@@ -12290,6 +12319,7 @@ class AdminPortalReader:
                         completed_observation,
                         question=question,
                         scope=_permission_result_scope(permission_context),
+                        page=explicit_source,
                     )
                     if team_result is not None:
                         return ReaderOutcome(team_result, {
