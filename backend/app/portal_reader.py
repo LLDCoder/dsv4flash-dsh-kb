@@ -3316,6 +3316,44 @@ def _ticket_team_summary_requested(question: str) -> bool:
     return has_people and has_ticket_scope and has_rollup
 
 
+def _team_member_roster(observation: Any) -> tuple[dict[str, str], ...]:
+    """Extract the rendered Team Members roster without inventing identities."""
+
+    if not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return ()
+    names: dict[str, str] = {}
+    generic = {
+        "team members", "team member", "members", "member", "overview", "statistics",
+        "all", "enquiries & complaints", "appeals", "refunds",
+    }
+    metric_markers = re.compile(
+        r"^(?:completed tasks|avg(?:\.|erage)? processing time|sla compliance|overdue tasks)$",
+        re.I,
+    )
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") not in {"cards", "card", "region"}:
+            continue
+        candidates: list[str] = []
+        heading = str(node.get("heading") or "").strip()
+        if heading:
+            candidates.append(heading)
+        for summary in node.get("cardSummaries") or ():
+            parts = [part.strip() for part in str(summary).split("|") if part.strip()]
+            if parts:
+                candidates.append(parts[0])
+        for candidate in candidates:
+            value = re.sub(r"\s+", " ", candidate).strip(" .:-")
+            key = re.sub(r"[^a-z0-9]", "", value.casefold())
+            if not value or not key or key in generic or metric_markers.fullmatch(value):
+                continue
+            # Card summaries may begin with a section label rather than a
+            # person. Only retain a human-looking heading/name.
+            if re.search(r"\b(?:team|member|completed|processing|compliance|overdue|tasks?)\b", value, re.I):
+                continue
+            names.setdefault(key, value[:120])
+    return tuple(names.values())
+
+
 def _ticket_member_query(question: str) -> str:
     """Extract a user-named staff member without treating Chinese prose as a name."""
 
@@ -3371,6 +3409,7 @@ def _ticket_team_summary_result(
     question: str,
     scope: Literal["personal", "team", "global", "unknown"],
     page: str = "/happiness/tickets",
+    member_observation: Any = None,
 ) -> ReaderResult | None:
     """Aggregate only visible ticket rows by their rendered owner field.
 
@@ -3443,6 +3482,23 @@ def _ticket_team_summary_result(
             missing=("pagination_incomplete",),
         )
     result_completeness = "complete" if all_pages_requested and pagination_complete else "bounded"
+    roster_names = _team_member_roster(member_observation) if page == "/happiness/team-management" else ()
+    if page == "/happiness/team-management" and not roster_names:
+        return ReaderResult(
+            status="not_confirmed",
+            summary="The Team Members roster was not available, so the team scope cannot be verified.",
+            page=page,
+            section="Team Tasks",
+            source_section=todo[1],
+            answer_shape="overview",
+            completeness="unknown",
+            scope=scope,
+            missing=("team_member_roster_not_observed",),
+        )
+    roster_by_key = {
+        re.sub(r"[^a-z0-9]", "", name.casefold()): name
+        for name in roster_names
+    }
 
     def field(row: dict[str, Any], *names: str) -> str:
         wanted = {re.sub(r"[^a-z0-9]", "", name.casefold()) for name in names}
@@ -3470,7 +3526,12 @@ def _ticket_team_summary_result(
             key = re.sub(r"[^a-z0-9]", "", handler.casefold())
             if not key:
                 continue
-            labels.setdefault(key, handler)
+            if roster_by_key and key not in roster_by_key:
+                # A queue row can contain a handler from another department or
+                # a stale identifier. Team scope is defined by the rendered
+                # Team Members roster, not by incidental queue ownership.
+                continue
+            labels.setdefault(key, roster_by_key.get(key, handler))
             bucket = totals.setdefault(key, {"Pending Tickets": 0, "Overdue Tickets": 0, "Closed Tickets": 0})
             status = field(row, "Status").casefold()
             sla = field(row, "SLA").casefold()
@@ -3485,6 +3546,10 @@ def _ticket_team_summary_result(
 
     add(todo[0], completed_view=False)
     add(completed[0], completed_view=True)
+    if roster_by_key:
+        for key, label in roster_by_key.items():
+            labels.setdefault(key, label)
+            totals.setdefault(key, {"Pending Tickets": 0, "Overdue Tickets": 0, "Closed Tickets": 0})
     requested_member = _ticket_member_query(question)
     if requested_member:
         member_key = re.sub(r"[^a-z0-9]", "", requested_member.casefold())
@@ -12550,6 +12615,55 @@ class AdminPortalReader:
                     # single fresh To Do read is insufficient evidence for
                     # closed-ticket counts, so switch only after the observed
                     # Completed control has been uniquely identified.
+                    member_observation = None
+                    if explicit_source == '/happiness/team-management':
+                        # Establish the team boundary from the page's own
+                        # Team Members roster before aggregating queue rows.
+                        # Queue ownership alone is not a safe scope signal: it
+                        # can include stale users, other departments, or raw
+                        # identifiers that are not members of this team.
+                        member_action = _observed_switch_tab_action({'name': 'Team Members'}, observation)
+                        if member_action is None:
+                            result = ReaderResult(
+                                status='not_confirmed', page=explicit_source,
+                                section='Team Members', answer_shape='overview',
+                                scope=_permission_result_scope(permission_context),
+                                summary='The Team Members roster was not visible in the current layout.',
+                                missing=('team_member_roster_not_observed',),
+                            )
+                            return ReaderOutcome(result, {
+                                'stage': 'ticket_team_summary', 'permission': permission_audit,
+                                'observation': observation, 'result': result.public_json(),
+                            })
+                        member_tool = await portal_read_stage(
+                            replace(request, actions=(member_action,)),
+                            timeout_stage='explicit_named_source_team_members',
+                            attempt='explicit_named_source_team_members',
+                        )
+                        if not member_tool.get('ok'):
+                            raise RuntimeError(str(member_tool.get('code') or 'team_member_roster_read_failed'))
+                        member_observation = (member_tool.get('result') or {}).get('observation') or {}
+                        team_tasks_action = _observed_switch_tab_action({'name': 'Team Tasks'}, member_observation)
+                        if team_tasks_action is None:
+                            result = ReaderResult(
+                                status='not_confirmed', page=explicit_source,
+                                section='Team Tasks', answer_shape='overview',
+                                scope=_permission_result_scope(permission_context),
+                                summary='The Team Tasks tab could not be restored after reading the team roster.',
+                                missing=('team_tasks_tab_not_observed',),
+                            )
+                            return ReaderOutcome(result, {
+                                'stage': 'ticket_team_summary', 'permission': permission_audit,
+                                'observation': member_observation, 'result': result.public_json(),
+                            })
+                        todo_tool = await portal_read_stage(
+                            replace(request, actions=(team_tasks_action,)),
+                            timeout_stage='explicit_named_source_team_tasks',
+                            attempt='explicit_named_source_team_tasks',
+                        )
+                        if not todo_tool.get('ok'):
+                            raise RuntimeError(str(todo_tool.get('code') or 'team_tasks_read_failed'))
+                        observation = (todo_tool.get('result') or {}).get('observation') or {}
                     completed_action = _observed_switch_tab_action({'name': 'Completed'}, observation)
                     if completed_action is None:
                         result = ReaderResult(
@@ -12577,12 +12691,14 @@ class AdminPortalReader:
                         question=question,
                         scope=_permission_result_scope(permission_context),
                         page=explicit_source,
+                        member_observation=member_observation,
                     )
                     if team_result is not None:
                         return ReaderOutcome(team_result, {
                             'stage': 'ticket_team_summary', 'permission': permission_audit,
                             'observation': observation,
                             'completedObservation': completed_observation,
+                            'memberObservation': member_observation,
                             'actions': (completed_action,),
                             'result': team_result.public_json(),
                         })

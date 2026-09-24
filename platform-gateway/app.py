@@ -1975,7 +1975,10 @@ READER_CARD_COLLECTION_SCRIPT = """() => {
         const parent = card.parentElement;
         if (!groups.has(parent)) groups.set(parent, []);
         const values = groups.get(parent);
-        if (values.length >= 4) continue;
+        // A Team Members roster commonly contains more than four cards. Keep
+        // the full rendered roster so downstream team-scope checks do not
+        // silently drop the last member.
+        if (values.length >= 40) continue;
         const fragments = [];
         const walk = node => {
             if (node.nodeType === Node.TEXT_NODE) {
@@ -2383,7 +2386,7 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
     for card_index, collection in enumerate(card_collections if isinstance(card_collections, list) else []):
         if not isinstance(collection, dict) or not isinstance(collection.get("cardSummaries"), list):
             continue
-        cards = [_sanitize_reader_text(value, max_chars=300) for value in collection["cardSummaries"][:min(limit, 4)]
+        cards = [_sanitize_reader_text(value, max_chars=300) for value in collection["cardSummaries"][:min(limit, 40)]
                  if isinstance(value, str) and value.strip()]
         if not cards:
             continue
