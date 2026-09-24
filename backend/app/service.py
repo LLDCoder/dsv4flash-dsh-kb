@@ -585,6 +585,21 @@ def reader_evidence_only_response(
             "zh": "当前未核实到所请求的团队范围视图，不能把当前列表当作团队数据，也不能把它的数量当作团队总数。",
             "ar": "لم أتمكن من التحقق من عرض بنطاق الفريق لهذا الطلب. لم أعتبر القائمة الحالية بيانات للفريق أو عددها إجمالي الفريق.",
         }.get(language, "The requested team scope could not be verified; the current list is not a verified team result.")
+    if status == "not_confirmed" and reader_result.get("missing") == ["subject_match_not_verified"]:
+        messages = {
+            "en": (
+                "I could not verify any readable record belonging to the requested subject. "
+                "The current page records were not used as substitutes. Please filter the relevant portal page "
+                "by the exact subject identifier and retry in English or Arabic."
+            ),
+            "zh": "未能核实到属于所请求对象的可读记录；当前页面记录未被用作替代结果。请在对应门户页面按准确对象标识筛选后重试。",
+            "ar": (
+                "لم أتمكن من التحقق من أي سجل قابل للقراءة يخص الجهة المطلوبة. "
+                "لم أستخدم سجلات الصفحة الحالية كبديل. يرجى تصفية صفحة البوابة ذات الصلة باستخدام معرّف الجهة "
+                "الدقيق ثم إعادة المحاولة بالإنجليزية أو العربية."
+            ),
+        }
+        return messages.get(language, messages["en"])
     if (prior_answer_coverage and status == "success" and reader_result.get("answerShape") == "detail"
             and len(facts) == 1 and facts[0] in {PRIOR_LIST_SAMPLE_FACT, PRIOR_EMPTY_LIST_FACT}
             and not reader_result.get("missing")):

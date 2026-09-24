@@ -3162,7 +3162,7 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # Team Members roster and Team Tasks tabs establish the member scope.  Do
     # this before the generic ticket keyword rule below: a question can contain
     # "tickets" and still be a Team Management question.
-    if _ticket_team_summary_requested(question):
+    if _ticket_team_summary_requested(question) and not _ticket_member_query(question):
         return "/happiness/team-management"
     if re.search(r"\bHC-01-\d{4}-\d+\b", str(question or ""), re.I) or re.search(
         r"\b(?:ticket|tickets|work\s*orders?|enquir(?:y|ies)|complaints?|cases?)\b"
@@ -3303,7 +3303,7 @@ def _ticket_team_summary_requested(question: str) -> bool:
     normalized = re.sub(r"\s+", " ", str(question or "").casefold())
     has_people = bool(re.search(r"\b(?:team|staff|member|employee|handler)s?\b|(?:团队|團隊|员工|員工|部门|部門|فريق|موظف)", normalized))
     has_ticket_scope = bool(re.search(
-        r"\b(?:ticket|work\s*order|case|complaint|enquir(?:y|ies))s?\b"
+        r"\b(?:ticket|task|work\s*order|case|complaint|enquir(?:y|ies))s?\b"
         r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|تذاكر|تذكرة|شكاوى|استفسار|طلبات)",
         normalized,
     ))
@@ -3447,7 +3447,9 @@ def _ticket_team_summary_result(
             for node in tables:
                 headers = {str(header).strip().casefold() for header in node.get("columnHeaders") or []}
                 path = " ".join(str(value) for value in node.get("selectedTabPath") or []).casefold()
-                if {"assigned to", "task no."}.issubset(headers) or "team tasks" in path:
+                if ({"assigned to", "task no."}.issubset(headers)
+                        or {"current handler", "ticket no."}.issubset(headers)
+                        or "team tasks" in path):
                     task_tables.append(node)
             if len(task_tables) == 1:
                 node = task_tables[0]
@@ -3457,17 +3459,20 @@ def _ticket_team_summary_result(
         return list(tables[0].get("rowFields") or []), str(tables[0].get("nodeId") or "")
 
     todo = table_rows(todo_observation)
-    completed = table_rows(completed_observation)
+    completed = table_rows(completed_observation) if completed_observation is not None else ([], "")
     if todo is None or completed is None:
         return None
     all_pages_requested = _question_requests_all_pages(question)
+    pagination_observations = [todo_observation]
+    if completed_observation is not None:
+        pagination_observations.append(completed_observation)
     pagination_complete = all(
         isinstance(observation, dict)
         and (
             int(observation.get("paginationTotalPages") or 1) <= 1
             or observation.get("paginationComplete") is True
         )
-        for observation in (todo_observation, completed_observation)
+        for observation in pagination_observations
     )
     if all_pages_requested and not pagination_complete:
         return ReaderResult(
@@ -3483,7 +3488,7 @@ def _ticket_team_summary_result(
         )
     result_completeness = "complete" if all_pages_requested and pagination_complete else "bounded"
     roster_names = _team_member_roster(member_observation) if page == "/happiness/team-management" else ()
-    if page == "/happiness/team-management" and not roster_names:
+    if page == "/happiness/team-management" and member_observation is not None and not roster_names:
         return ReaderResult(
             status="not_confirmed",
             summary="The Team Members roster was not available, so the team scope cannot be verified.",
@@ -3581,7 +3586,7 @@ def _ticket_team_summary_result(
         )
         for key in sorted(totals, key=lambda item: labels[item].casefold())
     )
-    if not closed_owner_observed:
+    if completed_observation is not None and not closed_owner_observed:
         facts = (*facts, "The completed ticket view for this account does not render a handler column, "
                         "so closed tickets are not attributed to individual members.")
     if not facts:
@@ -3599,9 +3604,11 @@ def _ticket_team_summary_result(
     return ReaderResult(
         status="success",
         summary=(
-            "All rendered To Do and Completed ticket pages were aggregated by Current Handler."
+            ("All rendered To Do and Completed ticket pages were aggregated by Current Handler."
+             if completed_observation is not None else "All rendered To Do ticket pages were aggregated by Current Handler.")
             if result_completeness == "complete"
-            else "Visible To Do and Completed ticket rows were aggregated by Current Handler."
+            else ("Visible To Do and Completed ticket rows were aggregated by Current Handler."
+                  if completed_observation is not None else "Visible To Do ticket rows were aggregated by Current Handler.")
         ),
         page=page,
         section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
@@ -3609,7 +3616,7 @@ def _ticket_team_summary_result(
         answer_shape="overview",
         completeness=result_completeness,
         scope=scope,
-        selected_state="To Do / Completed",
+        selected_state="To Do / Completed" if completed_observation is not None else "To Do",
         facts=facts,
     )
 
@@ -8722,6 +8729,102 @@ def _guard_related_record_substitution(outcome: ReaderOutcome, question: str,
     return outcome
 
 
+
+def _explicit_subject_identifiers(question: str) -> tuple[str, ...]:
+    """Extract identifiers explicitly named as the requested subject."""
+    value = str(question or "")
+    patterns = (
+        r"(?:specified|requested|target|subject|institution|entity|record|object)\s*"
+        r"(?:is|:)?\s*([A-Za-z0-9][A-Za-z0-9_.-]{2,})",
+        r"(?:指定(?:检查)?对象|指定主体|指定机构|目标(?:机构|主体)|对象|机构|主体|记录)\s*[:：]?\s*"
+        r"([A-Za-z0-9][A-Za-z0-9_.-]{2,})",
+        r"(?:الجهة|المؤسسة|السجل|المعرّف|المعرف|الموضوع)\s*[:：]?\s*"
+        r"([A-Za-z0-9][A-Za-z0-9_.-]{2,})",
+    )
+    ignored = {
+        "past", "all", "history", "checks", "inspections", "contact", "contacts",
+        "the", "this", "that", "record", "records", "object", "entity",
+    }
+    found: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, value, re.I):
+            candidate = match.group(1).strip(" .,:;!?。；，")
+            if candidate.casefold() not in ignored:
+                found.append(candidate)
+    return tuple(dict.fromkeys(found))
+
+
+def _subject_identifier_is_in_row(row: Any, identifiers: tuple[str, ...]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    normalized_ids = {
+        re.sub(r"[^a-z0-9]", "", identifier.casefold())
+        for identifier in identifiers
+    }
+    normalized_ids.discard("")
+    if not normalized_ids:
+        return False
+    for value in row.values():
+        text = str(value or "")
+        normalized = re.sub(r"[^a-z0-9]", "", text.casefold())
+        if normalized in normalized_ids:
+            return True
+        tokens = {
+            re.sub(r"[^a-z0-9]", "", token.casefold())
+            for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]*", text)
+        }
+        if normalized_ids.intersection(tokens):
+            return True
+    return False
+
+
+def _guard_subject_record_substitution(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Never present current-page rows as records for an explicitly named subject."""
+
+    result, evidence = outcome.result, outcome.audit_evidence
+    identifiers = _explicit_subject_identifiers(question)
+    if not identifiers or result.status not in {"success", "no_data"} or question_is_conceptual(question):
+        return outcome
+    if str(evidence.get("stage") or "").startswith("knowledge_"):
+        return outcome
+    observation = evidence.get("observation") or ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
+    source = _observation_evidence_for_result(observation, result)
+    if not isinstance(source, dict) or source.get("kind") not in {"table", "grid"}:
+        return outcome
+    rows = source.get("rowFields")
+    if not isinstance(rows, list) or not rows:
+        return outcome
+    matches = [row for row in rows if _subject_identifier_is_in_row(row, identifiers)]
+    if len(matches) == len(rows):
+        return outcome
+    guarded = replace(
+        result,
+        status="not_confirmed",
+        summary="The visible records were not verified as belonging to the requested subject.",
+        completeness="unknown",
+        facts=(
+            "No visible record was verified as belonging to the requested subject.",
+            "The current page rows are not used as a substitute for the requested subject.",
+        ),
+        workflow_state="",
+        source_hint={},
+        missing=("subject_match_not_verified",),
+    )
+    return ReaderOutcome(
+        guarded,
+        {
+            **evidence,
+            "subjectBoundaryGuard": {
+                "identifiers": list(identifiers),
+                "observedRows": len(rows),
+                "matchedRows": len(matches),
+                "action": "withhold_unverified_rows",
+            },
+            "result": guarded.public_json(),
+        },
+    )
+
+
 def _guard_requested_queue_view(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     result = outcome.result
     if (result.status not in {"success", "no_data", "not_confirmed"} or not result.page
@@ -10106,6 +10209,7 @@ class AdminPortalReader:
         outcome = _native_person_rollup(outcome, question)
         outcome = _guard_unfound_record_identity(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
+        outcome = _guard_subject_record_substitution(outcome, question)
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
         outcome = _native_identity_search_result(outcome, question, intent_state)

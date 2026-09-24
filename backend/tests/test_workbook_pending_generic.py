@@ -319,6 +319,30 @@ def test_team_ticket_summary_uses_both_visible_views_and_exact_member():
     assert member and "shiting zhaozhao" in " ".join(member.facts)
 
 
+def test_acc005_overdue_tasks_use_team_sla_and_assignee_projection():
+    question = "How many overdue tasks are in my team? Give the count and the names of the people responsible."
+    assert _ticket_team_summary_requested(question)
+    assert _explicit_reader_source(question, {}) == "/happiness/team-management"
+    result = _ticket_team_summary_result(
+        _ticket_observation([
+            {"Ticket No.": "HC-01-1", "Current Handler": "Happiness Leader", "Status": "Open", "SLA": "18d Overdue"},
+            {"Ticket No.": "HC-01-2", "Current Handler": "Happiness Leader", "Status": "Open", "SLA": "17d Overdue"},
+            {"Ticket No.": "HC-01-3", "Current Handler": "Happiness Staff", "Status": "Open", "SLA": "16d Overdue"},
+            {"Ticket No.": "HC-01-4", "Current Handler": "tiezhu ye", "Status": "Open", "SLA": "Due in 1d"},
+        ], "To Do"),
+        None,
+        question=question,
+        scope="team",
+        page="/happiness/team-management",
+    )
+    assert result and result.status == "success"
+    assert result.facts == (
+        '{"Team Member":"Happiness Leader","Pending Tickets":2,"Overdue Tickets":2}',
+        '{"Team Member":"Happiness Staff","Pending Tickets":1,"Overdue Tickets":1}',
+        '{"Team Member":"tiezhu ye","Pending Tickets":1,"Overdue Tickets":0}',
+    )
+
+
 def test_financial_daily_summary_counts_only_rows_dated_today():
     from datetime import datetime
     today = datetime.now().strftime("%d/%m/%Y")
