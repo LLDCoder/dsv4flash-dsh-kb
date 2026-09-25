@@ -13,6 +13,7 @@ from app.tool_gateway import ToolGateway
 from app.principal import Principal
 from app.profile_scope import profile_context_from_payload, requires_profile_switch
 from app.response_safety import is_internal_tool_protocol
+from app.service import DSHService
 from app.skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 
 
@@ -793,6 +794,81 @@ class RegistryAndRoutingTests(unittest.TestCase):
                 ),
                 ("umc.application_detail", {"applicationId": application_id}),
             )
+
+    def test_application_answer_evidence_separates_internal_ids_from_public_fields(self):
+        raw_result = {
+            "ok": True,
+            "code": "ok",
+            "toolName": "umc.applications",
+            "result": {
+                "data": {
+                    "applicationPage": {
+                        "total": 1,
+                        "items": [
+                            {
+                                "id": 7067,
+                                "applicationDetailsId": 8001,
+                                "applicationNumber": "ML-1-7-6000718",
+                                "serviceId": 42,
+                                "serviceNameEn": "Ground Photography Permit within the UAE",
+                                "createdOn": "2026-09-14T15:51:00Z",
+                                "applicationStatusId": 107,
+                                "applicationStatusNameEn": "Cancelled",
+                                "certificateId": 1487,
+                                "certificateReference": "Issued (record 1487)",
+                                "recordId": 1487,
+                                "orderAmount": 33500,
+                                "currencyCode": "AED",
+                                "paymentStatus": 3,
+                            }
+                        ],
+                    }
+                }
+            },
+        }
+
+        projected = DSHService.customer_application_result("umc.applications", raw_result)
+        evidence = DSHService.answer_tool_evidence("umc.applications", raw_result, "default")
+
+        # The internal result remains intact for server-side selection.
+        item = raw_result["result"]["data"]["applicationPage"]["items"][0]
+        self.assertEqual(item["id"], 7067)
+        self.assertEqual(item["certificateId"], 1487)
+
+        self.assertEqual(
+            projected["result"]["data"]["applicationPage"]["items"][0]["applicationNumber"],
+            "ML-1-7-6000718",
+        )
+        self.assertNotIn("7067", evidence)
+        self.assertNotIn("1487", evidence)
+        for internal_key in ("id", "applicationDetailsId", "serviceId", "applicationStatusId", "certificateId", "paymentStatus"):
+            self.assertNotIn(internal_key, evidence)
+        self.assertIn("Ground Photography Permit within the UAE", evidence)
+        self.assertIn("Cancelled", evidence)
+
+    def test_application_prompt_parameters_and_final_answer_hide_internal_detail_urls(self):
+        prompt_parameters = DSHService.customer_tool_parameters(
+            "umc.application_detail",
+            {"applicationId": 4958, "keyword": "ML-3-7-5263529"},
+        )
+        self.assertNotIn("applicationId", prompt_parameters)
+        self.assertEqual(prompt_parameters, {"keyword": "ML-3-7-5263529"})
+
+        english = DSHService.sanitize_customer_answer(
+            "Open [View application details](http://77.242.240.158:18085/my-requests/detail?id=4958).",
+            "en",
+        )
+        self.assertEqual(english, "Open [My Requests](/my-requests).")
+
+        arabic = DSHService.sanitize_customer_answer(
+            "يمكنك فتح /my-requests/detail?id=4958 أو مراجعة معرّف الطلب: 4958.",
+            "ar",
+        )
+        self.assertEqual(arabic, "يمكنك فتح /my-requests أو مراجعة.")
+
+    def test_non_application_answer_evidence_is_not_projected(self):
+        raw_result = {"ok": True, "code": "ok", "toolName": "umc.licenses.list", "result": {"data": {"id": 123, "documentName": "Permit"}}}
+        self.assertEqual(DSHService.customer_application_result("umc.licenses.list", raw_result), raw_result)
 
     def test_knowledge_and_ocr_are_runtime_only_capabilities(self):
         business_tools = {item["tool_name"] for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}

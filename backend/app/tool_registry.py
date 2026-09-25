@@ -65,7 +65,7 @@ DEFAULT_TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "tool_name": "umc.application_detail",
         "display_name": "Get application detail",
-        "description": "Read-only detail for a selected UMC application.",
+        "description": "Read-only detail for a selected UMC application. The numeric applicationId is an internal server-side lookup value and must not be returned as customer-facing application data.",
         "operation_id": "application_detail",
         "http_method": "GET",
         "http_path": "/api/MyRequest/ApplicationDetail/{applicationId}",

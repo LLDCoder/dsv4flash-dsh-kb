@@ -75,6 +75,213 @@ class EventBroker:
 
 
 class DSHService:
+    # Application workflows need internal IDs to resolve a selected record on
+    # the server, but those IDs are not customer-facing business data. Keep
+    # the projection at the answer boundary instead of masking the stored
+    # tool result, because selection follow-ups still need the raw ID.
+    APPLICATION_TOOL_NAMES = frozenset(
+        {
+            "umc.applications",
+            "umc.application_detail",
+            "umc.application_payment_detail",
+        }
+    )
+    APPLICATION_PUBLIC_KEYS = frozenset(
+        {
+            "applicationnumber",
+            "applicationno",
+            "servicecode",
+            "servicename",
+            "servicenameen",
+            "servicenamear",
+            "createdon",
+            "submissiontime",
+            "applicationstatusname",
+            "applicationstatusnameen",
+            "applicationstatusnamear",
+            "statusnameen",
+            "statusnamear",
+            "status",
+            "statusname",
+            "stage",
+            "type",
+            "requesttype",
+            "typename",
+            "typenameen",
+            "typenamear",
+            "profilename",
+            "profiledisplayname",
+            "profile",
+            "orderamount",
+            "amount",
+            "servicefee",
+            "currencycode",
+            "currency",
+            "paymentstatusname",
+            "nextstep",
+            "nextaction",
+            "resultscope",
+            "isissued",
+            "certificate",
+            "count",
+            "name",
+            "nameen",
+            "namear",
+        }
+    )
+    APPLICATION_STRUCTURE_KEYS = frozenset(
+        {
+            "ok",
+            "code",
+            "toolname",
+            "result",
+            "data",
+            "applicationpage",
+            "applicationstatuscounts",
+            "items",
+            "rows",
+            "nextcursor",
+            "total",
+            "pageindex",
+            "pagesize",
+            "issuccess",
+            "statuscode",
+        }
+    )
+    APPLICATION_INTERNAL_KEYS = frozenset(
+        {
+            "id",
+            "applicationid",
+            "applicationdetailsid",
+            "certificateid",
+            "serviceid",
+            "applicationstatusid",
+            "paymentstatus",
+            "paymentstatusid",
+            "recordid",
+            "internalreference",
+            "certificatereference",
+        }
+    )
+
+    @classmethod
+    def customer_application_result(cls, tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
+        """Return a customer-safe projection while preserving the raw result internally.
+
+        Application list/detail APIs return a mixture of public business
+        fields and numeric database identifiers. The raw result remains
+        available to the server for selection and authorization; only this
+        projection crosses into the answer-generation prompt.
+        """
+
+        if tool_name not in cls.APPLICATION_TOOL_NAMES:
+            return tool_result
+
+        def decode(value: Any) -> Any:
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.startswith(("{", "[")):
+                    try:
+                        return json.loads(stripped)
+                    except (TypeError, ValueError):
+                        return value
+            return value
+
+        def project(value: Any, depth: int = 0) -> Any:
+            if depth > 8:
+                return None
+            value = decode(value)
+            if isinstance(value, dict):
+                projected: dict[str, Any] = {}
+                for key, nested in value.items():
+                    normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                    if normalized in cls.APPLICATION_INTERNAL_KEYS or normalized.endswith("id"):
+                        continue
+                    if normalized not in cls.APPLICATION_PUBLIC_KEYS and normalized not in cls.APPLICATION_STRUCTURE_KEYS:
+                        continue
+                    safe = project(nested, depth + 1)
+                    if safe not in (None, "", [], {}):
+                        projected[str(key)] = safe
+                return projected
+            if isinstance(value, list):
+                return [safe for item in value[:100] if (safe := project(item, depth + 1)) not in (None, "", [], {})]
+            return value
+
+        projected_result = project(tool_result.get("result"))
+        return {
+            "ok": bool(tool_result.get("ok")),
+            "code": tool_result.get("code"),
+            "status": tool_result.get("status"),
+            "toolName": tool_name,
+            "result": projected_result,
+        }
+
+    @classmethod
+    def customer_tool_parameters(cls, tool_name: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        """Remove server-side application selectors before prompt construction.
+
+        ``applicationId`` is needed to call the detail endpoint, but it is not
+        customer evidence.  Keeping it in the trusted-parameters sentence
+        allowed the answer model to reconstruct an internal detail URL even
+        after the result projection had removed the field.  Audit events still
+        retain the original server-side arguments; this method only prepares
+        the customer-facing LLM prompt.
+        """
+
+        if tool_name not in cls.APPLICATION_TOOL_NAMES:
+            return parameters
+
+        def project(value: Any, depth: int = 0) -> Any:
+            if depth > 6:
+                return None
+            if isinstance(value, dict):
+                projected: dict[str, Any] = {}
+                for key, nested in value.items():
+                    normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                    if normalized in cls.APPLICATION_INTERNAL_KEYS or normalized.endswith("id"):
+                        continue
+                    safe = project(nested, depth + 1)
+                    if safe not in (None, "", [], {}):
+                        projected[str(key)] = safe
+                return projected
+            if isinstance(value, list):
+                return [safe for item in value[:50] if (safe := project(item, depth + 1)) not in (None, "", [], {})]
+            return value
+
+        return project(parameters) or {}
+
+    @staticmethod
+    def sanitize_customer_answer(content: str, response_language: str = "en") -> str:
+        """Apply a final customer-output guard against internal record links.
+
+        Prompt rules and evidence projection prevent the normal case.  This
+        last boundary also covers a model that hallucinates a portal detail
+        URL from a numeric selector or copies one from prior context.
+        """
+
+        if not content:
+            return content
+        label = {
+            "ar": "طلباتي",
+            "zh": "我的请求",
+        }.get(response_language, "My Requests")
+        detail_path = r"(?:https?://[^\s)]+)?/my-requests/detail\?[^\s)]+"
+        markdown_detail = re.compile(rf"\[[^\]]*\]\({detail_path}\)", re.IGNORECASE)
+        raw_detail = re.compile(detail_path, re.IGNORECASE)
+        sanitized = markdown_detail.sub(f"[{label}](/my-requests)", content)
+        sanitized = raw_detail.sub("/my-requests", sanitized)
+        # Cover plain-text variants such as "record ID: 4958" without
+        # touching public application references such as ML-3-7-5263529.
+        internal_id = re.compile(
+            r"(?i)\b(?:application|record|detail|certificate|service|status|payment)\s*id\s*[:#-]?\s*\d+\b"
+            r"|(?:معرّف|معرف|رقم)\s*(?:الطلب|السجل|التفاصيل|الشهادة|الخدمة|الحالة|الدفع)\s*[:#-]?\s*\d+\b"
+        )
+        sanitized = internal_id.sub("", sanitized)
+        sanitized = re.sub(r"\s+(?:or|and|أو|و)\s*(?=[.,،。؛;:!?؟]|$)", "", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r"\s+([.,،。؛;:!?؟])", r"\1", sanitized)
+        sanitized = re.sub(r"([.,،。؛;:!?؟])\1+", r"\1", sanitized)
+        return re.sub(r"[ \t]{2,}", " ", sanitized).strip()
+
     @staticmethod
     def is_cross_account_record_request(content: str, profile_context: ProfileContext | None) -> bool:
         """Detect a record lookup explicitly scoped to an unknown account name.
@@ -682,10 +889,13 @@ class DSHService:
         model must receive the successful read result; otherwise it can only
         guess whether the caller has records.  This keeps configured masking
         in force and removes credentials, contact data, attachments and raw
-        document content before the result crosses that boundary.
+        document content before the result crosses that boundary. Application
+        results additionally use a public-field projection so internal record
+        identifiers remain available only to server-side workflow logic.
         """
 
-        masked = mask_tool_result(tool_result, masking_policy)
+        customer_result = DSHService.customer_application_result(tool_name, tool_result)
+        masked = mask_tool_result(customer_result, masking_policy)
         # Treat credential/personal-data names as sensitive, but do not use a
         # blanket ``"document" in key`` check. License APIs legitimately use
         # documentName/documentStatus/documentId for customer-visible records;
@@ -2219,6 +2429,7 @@ class DSHService:
                                 if document_name_result.get("ok"):
                                     resolved_document_names = self.original_document_name_evidence(document_name_result)
                         if not latest_attachment:
+                            customer_parameters = self.customer_tool_parameters(tool_name, audited_parameters)
                             related_document_instruction = (
                                 "\nTRUSTED DOCUMENT NAME RESULT: The customer-visible evidence filename(s) are "
                                 + resolved_document_names
@@ -2235,7 +2446,7 @@ class DSHService:
                                         "Use these returned values as the authoritative source for the answer. "
                                         "For a count question, use the returned total/count field for the filtered result, not the length of a paginated items list. "
                                         "TRUSTED EXECUTED TOOL PARAMETERS: "
-                                        + json.dumps(audited_parameters, ensure_ascii=False)
+                                        + json.dumps(customer_parameters, ensure_ascii=False)
                                         + ". State that a filter was applied only when its corresponding parameter appears here. "
                                         "When startTime/endTime or startDate/endDate appear here, the server-side date range was applied; do not describe it as unsupported or unverified. "
                                         "Do not ask the user to confirm a profile, category, or record that is already present, "
@@ -2487,7 +2698,15 @@ class DSHService:
                             runtime_id=conversation.runtime_id,
                         )
                         try:
-                            async def draft_answer(prompt_messages: list[dict[str, str]]) -> tuple[str, str]:
+                            suppress_answer_stream = bool(
+                                tool_request and tool_request[0] in self.APPLICATION_TOOL_NAMES
+                            )
+
+                            async def draft_answer(
+                                prompt_messages: list[dict[str, str]],
+                                *,
+                                suppress_stream: bool = False,
+                            ) -> tuple[str, str]:
                                 chunks: list[str] = []
                                 reasoning_chunks: list[str] = []
                                 pending_stream = ""
@@ -2499,15 +2718,18 @@ class DSHService:
                                 async for token in self.llm.stream(prompt_messages, on_reasoning=capture_reasoning):
                                     chunks.append(token)
                                     pending_stream += token
-                                    if len(pending_stream) >= 24 or time.monotonic() - last_stream_flush >= 0.08:
+                                    if (
+                                        not suppress_stream
+                                        and (len(pending_stream) >= 24 or time.monotonic() - last_stream_flush >= 0.08)
+                                    ):
                                         await publish_answer_text(pending_stream)
                                         pending_stream = ""
                                         last_stream_flush = time.monotonic()
-                                if pending_stream:
+                                if pending_stream and not suppress_stream:
                                     await publish_answer_text(pending_stream)
                                 return "".join(chunks), "".join(reasoning_chunks)
 
-                            content, reasoning = await draft_answer(messages)
+                            content, reasoning = await draft_answer(messages, suppress_stream=suppress_answer_stream)
                             if is_internal_tool_protocol(content):
                                 retry_messages = [
                                     *messages,
@@ -2520,7 +2742,10 @@ class DSHService:
                                         ),
                                     },
                                 ]
-                                content, retry_reasoning = await draft_answer(retry_messages)
+                                content, retry_reasoning = await draft_answer(
+                                    retry_messages,
+                                    suppress_stream=suppress_answer_stream,
+                                )
                                 reasoning += retry_reasoning
                             if is_internal_tool_protocol(content):
                                 content = (
@@ -2528,6 +2753,9 @@ class DSHService:
                                     if response_language == "ar"
                                     else "I could not format the requested result. Please try again."
                                 )
+                            content = self.sanitize_customer_answer(content, response_language)
+                            if suppress_answer_stream:
+                                await publish_answer_text(content)
                         except Exception as exc:
                             await self.append_audit(
                                 db,

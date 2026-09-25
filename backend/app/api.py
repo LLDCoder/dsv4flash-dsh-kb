@@ -829,6 +829,15 @@ def make_router(service: DSHService) -> APIRouter:
         detail may be handed off to the read-only My Requests application
         Skill.  The service uses only an application identifier present in the
         prior verified detail result; it never guesses or performs a write.
+
+        Application tool results use two representations: the internal result
+        remains server-side for record selection and authorization, while the
+        answer-generation evidence is projected to customer-facing fields.
+        Internal application, certificate, detail, service, status, payment,
+        and record identifiers are not included in customer-facing evidence.
+        Customer-facing answers also replace any model-generated
+        ``/my-requests/detail?id=...`` link with the public ``/my-requests``
+        entry point before the SSE answer event is emitted.
         """
         payload = await request.json()
         content = str(payload.get("message") or "").strip()

@@ -27,7 +27,11 @@ DEFAULT_IDS = {"license_permit_status", "application_status", "license_renewal",
 
 def request(opener: urllib.request.OpenerDirector, method: str, url: str, body: dict | None = None) -> dict:
     payload = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, method=method, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    console_user_id = os.getenv("DSH_77_CONSOLE_USER_ID")
+    if console_user_id:
+        headers["X-User-Id"] = console_user_id
+    req = urllib.request.Request(url, data=payload, method=method, headers=headers)
     with opener.open(req, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
