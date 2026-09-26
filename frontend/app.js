@@ -1,5 +1,3 @@
-import { isModelServiceFailure, sanitizeAssistantContent } from "./model-service-error.js";
-
 const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
 
@@ -1579,14 +1577,13 @@ async function connect() {
           clearAssistantStatus();
           if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", "", `seq ${packet.seq}`);
           state.assistantContent += data.content || "";
-          renderLocalizedContent(state.assistantNode, sanitizeAssistantContent(state.assistantContent));
+          renderLocalizedContent(state.assistantNode, state.assistantContent);
           $("events").scrollTop = $("events").scrollHeight;
         } else if (packet.eventType === "assistant.message") {
           clearAssistantStatus();
           state.assistantContent = data.content || state.assistantContent;
-          const visibleContent = sanitizeAssistantContent(state.assistantContent);
-          if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", visibleContent, `seq ${packet.seq}`);
-          else renderLocalizedContent(state.assistantNode, visibleContent);
+          if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", state.assistantContent, `seq ${packet.seq}`);
+          else renderLocalizedContent(state.assistantNode, state.assistantContent);
         } else if (packet.eventType === "user.message") {
           clearAssistantStatus();
           const attachmentNote = data.attachment ? `附件：${data.attachment.fileName || "未命名文件"}` : "";
@@ -1595,15 +1592,7 @@ async function connect() {
           state.assistantContent = "";
         } else if (packet.eventType === "turn.completed") {
           clearAssistantStatus();
-          if (packet.eventType === "runtime.error" && isModelServiceFailure(data.error)) {
-            const visibleContent = sanitizeAssistantContent(data.error);
-            state.assistantContent = visibleContent;
-            if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", visibleContent, `seq ${packet.seq}`);
-            else renderLocalizedContent(state.assistantNode, visibleContent);
-            addEvent(packet.eventType, JSON.stringify({ ...data, error: visibleContent }), `seq ${packet.seq}`);
-          } else {
-            addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
-          }
+          addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
           if (document.querySelector("#auditPanel.active") && state.auditConversationId === state.conversationId) {
             void loadAuditDetail(state.conversationId);
           }
