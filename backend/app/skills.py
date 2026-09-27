@@ -63,6 +63,16 @@ CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY = (
 )
 
 
+CROSS_LANGUAGE_CONSISTENCY_RULES: tuple[str, ...] = (
+    "First establish one language-neutral answer plan from the user's intent and the trusted evidence, then render that same plan in the required response language.",
+    "Across languages, preserve the same substantive facts, eligibility conditions, timelines, caveats, uncertainty, refusal boundaries, alternatives, section order, and level of detail.",
+    "Do not add a policy claim, procedural rule, fee, deadline, exception, or technical explanation in one language unless the same claim is supported by the evidence and included in the other language.",
+    "For safety refusals, keep the refusal scope and safe alternatives equivalent; do not invent extra internal control mechanics in one language.",
+    "Translate the approved answer faithfully rather than summarizing it differently. Keep proper names and links consistent, and state unconfirmed details as unconfirmed in every language.",
+    "Complete every sentence and list before sending; never end with an unfinished fragment, placeholder, or dangling question.",
+)
+
+
 def _knowledge_guidance(when: str, boundary: str, prerequisites: str, response: str, navigation: str = "") -> str:
     return _guidance(
         when,
@@ -1073,6 +1083,8 @@ def build_system_prompt(
     prompt_parts.extend(
         [
             *language_policy,
+            "CROSS-LANGUAGE CONSISTENCY RULES:",
+            *(f"- {item}" for item in CROSS_LANGUAGE_CONSISTENCY_RULES),
             "SAFETY AND EVIDENCE RULES:",
             *(f"- {item}" for item in guardrails),
         ]
