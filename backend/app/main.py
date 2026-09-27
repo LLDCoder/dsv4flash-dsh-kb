@@ -67,7 +67,15 @@ async def lifespan(app: FastAPI):
     await service.skill_catalog.close()
 
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    version="0.1.0",
+    description=(
+        "NMA AI Assistant API. Customer-facing answers preserve the same evidence, "
+        "facts, constraints, and uncertainty across supported response languages."
+    ),
+    lifespan=lifespan,
+)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.add_middleware(ConsoleAuthMiddleware, get_password=lambda: service.console_password)
 app.include_router(make_router(service))
