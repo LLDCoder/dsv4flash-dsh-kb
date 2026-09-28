@@ -586,12 +586,15 @@ def reader_evidence_only_response(
             "ar": "لم أتمكن من التحقق من عرض بنطاق الفريق لهذا الطلب. لم أعتبر القائمة الحالية بيانات للفريق أو عددها إجمالي الفريق.",
         }.get(language, "The requested team scope could not be verified; the current list is not a verified team result.")
     if status == "not_confirmed" and reader_result.get("missing") == ["subject_match_not_verified"]:
+        all_pages_checked = reader_result.get("completeness") == "complete"
+        subject_message_en = (
+            "I checked all rendered pages but could not verify any readable record belonging to the requested subject. "
+            if all_pages_checked else
+            "I could not verify any readable record belonging to the requested subject. "
+        )
         messages = {
-            "en": (
-                "I could not verify any readable record belonging to the requested subject. "
-                "The current page records were not used as substitutes. Please filter the relevant portal page "
-                "by the exact subject identifier and retry in English or Arabic."
-            ),
+            "en": subject_message_en + "The current page records were not used as substitutes. Please filter the relevant portal page "
+            "by the exact subject identifier and retry in English or Arabic.",
             "zh": "未能核实到属于所请求对象的可读记录；当前页面记录未被用作替代结果。请在对应门户页面按准确对象标识筛选后重试。",
             "ar": (
                 "لم أتمكن من التحقق من أي سجل قابل للقراءة يخص الجهة المطلوبة. "
@@ -2402,6 +2405,26 @@ class DSHService:
         )
         if prior_answer_coverage:
             return fallback, False, "prior_answer_coverage"
+        # Subject-boundary failures must stay deterministic. Sending the safe
+        # two-fact result through the prose model allowed it to append rows
+        # from the current page even though those rows were explicitly
+        # withheld by the Reader.
+        if "subject_match_not_verified" in (evidence.get("missing") or []):
+            safe_evidence = {
+                **evidence,
+                "result": "not_confirmed",
+                "missing": ["subject_match_not_verified"],
+                "facts": [
+                    "No visible record was verified as belonging to the requested subject.",
+                    "The current page rows are not used as a substitute for the requested subject.",
+                ],
+            }
+            return reader_evidence_only_response(
+                safe_evidence,
+                language,
+                prior_answer_coverage=prior_answer_coverage,
+                question=question,
+            ), False, "deterministic_subject_boundary"
         if evidence.get('workflowState') == 'assignment_rechecked':
             return fallback, False, 'deterministic_assignment_comparison'
         if evidence.get('workflowState') in {'filter_return_verified', 'filter_return_unverified'}:
@@ -2415,6 +2438,29 @@ class DSHService:
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
             return fallback, False, "status_guard"
+        # Keep the boundary guarantee even if a later resolver preserves a
+        # successful status while carrying the Reader's explicit no-substitute
+        # facts. Never let the prose model append the visible page rows.
+        if any(
+            "No visible record was verified as belonging to the requested subject." in str(fact)
+            or "The current page rows are not used as a substitute for the requested subject." in str(fact)
+            for fact in facts
+        ):
+            safe_evidence = {
+                **evidence,
+                "result": "not_confirmed",
+                "missing": ["subject_match_not_verified"],
+                "facts": [
+                    "No visible record was verified as belonging to the requested subject.",
+                    "The current page rows are not used as a substitute for the requested subject.",
+                ],
+            }
+            return reader_evidence_only_response(
+                safe_evidence,
+                language,
+                prior_answer_coverage=prior_answer_coverage,
+                question=question,
+            ), False, "deterministic_subject_boundary"
         if re.search(r'\bidentify one [A-Za-z ]+ ID\b.*\bwithout\b.*\bpersonal\b', question, re.I):
             return fallback, False, 'deterministic_requested_identifier'
         scoped_sources = {str(fact).split(' scope:', 1)[0] for fact in facts if ' scope:' in str(fact)}
