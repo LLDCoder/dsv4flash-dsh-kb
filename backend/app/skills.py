@@ -18,19 +18,33 @@ def requested_response_language(text: str) -> str | None:
     return None
 
 
+def _language_prose(text: str) -> str:
+    """Exclude opaque literals from language votes, never from the actual request."""
+
+    value = str(text or "")
+    value = re.sub(r"```[\s\S]*?```|`[^`\n]*`", " ", value)
+    value = re.sub(r"https?://\S+|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", " ", value)
+    # Identifiers can contain many Latin letters while conveying no English
+    # prose. Require a digit and a letter; ordinary hyphenated words remain.
+    value = re.sub(r"(?<![A-Za-z0-9_])(?=[A-Za-z0-9_-]*[0-9])"
+                   r"(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_]+(?:[-_][A-Za-z0-9_]+)*"
+                   r"(?![A-Za-z0-9_])", " ", value)
+    return value
+
+
 def _message_language_counts(text: str) -> dict[str, int]:
     """Count the letters of each supported script; digits and emoji are ignored."""
 
-    value = str(text or "")
+    value = _language_prose(text)
     return {
         "ar": sum(
             1
             for char in value
-            if "\u0600" <= char <= "\u06ff"
+            if char.isalpha() and char != "\u0640" and ("\u0600" <= char <= "\u06ff"
             or "\u0750" <= char <= "\u077f"
             or "\u08a0" <= char <= "\u08ff"
             or "\ufb50" <= char <= "\ufdff"
-            or "\ufe70" <= char <= "\ufeff"
+            or "\ufe70" <= char <= "\ufeff")
         ),
         "en": sum(1 for char in value if ("A" <= char <= "Z") or ("a" <= char <= "z")),
         "zh": sum(1 for char in value if "\u3400" <= char <= "\u4dbf" or "\u4e00" <= char <= "\u9fff"),
@@ -92,7 +106,7 @@ def detect_unsupported_message_language(text: str) -> str:
     reply needs the short note about the supported languages.
     """
 
-    value = str(text or "")
+    value = _language_prose(text)
     counts = _message_language_counts(value)
     supported_letters = counts["en"] + counts["ar"]
     for code, start, end in _UNSUPPORTED_SCRIPT_RANGES:
@@ -150,8 +164,10 @@ def response_language_for(text: str, preferred_language: str | None = None) -> s
     """
 
     explicit = requested_response_language(text)
-    if explicit:
+    if explicit in {"en", "ar"}:
         return explicit
+    if explicit:
+        return preferred_language if preferred_language in {"en", "ar"} else "en"
 
     # A question written in an unsupported language is still answered, but only
     # in English or Arabic: keep the portal's supported language when it is one
@@ -172,7 +188,7 @@ def response_language_for(text: str, preferred_language: str | None = None) -> s
             return preferred_language
         return "ar" if "ar" in winners else winners[0]
 
-    if preferred_language in {"en", "ar", "zh"}:
+    if preferred_language in {"en", "ar"}:
         return preferred_language
     return "en"
 

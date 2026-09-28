@@ -25,6 +25,56 @@ def test_missing_switch_defaults_to_enforcement(monkeypatch):
     assert gateway._reader_whitelist_enabled() is True
 
 
+@pytest.mark.parametrize('method,path,expected', [
+    ('GET', '/api/Team/MyTeamMembers?isLeave=false', True),
+    ('POST', '/api/Team/MyTeamMembers', False),
+    ('GET', '/api/Team/MyTeamMemberReturn?userId=test', False),
+    ('POST', '/api/Team/MyTeamMemberLeave', False),
+])
+def test_managed_roster_registration_does_not_enable_neighbor_mutations(method, path, expected):
+    request = FakeRoute(method, 'https://admin.example.test' + path, 'fetch').request
+    assert gateway._reader_api_configured_policy_allows(request, 'https://admin.example.test') is expected
+
+
+@pytest.mark.parametrize('path', [
+    '/api/admin/finance/transactions/TXN-123',
+    '/api/admin/payments/refunds/RFD-123',
+    '/api/admin/payments/refunds/statistics',
+    '/api/admin/inspection/violations/123/timeline',
+    '/api/Enquiry/Management/123/Timeline',
+    '/api/UserManagement/GetRegionList/7',
+    '/api/Application/123/recall-approval/eligibility',
+])
+def test_reviewed_detail_dependencies_keep_method_and_origin_limits(path):
+    for method, origin, expected in [('GET', 'https://admin.example.test', True),
+                                     ('POST', 'https://admin.example.test', False),
+                                     ('GET', 'https://outside.example.test', False)]:
+        request = FakeRoute(method, origin + path, 'fetch').request
+        assert gateway._reader_api_configured_policy_allows(request, 'https://admin.example.test') is expected
+
+
+@pytest.mark.parametrize('path', [
+    '/api/admin/finance/transactions/export',
+    '/api/admin/payments/refunds/RFD-123/execute',
+    '/api/admin/inspection/violations/123/decide',
+    '/api/Enquiry/Management/123/Conversation',
+    '/api/Application/123/recall-approval',
+    '/api/LicenseManagement/export-2026',
+])
+def test_detail_registration_does_not_enable_adjacent_actions(path):
+    for method in ('GET', 'POST'):
+        request = FakeRoute(method, 'https://admin.example.test' + path, 'fetch').request
+        assert not gateway._reader_api_configured_policy_allows(request, 'https://admin.example.test')
+
+
+def test_array_transport_proof_distinguishes_type_changes():
+    original = {'rows': [{'enabled': True}]}
+    captured = {'rows': [{'enabled': 1}]}
+    proof = gateway._reader_field_evidence(original, captured)['/rows']
+    assert proof['status'] == 'bounded'
+    assert proof['valueHash'] == gateway._collection_digest(captured['rows'])
+
+
 @pytest.mark.parametrize("value", ["", "offf", "yes", "disabled", "2"])
 def test_invalid_switch_never_silently_disables_policy(monkeypatch, value):
     monkeypatch.setenv("PORTAL_READER_WHITELIST_ENABLED", value)

@@ -79,8 +79,21 @@ class ToolGateway:
             if policy_error:
                 return {"ok": False, "code": policy_error, "toolName": tool_name}
             try:
+                payload = request.as_payload()
+                if 'dashboardContext' in arguments:
+                    payload['dashboardContext'] = arguments['dashboardContext']
+                if "nativeRecordLookup" in arguments:
+                    payload["nativeRecordLookup"] = arguments["nativeRecordLookup"]
+                if "pageReads" in arguments:
+                    payload["pageReads"] = arguments["pageReads"]
+                if "relatedReads" in arguments:
+                    payload["relatedReads"] = arguments["relatedReads"]
+                if "collections" in arguments:
+                    # The gateway revalidates its strict schema and binds these
+                    # projections to observed, allowlisted requests in-session.
+                    payload["collections"] = arguments["collections"]
                 result = await self.platform.admin_portal_read(
-                    request.as_payload(),
+                    payload,
                     umc_token=principal.umc_token,
                     request_id=principal.request_id,
                     user_id=principal.user_id,
@@ -108,7 +121,20 @@ class ToolGateway:
                 return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "message": "top_k must be an integer"}
             if top_k < 1 or top_k > 100:
                 return {"ok": False, "code": "invalid_arguments", "toolName": tool_name, "message": "top_k must be between 1 and 100"}
-            result = await self.knowledge.search(query, folder_id, top_k, umc_token=principal.umc_token)
+            retrieval = arguments.get('retrieval')
+            if retrieval is not None and (not isinstance(retrieval, dict)
+                    or set(retrieval) - {'purpose', 'documentReferences', 'queryVariants'}
+                    or retrieval.get('purpose') not in {'business', 'page_fields', 'coverage_supplement'}
+                    or not isinstance(retrieval.get('documentReferences', []), list)
+                    or len(retrieval.get('documentReferences', [])) > 20
+                    or any(not isinstance(x, str) or len(x) > 500 for x in retrieval.get('documentReferences', []))
+                    or not isinstance(retrieval.get('queryVariants', []), list)
+                    or len(retrieval.get('queryVariants', [])) > 2
+                    or any(not isinstance(x, str) or not x.strip() or len(x) > 2000
+                           for x in retrieval.get('queryVariants', []))):
+                return {'ok': False, 'code': 'invalid_arguments', 'toolName': tool_name}
+            options = {'retrieval': retrieval} if retrieval is not None else {}
+            result = await self.knowledge.search(query, folder_id, top_k, umc_token=principal.umc_token, **options)
             return {"ok": True, "code": "ok", "toolName": tool_name, "result": result}
         except httpx.HTTPStatusError as exc:
             code = "permission_denied" if exc.response.status_code == 403 else "tool_error"

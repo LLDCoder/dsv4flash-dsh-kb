@@ -13685,15 +13685,24 @@
     {
       "method": "GET",
       "path": "/api/Team/MyTeamMembers",
-      "policyPaths": [],
+      "policyPaths": [
+        "/api/Team/MyTeamMembers"
+      ],
       "tags": [
         "Team"
       ],
-      "classification": "read_candidate",
+      "classification": "read_only",
       "requestSchemas": [],
       "requestFields": [],
       "responseSchemas": [],
-      "responseFields": []
+      "responseFields": [],
+      "verification": {
+        "method": "source_inspected_and_authenticated_get",
+        "controller": "UMC.AdminPortal.API/Controllers/TeamController.cs",
+        "implementation": "ApplicationAppService.GetMyTeamMembersAsync",
+        "sourceSha256": "22e94773e70c95fab9ce479919b51d0241e046bf085cd0c3f8b5991b9004772e",
+        "scope": "current user leader departments; isLeave=false retains leave members; no write operations"
+      }
     },
     {
       "method": "POST",

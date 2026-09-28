@@ -1055,7 +1055,7 @@ def test_model_cannot_raise_server_owned_limits() -> None:
     payload = PortalReadRequest("/licensing", ({"type": "query"},)).as_payload()
 
     assert payload["maxPages"] == 3
-    assert payload["timeoutSeconds"] == 45
+    assert payload["timeoutSeconds"] == 65
     assert payload["maxOutputItems"] == 20
 
 
@@ -1069,8 +1069,8 @@ def test_timeout_budget_caps_stages_inside_configured_total() -> None:
 
     assert budget.total_seconds == 90
     assert budget.get_user_info_seconds == 10
-    assert budget.knowledge_search_seconds == 15
-    assert budget.planner_seconds == 30
+    assert budget.knowledge_search_seconds == 30
+    assert budget.planner_seconds == 60
     assert budget.portal_read_seconds == 50
 
 

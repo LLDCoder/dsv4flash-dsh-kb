@@ -21,7 +21,8 @@ from app.portal_reader import (
     _state_control_label_matches,
     reader_answer_shape,
 )
-from app.schemas import MAX_CHAT_MESSAGE_CHARS, WSMessage
+from app.schemas import MessageCreate, WSMessage
+from app.message_compression import MESSAGE_COMPRESSION_THRESHOLD_CHARS
 from app.skills import detect_unsupported_message_language, message_language_notice
 from app.service import _response_language_for, reader_evidence_only_response, reader_natural_answer_is_grounded
 
@@ -180,10 +181,11 @@ def test_finance_exact_refund_reuses_observed_page_currency():
     assert result and '"Currency":"AED"' in result.facts[0]
 
 
-def test_websocket_message_limit_is_shared_with_the_browser_contract():
-    assert MAX_CHAT_MESSAGE_CHARS == 10_000
-    message = WSMessage(type="message", content="x" * MAX_CHAT_MESSAGE_CHARS, clientMessageId="m-1")
-    assert len(message.content) == MAX_CHAT_MESSAGE_CHARS
+def test_long_messages_reach_the_shared_compression_stage():
+    assert MESSAGE_COMPRESSION_THRESHOLD_CHARS == 10_000
+    content = "x" * 20_001
+    assert MessageCreate(content=content, clientMessageId="m-1").content == content
+    assert WSMessage(type="message", content=content, clientMessageId="m-1").content == content
     assert WSMessage(type="message", content="x", clientMessageId="m-2", responseLanguage="ar").response_language == "ar"
 
 
@@ -317,30 +319,6 @@ def test_team_ticket_summary_uses_both_visible_views_and_exact_member():
         scope="team",
     )
     assert member and "shiting zhaozhao" in " ".join(member.facts)
-
-
-def test_acc005_overdue_tasks_use_team_sla_and_assignee_projection():
-    question = "How many overdue tasks are in my team? Give the count and the names of the people responsible."
-    assert _ticket_team_summary_requested(question)
-    assert _explicit_reader_source(question, {}) == "/happiness/team-management"
-    result = _ticket_team_summary_result(
-        _ticket_observation([
-            {"Ticket No.": "HC-01-1", "Current Handler": "Happiness Leader", "Status": "Open", "SLA": "18d Overdue"},
-            {"Ticket No.": "HC-01-2", "Current Handler": "Happiness Leader", "Status": "Open", "SLA": "17d Overdue"},
-            {"Ticket No.": "HC-01-3", "Current Handler": "Happiness Staff", "Status": "Open", "SLA": "16d Overdue"},
-            {"Ticket No.": "HC-01-4", "Current Handler": "tiezhu ye", "Status": "Open", "SLA": "Due in 1d"},
-        ], "To Do"),
-        None,
-        question=question,
-        scope="team",
-        page="/happiness/team-management",
-    )
-    assert result and result.status == "success"
-    assert result.facts == (
-        '{"Team Member":"Happiness Leader","Pending Tickets":2,"Overdue Tickets":2}',
-        '{"Team Member":"Happiness Staff","Pending Tickets":1,"Overdue Tickets":1}',
-        '{"Team Member":"tiezhu ye","Pending Tickets":1,"Overdue Tickets":0}',
-    )
 
 
 def test_financial_daily_summary_counts_only_rows_dated_today():

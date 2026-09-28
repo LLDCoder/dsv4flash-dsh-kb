@@ -1,4 +1,5 @@
 from typing import Any
+import asyncio
 
 import httpx
 
@@ -32,13 +33,22 @@ class PlatformGatewayClient:
     async def get_user_info(self, *, umc_token: str | None = None, request_id: str | None = None) -> dict[str, Any]:
         """Read the authoritative role and permission context for this turn."""
 
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
-            response = await client.post(
-                self.user_info_url,
-                headers=self._headers(umc_token, request_id),
-            )
-            response.raise_for_status()
-            return response.json()
+        # Retry only this read-only identity lookup. Never cache or substitute
+        # another principal, and never retry an authentication/permission denial.
+        async with asyncio.timeout(self.timeout):
+            async with httpx.AsyncClient(timeout=min(self.timeout, 8), follow_redirects=False) as client:
+                for attempt in range(3):
+                    try:
+                        response = await client.post(self.user_info_url,
+                            headers=self._headers(umc_token, request_id))
+                        response.raise_for_status()
+                        return response.json()
+                    except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                        retryable = (isinstance(exc, httpx.TransportError) or
+                            exc.response.status_code in {408, 429, 500, 502, 503, 504})
+                        if not retryable or attempt == 2:
+                            raise
+                        await asyncio.sleep(0.2 * (attempt + 1))
 
     async def admin_portal_read(
         self,

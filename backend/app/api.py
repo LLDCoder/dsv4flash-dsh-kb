@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs
 from uuid import uuid4
+from dataclasses import replace
 
 import httpx
 
@@ -30,15 +31,55 @@ from .audit_auth import (
 from .config import config_catalog, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
 from .db import AuditOperator, AuditOperatorEvent, AuditOperatorSession, AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, get_db
+from .conversation_auth import authenticate_conversation_principal
 from .principal import Principal, _bearer_token, _token_reference, get_principal
-from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MAX_CHAT_MESSAGE_CHARS, MessageCreate, MessageFeedbackCreate, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
+from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
+from .stream_transport import forward_events_with_heartbeat
 from .testcases import generate_test_cases, run_test_cases
 
 # Uvicorn configures this logger at INFO for container output. Using it keeps
 # correlation records visible without changing the global logging policy.
 logger = logging.getLogger("uvicorn.error")
 _DUMMY_AUDIT_PASSWORD_HASH = hash_password("audit-console-invalid-password")
+
+
+async def websocket_identity(platform, token: str, request_id: str) -> tuple[str | None, str | None]:
+    """Use the same configured identity client as Reader; never call a timeout a denial."""
+    budget = min(max(float(getattr(platform, "timeout", 50)), 1), 60)
+    try:
+        async with asyncio.timeout(budget):
+            for attempt in range(2):
+                identity, error = await _websocket_identity_once(platform, token, request_id)
+                if error not in {"identity_dependency_timeout", "identity_dependency_unavailable"}:
+                    return identity, error
+                logger.info("umc_ws_identity_dependency request_id=%s attempt=%s code=%s",
+                            request_id[:128], attempt + 1, error)
+                if attempt == 0:
+                    await asyncio.sleep(0.15)
+            return None, error
+    except TimeoutError:
+        return None, "identity_dependency_timeout"
+
+
+async def _websocket_identity_once(platform, token: str, request_id: str) -> tuple[str | None, str | None]:
+    try:
+        payload = await platform.get_user_info(umc_token=token, request_id=request_id)
+    except httpx.TimeoutException:
+        return None, "identity_dependency_timeout"
+    except httpx.HTTPStatusError as exc:
+        return None, ("authentication_failed" if exc.response.status_code == 401 else
+                      "permission_denied" if exc.response.status_code == 403 else
+                      "identity_dependency_unavailable" if exc.response.status_code in {429, 502, 503, 504}
+                      else "identity_response_invalid")
+    except httpx.HTTPError:
+        return None, "identity_dependency_unavailable"
+    except (ValueError, TypeError):
+        return None, "identity_response_invalid"
+    data = payload.get("data") if isinstance(payload, dict) else None
+    candidate = data.get("id") if isinstance(data, dict) else None
+    identity = str(candidate).strip() if isinstance(candidate, (str, int)) and not isinstance(candidate, bool) else None
+    return (identity, None) if identity else (None, "missing_user_identity")
 
 
 def message_feedback_change(
@@ -95,6 +136,9 @@ def reader_identity_from_audit_payloads(payloads: list[Any]) -> dict[str, str]:
 def make_router(service: DSHService) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     audit_login_limiter = LoginRateLimiter()
+
+    async def conversation_principal(principal: Principal = Depends(get_principal)) -> Principal:
+        return await authenticate_conversation_principal(principal, service.tool_gateway.platform)
 
     def raw_config_value(item: ConfigEntry) -> object:
         value = item.value
@@ -345,7 +389,7 @@ def make_router(service: DSHService) -> APIRouter:
         return response
 
     @router.post("/conversations")
-    async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_principal)):
         conversation = await service.create_conversation(db, principal, payload.workspace)
         return service.conversation_json(conversation)
 
@@ -537,7 +581,7 @@ def make_router(service: DSHService) -> APIRouter:
         page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
         search: str | None = Query(default=None, max_length=160),
         db: AsyncSession = Depends(get_db),
-        principal: Principal = Depends(get_principal),
+        principal: Principal = Depends(conversation_principal),
     ):
         is_admin = service.can_view_all_audit(principal)
         query = select(Conversation)
@@ -881,7 +925,7 @@ def make_router(service: DSHService) -> APIRouter:
         return {"reset": True, "userId": operator.id}
 
     @router.get("/conversations/{conversation_id}")
-    async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_principal)):
         try:
             conversation = await service.get_owned_conversation(db, principal, conversation_id)
         except LookupError as exc:
@@ -890,7 +934,7 @@ def make_router(service: DSHService) -> APIRouter:
         return service.conversation_json(conversation, lease.state if lease else None)
 
     @router.delete("/conversations/{conversation_id}")
-    async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_principal)):
         try:
             await service.delete_owned_conversation(db, principal, conversation_id)
         except LookupError as exc:
@@ -900,7 +944,7 @@ def make_router(service: DSHService) -> APIRouter:
     @router.post("/conversations/{conversation_id}/messages", summary="Submit an owner-scoped assistant request",
                  responses={401: {"description": "Authentication required"},
                             404: {"description": "Conversation not owned by the current principal"}})
-    async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(get_principal)):
+    async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(conversation_principal)):
         """Queue a message; read the eventual answer and reader.result in conversation events.
 
         Admin Portal requests use GetUserInfo permissions and read-only page operations.
@@ -1041,13 +1085,13 @@ def make_router(service: DSHService) -> APIRouter:
                 payload.content,
                 payload.client_message_id,
                 payload.response_language,
-                payload.page_context.model_dump(by_alias=True) if payload.page_context else None,
+                page_context=payload.page_context.model_dump() if payload.page_context else None,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get("/conversations/{conversation_id}/history")
-    async def get_conversation_history(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    async def get_conversation_history(conversation_id: str, db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_principal)):
         try:
             conversation = await service.get_owned_conversation(db, principal, conversation_id)
         except LookupError as exc:
@@ -1089,7 +1133,7 @@ def make_router(service: DSHService) -> APIRouter:
         assistant_event_seq: int,
         payload: MessageFeedbackCreate,
         db: AsyncSession = Depends(get_db),
-        principal: Principal = Depends(get_principal),
+        principal: Principal = Depends(conversation_principal),
     ):
         try:
             conversation = await service.get_owned_conversation(db, principal, conversation_id)
@@ -1169,7 +1213,7 @@ def make_router(service: DSHService) -> APIRouter:
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=50, ge=1, le=100, alias="pageSize"),
         db: AsyncSession = Depends(get_db),
-        principal: Principal = Depends(get_principal),
+        principal: Principal = Depends(conversation_principal),
     ):
         """Return the persisted execution trail for an owned or admin-scoped conversation."""
 
@@ -1190,7 +1234,7 @@ def make_router(service: DSHService) -> APIRouter:
         )
 
     @router.get("/conversations/{conversation_id}/events")
-    async def sse_events(conversation_id: str, after_seq: int = Query(default=0, alias="afterSeq"), event_type: str | None = Query(default=None, alias="eventType"), db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    async def sse_events(conversation_id: str, after_seq: int = Query(default=0, alias="afterSeq"), event_type: str | None = Query(default=None, alias="eventType"), db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_principal)):
         try:
             conversation = await service.get_owned_conversation(db, principal, conversation_id)
         except LookupError as exc:
@@ -1345,26 +1389,11 @@ def make_router(service: DSHService) -> APIRouter:
                 await websocket.send_json(payload)
 
         async def forward_events(conversation_id: str, queue: asyncio.Queue[dict]) -> None:
-            while True:
-                event = await queue.get()
-                await send({"type": "event", **event})
+            await forward_events_with_heartbeat(conversation_id, queue, send)
 
         try:
             while True:
                 raw = await websocket.receive_json()
-                if (
-                    isinstance(raw, dict)
-                    and raw.get("type") == "message"
-                    and isinstance(raw.get("content"), str)
-                    and len(raw["content"]) > MAX_CHAT_MESSAGE_CHARS
-                ):
-                    await send({
-                        "type": "error",
-                        "code": "message_too_long",
-                        "message": f"Message exceeds the {MAX_CHAT_MESSAGE_CHARS}-character limit; shorten it before sending.",
-                        "maxChars": MAX_CHAT_MESSAGE_CHARS,
-                    })
-                    continue
                 message = WSMessage.model_validate(raw)
                 if message.type == "auth":
                     # Browser WebSocket clients cannot set an Authorization
@@ -1375,23 +1404,10 @@ def make_router(service: DSHService) -> APIRouter:
                     if not token:
                         await send({"type": "error", "code": "umc_token_required"})
                         continue
-                    claims_user_id = None
-                    settings = get_settings()
-                    try:
-                        async with httpx.AsyncClient(timeout=settings.platform_timeout_seconds) as client:
-                            response = await client.post(
-                                settings.umc_user_info_endpoint,
-                                headers={"Authorization": f"Bearer {token}"},
-                                json={},
-                            )
-                        payload = response.json()
-                        data = payload.get("data") if isinstance(payload, dict) else None
-                        candidate = data.get("id") if isinstance(data, dict) else None
-                        claims_user_id = str(candidate).strip() if isinstance(candidate, (str, int)) else None
-                    except (httpx.HTTPError, ValueError, TypeError):
-                        claims_user_id = None
+                    claims_user_id, identity_error = await websocket_identity(
+                        service.tool_gateway.platform, token, principal.request_id)
                     if not claims_user_id:
-                        await send({"type": "error", "code": "missing_user_identity"})
+                        await send({"type": "error", "code": identity_error})
                         continue
                     if principal.user_id and str(claims_user_id) != str(principal.user_id):
                         await send({"type": "error", "code": "identity_mismatch"})
@@ -1432,18 +1448,23 @@ def make_router(service: DSHService) -> APIRouter:
                         await send({"type": "subscribed", "conversationId": conversation_id, "afterSeq": message.after_seq})
                 elif message.type == "message" and message.conversation_id and message.client_message_id:
                     try:
+                        # A socket is a session, not a single request. Every
+                        # accepted message needs its own response correlation.
+                        turn_principal = replace(principal, request_id=str(uuid4()))
                         result = await service.submit_message(
-                            principal,
+                            turn_principal,
                             message.conversation_id,
                             message.content or "",
                             message.client_message_id,
                             message.response_language,
-                            message.page_context.model_dump(by_alias=True) if message.page_context else None,
+                            page_context=message.page_context.model_dump() if message.page_context else None,
                         )
                     except LookupError:
-                        await send({"type": "error", "code": "conversation_not_found"})
+                        await send({"type": "error", "code": "conversation_not_found",
+                                    "clientMessageId": message.client_message_id})
                     else:
-                        await send({"type": "accepted", **result})
+                        await send({"type": "accepted", **result,
+                                    "clientMessageId": message.client_message_id})
                 elif message.type == "cancel" and message.conversation_id:
                     await service.cancel(principal, message.conversation_id)
                 elif message.type == "ack":
@@ -1455,6 +1476,7 @@ def make_router(service: DSHService) -> APIRouter:
                 service.broker.unsubscribe(conversation_id, queue)
             for task in forwarders.values():
                 task.cancel()
+            await asyncio.gather(*forwarders.values(), return_exceptions=True)
 
     return router
 

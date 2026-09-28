@@ -1,8 +1,8 @@
 """Authentication primitives for the local DSH test console.
 
-The console password is intentionally recoverable from PostgreSQL because it
-is a fixed operator-shared test credential. It is never returned by an HTTP
-endpoint. Successful logins receive a short-lived, signed HttpOnly cookie so
+The initial console password comes from runtime configuration or is randomly
+generated. Existing PostgreSQL configuration takes precedence after startup.
+It is never returned by an HTTP endpoint. Successful logins receive a short-lived, signed HttpOnly cookie so
 the same guard protects both REST calls and the WebSocket test channel.
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -20,7 +21,7 @@ from starlette.responses import JSONResponse
 
 
 CONSOLE_PASSWORD_CONFIG_KEY = "console_password"
-DEFAULT_CONSOLE_PASSWORD = "nB4tB2mN9sQ9mT7zM6sL8hB5aL7cB8rQ2qS3eO5lR6pR8fZ4gG6bV0dD1bU0fJ1mS1zE9gC9vZ1kR3iD0oE6aX3gZ2sY4eO7nU4zN4mR6tI1cE7lU0kO3fZ5bV4rM1iB"
+DEFAULT_CONSOLE_PASSWORD = os.environ.get("CONSOLE_BOOTSTRAP_PASSWORD") or secrets.token_urlsafe(48)
 CONSOLE_SESSION_COOKIE = "dsh_console_session"
 CONSOLE_SESSION_MAX_AGE_SECONDS = 12 * 60 * 60
 

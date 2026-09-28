@@ -3,10 +3,7 @@ from typing import Any, Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .audit_auth import validate_password_policy
-
-
-# Keep browser, REST, and WebSocket callers on one user-visible input bound.
-MAX_CHAT_MESSAGE_CHARS = 10_000
+from .reader_context import ReaderPageContext
 
 
 class APIModel(BaseModel):
@@ -17,34 +14,14 @@ class ConversationCreate(APIModel):
     workspace: str = "default"
 
 
-class PageContext(APIModel):
-    """Bounded, non-authoritative hints about the Admin UI currently visible to the user."""
-
-    current_page: str = Field(default="", max_length=300, validation_alias=AliasChoices("currentPage", "current_page"))
-    selected_tab_path: list[str] = Field(
-        default_factory=list,
-        max_length=8,
-        validation_alias=AliasChoices("selectedTabPath", "selected_tab_path"),
-    )
-    visible_fields: list[str] = Field(
-        default_factory=list,
-        max_length=40,
-        validation_alias=AliasChoices("visibleFields", "visible_fields"),
-    )
-    filters: dict[str, Any] = Field(default_factory=dict)
-    pagination: dict[str, Any] = Field(default_factory=dict)
-
-
 class MessageCreate(APIModel):
-    content: str = Field(default="", max_length=MAX_CHAT_MESSAGE_CHARS)
+    # Long content is preserved here and compressed once before intent analysis.
+    content: str = ""
     client_message_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
+    page_context: ReaderPageContext | None = Field(default=None, validation_alias=AliasChoices("pageContext", "page_context"))
     response_language: Literal["en", "ar", "zh"] | None = Field(
         default=None,
         validation_alias=AliasChoices("responseLanguage", "response_language"),
-    )
-    page_context: PageContext | None = Field(
-        default=None,
-        validation_alias=AliasChoices("pageContext", "page_context"),
     )
 
     @model_validator(mode="after")
@@ -112,18 +89,15 @@ class TestCaseRunRequest(APIModel):
 class WSMessage(APIModel):
     type: Literal["auth", "subscribe", "message", "resume", "ack", "cancel"]
     conversation_id: str | None = Field(default=None, validation_alias=AliasChoices("conversationId", "conversation_id"))
-    content: str | None = Field(default=None, max_length=MAX_CHAT_MESSAGE_CHARS)
+    content: str | None = None
     client_message_id: str | None = Field(default=None, validation_alias=AliasChoices("clientMessageId", "client_message_id"))
+    page_context: ReaderPageContext | None = Field(default=None, validation_alias=AliasChoices("pageContext", "page_context"))
     after_seq: int = Field(default=0, validation_alias=AliasChoices("afterSeq", "after_seq"))
     seq: int | None = None
     umc_token: str | None = Field(default=None, validation_alias=AliasChoices("umctoken", "umcToken", "umc_token"))
     response_language: Literal["en", "ar", "zh"] | None = Field(
         default=None,
         validation_alias=AliasChoices("responseLanguage", "response_language"),
-    )
-    page_context: PageContext | None = Field(
-        default=None,
-        validation_alias=AliasChoices("pageContext", "page_context"),
     )
 
     @model_validator(mode="after")

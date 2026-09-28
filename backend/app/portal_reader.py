@@ -95,7 +95,7 @@ _CREDENTIAL_NAME = (
 )
 
 
-def _sanitize_untrusted_text(value: object, *, max_length: int) -> str:
+def _sanitize_untrusted_text(value: object, *, max_length: int | None) -> str:
     decoded = html.unescape(str(value))
     without_active_markup = re.sub(
         r"(?is)<(script|style)\b[^>]*>.*?(?:</\1\s*>|$)",
@@ -177,8 +177,8 @@ class ReaderTimeoutBudget:
         return cls(
             total_seconds=total,
             get_user_info_seconds=min(10.0, float(platform_timeout_seconds), total),
-            knowledge_search_seconds=min(15.0, float(knowledge_timeout_seconds), total),
-            planner_seconds=min(30.0, float(llm_timeout_seconds), total),
+            knowledge_search_seconds=min(float(knowledge_timeout_seconds), total),
+            planner_seconds=min(float(llm_timeout_seconds), total),
             portal_read_seconds=min(float(platform_timeout_seconds), total),
         )
 
@@ -1508,158 +1508,13 @@ def permission_audit_summary(context: UserPermissionContext) -> dict[str, Any]:
     }
 
 
-_PAGE_CONTEXT_ALLOWED_PATHS = frozenset({
-    "/dashboard",
-    "/happiness/tickets",
-    "/happiness/team-management",
-    "/happiness/refunds",
-    "/happiness/customerManagement",
-    "/inspection/tasks",
-    "/inspection/violations",
-    "/financial-payment/refunds",
-    "/financial-payment/transactions",
-    "/content/ContentLibrary",
-    "/licensing/applications",
-    "/licensing/licenses",
-})
-
-_PAGE_CONTEXT_TERMS: dict[str, tuple[str, ...]] = {
-    "/happiness/team-management": ("team", "member", "assigned", "task", "ticket", "pending", "overdue", "closed", "团队", "成员", "任务", "工单"),
-    "/happiness/tickets": ("ticket", "enquiry", "complaint", "case", "工单", "投诉", "案件"),
-    "/happiness/refunds": ("refund", "sla", "استرداد", "退款"),
-    "/happiness/customerManagement": ("customer", "account", "phone", "address", "客户", "账号", "账户"),
-    "/inspection/tasks": ("inspection", "inspector", "task", "检查", "巡检", "任务"),
-    "/inspection/violations": ("violation", "fine", "penalty", "committee", "违规", "罚款", "处罚"),
-    "/financial-payment/refunds": ("finance", "financial", "refund", "amount", "currency", "财务", "退款"),
-    "/financial-payment/transactions": ("transaction", "payment", "amount", "currency", "交易", "付款"),
-    "/content/ContentLibrary": ("content", "book", "movie", "game", "newspaper", "内容", "图书", "电影", "游戏"),
-    "/licensing/applications": ("application", "license", "approval", "申请", "许可", "审批"),
-    "/licensing/licenses": ("license", "expiry", "renew", "许可", "到期", "续期"),
-    "/dashboard": ("dashboard", "metric", "count", "overview", "仪表盘", "指标", "统计"),
-}
-
-
-def _question_requests_all_pages(question: str) -> bool:
-    """Identify collection/list requests that must cover every rendered page."""
-
-    text = re.sub(r"\s+", " ", str(question or "").casefold()).strip()
-    if not text:
-        return False
-    # Explicitly bounded wording keeps the user's requested scope.
-    if re.search(r"\b(?:current|visible|this|that)\s+page\b|当前页|本页|这一页|next page|下一页", text):
-        return False
-    if re.search(r"\b(?:first|top|up to|at most)\s+\d+\b|前\s*\d+|最多\s*\d+", text):
-        return False
-    return bool(re.search(
-        r"\b(?:all|every|each|list|show|count|how many|total|summary|summarize|records?|items?|tickets?|tasks?)\b"
-        r"|所有|全部|每个|各个|列表|清单|总数|多少|汇总|统计|全部分页|全量",
-        text,
-    ))
-
-
-def _pagination_total_pages(observation: Any) -> int:
-    if not isinstance(observation, dict):
-        return 1
-    pages = 1
-    for node in _observation_semantic_nodes(observation):
-        for summary in node.get("summaries") or ():
-            value = str(summary or "")
-            match = re.search(r"(?:total|共)\s*[\d,]+[^\d]{0,20}(\d+)\s*/\s*(\d+)", value, re.I)
-            if match:
-                pages = max(pages, min(int(match.group(2)), 50))
-    return pages
-
-
-def _merge_paged_observations(observations: list[dict[str, Any]]) -> dict[str, Any]:
-    """Merge same-page table observations while retaining bounded semantic evidence."""
-
-    if not observations:
-        return {}
-    merged = dict(observations[0])
-    merged["paginationComplete"] = True
-    merged["paginationPagesRead"] = len(observations)
-    merged["paginationPages"] = list(range(1, len(observations) + 1))
-    merged_nodes: dict[str, dict[str, Any]] = {}
-    for observation in observations:
-        for node in _observation_semantic_nodes(observation):
-            key = str(node.get("nodeId") or node.get("heading") or "table")
-            target = merged_nodes.setdefault(key, dict(node))
-            for field_name in ("rowSummaries", "rowFields"):
-                values = list(target.get(field_name) or [])
-                seen = {json.dumps(item, ensure_ascii=False, sort_keys=True) for item in values}
-                for item in node.get(field_name) or []:
-                    marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
-                    if marker not in seen and len(values) < 3000:
-                        values.append(item)
-                        seen.add(marker)
-                target[field_name] = values
-            if node.get("summaries"):
-                target["summaries"] = list(dict.fromkeys([*(target.get("summaries") or []), *node["summaries"]]))[:4]
-    if merged_nodes:
-        merged["sectionSummaries"] = list(merged_nodes.values())[:4]
-    return merged
-
-
-def _bounded_page_context(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    raw_page = value.get("currentPage", value.get("current_page", ""))
-    page = _sanitize_untrusted_text(raw_page, max_length=300) if isinstance(raw_page, str) else ""
-    if page not in _PAGE_CONTEXT_ALLOWED_PATHS:
-        return {}
-    def bounded_list(name: str, limit: int) -> list[str]:
-        raw = value.get(name, [])
-        if not isinstance(raw, list):
-            return []
-        return [_sanitize_untrusted_text(item, max_length=120) for item in raw[:limit] if isinstance(item, str) and item.strip()]
-    context: dict[str, Any] = {
-        "currentPage": page,
-        "selectedTabPath": bounded_list("selectedTabPath", 8),
-        "visibleFields": bounded_list("visibleFields", 40),
-    }
-    for key in ("filters", "pagination"):
-        item = value.get(key)
-        if isinstance(item, dict):
-            context[key] = bounded_json(item, max_depth=2, max_items=12, max_string=120)
-    return context
-
-
-def _page_context_source(question: str, context: dict[str, Any]) -> str:
-    page_context = context.get("pageContext") if isinstance(context, dict) else None
-    page_context = _bounded_page_context(page_context)
-    page = str(page_context.get("currentPage") or "")
-    if not page:
-        return ""
-    question_text = str(question or "").casefold()
-    visible = " ".join(page_context.get("selectedTabPath", []) + page_context.get("visibleFields", [])).casefold()
-    terms = _PAGE_CONTEXT_TERMS.get(page, ())
-    if any(str(term).casefold() in question_text for term in terms):
-        return page
-    # A different module keyword is a hard mismatch; do not let a generic
-    # "how many/status/list" question borrow an unrelated page just because
-    # that page has a visible Status column.
-    other_terms = {
-        str(term).casefold()
-        for other_page, other_page_terms in _PAGE_CONTEXT_TERMS.items()
-        if other_page != page
-        for term in other_page_terms
-    }
-    if any(term in question_text for term in other_terms):
-        return ""
-    generic_question = bool(re.search(r"(?i)\b(?:how many|count|list|show|status|data|records?|items?)\b|多少|数量|状态|列表|数据|记录", question_text))
-    return page if generic_question and any(str(term).casefold() in visible for term in terms) else ""
-
-
 def _bounded_conversation_context(value: Any) -> dict[str, Any]:
     """Keep only non-authoritative continuity metadata needed by the Reader."""
 
     if not isinstance(value, dict):
         return {}
-    page_context = _bounded_page_context(value.get("pageContext"))
     if isinstance(value.get("resolvedIntent"), dict):
         resolved_context = {"resolvedIntent": bounded_json(value["resolvedIntent"], max_depth=4, max_items=10, max_string=500)}
-        if page_context:
-            resolved_context["pageContext"] = page_context
         options = value.get("resolvedChoiceOptions")
         if isinstance(options, list) and len(options) == 2 and all(isinstance(option, str) for option in options):
             resolved_context["resolvedChoiceOptions"] = [_sanitize_untrusted_text(option, max_length=120) for option in options]
@@ -1669,7 +1524,7 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
                                               if key in {"page", "section"} and isinstance(item, str)}
         return resolved_context
     if not isinstance(value.get("previousIntent"), dict):
-        return {"pageContext": page_context} if page_context else {}
+        return {}
     previous = value["previousIntent"]
     limits = {
         "question": 500,
@@ -1722,10 +1577,7 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
             _sanitize_untrusted_text(option, max_length=120)
             for option in previous["clarificationOptions"][:2] if isinstance(option, str)
         ]
-    result = {"previousIntent": bounded} if any(bounded.values()) else {}
-    if page_context:
-        result["pageContext"] = page_context
-    return result
+    return {"previousIntent": bounded} if any(bounded.values()) else {}
 
 
 def _resolved_intent_values(conversation_context: Any) -> dict[str, str]:
@@ -2140,6 +1992,7 @@ def _bounded_api_json(
     max_depth: int = 32,
     max_items: int = 60,
     max_string: int = 1_000,
+    max_fields: int = 200,
 ) -> Any:
     """Project already-bounded API JSON without turning omissions into facts."""
 
@@ -2150,7 +2003,7 @@ def _bounded_api_json(
             return omitted
         if isinstance(item, dict):
             result: dict[str, Any] = {}
-            for name, child in list(item.items())[:max_items]:
+            for name, child in list(item.items())[:max_fields]:
                 normalized = _key(name)
                 if (
                     normalized in {_key(key) for key in SENSITIVE_KEYS}
@@ -2184,6 +2037,11 @@ def bounded_portal_observation(value: Any) -> Any:
     """Bound page semantics while giving each captured API response its own depth budget."""
 
     projected = bounded_json(value, max_depth=10, max_items=60, max_string=1_000)
+    if isinstance(value, dict) and isinstance(projected, dict) and "collections" in value:
+        # Computation receipts have independent row/byte limits and must never
+        # inherit the UI's 60-item truncation while retaining "complete".
+        from .reader_collection import checked_collections
+        projected["collections"] = checked_collections(value["collections"])
     raw_discovery = _api_discovery(value)
     projected_discovery = _api_discovery(projected)
     if raw_discovery is None or projected_discovery is None:
@@ -2210,7 +2068,28 @@ def bounded_portal_observation(value: Any) -> Any:
                 max_items=60,
                 max_string=1_000,
             )
-            candidate["responseEvidenceTruncated"] = raw_candidate.get("responseEvidenceTruncated") is True
+            candidate["responseEvidenceTruncated"] = (raw_candidate.get("responseEvidenceTruncated") is True
+                or candidate["responseEvidence"] != raw_candidate.get("responseEvidence"))
+            # Transport receipts are indexed by field path, not UI rows.
+            # The generic 60-item observation bound used to silently discard
+            # sibling-array proofs and fields at the end of a detail response.
+            receipts = raw_candidate.get('fieldEvidence')
+            if isinstance(receipts, dict):
+                candidate['fieldEvidence'] = {
+                    path: {key: receipt[key] for key in ('status', 'kind', 'valueHash')}
+                    for path, receipt in list(receipts.items())[:600]
+                    if (isinstance(path, str) and path.startswith('/') and len(path) <= 512
+                        and isinstance(receipt, dict)
+                        and receipt.get('status') in {'complete', 'bounded', 'transformed', 'null'}
+                        and receipt.get('kind') in {'scalar', 'array', 'object'}
+                        and isinstance(receipt.get('valueHash'), str)
+                        and re.fullmatch(r'[0-9a-f]{64}', receipt['valueHash'])
+                        and not any(fragment in _key(path) for fragment in SENSITIVE_KEY_FRAGMENTS))
+                }
+            if isinstance(raw_candidate.get('structuredDocuments'), list):
+                candidate['structuredDocuments'] = _bounded_api_json(
+                    raw_candidate['structuredDocuments'][:3], max_depth=32,
+                    max_items=60, max_fields=200, max_string=1_000)
             if isinstance(raw_candidate.get('assignmentEvidence'), list):
                 candidate['assignmentEvidence'] = _bounded_api_json(raw_candidate['assignmentEvidence'],
                     max_depth=8, max_items=20, max_string=120)
@@ -2383,20 +2262,7 @@ class ReadOnlyPortalPolicy:
             return "invalid_navigation_path"
         if self._is_mutation_route(request.start_path):
             return "action_not_read_only"
-        # Pagination is expanded internally for collection-wide reads. Keep
-        # the planner's ordinary action budget, but allow the bounded series
-        # of read-only Next-page actions needed to traverse every page.
-        action_types = tuple(
-            str(action.get("type") or "").strip().casefold().replace("-", "_")
-            for action in request.actions
-        )
-        non_pagination_actions = sum(action_type != "paginate" for action_type in action_types)
-        pagination_actions = sum(action_type == "paginate" for action_type in action_types)
-        if (
-            not request.actions
-            or non_pagination_actions > self.max_actions
-            or pagination_actions > 50
-        ):
+        if not request.actions or len(request.actions) > self.max_actions:
             return "invalid_action_count"
         page_paths = {request.start_path}
         allowed_pages = tuple(path for path in (*permissions.pages, *permissions.subpages) if path.startswith("/"))
@@ -3171,12 +3037,6 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
         normalized,
     ):
         return "/inspection/tasks"
-    # Team roll-ups are answered from the Team Management surface, where the
-    # Team Members roster and Team Tasks tabs establish the member scope.  Do
-    # this before the generic ticket keyword rule below: a question can contain
-    # "tickets" and still be a Team Management question.
-    if _ticket_team_summary_requested(question) and not _ticket_member_query(question):
-        return "/happiness/team-management"
     if re.search(r"\bHC-01-\d{4}-\d+\b", str(question or ""), re.I) or re.search(
         r"\b(?:ticket|tickets|work\s*orders?|enquir(?:y|ies)|complaints?|cases?)\b"
         r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|投诉|諮詢)"
@@ -3316,7 +3176,7 @@ def _ticket_team_summary_requested(question: str) -> bool:
     normalized = re.sub(r"\s+", " ", str(question or "").casefold())
     has_people = bool(re.search(r"\b(?:team|staff|member|employee|handler)s?\b|(?:团队|團隊|员工|員工|部门|部門|فريق|موظف)", normalized))
     has_ticket_scope = bool(re.search(
-        r"\b(?:ticket|task|work\s*order|case|complaint|enquir(?:y|ies))s?\b"
+        r"\b(?:ticket|work\s*order|case|complaint|enquir(?:y|ies))s?\b"
         r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|تذاكر|تذكرة|شكاوى|استفسار|طلبات)",
         normalized,
     ))
@@ -3327,44 +3187,6 @@ def _ticket_team_summary_requested(question: str) -> bool:
         normalized,
     ))
     return has_people and has_ticket_scope and has_rollup
-
-
-def _team_member_roster(observation: Any) -> tuple[dict[str, str], ...]:
-    """Extract the rendered Team Members roster without inventing identities."""
-
-    if not isinstance(observation, dict) or _observation_has_error_state(observation):
-        return ()
-    names: dict[str, str] = {}
-    generic = {
-        "team members", "team member", "members", "member", "overview", "statistics",
-        "all", "enquiries & complaints", "appeals", "refunds",
-    }
-    metric_markers = re.compile(
-        r"^(?:completed tasks|avg(?:\.|erage)? processing time|sla compliance|overdue tasks)$",
-        re.I,
-    )
-    for node in _observation_semantic_nodes(observation):
-        if node.get("kind") not in {"cards", "card", "region"}:
-            continue
-        candidates: list[str] = []
-        heading = str(node.get("heading") or "").strip()
-        if heading:
-            candidates.append(heading)
-        for summary in node.get("cardSummaries") or ():
-            parts = [part.strip() for part in str(summary).split("|") if part.strip()]
-            if parts:
-                candidates.append(parts[0])
-        for candidate in candidates:
-            value = re.sub(r"\s+", " ", candidate).strip(" .:-")
-            key = re.sub(r"[^a-z0-9]", "", value.casefold())
-            if not value or not key or key in generic or metric_markers.fullmatch(value):
-                continue
-            # Card summaries may begin with a section label rather than a
-            # person. Only retain a human-looking heading/name.
-            if re.search(r"\b(?:team|member|completed|processing|compliance|overdue|tasks?)\b", value, re.I):
-                continue
-            names.setdefault(key, value[:120])
-    return tuple(names.values())
 
 
 def _ticket_member_query(question: str) -> str:
@@ -3421,8 +3243,6 @@ def _ticket_team_summary_result(
     *,
     question: str,
     scope: Literal["personal", "team", "global", "unknown"],
-    page: str = "/happiness/tickets",
-    member_observation: Any = None,
 ) -> ReaderResult | None:
     """Aggregate only visible ticket rows by their rendered owner field.
 
@@ -3436,7 +3256,7 @@ def _ticket_team_summary_result(
         return ReaderResult(
             status="not_confirmed",
             summary="A team-scoped ticket view was not verified for this account.",
-            page=page,
+            page="/happiness/tickets",
             answer_shape="overview",
             scope=scope,
             missing=("requested_team_scope_unverified",),
@@ -3451,72 +3271,14 @@ def _ticket_team_summary_result(
             node for node in _observation_semantic_nodes(observation)
             if node.get("kind") in {"table", "grid"} and node.get("columnHeaders") and node.get("rowFields")
         ]
-        if page == "/happiness/team-management":
-            # Team Management can expose dashboard tables alongside the Team
-            # Tasks table. Select the table whose rendered schema identifies
-            # task ownership instead of rejecting the observation as
-            # ambiguous or falling through to the generic person roll-up.
-            task_tables = []
-            for node in tables:
-                headers = {str(header).strip().casefold() for header in node.get("columnHeaders") or []}
-                path = " ".join(str(value) for value in node.get("selectedTabPath") or []).casefold()
-                if ({"assigned to", "task no."}.issubset(headers)
-                        or {"current handler", "ticket no."}.issubset(headers)
-                        or "team tasks" in path):
-                    task_tables.append(node)
-            if len(task_tables) == 1:
-                node = task_tables[0]
-                return list(node.get("rowFields") or []), str(node.get("nodeId") or "")
         if len(tables) != 1:
             return None
         return list(tables[0].get("rowFields") or []), str(tables[0].get("nodeId") or "")
 
     todo = table_rows(todo_observation)
-    completed = table_rows(completed_observation) if completed_observation is not None else ([], "")
+    completed = table_rows(completed_observation)
     if todo is None or completed is None:
         return None
-    all_pages_requested = _question_requests_all_pages(question)
-    pagination_observations = [todo_observation]
-    if completed_observation is not None:
-        pagination_observations.append(completed_observation)
-    pagination_complete = all(
-        isinstance(observation, dict)
-        and (
-            int(observation.get("paginationTotalPages") or 1) <= 1
-            or observation.get("paginationComplete") is True
-        )
-        for observation in pagination_observations
-    )
-    if all_pages_requested and not pagination_complete:
-        return ReaderResult(
-            status="not_confirmed",
-            summary="The requested list spans multiple pages, but all pages could not be verified.",
-            page=page,
-            section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
-            source_section=todo[1],
-            answer_shape="overview",
-            completeness="unknown",
-            scope=scope,
-            missing=("pagination_incomplete",),
-        )
-    result_completeness = "complete" if all_pages_requested and pagination_complete else "bounded"
-    roster_names = _team_member_roster(member_observation) if page == "/happiness/team-management" else ()
-    if page == "/happiness/team-management" and member_observation is not None and not roster_names:
-        return ReaderResult(
-            status="not_confirmed",
-            summary="The Team Members roster was not available, so the team scope cannot be verified.",
-            page=page,
-            section="Team Tasks",
-            source_section=todo[1],
-            answer_shape="overview",
-            completeness="unknown",
-            scope=scope,
-            missing=("team_member_roster_not_observed",),
-        )
-    roster_by_key = {
-        re.sub(r"[^a-z0-9]", "", name.casefold()): name
-        for name in roster_names
-    }
 
     def field(row: dict[str, Any], *names: str) -> str:
         wanted = {re.sub(r"[^a-z0-9]", "", name.casefold()) for name in names}
@@ -3544,12 +3306,7 @@ def _ticket_team_summary_result(
             key = re.sub(r"[^a-z0-9]", "", handler.casefold())
             if not key:
                 continue
-            if roster_by_key and key not in roster_by_key:
-                # A queue row can contain a handler from another department or
-                # a stale identifier. Team scope is defined by the rendered
-                # Team Members roster, not by incidental queue ownership.
-                continue
-            labels.setdefault(key, roster_by_key.get(key, handler))
+            labels.setdefault(key, handler)
             bucket = totals.setdefault(key, {"Pending Tickets": 0, "Overdue Tickets": 0, "Closed Tickets": 0})
             status = field(row, "Status").casefold()
             sla = field(row, "SLA").casefold()
@@ -3564,10 +3321,6 @@ def _ticket_team_summary_result(
 
     add(todo[0], completed_view=False)
     add(completed[0], completed_view=True)
-    if roster_by_key:
-        for key, label in roster_by_key.items():
-            labels.setdefault(key, label)
-            totals.setdefault(key, {"Pending Tickets": 0, "Overdue Tickets": 0, "Closed Tickets": 0})
     requested_member = _ticket_member_query(question)
     if requested_member:
         member_key = re.sub(r"[^a-z0-9]", "", requested_member.casefold())
@@ -3576,11 +3329,11 @@ def _ticket_team_summary_result(
             return ReaderResult(
                 status="no_data",
                 summary="The named staff member was not visible in the current ticket rows.",
-                page=page,
-                section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
+                page="/happiness/tickets",
+                section="Enquiries & Complaints",
                 source_section=todo[1],
                 answer_shape="overview",
-                completeness=result_completeness,
+                completeness="bounded",
                 scope=scope,
                 facts=(f"No visible Current Handler matches {requested_member} in the current To Do and Completed ticket views.",),
             )
@@ -3599,37 +3352,31 @@ def _ticket_team_summary_result(
         )
         for key in sorted(totals, key=lambda item: labels[item].casefold())
     )
-    if completed_observation is not None and not closed_owner_observed:
+    if not closed_owner_observed:
         facts = (*facts, "The completed ticket view for this account does not render a handler column, "
                         "so closed tickets are not attributed to individual members.")
     if not facts:
         return ReaderResult(
             status="not_confirmed",
             summary="The current ticket views did not expose a usable owner field.",
-            page=page,
-            section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
+            page="/happiness/tickets",
+            section="Enquiries & Complaints",
             source_section=todo[1],
             answer_shape="overview",
-            completeness=result_completeness,
+            completeness="bounded",
             scope=scope,
             missing=("ticket_current_handler_not_observed",),
         )
     return ReaderResult(
         status="success",
-        summary=(
-            ("All rendered To Do and Completed ticket pages were aggregated by Current Handler."
-             if completed_observation is not None else "All rendered To Do ticket pages were aggregated by Current Handler.")
-            if result_completeness == "complete"
-            else ("Visible To Do and Completed ticket rows were aggregated by Current Handler."
-                  if completed_observation is not None else "Visible To Do ticket rows were aggregated by Current Handler.")
-        ),
-        page=page,
-        section="Team Tasks" if page == "/happiness/team-management" else "Enquiries & Complaints",
+        summary="Visible To Do and Completed ticket rows were aggregated by Current Handler.",
+        page="/happiness/tickets",
+        section="Enquiries & Complaints",
         source_section=todo[1],
         answer_shape="overview",
-        completeness=result_completeness,
+        completeness="bounded",
         scope=scope,
-        selected_state="To Do / Completed" if completed_observation is not None else "To Do",
+        selected_state="To Do / Completed",
         facts=facts,
     )
 
@@ -6399,11 +6146,10 @@ def _section_observation(section: Any) -> dict[str, Any] | None:
         value = str(section.get(name) or "").strip()
         if value:
             normalized[name] = value[:max_length]
-    row_limit = 3000 if section.get("paginationComplete") is True else SEMANTIC_ROW_LIMIT
     if isinstance(section.get("rowFields"), list):
         normalized["rowFields"] = [
             {str(key)[:120]: str(value)[:300] for key, value in list(row.items())[:12] if isinstance(value, str)}
-            for row in section["rowFields"][:row_limit] if isinstance(row, dict)
+            for row in section["rowFields"][:SEMANTIC_ROW_LIMIT] if isinstance(row, dict)
         ]
     return normalized
 
@@ -8742,105 +8488,6 @@ def _guard_related_record_substitution(outcome: ReaderOutcome, question: str,
     return outcome
 
 
-
-def _explicit_subject_identifiers(question: str) -> tuple[str, ...]:
-    """Extract identifiers explicitly named as the requested subject."""
-    value = str(question or "")
-    patterns = (
-        r"(?:specified|requested|target|subject|institution|entity|record|object)\s*"
-        r"(?:is|:)?\s*([A-Za-z0-9][A-Za-z0-9_.-]{2,})",
-        r"(?:指定(?:检查)?对象|指定主体|指定机构|目标(?:机构|主体)|对象|机构|主体|记录)\s*[:：]?\s*"
-        r"([A-Za-z0-9][A-Za-z0-9_.-]{2,})",
-        r"(?:الجهة|المؤسسة|السجل|المعرّف|المعرف|الموضوع)\s*[:：]?\s*"
-        r"([A-Za-z0-9][A-Za-z0-9_.-]{2,})",
-    )
-    ignored = {
-        "past", "all", "history", "checks", "inspections", "contact", "contacts",
-        "the", "this", "that", "record", "records", "object", "entity",
-    }
-    found: list[str] = []
-    for pattern in patterns:
-        for match in re.finditer(pattern, value, re.I):
-            candidate = match.group(1).strip(" .,:;!?。；，")
-            if candidate.casefold() not in ignored:
-                found.append(candidate)
-    return tuple(dict.fromkeys(found))
-
-
-def _subject_identifier_is_in_row(row: Any, identifiers: tuple[str, ...]) -> bool:
-    if not isinstance(row, dict):
-        return False
-    normalized_ids = {
-        re.sub(r"[^a-z0-9]", "", identifier.casefold())
-        for identifier in identifiers
-    }
-    normalized_ids.discard("")
-    if not normalized_ids:
-        return False
-    for value in row.values():
-        text = str(value or "")
-        normalized = re.sub(r"[^a-z0-9]", "", text.casefold())
-        if normalized in normalized_ids:
-            return True
-        tokens = {
-            re.sub(r"[^a-z0-9]", "", token.casefold())
-            for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]*", text)
-        }
-        if normalized_ids.intersection(tokens):
-            return True
-    return False
-
-
-def _guard_subject_record_substitution(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
-    """Never present current-page rows as records for an explicitly named subject."""
-
-    result, evidence = outcome.result, outcome.audit_evidence
-    identifiers = _explicit_subject_identifiers(question)
-    if not identifiers or result.status not in {"success", "no_data"} or question_is_conceptual(question):
-        return outcome
-    if str(evidence.get("stage") or "").startswith("knowledge_"):
-        return outcome
-    observation = evidence.get("observation") or ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
-    source = _observation_evidence_for_result(observation, result)
-    if not isinstance(source, dict) or source.get("kind") not in {"table", "grid"}:
-        return outcome
-    rows = source.get("rowFields")
-    if not isinstance(rows, list) or not rows:
-        return outcome
-    matches = [row for row in rows if _subject_identifier_is_in_row(row, identifiers)]
-    if len(matches) == len(rows):
-        return outcome
-    pagination_complete = bool(
-        isinstance(observation, dict) and observation.get("paginationComplete") is True
-    )
-    guarded = replace(
-        result,
-        status="not_confirmed",
-        summary="The visible records were not verified as belonging to the requested subject.",
-        completeness="complete" if pagination_complete else "unknown",
-        facts=(
-            "No visible record was verified as belonging to the requested subject.",
-            "The current page rows are not used as a substitute for the requested subject.",
-        ),
-        workflow_state="",
-        source_hint={},
-        missing=("subject_match_not_verified",),
-    )
-    return ReaderOutcome(
-        guarded,
-        {
-            **evidence,
-            "subjectBoundaryGuard": {
-                "identifiers": list(identifiers),
-                "observedRows": len(rows),
-                "matchedRows": len(matches),
-                "action": "withhold_unverified_rows",
-            },
-            "result": guarded.public_json(),
-        },
-    )
-
-
 def _guard_requested_queue_view(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     result = outcome.result
     if (result.status not in {"success", "no_data", "not_confirmed"} or not result.page
@@ -9526,12 +9173,6 @@ def _native_fine_decision_result(outcome: ReaderOutcome, question: str) -> Reade
             "The decision itself and any appeal stay with the responsible committee through the portal workflow."
         )
     else:
-        # An explicitly named subject with no matching row is a boundary
-        # failure, not a license to summarize whatever happens to be visible
-        # on the current page. Leave the original observation intact so the
-        # subject guard can produce its deterministic no-substitute result.
-        if _explicit_subject_identifiers(question) and not matched:
-            return outcome
         visible = [
             " | ".join(str(part) for part in (
                 row.get("violationNo"), row.get("violationTypeName"), row.get("statusName"),
@@ -9761,14 +9402,6 @@ def _native_person_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcom
     if not _PERSON_ROLLUP_REQUEST.search(str(question or "")):
         return outcome
     if outcome.result.status not in {"success", "not_confirmed", "no_data"}:
-        return outcome
-    # A Team Management team-summary result already has the requested
-    # Pending/Overdue/Closed shape and source scope. Do not replace it with
-    # the generic bounded visible-row projection below.
-    if (
-        outcome.result.page == "/happiness/team-management"
-        and outcome.audit_evidence.get("stage") == "ticket_team_summary"
-    ):
         return outcome
     observation = outcome.audit_evidence.get("observation") or (
         (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
@@ -10231,7 +9864,6 @@ class AdminPortalReader:
         outcome = _native_person_rollup(outcome, question)
         outcome = _guard_unfound_record_identity(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
-        outcome = _guard_subject_record_substitution(outcome, question)
         outcome = _guard_requested_queue_view(outcome, question)
         outcome = _guard_requested_team_scope(outcome, intent_state, question)
         outcome = _native_identity_search_result(outcome, question, intent_state)
@@ -11391,74 +11023,6 @@ class AdminPortalReader:
                 )
                 raise
             payload = tool_result.get("result") if isinstance(tool_result, dict) else None
-            if (
-                isinstance(tool_result, dict)
-                and tool_result.get("ok")
-                and isinstance(payload, dict)
-                and isinstance(payload.get("observation"), dict)
-                and _question_requests_all_pages(question)
-                and not any(str(action.get("type") or "").casefold() == "paginate" for action in request.actions)
-            ):
-                first_observation = payload["observation"]
-                total_pages = _pagination_total_pages(first_observation)
-                base_actions = tuple(
-                    action for action in request.actions
-                    if str(action.get("type") or "").casefold() != "observe"
-                )
-                if total_pages > 1 and all(
-                    str(action.get("type") or "").casefold() in {"observe", "switch_tab", "filter", "apply_filter", "sort"}
-                    for action in request.actions
-                ):
-                    observations = [first_observation]
-                    complete = True
-                    for page_number in range(2, total_pages + 1):
-                        page_observation: dict[str, Any] | None = None
-                        for role, name in (("button", "Next Page"), ("button", "Next"), ("link", "Next Page"), ("link", "Next")):
-                            page_actions = (*base_actions, *(
-                                {"type": "paginate", "role": role, "name": name}
-                                for _ in range(page_number - 1)
-                            ))
-                            candidate_request = replace(request, actions=page_actions)
-                            if validate_policy(candidate_request, reason="paginate_all_pages"):
-                                continue
-                            try:
-                                candidate_result = await _await_reader_stage(
-                                    self.gateway.invoke(
-                                        principal,
-                                        "admin.portal.read",
-                                        candidate_request.as_payload(),
-                                        allowed_tools=self.allowed_tools,
-                                    ),
-                                    stage=timeout_stage,
-                                    cap_seconds=budget.portal_read_seconds,
-                                    deadline=deadline,
-                                )
-                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError):
-                                continue
-                            candidate_payload = candidate_result.get("result") if isinstance(candidate_result, dict) else None
-                            if candidate_result.get("ok") and isinstance(candidate_payload, dict) and isinstance(candidate_payload.get("observation"), dict):
-                                page_observation = candidate_payload["observation"]
-                                break
-                        if page_observation is None:
-                            complete = False
-                            break
-                        observations.append(page_observation)
-                    merged_observation = _merge_paged_observations(observations)
-                    merged_observation["paginationComplete"] = complete
-                    merged_observation["paginationPagesRead"] = len(observations)
-                    merged_observation["paginationTotalPages"] = total_pages
-                    for node in merged_observation.get("sectionSummaries") or []:
-                        if isinstance(node, dict):
-                            node["paginationComplete"] = complete
-                    payload = {**payload, "observation": merged_observation}
-                    tool_result = {**tool_result, "result": payload}
-                    trace.record(
-                        "pagination_all_pages",
-                        "passed" if complete else "degraded",
-                        input_summary={"totalPages": total_pages},
-                        output_summary={"pagesRead": len(observations), "complete": complete},
-                        failure_code="pagination_incomplete" if not complete else "",
-                    )
             if (tool_result.get('ok') and isinstance(payload, dict) and isinstance(payload.get('observation'), dict)):
                 last_portal_page = request.start_path
                 last_portal_observation = payload['observation']
@@ -12582,24 +12146,10 @@ class AdminPortalReader:
                         'result': license_result.public_json(),
                     })
 
-        # A validated live-page hint can take precedence for semantically
-        # matching questions. Explicit identifiers/module names still win;
-        # the service retries without this hint when the page cannot answer.
-        page_context_source = _page_context_source(question, bounded_conversation_context)
         explicit_source = _explicit_reader_source(question, bounded_conversation_context)
-        if not explicit_source and page_context_source:
-            explicit_source = page_context_source
-            trace.record(
-                "page_context_routing",
-                "passed",
-                input_summary={"currentPage": page_context_source},
-                output_summary={"decision": "current_page_priority"},
-            )
         if explicit_source in {
-            '/happiness/tickets', '/happiness/team-management', '/happiness/refunds', '/financial-payment/refunds',
+            '/happiness/tickets', '/happiness/refunds', '/financial-payment/refunds',
             '/financial-payment/transactions', '/content/ContentLibrary', '/licensing/licenses',
-            '/happiness/customerManagement', '/inspection/tasks', '/inspection/violations',
-            '/licensing/applications', '/dashboard',
         }:
             request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
             denied = validate_policy(request, reason='explicit_named_source_list')
@@ -12736,60 +12286,11 @@ class AdminPortalReader:
                             'observation': observation,
                             'result': sla_result.public_json(),
                         })
-                if explicit_source in {'/happiness/tickets', '/happiness/team-management'} and _ticket_team_summary_requested(question):
+                if explicit_source == '/happiness/tickets' and _ticket_team_summary_requested(question):
                     # The team roll-up requires both visible queue states.  A
                     # single fresh To Do read is insufficient evidence for
                     # closed-ticket counts, so switch only after the observed
                     # Completed control has been uniquely identified.
-                    member_observation = None
-                    if explicit_source == '/happiness/team-management':
-                        # Establish the team boundary from the page's own
-                        # Team Members roster before aggregating queue rows.
-                        # Queue ownership alone is not a safe scope signal: it
-                        # can include stale users, other departments, or raw
-                        # identifiers that are not members of this team.
-                        member_action = _observed_switch_tab_action({'name': 'Team Members'}, observation)
-                        if member_action is None:
-                            result = ReaderResult(
-                                status='not_confirmed', page=explicit_source,
-                                section='Team Members', answer_shape='overview',
-                                scope=_permission_result_scope(permission_context),
-                                summary='The Team Members roster was not visible in the current layout.',
-                                missing=('team_member_roster_not_observed',),
-                            )
-                            return ReaderOutcome(result, {
-                                'stage': 'ticket_team_summary', 'permission': permission_audit,
-                                'observation': observation, 'result': result.public_json(),
-                            })
-                        member_tool = await portal_read_stage(
-                            replace(request, actions=(member_action,)),
-                            timeout_stage='explicit_named_source_team_members',
-                            attempt='explicit_named_source_team_members',
-                        )
-                        if not member_tool.get('ok'):
-                            raise RuntimeError(str(member_tool.get('code') or 'team_member_roster_read_failed'))
-                        member_observation = (member_tool.get('result') or {}).get('observation') or {}
-                        team_tasks_action = _observed_switch_tab_action({'name': 'Team Tasks'}, member_observation)
-                        if team_tasks_action is None:
-                            result = ReaderResult(
-                                status='not_confirmed', page=explicit_source,
-                                section='Team Tasks', answer_shape='overview',
-                                scope=_permission_result_scope(permission_context),
-                                summary='The Team Tasks tab could not be restored after reading the team roster.',
-                                missing=('team_tasks_tab_not_observed',),
-                            )
-                            return ReaderOutcome(result, {
-                                'stage': 'ticket_team_summary', 'permission': permission_audit,
-                                'observation': member_observation, 'result': result.public_json(),
-                            })
-                        todo_tool = await portal_read_stage(
-                            replace(request, actions=(team_tasks_action,)),
-                            timeout_stage='explicit_named_source_team_tasks',
-                            attempt='explicit_named_source_team_tasks',
-                        )
-                        if not todo_tool.get('ok'):
-                            raise RuntimeError(str(todo_tool.get('code') or 'team_tasks_read_failed'))
-                        observation = (todo_tool.get('result') or {}).get('observation') or {}
                     completed_action = _observed_switch_tab_action({'name': 'Completed'}, observation)
                     if completed_action is None:
                         result = ReaderResult(
@@ -12816,15 +12317,12 @@ class AdminPortalReader:
                         completed_observation,
                         question=question,
                         scope=_permission_result_scope(permission_context),
-                        page=explicit_source,
-                        member_observation=member_observation,
                     )
                     if team_result is not None:
                         return ReaderOutcome(team_result, {
                             'stage': 'ticket_team_summary', 'permission': permission_audit,
                             'observation': observation,
                             'completedObservation': completed_observation,
-                            'memberObservation': member_observation,
                             'actions': (completed_action,),
                             'result': team_result.public_json(),
                         })

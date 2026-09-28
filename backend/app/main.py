@@ -78,6 +78,9 @@ async def healthz():
     return {
         "status": "ok",
         "service": settings.app_name,
+        "environment": settings.environment,
+        "readerPipeline": service.settings.reader_pipeline,
+        "llmConfigured": bool(service.settings.llm_base_url and service.settings.llm_api_key),
         "runtimeMode": "embedded-lease-mvp",
         "umcPortal": settings.umc_portal_name,
         "umcBaseUrl": settings.umc_base_url,

@@ -1,7 +1,15 @@
-import { isModelServiceFailure, sanitizeAssistantContent } from "./model-service-error.js";
-
 const state = { ws: null, connectPromise: null, wsGeneration: 0, conversationId: null, seq: 0, assistantNode: null, assistantContent: "", statusNode: null, configItems: [], skills: [], skillsLoaded: false, skillPage: 1, skillPageSize: 25, skillTotal: 0, tools: [], toolsLoaded: false, toolPage: 1, toolPageSize: 25, toolTotal: 0, swaggerOperations: [], editingSkillId: null, editingToolName: null, skillDialogMode: "edit", selectedSkillTools: [], attachment: null, umcToken: "", umcUserId: "", umcTokenPromise: null, testCases: [], testResults: [], auditConversations: [], auditScope: "owner", auditLoaded: false, auditConversationPage: 1, auditConversationPageSize: 25, auditConversationTotal: 0, auditConversationId: null, auditItems: [], auditRecordPage: 1, auditRecordPageSize: 25, auditRecordTotal: 0, auditRecordHasMore: false, auditRecordLoading: false, auditRecordRequestId: 0, consoleAuthenticated: false };
 const $ = (id) => document.getElementById(id);
+const MAX_CHAT_MESSAGE_CHARS = 10000;
+
+function updateMessageLimit() {
+  const input = $("message");
+  const counter = $("messageLimit");
+  if (!input || !counter) return;
+  const count = input.value.length;
+  counter.textContent = `${count} / ${MAX_CHAT_MESSAGE_CHARS} 字`;
+  counter.classList.toggle("warning", count > MAX_CHAT_MESSAGE_CHARS);
+}
 
 function debounce(callback, delay = 250) {
   let timer = null;
@@ -69,7 +77,9 @@ function renderLocalizedContent(node, content) {
   node.replaceChildren();
   const text = String(content || "");
   const event = node.closest(".event");
-  if (event) event.classList.toggle("rtl", containsArabic(text));
+  const rtl = containsArabic(text);
+  node.dir = rtl ? "rtl" : "ltr";
+  if (event) event.classList.toggle("rtl", rtl);
   if (!text) return;
   text.split(/\n{2,}/).forEach((paragraph) => {
     const lines = paragraph.split("\n");
@@ -1526,14 +1536,13 @@ async function connect() {
           clearAssistantStatus();
           if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", "", `seq ${packet.seq}`);
           state.assistantContent += data.content || "";
-          renderLocalizedContent(state.assistantNode, sanitizeAssistantContent(state.assistantContent));
+          renderLocalizedContent(state.assistantNode, state.assistantContent);
           $("events").scrollTop = $("events").scrollHeight;
         } else if (packet.eventType === "assistant.message") {
           clearAssistantStatus();
           state.assistantContent = data.content || state.assistantContent;
-          const visibleContent = sanitizeAssistantContent(state.assistantContent);
-          if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", visibleContent, `seq ${packet.seq}`);
-          else renderLocalizedContent(state.assistantNode, visibleContent);
+          if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", state.assistantContent, `seq ${packet.seq}`);
+          else renderLocalizedContent(state.assistantNode, state.assistantContent);
         } else if (packet.eventType === "user.message") {
           clearAssistantStatus();
           const attachmentNote = data.attachment ? `附件：${data.attachment.fileName || "未命名文件"}` : "";
@@ -1548,15 +1557,7 @@ async function connect() {
           }
         } else {
           if (packet.eventType === "runtime.error" || packet.eventType === "turn.cancelled") clearAssistantStatus();
-          if (packet.eventType === "runtime.error" && isModelServiceFailure(data.error)) {
-            const visibleContent = sanitizeAssistantContent(data.error);
-            state.assistantContent = visibleContent;
-            if (!state.assistantNode) state.assistantNode = addEvent("assistant.message", visibleContent, `seq ${packet.seq}`);
-            else renderLocalizedContent(state.assistantNode, visibleContent);
-            addEvent(packet.eventType, JSON.stringify({ ...data, error: visibleContent }), `seq ${packet.seq}`);
-          } else {
-            addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
-          }
+          addEvent(packet.eventType, JSON.stringify(data), `seq ${packet.seq}`);
         }
       };
     });
@@ -1642,9 +1643,15 @@ $("clearAttachmentBtn").addEventListener("click", clearAttachment);
 $("generateTestsBtn").addEventListener("click", generateTests);
 $("runTestsBtn").addEventListener("click", runTests);
 $("selectAllTests").addEventListener("change", (event) => document.querySelectorAll(".case-check").forEach((node) => { node.checked = event.target.checked; }));
+$("message").addEventListener("input", updateMessageLimit);
+updateMessageLimit();
 $("messageForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const content = $("message").value.trim();
+  const rawContent = $("message").value.trim();
+  const content = rawContent.slice(0, MAX_CHAT_MESSAGE_CHARS);
+  if (rawContent.length > MAX_CHAT_MESSAGE_CHARS) {
+    $("attachmentStatus").textContent = `输入内容超过 ${MAX_CHAT_MESSAGE_CHARS} 字，已截取前 ${MAX_CHAT_MESSAGE_CHARS} 字后发送。`;
+  }
   let attachment = null;
   try {
     attachment = readAttachment();
@@ -1668,6 +1675,7 @@ $("messageForm").addEventListener("submit", async (event) => {
   }
   state.ws.send(JSON.stringify({ type: "message", conversationId: state.conversationId, content, attachment, clientMessageId: createClientMessageId() }));
   $("message").value = "";
+  updateMessageLimit();
   if (attachment) $("attachmentStatus").textContent = `已发送附件：${attachment.fileName}`;
 });
 

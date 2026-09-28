@@ -130,7 +130,7 @@ def test_reader_timeout_defaults_cover_two_stage_planning_and_portal_executor() 
 
     assert settings.reader_total_timeout_seconds == READER_TOTAL_TIMEOUT_SECONDS == 90
     assert settings.reader_max_candidates_before_drill == 10
-    assert platform.timeout > PORTAL_EXECUTION_TIMEOUT_SECONDS == 45
+    assert platform.timeout > PORTAL_EXECUTION_TIMEOUT_SECONDS == 65
 
 
 @pytest.mark.parametrize(
@@ -176,4 +176,4 @@ def test_hot_config_ignores_invalid_reader_timeouts() -> None:
 
     assert service.settings.reader_total_timeout_seconds == READER_TOTAL_TIMEOUT_SECONDS
     assert service.settings.platform_timeout_seconds == 50
-    assert service.tool_gateway.platform.timeout == 50
+    assert service.tool_gateway.platform.timeout == 70

@@ -89,6 +89,16 @@ class AuditRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class ReaderClarificationClaim(Base):
+    """One persisted consumption per conversation/clarification, across workers."""
+    __tablename__ = "reader_clarification_claim"
+    conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    clarification_id: Mapped[str] = mapped_column(String(192), primary_key=True)
+    task_fingerprint: Mapped[str] = mapped_column(String(64))
+    request_id: Mapped[str] = mapped_column(String(128))
+    consumed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuditOperator(Base):
     """A named account for the dedicated Admin audit console."""
 

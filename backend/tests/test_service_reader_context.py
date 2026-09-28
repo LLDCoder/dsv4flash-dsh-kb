@@ -74,8 +74,12 @@ def test_response_language_treats_chinese_as_an_unsupported_language() -> None:
     # Arabic portal language) and the caller adds the supported-language note.
     assert _response_language_for("那只显示我的申请") == "en"
     assert _response_language_for("那只显示我的申请", "ar") == "ar"
-    assert _response_language_for("请用中文回答我的申请") == "zh"  # explicit request still wins
-    assert "Required response language: CHINESE." in DSHService._runtime_system_prompt("admin_portal_reader", "zh", "", "")
+    # I-09 supports English/Arabic only, including an explicit unsupported request.
+    assert _response_language_for("请用中文回答我的申请") == "en"
+    assert _response_language_for("请用中文回答我的申请", "ar") == "ar"
+    assert _response_language_for("请用中文回答我的申请", "zh") == "en"
+    resolved = _response_language_for("请用中文回答我的申请")
+    assert "Required response language: ENGLISH." in DSHService._runtime_system_prompt("admin_portal_reader", resolved, "", "")
 
 
 def test_empty_reader_results_are_answered_without_final_llm_inference() -> None:

@@ -894,7 +894,7 @@ def test_labeled_metrics_remain_separate_from_table_pagination_totals() -> None:
 def test_observe_semantics_collects_only_visible_native_table_rows_within_bounds() -> None:
     rows = [("Hidden row", False), ("No data found", True), ("Loading...", True)] + [
         (f"Row {index} " + ("x" * 450), True)
-        for index in range(10)
+        for index in range(25)
     ]
     page = FakeObservationPage({
         "h1,h2,h3,[role='heading']": [("Hidden heading", False), ("Dashboard", True)],
@@ -904,7 +904,7 @@ def test_observe_semantics_collects_only_visible_native_table_rows_within_bounds
 
     assert observation["headings"] == ["Dashboard"]
     assert "table,[role='grid']" in page.selectors
-    assert len(observation["rowSummaries"]) == 8
+    assert len(observation["rowSummaries"]) == 10
     assert all("Hidden row" not in row for row in observation["rowSummaries"])
     assert all("No data" not in row and "Loading" not in row for row in observation["rowSummaries"])
     assert all(len(row) == 400 for row in observation["rowSummaries"])
@@ -1242,7 +1242,7 @@ def test_observe_semantics_does_not_bind_ambiguous_table_structures(headers, cel
 def test_observe_semantics_bounds_and_sanitizes_structured_row_fields() -> None:
     headers = [("Notes" if index == 1 else f"Field {index}", True) for index in range(14)]
     rows = []
-    for row_index in range(5):
+    for row_index in range(15):
         cells = [
             (("x" * 350) if column_index == 0 else (
                 "password: field-secret" if column_index == 1 else f"row {row_index} value {column_index}"
@@ -1255,12 +1255,12 @@ def test_observe_semantics_bounds_and_sanitizes_structured_row_fields() -> None:
     observation = asyncio.run(gateway._observe_semantics(FakeObservationPage({}, containers=[container]), 20))
     row_fields = observation["sectionSummaries"][0]["rowFields"]
 
-    assert len(row_fields) == 4
+    assert len(row_fields) == 10
     assert all(len(row) == 12 for row in row_fields)
     assert all(len(row["Field 0"]) == 300 for row in row_fields)
     assert all(row["Notes"] == "password: [redacted]" for row in row_fields)
-    assert [row["Field 2"] for row in row_fields] == [f"row {index} value 2" for index in range(4)]
-    assert "row 4 value" not in str(row_fields)
+    assert [row["Field 2"] for row in row_fields] == [f"row {index} value 2" for index in range(10)]
+    assert "row 10 value" not in str(row_fields)
     assert "field-secret" not in str(row_fields)
 
 
@@ -2283,6 +2283,9 @@ def test_default_post_allowlist_is_exact() -> None:
         "/api/Role/GetRolesGroupedByDepartmentId",
         "/api/Application/MyComplatedPage",
         "/api/Application/MyTodoPage",
+        "/api/Content/MyTodoPage",
+        "/api/Content/MyComplatedPage",
+        "/api/content/team-management/tasks/query",
         "/api/LicenseManagement/list",
         "/api/licensing/team-management/tasks/query",
         "/api/inspection/team-management/tasks/query",
@@ -2307,7 +2310,15 @@ def test_guard_allows_only_configured_read_only_posts(path) -> None:
 
 def test_default_get_allowlist_is_server_owned_and_exact() -> None:
     assert gateway.READER_READ_ONLY_GET_PATHS == {
+        "/api/content/team-management/members",
+        "/api/customer-happiness/team-management/members",
+        "/api/Team/MyTeamMembers",
         "/api/license/dashboard/overview",
+        "/api/Content/MyReviewDetail/:taskId",
+        "/api/content/team-management/metadata",
+        "/api/content/team-management/summary",
+        "/api/TypeDictionary/GetTypeDictionaries/ModificationReason",
+        "/api/TypeDictionary/GetTypeDictionaries/RejectionReason",
         "/api/license/dashboard/license-distribution",
         "/api/license/dashboard/performance",
         "/api/license/dashboard/performance-trend",
@@ -2336,6 +2347,7 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/admin/inspection/lookup/priorities",
         "/api/admin/inspection/tasks",
         "/api/admin/inspection/tasks/:id",
+        "/api/admin/inspection/tasks/:id/checklist-template",
         "/api/admin/inspection/tasks/created-by-users",
         "/api/admin/inspection/tasks/stats",
         "/api/admin/inspection/violations",
@@ -2396,6 +2408,38 @@ def test_default_get_allowlist_is_server_owned_and_exact() -> None:
         "/api/UserManagement/UserProfile/:id/Establishment",
         "/api/UserManagement/UserProfile/:id/Partners",
         "/api/LicenseManagement/:id",
+        "/api/admin/finance/transactions/:transactionNo",
+        "/api/admin/payments/refunds",
+        "/api/admin/payments/refunds/statistics",
+        "/api/admin/payments/refunds/:refundNo",
+        "/api/admin/inspection/violations/:id",
+        "/api/admin/inspection/violations/:id/penalty-standard",
+        "/api/admin/inspection/violations/:id/timeline",
+        "/api/admin/inspection/violations/:id/target-overview",
+        "/api/UserManagement/GetEmirateList",
+        "/api/UserManagement/GetRegionList/:id",
+        "/api/UserManagement/GetAreaList/:id",
+        "/api/UserManagement/GetEstablishmentByProfileId/:profileId",
+        "/api/UserManagement/:userProfileId/ProfileAndApplicant",
+        "/api/UserManagement/:userProfileId/Relate",
+        "/api/TypeDictionary/GetTypeDictionaries/RejectDispositionReason",
+        "/api/TypeDictionary/GetTypeDictionaries/CertificateDisableReason",
+        "/api/Lookup/GetArtistWorkTypes",
+        "/api/ServiceInfo/GetEconomicActivitys",
+        "/api/Enquiry/Management/:enquiryId/EnquiryInfo",
+        "/api/Enquiry/Management/:enquiryId/Timeline",
+        "/api/Enquiry/Management/EnquiryInfo/:enquiryId/Relate",
+        "/api/Enquiry/Management/EnquiryInfo/:enquiryId/Applicants",
+        "/api/admin/application/:applicationId",
+        "/api/Refund/Admin/Tickets/:refundId/Detail",
+        "/api/Refund/Admin/Tickets/:refundId/Timeline",
+        "/api/User/GetUserIndividual",
+        "/api/User/GetNationalityList",
+        "/api/User/GetEmirateList",
+        "/api/User/GetRegionList",
+        "/api/User/GetAreaList",
+        "/api/User/GetUserEstablishmentByID/:id",
+        "/api/Application/:applicationId/recall-approval/eligibility",
     }
 
 
@@ -2575,8 +2619,8 @@ def test_guard_keeps_inspection_task_creation_and_exports_blocked() -> None:
 def test_health_reports_fixed_allowlist_counts() -> None:
     health = asyncio.run(gateway.healthz())
 
-    assert health["readOnlyGetPathCount"] == 89
-    assert health["readOnlyPostPathCount"] == 8
+    assert health["readOnlyGetPathCount"] == 130
+    assert health["readOnlyPostPathCount"] == 11
 
 
 @pytest.mark.parametrize(

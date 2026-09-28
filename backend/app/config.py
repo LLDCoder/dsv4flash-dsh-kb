@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,6 +15,11 @@ from .reader_limits import (
 class Settings(BaseSettings):
     app_name: str = "DSH External Service"
     environment: str = "development"
+    reader_pipeline: Literal["legacy", "generic_v3"] = "legacy"
+    reader_artifacts_dir: str = "/reader-artifacts"
+    reader_business_timezone: str = "UTC"
+    reader_routing_mode: Literal["catalog", "single"] = "catalog"
+    reader_clarification_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     database_url: str = "postgresql+asyncpg://dsh:dsh@postgres:5432/dsh"
     # Deployment-only controls for instances sharing an existing database.
     database_init_enabled: bool = True

@@ -6,14 +6,18 @@ import json
 import logging
 import os
 import re
+from contextvars import ContextVar
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qsl, unquote, urljoin, urlsplit
+from urllib.parse import parse_qsl, unquote, urljoin, urlsplit, urlencode, urlunsplit
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 try:
     from playwright.async_api import Browser, Page, Route, async_playwright
 except ModuleNotFoundError:  # The production image installs Playwright and Chromium.
@@ -47,7 +51,8 @@ READER_MUTATION_ROUTE_TERMS = READER_MUTATION_COMMAND_TERMS
 READER_READ_ONLY_OPEN_CONTEXT_TERMS = {"task", "tasks", "status", "statuses", "category", "categories"}
 READER_MAX_ACTIONS = 12
 READER_MAX_PAGES = 3
-READER_TIMEOUT_SECONDS = 45
+READER_TIMEOUT_SECONDS = 65
+READER_NAVIGATION_TIMEOUT_MS = 30_000
 READER_ACTION_TIMEOUT_MS = max(
     5_000,
     min(15_000, int(float(os.getenv("READER_ACTION_TIMEOUT_MS", "10000")))),
@@ -60,6 +65,7 @@ READER_MAX_API_EVIDENCE_NODES = 600
 READER_MAX_API_EVIDENCE_CHARS = 48_000
 READER_MAX_API_EVIDENCE_DEPTH = 32
 READER_LOCK = asyncio.Lock()
+READER_PROGRESS: ContextVar[dict | None] = ContextVar('reader_request_progress', default=None)
 
 
 def _reader_whitelist_enabled() -> bool:
@@ -171,6 +177,32 @@ try:
 except (OSError, ValueError, json.JSONDecodeError) as exc:
     logger.warning("Reader operation catalog is unavailable: %s", type(exc).__name__)
     READER_OPERATION_CATALOG = ()
+def _load_reader_related_collection_contracts(path):
+    """Explicit reviewed ownership contracts; missing/invalid config is closed."""
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return ()
+    required = {'relationshipRef','operationKey','parentOperationKey','parentPath','parentField','parameter','collectionPath'}
+    result = []
+    for contract in payload.get('contracts', [])[:50] if isinstance(payload, dict) else []:
+        if (not isinstance(contract, dict) or not required <= set(contract)
+                or not all(isinstance(contract[k], str) and 0 < len(contract[k]) <= 300 for k in required)
+                or not contract['operationKey'].startswith('GET ')
+                or not contract['parentOperationKey'].startswith('GET ')
+                or not isinstance(contract.get('allowedFields'), list) or not contract['allowedFields']
+                or not all(isinstance(f, str) and len(f) <= 160 for f in contract['allowedFields'])
+                or not contract.get('sources') or not all(isinstance(x, dict) and x.get('reference')
+                    and re.fullmatch(r'[a-f0-9]{64}', str(x.get('sha256', ''))) for x in contract['sources'])):
+            continue
+        result.append(contract)
+    return tuple(result)
+
+
+READER_RELATED_COLLECTION_CONTRACTS = _load_reader_related_collection_contracts(Path(os.getenv(
+    'PORTAL_READER_RELATED_COLLECTION_CONTRACTS', '/app/config/reader-related-collection-contracts.json')))
+
+
 READER_BROAD_SELECTORS = frozenset({"html", "body", "main", "table", "*", "#root", "#app"})
 READER_QUERY_ROLES = frozenset({"row", "cell", "columnheader", "heading", "status", "listitem", "term", "definition"})
 READER_SENSITIVE_LOCATOR_TERMS = frozenset(
@@ -213,6 +245,90 @@ class PortalReadAction(BaseModel):
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProjectedCollectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operationKey: str = Field(max_length=500)
+    contextRef: str = Field(pattern=r"^[a-f0-9]{64}$")
+    rowsPath: str = Field(max_length=300)
+    totalPath: str = Field(max_length=300)
+    fields: list[str] = Field(min_length=1, max_length=20)
+    identityFields: list[str] = Field(min_length=1, max_length=5)
+    pageField: str = Field(max_length=80)
+    sizeField: str = Field(max_length=80)
+    firstPage: int = Field(default=1, ge=0, le=1)
+    unknownPolicy: Literal['reject', 'report'] = 'reject'
+
+
+class PageReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operationKey: str = Field(max_length=300)
+    parameters: dict[str, str | int | bool] = Field(default_factory=dict, max_length=12)
+
+
+class RelatedArrayProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    path: str = Field(pattern=r"^/[A-Za-z0-9_/]{1,250}$")
+    fields: list[str] = Field(min_length=1, max_length=20)
+
+
+class RelatedReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operationKey: str = Field(max_length=300)
+    parentOperationKey: str = Field(max_length=300)
+    parentPath: str = Field(pattern=r"^/[A-Za-z0-9_/]{1,250}$")
+    parentField: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
+    parameter: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
+    responseKeyPath: str | None = Field(default=None, pattern=r"^/[A-Za-z0-9_/]{1,250}$")
+    ownership: Literal['echoed_key', 'request_parameter_collection'] = 'echoed_key'
+    relationshipRef: str | None = Field(default=None, max_length=160)
+    collectionPath: str | None = Field(default=None, pattern=r"^/[A-Za-z0-9_/]{1,250}$")
+    projections: list[RelatedArrayProjection] = Field(default_factory=list, max_length=3)
+
+
+    @model_validator(mode='after')
+    def check_ownership(self):
+        if self.ownership == 'echoed_key':
+            if not self.responseKeyPath or self.relationshipRef is not None or self.collectionPath is not None:
+                raise ValueError('related_echo_contract_required')
+        elif self.responseKeyPath is not None or not self.relationshipRef or not self.collectionPath:
+            raise ValueError('related_collection_contract_required')
+        return self
+
+
+class DashboardFilterHint(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: Literal['timeFilter', 'department', 'roleVariant']
+    value: str = Field(min_length=1, max_length=500)
+
+
+class DashboardReadContext(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    route: Literal['/dashboard']
+    view: Literal['']
+    userId: str = Field(min_length=1, max_length=200)
+    filters: list[DashboardFilterHint] = Field(min_length=3, max_length=3)
+    browserTimezone: str = Field(default='UTC', min_length=1, max_length=80)
+
+    @model_validator(mode='after')
+    def applied_context_only(self):
+        try:
+            ZoneInfo(self.browserTimezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError('dashboard_timezone_invalid') from exc
+        values = {item.name: item.value for item in self.filters}
+        if set(values) != {'timeFilter', 'department', 'roleVariant'}:
+            raise ValueError('dashboard_applied_context_incomplete')
+        try:
+            period = json.loads(values['timeFilter'])
+        except ValueError as exc:
+            raise ValueError('dashboard_period_not_structured') from exc
+        if (not isinstance(period, dict) or set(period) != {'preset', 'days'}
+                or type(period['days']) is not int or not isinstance(period['preset'], str)
+                or not 1 <= period['days'] <= 366):
+            raise ValueError('dashboard_period_requires_observed_preset')
+        return self
+
+
 class AdminPortalReadRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     start_path: str = Field(alias="startPath", min_length=1, max_length=1_000)
@@ -221,6 +337,12 @@ class AdminPortalReadRequest(BaseModel):
     max_pages: int = Field(default=READER_MAX_PAGES, alias="maxPages", ge=1, le=READER_MAX_PAGES)
     timeout_seconds: int = Field(default=READER_TIMEOUT_SECONDS, alias="timeoutSeconds", ge=1, le=READER_TIMEOUT_SECONDS)
     max_output_items: int = Field(default=READER_MAX_OUTPUT_ITEMS, alias="maxOutputItems", ge=1, le=READER_MAX_OUTPUT_ITEMS)
+    page_reads: list[PageReadRequest] = Field(default_factory=list, alias="pageReads", max_length=4)
+    related_reads: list[RelatedReadRequest] = Field(default_factory=list, alias="relatedReads", max_length=2)
+    collections: list[ProjectedCollectionRequest] = Field(default_factory=list, max_length=2)
+    native_record_lookup: str | None = Field(default=None, alias='nativeRecordLookup', min_length=1, max_length=200,
+        description='Record identifier for a reviewed native lookup when menu permission metadata is insufficient. Returns only the native outcome, never business rows or an authorization grant.')
+    dashboard_context: DashboardReadContext | None = Field(default=None, alias='dashboardContext')
     completion_period: Literal['this week', 'last week', 'this month', 'last month', 'this year', 'last year'] | None = Field(
         default=None, alias='completionPeriod', description='Optional personal Completed-view count by taskApprovalAt. Requires a verified native Completed view and its observed, allowlisted personal list operation. Reads at most 3000 distinct applications twice, rejecting missing dates, foreign assignees, incomplete/changing pagination. Returns only bounded aggregate evidence, never full rows. Calendar periods use Asia/Dubai, Monday-start weeks; explicit dates are returned.')
 
@@ -248,7 +370,7 @@ def _trace_id(request_id: str | None) -> str:
     return request_id.strip()[:128] if request_id and request_id.strip() else "-"
 
 
-async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None, authorization: str | None = None, request_id: str | None = None) -> Any:
+async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None, authorization: str | None = None, request_id: str | None = None, identity_retry: bool = False) -> Any:
     forwarded = _require_umc_token(authorization)
     trace_id = _trace_id(request_id)
     token_ref = _token_ref(forwarded)
@@ -261,14 +383,21 @@ async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = 
         path,
     )
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            response = await client.request(
-                method,
-                f"{UMC_BASE_URL}{path}",
-                json=json,
-                params=params,
-                headers={"Authorization": forwarded, "Content-Type": "application/json"},
-            )
+        attempts = 3 if identity_retry and method == 'POST' and path == '/api/AdminUser/GetUserInfo' else 1
+        async with httpx.AsyncClient(timeout=min(TIMEOUT_SECONDS, 8) if attempts > 1 else TIMEOUT_SECONDS) as client:
+            for attempt in range(attempts):
+                try:
+                    response = await client.request(method, f"{UMC_BASE_URL}{path}", json=json, params=params,
+                        headers={"Authorization": forwarded, "Content-Type": "application/json"})
+                    response.raise_for_status()
+                    break
+                except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                    retryable = (isinstance(exc, httpx.TransportError) or
+                        exc.response.status_code in {408, 429, 500, 502, 503, 504})
+                    if not retryable or attempt + 1 == attempts:
+                        raise
+                    logger.info('umc_identity_retry request_id=%s attempt=%s error_type=%s', trace_id, attempt + 1, type(exc).__name__)
+                    await asyncio.sleep(0.2 * (attempt + 1))
         logger.info(
             "umc_response portal=%s request_id=%s token_ref=%s method=%s path=%s status=%s",
             UMC_PORTAL,
@@ -282,9 +411,24 @@ async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = 
         return response.json()
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response.status_code in {401, 403, 404, 422} else 502
-        raise HTTPException(status_code=status, detail={"code": "umc_upstream_error", "upstreamStatus": exc.response.status_code}) from exc
+        permission_response = {}
+        if exc.response.status_code in {401, 403}:
+            try:
+                body = exc.response.json()
+                if isinstance(body, dict) and body.get('isSuccess') is False:
+                    permission_response = {'isSuccess': False, 'statusCode': exc.response.status_code}
+                    # Preserve the documented public denial, not arbitrary error bodies.
+                    if body.get('message') in {'You do not have permission to perform this action.',
+                            'Unauthorized access. Please log in.'}:
+                        permission_response['message'] = body['message']
+            except ValueError:
+                pass
+        raise HTTPException(status_code=status, detail={"code": "umc_upstream_error", "upstreamStatus": exc.response.status_code,
+            "attempts": attempt + 1, "errorType": type(exc).__name__,
+            **({'permissionResponse': permission_response} if permission_response else {})}) from exc
     except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail={"code": "umc_upstream_unavailable", "message": str(exc)[:500]}) from exc
+        raise HTTPException(status_code=503, detail={"code": "umc_upstream_unavailable",
+            "attempts": attempt + 1, "errorType": type(exc).__name__}) from exc
 
 
 @app.get("/healthz")
@@ -297,6 +441,7 @@ async def healthz() -> dict[str, Any]:
         "authMode": "umctoken-forwarded",
         "readerWhitelistEnabled": READER_WHITELIST_ENABLED,
         "readerWhitelistFile": str(READER_NETWORK_POLICY_FILE),
+        "readerPolicyHash": hashlib.sha256(json.dumps(READER_NETWORK_POLICY, sort_keys=True).encode()).hexdigest(),
         "readerNetworkMode": "allowlist" if READER_WHITELIST_ENABLED else "same-origin-unrestricted",
         "readerOperationCatalogFile": str(READER_OPERATION_CATALOG_FILE),
         "readerOperationCatalogCount": len(READER_OPERATION_CATALOG),
@@ -684,7 +829,74 @@ def _reader_request_variant(request_obj: Any) -> str:
     ).hexdigest()
 
 
-def _reader_bounded_api_evidence(value: Any) -> tuple[Any, bool]:
+def _reader_field_evidence(original: Any, captured: Any) -> dict:
+    """Field-level transport proof; never returns the original values."""
+    receipts = {}
+    def visit(raw, value, path):
+        if len(receipts) >= READER_MAX_API_EVIDENCE_NODES:
+            return
+        if isinstance(value, dict) and isinstance(raw, dict):
+            for key, child in value.items():
+                visit(raw.get(key), child, path + '/' + str(key).replace('~', '~0').replace('/', '~1'))
+        elif isinstance(value, list) and isinstance(raw, list):
+            captured_hash = _collection_digest(value)
+            receipts[path] = {'status': 'complete' if _collection_digest(raw) == captured_hash else 'bounded',
+                              'kind': 'array', 'valueHash': captured_hash}
+            for index, child in enumerate(value):
+                if index < len(raw):
+                    visit(raw[index], child, path + '/' + str(index))
+        elif not isinstance(value, (dict, list)):
+            identical = type(raw) is type(value) and raw == value
+            whitespace_only = (isinstance(raw, str) and isinstance(value, str)
+                               and re.sub(r'\s+', ' ', raw).strip() == value)
+            receipts[path] = {'status': 'complete' if identical or whitespace_only else 'transformed',
+                              'kind': 'scalar', 'valueHash': _collection_digest(value),
+                              **({'normalization': 'whitespace'} if whitespace_only and not identical else {})}
+    visit(original, captured, '')
+    return receipts
+
+
+def _reader_structured_documents(payload: Any) -> list:
+    """Decode bounded JSON text as separate evidence; never evaluate expressions."""
+    documents = []
+    def decode(value, depth=0):
+        if depth > 20:
+            raise ValueError('document nesting limit')
+        if isinstance(value, str) and value.lstrip().startswith(('{', '[')):
+            if len(value.encode()) > 128_000:
+                raise ValueError('document size limit')
+            try:
+                return decode(json.loads(value), depth + 1)
+            except json.JSONDecodeError:
+                return value
+        if isinstance(value, dict):
+            return {k: decode(v, depth + 1) for k, v in value.items()}
+        if isinstance(value, list):
+            return [decode(v, depth + 1) for v in value]
+        return value
+    def scan(value, path='', depth=0):
+        if len(documents) >= 3 or depth > 5:
+            return
+        if isinstance(value, dict):
+            for key, child in list(value.items())[:200]:
+                if re.search(r'password|secret|token|credential|cookie|authorization|binary|base64', str(key), re.I):
+                    continue
+                scan(child, path + '/' + str(key).replace('~', '~0').replace('/', '~1'), depth + 1)
+        elif isinstance(value, str) and value.lstrip().startswith(('{', '[')) and len(value.encode()) <= 128_000:
+            try:
+                decoded = decode(json.loads(value))
+                evidence, truncated = _reader_bounded_api_evidence(decoded)
+                documents.append({'path': path, 'encoding': 'json', 'data': evidence,
+                                  'completeness': 'bounded' if truncated else 'complete',
+                                  'contentHash': _collection_digest(decoded),
+                                  'fieldEvidence': _reader_field_evidence(decoded, evidence)})
+            except (ValueError, RecursionError):
+                pass
+    scan(payload)
+    return documents
+
+
+def _reader_bounded_api_evidence(value: Any, *, projected_array_paths: set[str] | None = None) -> tuple[Any, bool]:
     """Keep arbitrary JSON response shapes while bounding and redacting them."""
 
     remaining_nodes = READER_MAX_API_EVIDENCE_NODES
@@ -699,7 +911,7 @@ def _reader_bounded_api_evidence(value: Any) -> tuple[Any, bool]:
             "base64", "binary", "filecontent", "documentcontent", "pagehtml", "fullhtml",
         ))
 
-    def visit(item: Any, depth: int = 0) -> Any:
+    def visit(item: Any, depth: int = 0, path: str = '') -> Any:
         nonlocal remaining_nodes, remaining_chars, truncated
         if (
             remaining_nodes <= 0
@@ -716,26 +928,30 @@ def _reader_bounded_api_evidence(value: Any) -> tuple[Any, bool]:
                 for key, child in item.items()
                 if not sensitive_key(key)
             ]
-            if len(safe_items) > 60:
+            if len(safe_items) > 200:
                 truncated = True
             # Large record arrays must not consume the whole response budget
             # before sibling summary objects such as totals or dashboard cards.
             safe_items.sort(key=lambda pair: 2 if isinstance(pair[1], (list, tuple)) else 1 if isinstance(pair[1], dict) else 0)
-            for key, child in safe_items[:60]:
+            for key, child in safe_items[:200]:
                 if sensitive_key(key):
                     continue
                 safe_key = _sanitize_reader_text(key, max_chars=120)
                 if safe_key:
-                    bounded_child = visit(child, depth + 1)
+                    bounded_child = visit(child, depth + 1, path + '/' + str(safe_key))
                     if bounded_child is not omitted:
                         result[safe_key] = bounded_child
             return result
         if isinstance(item, (list, tuple)):
-            if len(item) > READER_MAX_OUTPUT_ITEMS:
+            # Discovery samples keep the small UI limit. Explicit field
+            # projections use the collection row bound, still subject to the
+            # same node/character/transport limits and truncation receipts.
+            row_limit = COLLECTION_MAX_ROWS if path in (projected_array_paths or set()) else READER_MAX_OUTPUT_ITEMS
+            if len(item) > row_limit:
                 truncated = True
             result = []
-            for child in list(item)[:READER_MAX_OUTPUT_ITEMS]:
-                bounded_child = visit(child, depth + 1)
+            for index, child in enumerate(list(item)[:row_limit]):
+                bounded_child = visit(child, depth + 1, path + '/' + str(index))
                 if bounded_child is not omitted:
                     result.append(bounded_child)
             return result
@@ -942,11 +1158,623 @@ async def _reader_capture_api_response_evidence(
         return
     candidate["responseEvidence"] = evidence
     candidate["responseEvidenceTruncated"] = truncated
+    candidate["fieldEvidence"] = _reader_field_evidence(payload, evidence)
+    candidate["structuredDocuments"] = _reader_structured_documents(payload)
+    # Private request material stays in this browser session. Only a digest,
+    # field names and response schema cross the discovery boundary.
+    if candidate.get("policyState") == "allowed":
+        captured = _collection_request(response.request) if getattr(response, "request", None) else None
+        if captured is not None:
+            reader_health.setdefault("collectionRequests", {})[operation_key] = captured
+            candidate["collectionContext"] = {
+                "contextRef": captured["contextRef"],
+                "requestFields": list(captured["parameters"]),
+                "parameterHashes": {k: _collection_digest(v) for k, v in captured["parameters"].items()},
+                "parameterShapeEvidence": _request_date_shape_evidence(captured),
+                "rowSchemas": _collection_row_schemas(payload),
+                "mode": "page_number_two_pass",
+            }
     assignment = _inspection_assignment_evidence(payload, operation_key)
     if assignment:
         candidate['assignmentEvidence'] = assignment
     else:
         candidate.pop('assignmentEvidence', None)
+
+
+COLLECTION_MAX_ROWS = 5000
+COLLECTION_MAX_PAGES = 100
+COLLECTION_MAX_BYTES = 5_000_000
+COLLECTION_RESTRICTED = re.compile(
+    r"password|passwd|secret|token|authorization|cookie|email|e.?mail|passport|"
+    r"national.?id|emirates.?id|phone|mobile|address|credential|base64|binary|content", re.I)
+
+
+def _collection_digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def _request_date_shape_evidence(captured):
+    """Attest only ISO date shape and digest from the real GET request."""
+    if captured.get('method') != 'GET':
+        return {}
+    result = {}
+    for key, value in captured.get('parameters', {}).items():
+        if not isinstance(value, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            continue
+        try:
+            datetime.strptime(value, '%Y-%m-%d')
+        except ValueError:
+            continue
+        result[key] = {'format': 'date', 'status': 'complete', 'valueHash': _collection_digest(value)}
+    return result
+
+
+class CollectionDependencyError(ValueError):
+    def __init__(self, code, diagnostic):
+        super().__init__(code)
+        self.diagnostic = diagnostic
+
+
+def _collection_comparison(first: list, second: list, fields: list, identity: list) -> dict:
+    """Compare projected populations, preserving duplicate multiplicity but not order.
+
+    Diagnostics contain counts and field names only. Changed values, including
+    changing clock-derived fields, are never silently tolerated.
+    """
+    def identities(rows):
+        grouped = {}
+        for row in rows:
+            key = _collection_digest([row[k] for k in identity])
+            grouped.setdefault(key, []).append(row)
+        return grouped
+    left, right = identities(first), identities(second)
+    changed_fields, changed_entities = set(), 0
+    for key in left.keys() & right.keys():
+        changed = [field for field in fields if Counter(_collection_digest(row[field]) for row in left[key])
+                   != Counter(_collection_digest(row[field]) for row in right[key])]
+        if changed:
+            changed_entities += 1
+            changed_fields.update(changed)
+    equal = Counter(_collection_digest(row) for row in first) == Counter(_collection_digest(row) for row in second)
+    return {"equivalent": equal, "orderChanged": equal and first != second,
+            "firstRowCount": len(first), "secondRowCount": len(second),
+            "addedIdentityCount": len(right.keys() - left.keys()),
+            "removedIdentityCount": len(left.keys() - right.keys()),
+            "changedIdentityCount": changed_entities, "changedFields": sorted(changed_fields)}
+
+
+def _collection_request(request_obj: Any) -> dict | None:
+    method = str(request_obj.method).upper()
+    parsed = urlsplit(request_obj.url)
+    try:
+        if method == "POST":
+            raw = request_obj.post_data or ""
+            if len(raw) > 16384:
+                return None
+            parameters = json.loads(raw)
+        elif method == "GET":
+            pairs = parse_qsl(parsed.query, keep_blank_values=True)
+            if len(pairs) != len(dict(pairs)):
+                return None
+            parameters = dict(pairs)
+        else:
+            return None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parameters, dict) or len(parameters) > 60:
+        return None
+    return {"url": request_obj.url, "method": method, "parameters": parameters,
+            "contextRef": _collection_digest([request_obj.url, method, parameters])}
+
+
+def _collection_row_schemas(value: Any, path: str = "", depth: int = 0) -> list[dict]:
+    if depth > 12:
+        return []
+    if isinstance(value, list):
+        def scalar_paths(row, prefix="", level=0):
+            if not isinstance(row, dict) or level > 5:
+                return []
+            found = []
+            for key, child in list(row.items())[:60]:
+                field = prefix + str(key)
+                if COLLECTION_RESTRICTED.search(field) or "." in str(key):
+                    continue
+                if isinstance(child, dict):
+                    found.extend(scalar_paths(child, field + ".", level + 1))
+                elif not isinstance(child, list):
+                    found.append(field)
+            return found
+        sampled = value[:100]
+        def null_paths(row, prefix="", level=0):
+            if not isinstance(row, dict) or level > 5:
+                return []
+            found = []
+            for key, child in list(row.items())[:60]:
+                field = prefix + str(key)
+                if COLLECTION_RESTRICTED.search(field) or "." in str(key):
+                    continue
+                if child is None:
+                    found.append(field)
+                elif isinstance(child, dict):
+                    found.extend(null_paths(child, field + ".", level + 1))
+            return found
+        # Preserve row-level fields before nested lookup objects consume the
+        # bounded schema inventory. Missing names in a truncated inventory are
+        # not evidence that the upstream row lacks those properties.
+        fields = sorted({f for row in sampled for f in scalar_paths(row)}, key=lambda f: (f.count('.'), f))
+        nullable = sorted({f for row in sampled for f in null_paths(row)}, key=lambda f: (f.count('.'), f))
+        return [{"path": path, "fields": fields[:60], "fieldsTruncated": len(fields) > 60,
+                 "nullableFields": nullable[:60], "nullableFieldsTruncated": len(nullable) > 60,
+                 "sampledRows": len(sampled)}]
+    if isinstance(value, dict):
+        return [item for key, child in list(value.items())[:60]
+                if not COLLECTION_RESTRICTED.search(str(key))
+                for item in _collection_row_schemas(child, path + "/" + str(key).replace("~", "~0").replace("/", "~1"), depth + 1)][:30]
+    return []
+
+
+def _collection_pointer(value: Any, path: str) -> Any:
+    if not path.startswith("/") or ".." in path.split("/"):
+        raise ValueError("collection_field_missing")
+    try:
+        for part in path[1:].split("/"):
+            value = value[part.replace("~1", "/").replace("~0", "~")]
+        return value
+    except (KeyError, TypeError):
+        raise ValueError("collection_field_missing") from None
+
+
+def _collection_project(payload: Any, spec: ProjectedCollectionRequest, field_status: dict | None = None) -> tuple[list, int]:
+    if isinstance(payload, dict) and (payload.get("isSuccess") is False or payload.get("success") is False):
+        raise ValueError("collection_response_failed")
+    rows, total = _collection_pointer(payload, spec.rowsPath), _collection_pointer(payload, spec.totalPath)
+    if not isinstance(rows, list) or type(total) is not int or total < 0:
+        raise ValueError("collection_shape_invalid")
+    if total > COLLECTION_MAX_ROWS:
+        raise ValueError("collection_budget_exceeded")
+    projected = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("collection_field_missing")
+        item = {}
+        for field in spec.fields:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,5}", field):
+                raise ValueError("collection_field_invalid")
+            value, failure = row, ''
+            for key in field.split("."):
+                # Preserve a null parent as unknown; never coerce it to false.
+                if value is None:
+                    break
+                if not isinstance(value, dict) or key not in value:
+                    failure = 'collection_field_missing'
+                    break
+                value = value[key]
+            if not failure and (isinstance(value, (dict, list)) or isinstance(value, str) and len(value) > 500):
+                failure = 'collection_scalar_fields_required'
+            if not failure and isinstance(value, str) and _sanitize_reader_text(value, max_chars=500) != value:
+                failure = 'collection_value_not_safe'
+            if failure:
+                if spec.unknownPolicy != 'report' or field in spec.identityFields:
+                    raise ValueError(failure)
+                value = None
+            if field_status is not None:
+                if failure:
+                    field_status[field] = failure
+                elif value is None:
+                    if field_status.get(field, 'complete') == 'complete':
+                        field_status[field] = 'null'
+                else:
+                    field_status.setdefault(field, 'complete')
+            item[field] = value
+        if any(item[k] is None or item[k] == "" for k in spec.identityFields):
+            raise ValueError("collection_identity_missing")
+        # Unavailable non-key fields stay unknown; identity is always strict.
+        projected.append(item)
+    return projected, total
+
+
+async def _collect_projected_rows(spec: ProjectedCollectionRequest, captured: dict, fetch) -> dict:
+    """No URLs or filter values are accepted from the planner; two bounded scans.
+
+    Stable scans are an observational consistency check, not a DB snapshot.
+    fetch preserves the authorized request's filters and identity. Only its
+    observed pagination parameters change, with one bounded size for both scans.
+    """
+    started = datetime.now(timezone.utc).isoformat()
+    receipt = {"schemaVersion": "projected-collection/1", "operationRef": spec.operationKey,
+               "contextRef": spec.contextRef, "rowsPath": spec.rowsPath, "totalPath": spec.totalPath,
+               "fields": spec.fields, "identityFields": spec.identityFields,
+               "startedAt": started, "completeness": "incomplete", "consistency": "two_pass_observation",
+               "pagesRead": 0, "snapshotIsolation": False}
+    try:
+        if captured.get("contextRef") != spec.contextRef:
+            raise ValueError("collection_context_changed")
+        # Parameter semantics are gateway-owned, not arbitrary RAG assignments.
+        if not re.fullmatch(r"page(?:index|number)?", spec.pageField, re.I) or not re.fullmatch(
+                r"pagesize|perpage|limit", spec.sizeField, re.I):
+            raise ValueError("collection_pagination_unsupported")
+        parameters = captured["parameters"]
+        if spec.pageField == spec.sizeField or not all(k in parameters for k in [spec.pageField, spec.sizeField]):
+            raise ValueError("collection_pagination_not_observed")
+        try:
+            page_number, size = int(parameters[spec.pageField]), int(parameters[spec.sizeField])
+        except (TypeError, ValueError):
+            raise ValueError("collection_pagination_invalid") from None
+        if isinstance(parameters[spec.pageField], bool) or isinstance(parameters[spec.sizeField], bool) or not 1 <= size <= 500:
+            raise ValueError("collection_pagination_invalid")
+        if page_number != spec.firstPage:
+            raise ValueError("collection_first_page_not_observed")
+        # A small UI page is not a collection budget. Coalesce reads using the
+        # already-observed size parameter, never introduce a new body field.
+        # Use the existing bounded 500-row ceiling to reduce round trips;
+        # per-page latency must not multiply merely because the UI shows 10 rows.
+        # If a server clamps or ignores the size, exact row/total checks fail.
+        observed_size = size
+        size = 500
+        receipt["pagination"] = {"observedPageSize": observed_size, "pageSize": size,
+                                 "pageField": spec.pageField, "sizeField": spec.sizeField}
+        if len(set(spec.fields)) != len(spec.fields) or not set(spec.identityFields) <= set(spec.fields):
+            raise ValueError("collection_identity_projection_missing")
+        if any(COLLECTION_RESTRICTED.search(field) for field in [spec.rowsPath, spec.totalPath, *spec.fields]):
+            raise ValueError("collection_field_restricted")
+        if spec.rowsPath.rsplit("/", 1)[0] != spec.totalPath.rsplit("/", 1)[0]:
+            raise ValueError("collection_total_context_mismatch")
+        bytes_read, field_status = 0, {}
+        fallback_size = max(observed_size, 100)
+
+        async def scan_population(batch_size, *, allow_fallback=False, expected_total=None):
+            nonlocal bytes_read
+            scans, totals = [], []
+            for scan in range(2):
+                accumulated, seen_pages, expected = [], set(), None
+                for offset in range(COLLECTION_MAX_PAGES):
+                    params = dict(parameters)
+                    params[spec.pageField] = spec.firstPage + offset
+                    params[spec.sizeField] = batch_size
+                    raw = await fetch(params)
+                    bytes_read += len(raw)
+                    if bytes_read > COLLECTION_MAX_BYTES:
+                        raise ValueError("collection_budget_exceeded")
+                    rows, total = _collection_project(json.loads(raw), spec, field_status)
+                    receipt["pagesRead"] += 1
+                    if expected_total is not None and total != expected_total:
+                        raise ValueError("collection_total_changed")
+                    if expected is None:
+                        expected = total
+                    if total != expected:
+                        raise ValueError("collection_total_changed")
+                    expected_size = min(batch_size, max(0, total - offset * batch_size))
+                    if (allow_fallback and scan == 0 and offset == 0
+                            and batch_size > fallback_size and len(rows) < expected_size):
+                        # Discard this short probe. Never infer its page size or
+                        # offset: restart BOTH scans at the previously used size.
+                        return None, total
+                    signature = _collection_digest(rows)
+                    if rows and signature in seen_pages:
+                        raise ValueError("collection_repeated_page")
+                    seen_pages.add(signature)
+                    accumulated.extend(rows)
+                    if len(rows) != expected_size or len(accumulated) > total:
+                        raise ValueError("collection_page_incomplete")
+                    if len(accumulated) == total:
+                        break
+                else:
+                    raise ValueError("collection_budget_exceeded")
+                scans.append(accumulated)
+                totals.append(expected)
+            return scans, totals
+
+        scans, totals = await scan_population(size, allow_fallback=True)
+        if scans is None:
+            probe_total = totals
+            receipt['pagination']['fallbackFromPageSize'] = size
+            receipt['pagination']['fallbackReason'] = 'first_batch_short'
+            size = fallback_size
+            receipt['pagination']['pageSize'] = size
+            field_status.clear()
+            # Byte and time budgets, and the probe's total, remain binding.
+            scans, totals = await scan_population(size, expected_total=probe_total)
+        receipt['comparison'] = _collection_comparison(scans[0], scans[1], spec.fields, spec.identityFields)
+        if totals[0] != totals[1] or not receipt['comparison']['equivalent']:
+            raise ValueError("collection_changed_between_passes")
+        receipt.update(completeness="complete", stablePasses=2, total=totals[0],
+                       rows=scans[0], rowCount=len(scans[0]), bytesRead=bytes_read,
+                       projectionHash=_collection_digest(scans[0]), fieldStatus=field_status)
+    except (ValueError, KeyError, TypeError) as exc:
+        code = str(exc)
+        receipt["reason"] = code if re.fullmatch(r"collection_[a-z_]+", code) else "collection_response_invalid"
+        if isinstance(exc, CollectionDependencyError):
+            receipt['dependency'] = exc.diagnostic
+    receipt["finishedAt"] = datetime.now(timezone.utc).isoformat()
+    return receipt
+
+
+def _page_read_target(spec, portal_origin):
+    if not spec.operationKey.startswith(('GET ', 'POST ')):
+        raise ValueError('page_read_not_readonly')
+    method, path = spec.operationKey.split(' ', 1)
+    if ('{' in path or not any(x['method'] == method and x['path'] == path for x in READER_OPERATION_CATALOG)):
+        raise ValueError('page_read_not_registered')
+    if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or COLLECTION_RESTRICTED.search(key)
+            or len(str(value)) > 120 for key, value in spec.parameters.items()):
+        raise ValueError('page_read_parameter_invalid')
+    params = {key: str(value).lower() if type(value) is bool else str(value) for key, value in spec.parameters.items()}
+    url = portal_origin + path + ('?' + urlencode(params) if params and method == 'GET' else '')
+    if not _reader_api_configured_policy_allows(SimpleNamespace(url=url, method=method), portal_origin):
+        raise ValueError('page_read_not_allowed')
+    return url
+
+
+async def _reader_get_document(page, url, *, method="GET", parameters=None):
+    """Retry only the already policy-checked read transport; never browser actions."""
+    for attempt in range(3):
+        try:
+            transport = getattr(page, '_reader_request_context', None) or page.context.request
+            response = (await transport.get(url, max_redirects=0, timeout=10000) if method == "GET"
+                        else await transport.fetch(url, method=method, data=parameters,
+                                                   max_redirects=0, timeout=10000))
+            try:
+                if not 200 <= response.status < 300:
+                    raise CollectionDependencyError('related_source_denied' if response.status in {401,403} else 'related_source_failed',
+                        {'upstreamStatus':response.status, 'attempts':attempt+1})
+                body = await response.body()
+                if len(body) > READER_MAX_API_EVIDENCE_BYTES:
+                    raise ValueError('related_source_too_large')
+                payload = json.loads(body)
+                if not isinstance(payload,dict) or payload.get('isSuccess') is False or payload.get('success') is False:
+                    raise ValueError('related_source_failed')
+                return payload, response.status
+            finally:
+                await response.dispose()
+        except Exception as exc:
+            retryable = (exc.diagnostic.get('upstreamStatus') in {408,429,500,502,503,504}
+                if isinstance(exc,CollectionDependencyError) else type(exc).__name__ in {'Error','TimeoutError'})
+            if not retryable or attempt == 2: raise
+            await asyncio.sleep(0.2*(attempt+1))
+
+
+async def _reader_page_reads(page, specs, portal_origin):
+    health = getattr(page, '_reader_health', {})
+    candidates = _reader_api_discovery_state(health)['candidates']
+    outcomes = []
+    for spec in specs:
+        try:
+            url = _page_read_target(spec, portal_origin)
+            method, path = spec.operationKey.split(" ", 1)
+            payload, status = await _reader_get_document(page, url, method=method, parameters=spec.parameters)
+            evidence, truncated = _reader_bounded_api_evidence(payload)
+            captured = _collection_request(SimpleNamespace(method=method, url=url, post_data=json.dumps(spec.parameters)))
+            key = spec.operationKey + '#' + captured['contextRef']
+            health.setdefault('collectionRequests', {})[key] = captured
+            candidates[key] = {'operationKey':spec.operationKey, 'method':method, 'path':path,
+                'pathTemplate':path, 'status':status, 'policyState':'allowed',
+                'candidateKind':'business', 'trigger':'authorized_page_read', 'triggers':['authorized_page_read'],
+                'responseEvidence':evidence, 'responseEvidenceTruncated':truncated,
+                'fieldEvidence':_reader_field_evidence(payload,evidence), 'structuredDocuments':_reader_structured_documents(payload),
+                'collectionContext':{'contextRef':captured['contextRef'], 'requestFields':list(captured['parameters']),
+                    'parameterHashes':{k:_collection_digest(v) for k,v in captured['parameters'].items()},
+                    'rowSchemas':_collection_row_schemas(payload), 'mode':'page_number_two_pass'}}
+            outcomes.append({'operationKey':spec.operationKey,'contextRef':captured['contextRef'],'verified':True})
+        except Exception as exc:
+            code=str(exc)
+            dependency = exc.diagnostic if isinstance(exc, CollectionDependencyError) else {}
+            reason = (code if re.fullmatch(r'page_read_[a-z_]+',code) else
+                'page_read_access_denied' if dependency.get('upstreamStatus') in {401,403} else
+                'page_read_dependency_unavailable')
+            outcomes.append({'operationKey':spec.operationKey,'verified':False, 'errorType':type(exc).__name__,
+                'reason':reason, 'dependency':{k:v for k,v in dependency.items()
+                    if k in {'upstreamStatus','attempts'} and type(v) is int}})
+    return outcomes
+
+
+def _related_read_target(spec, candidates, portal_origin):
+    parent = candidates.get(spec.parentOperationKey, {})
+    if (parent.get('policyState') != 'allowed' or not isinstance(parent.get('status'), int)
+            or not 200 <= parent['status'] < 300):
+        raise ValueError('related_parent_not_authorized')
+    if not spec.operationKey.startswith('GET '):
+        raise ValueError('related_operation_not_readonly')
+    template = spec.operationKey[4:]
+    if not any(x['method'] == 'GET' and x['path'] == template for x in READER_OPERATION_CATALOG):
+        raise ValueError('related_operation_not_registered')
+    if (re.findall(r'\{([^}]+)\}', template) != [spec.parameter]
+            or COLLECTION_RESTRICTED.search(spec.parentField)
+            or COLLECTION_RESTRICTED.search(spec.responseKeyPath or spec.collectionPath or '')):
+        raise ValueError('related_parameter_invalid')
+    value = _collection_pointer(parent.get('responseEvidence', {}), spec.parentPath)
+    if isinstance(value, list):
+        receipt = parent.get('fieldEvidence', {}).get(spec.parentPath, {})
+        if receipt.get('status') != 'complete' or receipt.get('valueHash') != _collection_digest(value):
+            raise ValueError('related_parent_incomplete')
+    row = value[0] if isinstance(value, list) and len(value) == 1 else value
+    if not isinstance(row, dict):
+        raise ValueError('related_parent_ambiguous')
+    key = row.get(spec.parentField)
+    if type(key) not in {str, int} or not re.fullmatch(r'[A-Za-z0-9_-]{1,120}', str(key)):
+        raise ValueError('related_key_unavailable')
+    key_path = spec.parentPath + ('/0' if isinstance(value, list) else '') + '/' + spec.parentField
+    key_receipt = parent.get('fieldEvidence', {}).get(key_path, {})
+    if key_receipt.get('status') != 'complete' or key_receipt.get('valueHash') != _collection_digest(key):
+        raise ValueError('related_parent_key_unverified')
+    url = portal_origin + template.replace('{'+spec.parameter+'}', str(key))
+    if not _reader_api_configured_policy_allows(SimpleNamespace(url=url, method='GET'), portal_origin):
+        raise ValueError('related_operation_not_allowed')
+    receipt = {**spec.model_dump(), 'parentValueHash': _collection_digest({spec.parentField: key}), 'keyHash': _collection_digest(key)}
+    if spec.ownership == 'request_parameter_collection':
+        keys = ('relationshipRef','operationKey','parentOperationKey','parentPath','parentField','parameter','collectionPath')
+        contracts = [c for c in READER_RELATED_COLLECTION_CONTRACTS
+                     if all(c.get(k) == getattr(spec, k) for k in keys)]
+        if len(contracts) != 1:
+            raise ValueError('related_collection_contract_unreviewed')
+        contract = contracts[0]
+        if (len(spec.projections) != 1 or spec.projections[0].path != spec.collectionPath
+                or not set(spec.projections[0].fields) <= set(contract['allowedFields'])):
+            raise ValueError('related_collection_projection_unreviewed')
+        receipt.update(contractVerified=True, contractHash=_collection_digest(contract),
+            requestMethod='GET', requestPath=urlsplit(url).path, requestParameterHash=_collection_digest(key))
+    return url, receipt
+
+
+def _reader_project_related_arrays(payload, specs, response_key_path):
+    """Project documented scalar fields before bounded transport, retaining every row.
+
+    The gateway already verified this response's authorization and parent key.
+    Array receipts describe completeness of this exact field projection, never
+    an invented total or a claim about unrequested fields.
+    """
+    import copy
+    projected = copy.deepcopy(payload)
+    receipts = []
+    for spec in specs:
+        if (not spec.fields or len(set(spec.fields)) != len(spec.fields)
+                or any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*', f)
+                       or COLLECTION_RESTRICTED.search(f) for f in spec.fields)
+                or COLLECTION_RESTRICTED.search(spec.path)):
+            raise ValueError('related_projection_invalid')
+        try:
+            raw = _collection_pointer(payload, spec.path)
+        except (KeyError, ValueError, TypeError):
+            raise ValueError('related_projection_path_missing')
+        # Object properties and encoded JSON strings keep their existing
+        # bounded capture. Only actual record arrays use this projection.
+        if not isinstance(raw, list):
+            continue
+        if not all(isinstance(row, dict) for row in raw):
+            raise ValueError('related_projection_invalid')
+        rows = []
+        for row in raw:
+            out = {}
+            for field in spec.fields:
+                parts = field.split('.')
+                value = row
+                for part in parts:
+                    if not isinstance(value, dict) or part not in value:
+                        raise ValueError('related_projection_field_missing')
+                    value = value[part]
+                if value is not None and type(value) not in {str, bool, int, float}:
+                    raise ValueError('related_projection_not_scalar')
+                target = out
+                for part in parts[:-1]:
+                    target = target.setdefault(part, {})
+                target[parts[-1]] = value
+            rows.append(out)
+        target = projected
+        parts = spec.path.strip('/').split('/')
+        for part in parts[:-1]:
+            target = target[part]
+        target[parts[-1]] = rows
+        receipts.append({'path':spec.path, 'fields':spec.fields, 'rowCount':len(rows),
+            'sourceArrayHash':_collection_digest(raw), 'projectedArrayHash':_collection_digest(rows)})
+    if response_key_path is not None and _collection_digest(_collection_pointer(projected,response_key_path)) != _collection_digest(
+            _collection_pointer(payload,response_key_path)):
+        raise ValueError('related_projection_identity_changed')
+    return projected, receipts
+
+
+async def _reader_related(page, specs, portal_origin):
+    health = getattr(page, '_reader_health', {})
+    candidates = _reader_api_discovery_state(health)['candidates']
+    outcomes = []
+    for spec in specs:
+        try:
+            url, receipt = _related_read_target(spec, candidates, portal_origin)
+            payload, status = await _reader_get_document(page, url)
+            if spec.ownership == 'echoed_key' and _collection_digest(_collection_pointer(payload, spec.responseKeyPath)) != receipt['keyHash']:
+                raise ValueError('related_response_identity_mismatch')
+            projected, projection_receipts = _reader_project_related_arrays(payload, spec.projections, spec.responseKeyPath)
+            if spec.ownership == 'request_parameter_collection':
+                # Keep only the reviewed collection projection. Sibling notes
+                # and encoded documents are not part of this relationship read.
+                rows = _collection_pointer(projected, spec.collectionPath)
+                projected = {}
+                target = projected
+                parts = spec.collectionPath.strip('/').split('/')
+                for part in parts[:-1]:
+                    target[part] = {}; target = target[part]
+                target[parts[-1]] = rows
+            evidence, truncated = _reader_bounded_api_evidence(projected,
+                projected_array_paths={p['path'] for p in projection_receipts})
+            field_evidence = _reader_field_evidence(projected, evidence)
+            collection = spec.ownership == 'request_parameter_collection'
+            if collection:
+                rows = _collection_pointer(evidence, spec.collectionPath)
+                array_receipt = field_evidence.get(spec.collectionPath, {})
+                if (not isinstance(rows, list) or len(projection_receipts) != 1
+                        or array_receipt.get('status') != 'complete'
+                        or array_receipt.get('valueHash') != _collection_digest(rows)
+                        or projection_receipts[0]['projectedArrayHash'] != _collection_digest(rows)):
+                    raise ValueError('related_collection_incomplete')
+            trigger = 'verified_related_collection' if collection else 'verified_related_read'
+            candidates[spec.operationKey] = {'operationKey': spec.operationKey, 'method': 'GET',
+                'path': spec.operationKey[4:], 'pathTemplate': spec.operationKey[4:], 'status': status,
+                'policyState': 'allowed', 'candidateKind': 'business', 'trigger': trigger,
+                'triggers': [trigger], 'responseEvidence': evidence,
+                'responseEvidenceTruncated': truncated, 'fieldEvidence': field_evidence,
+                'structuredDocuments': _reader_structured_documents(projected if collection else payload),
+                'relatedReadReceipt': {**receipt, 'verified': True, 'arrayProjections': projection_receipts}}
+            outcomes.append({'operationKey': spec.operationKey, 'verified': True})
+        except Exception as exc:
+            code = str(exc)
+            outcomes.append({'operationKey': spec.operationKey, 'verified': False, 'errorType':type(exc).__name__,
+                'reason': ('related_source_timeout' if type(exc).__name__ == 'TimeoutError' else code if re.fullmatch(r'(related|collection)_[a-z_]+', code) else 'related_read_failed')})
+    return outcomes
+
+
+async def _reader_collect(page, specs, portal_origin):
+    health = getattr(page, "_reader_health", {})
+    result = []
+    for spec in specs:
+        candidates = _reader_api_discovery_state(health)["candidates"]
+        matches = [(key, candidate) for key, candidate in candidates.items()
+                   if candidate.get('operationKey') == spec.operationKey
+                   and (candidate.get('collectionContext') or {}).get('contextRef') == spec.contextRef]
+        key, candidate = matches[0] if len(matches) == 1 else (spec.operationKey, candidates.get(spec.operationKey, {}))
+        captured = health.get("collectionRequests", {}).get(key)
+        if len(matches) > 1 or (captured and captured.get('contextRef') != spec.contextRef):
+            captured = None
+        if not captured or candidate.get("policyState") != "allowed" or not isinstance(candidate.get("status"), int) or not 200 <= candidate["status"] < 300:
+            result.append({"operationRef": spec.operationKey, "contextRef": spec.contextRef, "completeness": "incomplete", "reason": "collection_source_not_authorized"})
+            continue
+        async def fetch(parameters):
+            url = captured["url"]
+            kwargs = {"method": captured["method"], "max_redirects": 0, "timeout": 10000}
+            if captured["method"] == "GET":
+                parts = urlsplit(url)
+                url = urlunsplit(parts._replace(query=urlencode(parameters)))
+            else:
+                kwargs["data"] = parameters
+            if not _reader_api_configured_policy_allows(SimpleNamespace(url=url, method=captured["method"]), portal_origin):
+                raise ValueError("collection_source_not_authorized")
+            for attempt in range(3):
+                try:
+                    response = await page.context.request.fetch(url, **kwargs)
+                    try:
+                        if not 200 <= response.status < 300:
+                            raise CollectionDependencyError('collection_response_failed',
+                                {'upstreamStatus': response.status, 'attempts': attempt + 1})
+                        return await response.body()
+                    finally:
+                        await response.dispose()
+                except Exception as exc:
+                    if isinstance(exc, CollectionDependencyError):
+                        retryable = exc.diagnostic['upstreamStatus'] in {408, 429, 500, 502, 503, 504}
+                    else:
+                        # Only the bounded, policy-checked read transport is
+                        # retried. No browser click or mutation is replayed.
+                        retryable = type(exc).__name__ in {'Error', 'TimeoutError'}
+                    if not retryable or attempt == 2:
+                        if isinstance(exc, CollectionDependencyError):
+                            raise
+                        raise CollectionDependencyError('collection_dependency_unavailable',
+                            {'errorType': type(exc).__name__, 'attempts': attempt + 1}) from exc
+                    await asyncio.sleep(0.2 * (attempt + 1))
+        try:
+            result.append(await _collect_projected_rows(spec, captured, fetch))
+        except Exception as exc:
+            result.append({"operationRef": spec.operationKey, "contextRef": spec.contextRef, "completeness": "incomplete", "reason": "collection_dependency_unavailable",
+                           'dependency': {'errorType': type(exc).__name__}})
+    return result
 
 
 def _inspection_assignment_evidence(payload: Any, operation_key: str) -> list[dict[str, Any]]:
@@ -1100,15 +1928,53 @@ def _permission_fingerprint(context: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def _validate_gateway_permissions(payload: Any, requested_path: str, principal_user_id: str | None) -> dict[str, Any]:
+def _validate_gateway_permissions(payload: Any, requested_path: str, principal_user_id: str | None,
+                                  *, require_page_access: bool = True) -> dict[str, Any]:
     context = _gateway_permission_context(payload)
     if not principal_user_id or not context["userId"] or str(context["userId"]) != str(principal_user_id):
         raise HTTPException(status_code=403, detail={"code": "reader_identity_mismatch"})
     if not context["roles"] or not (*context["pages"], *context["subpages"]):
         raise HTTPException(status_code=403, detail={"code": "reader_permission_context_incomplete"})
-    if not _path_is_permitted(requested_path, (*context["pages"], *context["subpages"])):
+    if require_page_access and not _path_is_permitted(requested_path, (*context["pages"], *context["subpages"])):
         raise HTTPException(status_code=403, detail={"code": "page_not_permitted"})
     return context
+
+
+async def _native_record_lookup_outcome(request, authorization, request_id):
+    """Ask the actual read endpoint; menu metadata alone is not a native denial."""
+    if (len(request.actions) != 1 or request.actions[0].model_dump(exclude_none=True) !=
+            PortalReadAction(type='observe').model_dump(exclude_none=True)
+            or request.page_reads or request.related_reads or request.collections or request.completion_period):
+        raise HTTPException(status_code=422, detail={'code': 'native_lookup_must_be_observe_only'})
+    config = json.loads((Path(__file__).parent / 'config/reader-native-record-lookups.json').read_text())
+    bindings = [item for item in config['bindings'] if request.start_path in item['pages']]
+    if len(bindings) != 1:
+        return {'status': 'not_confirmed', 'limitations': ['native_lookup_binding_unavailable']}
+    binding = bindings[0]
+    path = binding['path']
+    # This guard stays active even when browser network policy is disabled for tests.
+    if (binding['method'] != 'POST' or path not in READER_READ_ONLY_POST_PATHS
+            or path in READER_BLOCKED_EXACT_PATHS or _reader_is_mutation_route(path)):
+        raise HTTPException(status_code=422, detail={'code': 'native_lookup_not_read_only'})
+    body = {**binding['parameters'], binding['identitySearchField']: request.native_record_lookup}
+    diagnostic = {'stage': 'native_record_lookup', 'operationRef': 'POST ' + path}
+    try:
+        result = await _umc_request('POST', path, json=body, authorization=authorization, request_id=request_id)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        status = detail.get('upstreamStatus', exc.status_code)
+        return {'status': 'no_permission' if status in {401, 403} else 'load_failed',
+                'diagnostics': {**diagnostic, 'upstreamStatus': status,
+                    **({'permissionResponse': detail['permissionResponse']} if detail.get('permissionResponse') else {})}}
+    # Some API wrappers carry the native status in a successful HTTP envelope.
+    status = result.get('statusCode') if isinstance(result, dict) and result.get('isSuccess') is False else None
+    if type(status) is int and status in {401, 403}:
+        return {'status': 'no_permission', 'diagnostics': {**diagnostic, 'upstreamStatus': status,
+                'permissionResponse': {'isSuccess': False, 'statusCode': status}}}
+    # An accepted request is not a record match or permission grant. The normal
+    # evidence path must still establish the record, route and row scope.
+    return {'status': 'not_confirmed', 'limitations': ['native_lookup_record_unconfirmed'],
+            'diagnostics': {**diagnostic, 'upstreamStatus': 200}}
 
 
 def _validate_reader_selector(selector: str | None) -> None:
@@ -1128,6 +1994,8 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
         raise HTTPException(status_code=422, detail={"code": "reader_limit_exceeded"})
     if not _reader_relative_path(request.start_path) or _reader_is_mutation_route(request.start_path):
         raise HTTPException(status_code=422, detail={"code": "invalid_reader_path"})
+    if request.dashboard_context is not None and request.start_path != request.dashboard_context.route:
+        raise HTTPException(status_code=422, detail='dashboard_context_route_mismatch')
     pages = {request.start_path}
     if any(action.type.strip().casefold().replace("-", "_") == "observe" for action in request.actions) and len(request.actions) != 1:
         raise HTTPException(status_code=422, detail={"code": "invalid_observation_plan"})
@@ -1210,6 +2078,16 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
         raise HTTPException(status_code=422, detail={"code": "page_limit_exceeded"})
 
 
+def _reader_reviewed_get_path(path: str) -> bool:
+    # A server-owned read definition may contain action vocabulary (e.g. a
+    # eligibility query). Only its static template can override that heuristic;
+    # an action word appearing solely inside an arbitrary ID never can.
+    return path in READER_READ_ONLY_GET_PATHS or any(
+        ':' in template and _reader_is_mutation_route(template)
+        and _path_is_permitted(path, (template,))
+        for template in READER_READ_ONLY_GET_PATHS)
+
+
 def _reader_network_request_allowed(
     request: Any,
     portal_origin: str,
@@ -1230,7 +2108,7 @@ def _reader_network_request_allowed(
     api_request = parsed.path.startswith("/api/")
     if parsed.path in READER_BLOCKED_EXACT_PATHS:
         return False
-    exact_get_path_allowed = method == "GET" and parsed.path in READER_READ_ONLY_GET_PATHS
+    exact_get_path_allowed = method == "GET" and _reader_reviewed_get_path(parsed.path)
     if api_request and _reader_is_mutation_route(parsed.path) and not exact_get_path_allowed:
         return False
     get_path_allowed = _path_is_permitted(parsed.path, tuple(READER_READ_ONLY_GET_PATHS))
@@ -1255,7 +2133,7 @@ def _reader_api_configured_policy_allows(request: Any, portal_origin: str) -> bo
     parsed = urlsplit(request.url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
     method = request.method.upper()
-    exact_get_path_allowed = method == "GET" and parsed.path in READER_READ_ONLY_GET_PATHS
+    exact_get_path_allowed = method == "GET" and _reader_reviewed_get_path(parsed.path)
     if (
         origin != portal_origin
         or not parsed.path.startswith("/api/")
@@ -1432,25 +2310,16 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
             raise RuntimeError("reader_detail_row_not_visible")
         if not _reader_detail_identity(await row.inner_text()):
             raise RuntimeError("reader_detail_row_unverifiable")
-    descriptor_parts = [
-        await locator.get_attribute("aria-label"),
-        await locator.get_attribute("title"),
-        (await locator.inner_text())[:200],
-    ]
-    # Ant Design renders the pagination control's accessible name on the
-    # surrounding `.ant-pagination-next` container while the native button
-    # itself is exposed as the icon name (for example, `right`).  Include the
-    # validated parent descriptor so semantic actions such as `Next Page` can
-    # still be matched without weakening ordinary click verification.
-    if action_type == "paginate":
-        parent_descriptor = await locator.evaluate("""element => {
-            const parent = element.closest(".ant-pagination-next, [title*='Next' i], [aria-label*='Next' i]");
-            if (!parent) return '';
-            return [parent.getAttribute('aria-label'), parent.getAttribute('title'), (parent.innerText || '').trim().slice(0, 200)]
-                .filter(Boolean).join(' ');
-        }""")
-        descriptor_parts.append(parent_descriptor)
-    descriptor = " ".join(filter(None, descriptor_parts))
+    descriptor = " ".join(
+        filter(
+            None,
+            [
+                await locator.get_attribute("aria-label"),
+                await locator.get_attribute("title"),
+                (await locator.inner_text())[:200],
+            ],
+        )
+    )
     if _reader_contains_mutation_command(descriptor) and not _reader_is_safe_overlay_dismissal_descriptor(descriptor, action):
         raise RuntimeError("action_not_read_only")
     if not descriptor.strip():
@@ -1468,9 +2337,7 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
     if action_type == "switch_tab" and role != "tab":
         raise RuntimeError("reader_click_target_not_tab")
     if action_type == "paginate" and rel != "next" and not await locator.get_attribute("aria-controls"):
-        native_next = await locator.evaluate("""element => Boolean(element.closest('.ant-pagination-next'))""")
-        if not native_next:
-            raise RuntimeError("reader_click_target_not_pagination")
+        raise RuntimeError("reader_click_target_not_pagination")
     if action_type == "expand_details" and aria_expanded not in {"true", "false"}:
         raise RuntimeError("reader_click_target_not_expandable")
     before_tab = await _reader_tab_selection(locator) if action_type == "switch_tab" else {}
@@ -1507,17 +2374,6 @@ async def _visible_overlay_count(page: Page) -> int:
 def _semantic_locator(page: Page, action: PortalReadAction, *, prefer_overlay: bool = False):
     action_type = action.type.strip().casefold().replace("-", "_")
     root = _visible_overlay(page) if prefer_overlay or action_type == "dismiss_overlay" else page
-    if action_type == "paginate" and not action.selector and not action.field:
-        # Pagination controls frequently expose the icon name (`right`) on
-        # the button while the enclosing Ant container carries `Next Page`.
-        # Locate the native next button from that container, keeping the
-        # subsequent role/descriptor/disabled checks in `_safe_click`.
-        return root.locator(
-            ".ant-pagination-next:not(.ant-pagination-disabled) button:visible,"
-            ".ant-pagination-next:not(.ant-pagination-disabled) a:visible,"
-            "[title='Next Page']:not([disabled]) button:visible,"
-            "[aria-label='Next Page']:not([disabled]) button:visible"
-        )
     if action.selector:
         return root.locator(action.selector)
     if action.field:
@@ -1528,6 +2384,216 @@ def _semantic_locator(page: Page, action: PortalReadAction, *, prefer_overlay: b
     if action.section:
         return root.get_by_role("region", name=action.section, exact=True)
     raise RuntimeError("reader_semantic_locator_required")
+
+
+async def _select_only_filter(page: Page, locator: Any, value: str | None = None) -> list[str]:
+    """Inspect/apply an explicitly marked read-only listbox filter, never arbitrary buttons."""
+    if (await locator.evaluate("element => element.tagName.toLowerCase()") != "button"
+            or await locator.get_attribute("role") != "combobox"
+            or await locator.get_attribute("data-reader-select-filter") != "true"
+            or await locator.get_attribute("aria-haspopup") != "listbox"
+            or not await locator.is_enabled()):
+        raise RuntimeError("reader_filter_control_unsupported")
+    popup_id = await locator.get_attribute("aria-controls")
+    if not popup_id:
+        raise RuntimeError("reader_filter_options_unbound")
+    if await locator.get_attribute("aria-expanded") != "true":
+        await locator.click(timeout=READER_ACTION_TIMEOUT_MS)
+    popup = page.locator('[id=' + json.dumps(popup_id) + '][role="listbox"]')
+    try:
+        if await popup.count() != 1:
+            raise RuntimeError("reader_filter_options_not_unique")
+        await popup.wait_for(state="visible", timeout=READER_ACTION_TIMEOUT_MS)
+        choices = popup.locator('[role="option"][data-reader-filter-choice="immediate"]:visible')
+        count = await choices.count()
+        if not 1 <= count <= 20:
+            raise RuntimeError("reader_filter_options_unbounded")
+        options = [(await choices.nth(index).inner_text()).strip() for index in range(count)]
+        if any(not text or len(text) > 120 for text in options) or len(set(options)) != count:
+            raise RuntimeError("reader_filter_options_not_unique")
+        if value is None:
+            return options
+        if value not in options:
+            raise RuntimeError("reader_filter_value_not_observed")
+        choice = popup.get_by_role("option", name=value, exact=True)
+        if (await choice.count() != 1 or not await choice.is_enabled()
+                or await choice.get_attribute("data-reader-filter-choice") != "immediate"):
+            raise RuntimeError("reader_filter_option_not_found")
+        await choice.click(timeout=READER_ACTION_TIMEOUT_MS)
+        for attempt in range(21):
+            if await locator.get_attribute("data-reader-filter-selected") == value:
+                return options
+            if attempt < 20:
+                await asyncio.sleep(0.1)
+        raise RuntimeError("reader_filter_value_not_confirmed")
+    finally:
+        # Observation must not leave a popup over unrelated filter controls.
+        if await locator.get_attribute("aria-expanded") == "true":
+            await locator.press("Escape", timeout=READER_ACTION_TIMEOUT_MS)
+
+
+def _reader_failure_diagnostics(stage, exc, health):
+    # Counts distinguish unsettled requests/captures from an empty observation.
+    # Do not return request URLs, query values, response bodies or exception text.
+    candidates = (health.get('apiDiscovery') or {}).get('candidates') or {}
+    return {'stage': stage, 'errorType': type(exc).__name__, 'readHealth': {
+        'pendingCount': len(health.get('pending') or {}),
+        'failedCount': len(health.get('failed') or {}),
+        'blockedCount': len(health.get('blocked') or []),
+        'captureTaskCount': len(health.get('responseCaptureTasks') or ()),
+        'responseCount': len(health.get('responses') or {}),
+        'sourceCandidateCount': len(candidates),
+        'capturedSourceCount': sum(isinstance(item, dict) and item.get('responseEvidence') is not None
+                                   for item in candidates.values())}}
+
+
+def _dashboard_browser_context_options(context):
+    # Match browser-local Dashboard date calculations before page scripts run.
+    # Other readers retain the existing browser defaults.
+    return {'timezone_id': context.browserTimezone} if context is not None else {}
+
+
+async def _settle_dashboard_requests(page, health):
+    """Await actual allowed API completion and capture within the existing read budget.
+
+    The preliminary page settle has a short bound. A response that has not
+    arrived yet has no capture task, so gathering only current capture tasks
+    cannot prove that the submitted Dashboard context is ready.
+    """
+    changed = asyncio.Event()
+
+    def signal(*_args):
+        changed.set()
+
+    events = ('response', 'requestfinished', 'requestfailed')
+    for event in events:
+        page.on(event, signal)
+    try:
+        while True:
+            changed.clear()
+            if health.get('failed'):
+                raise RuntimeError('dashboard_context_requests_unsettled')
+            captures = list(health.get('responseCaptureTasks', ()))
+            # Done callbacks can still be queued when this coroutine resumes.
+            # Consume completed tasks here as well, so they cannot keep the
+            # loop busy and starve the callbacks that remove them.
+            for capture in captures:
+                if capture.done():
+                    capture.result()
+                    health['responseCaptureTasks'].discard(capture)
+            captures = [capture for capture in captures if not capture.done()]
+            if captures:
+                await asyncio.gather(*captures)
+                continue
+            if not health.get('pending'):
+                return
+            # No timer, retry or scope exemption. Cancellation by the enclosing
+            # request's original deadline is preserved, including hung bodies.
+            await changed.wait()
+    finally:
+        for event in events:
+            page.remove_listener(event, signal)
+
+
+async def _restore_dashboard_context(page, context, portal_origin, principal_user_id, *, allow_restore=True):
+    """Replay only a marked Dashboard preset; independently compare role/scope.
+
+    Browser values are desired constraints. Only real controls and the new
+    authenticated page establish their actual application. No storage, API
+    parameter or principal override is performed.
+    """
+    if context is None:
+        return None
+    parsed, origin = urlsplit(page.url), urlsplit(portal_origin)
+    if ((parsed.scheme, parsed.netloc) != (origin.scheme, origin.netloc)
+            or parsed.path != context.route or parsed.query or parsed.fragment
+            or context.view != '' or str(principal_user_id) != context.userId):
+        raise RuntimeError('dashboard_page_context_mismatch')
+    timezone_evidence = await page.evaluate(
+        """requested => ({requested,
+            observed: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            resolvedRequested: Intl.DateTimeFormat('en', {timeZone: requested}).resolvedOptions().timeZone})""",
+        context.browserTimezone)
+    if (not timezone_evidence.get('observed')
+            or timezone_evidence['observed'] != timezone_evidence.get('resolvedRequested')):
+        raise RuntimeError('dashboard_browser_timezone_mismatch')
+    wanted = {item.name: item.value for item in context.filters}
+    health = getattr(page, '_reader_health', {})
+
+    async def settled_captures():
+        await _settle_dashboard_requests(page, health)
+        return {key: (item.get('collectionContext') or {}).get('parameterHashes', {})
+                for key, item in _reader_api_discovery_state(health)['candidates'].items()
+                if '/dashboard/' in key and item.get('policyState') == 'allowed'
+                and item.get('responseEvidence') is not None}
+
+    original_captures = await settled_captures()
+
+    async def read_markers():
+        result = {}
+        for name in wanted:
+            nodes = page.locator('[data-reader-filter-name=' + json.dumps(name) + '][data-reader-filter-value]:visible')
+            if await nodes.count() != 1:
+                raise RuntimeError('dashboard_applied_marker_not_unique')
+            result[name] = await nodes.get_attribute('data-reader-filter-value')
+        return result
+
+    def same(left, right):
+        try:
+            return (left['department'] == right['department'] and left['roleVariant'] == right['roleVariant']
+                    and json.loads(left['timeFilter']) == json.loads(right['timeFilter']))
+        except (ValueError, KeyError, TypeError):
+            return False
+
+    before = await read_markers()
+    if any(before[key] != wanted[key] for key in ('department', 'roleVariant')):
+        raise RuntimeError('dashboard_identity_view_mismatch')
+    changed = not same(before, wanted)
+    if changed:
+        if not allow_restore:
+            raise RuntimeError('dashboard_applied_context_changed_during_read')
+        marker = page.locator('[data-reader-filter-name="timeFilter"][data-reader-filter-value]:visible')
+        control = marker.locator('button[role="combobox"][data-reader-select-filter="true"]:visible')
+        if await control.count() != 1 or await control.get_attribute('data-reader-filter-context-field') != 'preset':
+            raise RuntimeError('dashboard_preset_control_unavailable')
+        # The same bounded selector verifies tag, popup ownership, enabled
+        # options and closes the popup. Labels are read, never translated.
+        options = await _select_only_filter(page, control)
+        popup_id = await control.get_attribute('aria-controls')
+        desired = json.loads(wanted['timeFilter'])['preset']
+        await control.click(timeout=READER_ACTION_TIMEOUT_MS)
+        try:
+            popup = page.locator('[id=' + json.dumps(popup_id) + '][role="listbox"]')
+            await popup.wait_for(state='visible', timeout=READER_ACTION_TIMEOUT_MS)
+            choices = popup.locator('[role="option"][data-reader-filter-choice="immediate"]:visible')
+            values = [await choices.nth(i).get_attribute('data-reader-filter-option-value') for i in range(await choices.count())]
+            if (not values or len(values) > 20 or any(not v for v in values)
+                    or len(values) != len(set(values)) or desired not in values):
+                raise RuntimeError('dashboard_preset_value_not_observed')
+            label = (await choices.nth(values.index(desired)).inner_text()).strip()
+            if label not in options:
+                raise RuntimeError('dashboard_preset_value_not_observed')
+        finally:
+            if await control.get_attribute('aria-expanded') == 'true':
+                await control.press('Escape', timeout=READER_ACTION_TIMEOUT_MS)
+        await _select_only_filter(page, control, label)
+        await _settle_page(page)
+    after = await read_markers()
+    if not same(after, wanted):
+        raise RuntimeError('dashboard_applied_context_unconfirmed')
+    # Wait for the capture coroutines as well as the browser request queue.
+    final_captures = await settled_captures()
+    if changed and (not original_captures or not original_captures.keys() <= final_captures.keys()
+            or any(not all(name in hashes and name in final_captures[key] for name in ('startDate', 'endDate'))
+                   or all(hashes[name] == final_captures[key][name] for name in ('startDate', 'endDate'))
+                   for key, hashes in original_captures.items())):
+        raise RuntimeError('dashboard_context_response_not_refreshed')
+    return {'verified': True, 'route': context.route, 'view': context.view, 'sameOrigin': True,
+            'browserTimezone': timezone_evidence,
+            'principalHash': _collection_digest(principal_user_id),
+            'requestedFiltersHash': _collection_digest([item.model_dump() for item in context.filters]),
+            'appliedFiltersHash': _collection_digest(after), 'restoredThroughObservedControl': changed,
+            'refreshedOperations': sorted(final_captures) if changed else []}
 
 
 async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
@@ -1557,6 +2623,27 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
     tag_name = str(await locator.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
     role = str(await locator.get_attribute("role") or "").casefold()
     input_type = str(await locator.get_attribute("type") or "").casefold()
+    if tag_name == "button" and role == "combobox":
+        values = action.values or ([action.value] if action.value is not None else [])
+        if len(values) != 1:
+            raise RuntimeError("reader_filter_control_not_multiselect")
+        await _select_only_filter(page, locator, str(values[0]))
+        return
+    if role == "switch":
+        values = action.values or ([action.value] if action.value is not None else [])
+        if len(values) != 1 or str(values[0]).lower() not in {"true", "false"}:
+            raise RuntimeError("reader_filter_value_not_observed")
+        surface = await _observe_filter_surface(page, 12)
+        matches = [c for c in surface['filterControls'] if c.get('role') == 'switch'
+                   and c.get('selector') == action.selector and c.get('filterSurface') is True]
+        if len(matches) != 1 or not await locator.is_enabled():
+            raise RuntimeError("reader_filter_control_not_unique")
+        desired = str(values[0]).lower()
+        if await locator.get_attribute('aria-checked') != desired:
+            await locator.click(timeout=READER_ACTION_TIMEOUT_MS)
+        if await locator.get_attribute('aria-checked') != desired:
+            raise RuntimeError("reader_filter_value_not_confirmed")
+        return
     if input_type == "password":
         raise RuntimeError("reader_sensitive_locator_forbidden")
     if input_type in {"file", "checkbox", "radio", "submit", "reset", "button", "hidden"}:
@@ -1585,12 +2672,19 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
             if await option.count() != 1 or not await option.is_visible():
                 raise RuntimeError("reader_filter_option_not_found")
             await option.click(timeout=READER_ACTION_TIMEOUT_MS)
-            selected = await handle.evaluate("""element => {
-                const ant = element.closest('.ant-select');
-                return ant ? Array.from(ant.querySelectorAll('.ant-select-selection-item')).map(x => x.getAttribute('title') || x.textContent.trim())
-                    : [element.value || element.textContent.trim()];
-            }""")
-            if not isinstance(selected, list) or str(item) not in selected:
+            # React may commit controlled selection after the click resolves.
+            # Verify the same observed element, never a different matching menu.
+            for attempt in range(21):
+                selected = await handle.evaluate("""element => {
+                    const ant = element.closest('.ant-select');
+                    return ant ? Array.from(ant.querySelectorAll('.ant-select-selection-item')).map(x => x.getAttribute('title') || x.textContent.trim())
+                        : [element.value || element.textContent.trim()];
+                }""")
+                if isinstance(selected, list) and str(item) in selected:
+                    break
+                if attempt < 20:
+                    await asyncio.sleep(0.1)
+            else:
                 raise RuntimeError("reader_filter_value_not_confirmed")
         return
     if len(values) != 1:
@@ -1609,7 +2703,7 @@ async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
             const ant = el.closest('.ant-select');
             if (!visible(ant || el) || el.type === 'password' || el.closest('nav,aside')) continue;
             const filterRoot = el.closest('[role="search"],[class*="filter"],[class*="Filter"]');
-            const filterSurface = !!filterRoot;
+            const filterSurface = !!filterRoot || el.getAttribute('data-reader-select-filter') === 'true';
             const commands = filterRoot ? Array.from(filterRoot.querySelectorAll('button,[role="button"]'))
                 .filter(visible).map(button => button.getAttribute('aria-label') || text(button))
                 .filter(name => /^(?:filter|apply|apply filters|reset|reset filters|clear|clear filters)$/i.test(name))
@@ -1618,15 +2712,41 @@ async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
             const label = el.getAttribute('aria-label') || text(el.labels?.[0]) || placeholder || text(ant?.querySelector('.ant-select-selection-item'));
             if (!label || /page size/i.test(label)) continue;
             const selected = ant ? Array.from(ant.querySelectorAll('.ant-select-selection-item')).map(text)
-                : el.tagName === 'SELECT' ? Array.from(el.selectedOptions).map(text) : [el.value].filter(Boolean);
-            const selector = ant && placeholder
-                ? '.ant-select:has(.ant-select-selection-placeholder:text-is(' + JSON.stringify(placeholder) + ')) [role="combobox"]'
-                : el.id && el.getAttribute('role') ? '[id=' + JSON.stringify(el.id) + '][role=' + JSON.stringify(el.getAttribute('role')) + ']'
+                : el.tagName === 'SELECT' ? Array.from(el.selectedOptions).map(text)
+                : el.getAttribute('data-reader-select-filter') === 'true' ? [el.getAttribute('data-reader-filter-selected')].filter(Boolean)
+                : [el.value].filter(Boolean);
+            const selector = el.id && el.getAttribute('role') && document.querySelectorAll('[id=' + JSON.stringify(el.id) + ']').length === 1
+                ? '[id=' + JSON.stringify(el.id) + '][role=' + JSON.stringify(el.getAttribute('role')) + ']'
+                : ant && placeholder ? '.ant-select:has(.ant-select-selection-placeholder:text-is(' + JSON.stringify(placeholder) + ')) [role="combobox"]'
                 : el.getAttribute('placeholder') ? 'input[placeholder=' + JSON.stringify(placeholder) + ']'
                 : '';
             controls.push({label, role:el.getAttribute('role') || (el.tagName === 'SELECT' ? 'combobox' : 'textbox'),
                 selector, selected, filterSurface, commands, options:el.tagName === 'SELECT' ? Array.from(el.options).slice(0,20).map(text) : []});
             if (controls.length >= limit) break;
+        }
+        // Boolean list filters can live in the table-card header, outside the
+        // text-filter toolbar. Exclude forms, record rows and action dialogs;
+        // require a local label and a sibling filter/table workspace. The
+        // read-only network policy still guards every resulting request.
+        for (const el of document.querySelectorAll('[role="switch"]')) {
+            if (controls.length >= limit) break;
+            if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true'
+                || el.closest('form,table,[role="grid"],[role="dialog"],nav,aside')) continue;
+            const parent = el.parentElement;
+            const labels = parent ? Array.from(parent.children).filter(x => x !== el && x.tagName === 'SPAN' && !x.querySelector('input,button,a,select')) : [];
+            if (labels.length !== 1) continue;
+            const label = text(labels[0]);
+            let root = el.closest('[role="search"],[class*="filter"],[class*="Filter"]');
+            if (!root) {
+                for (let card = parent, depth = 0; card && card !== document.body && depth < 10; card = card.parentElement, depth++) {
+                    if (card.matches('section,article,[class*="card"],[class*="Card"]') && card.querySelector('table,[role="grid"]')
+                        && card.querySelector('[role="search"],[class*="filter"],[class*="Filter"]')) { root = card; break; }
+                }
+            }
+            if (!root || !label || label.length > 120 || !['true','false'].includes(el.getAttribute('aria-checked'))) continue;
+            const selector = parent.tagName.toLowerCase() + ':has(> span:text-is(' + JSON.stringify(label) + ')) > [role="switch"]';
+            controls.push({label,role:'switch',selector,selected:[el.getAttribute('aria-checked')],
+                options:['true','false'],filterSurface:true,commands:[]});
         }
         // Bind only local label/value siblings, never adjacent flattened page text.
         const metrics = [];
@@ -1660,6 +2780,15 @@ async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
             continue
         locator = page.locator(control["selector"])
         if await locator.count() != 1:
+            continue
+        if await locator.get_attribute("data-reader-select-filter") == "true":
+            try:
+                control["options"] = [
+                    _sanitize_reader_text(value, max_chars=120)
+                    for value in await _select_only_filter(page, locator)
+                ]
+            except Exception:
+                control["options"] = []
             continue
         ant = locator.locator("xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' ant-select ')][1]")
         if await ant.count() != 1:
@@ -1942,17 +3071,8 @@ READER_TABLE_PAGINATION_SCRIPT = """element => {
     if (tables.length !== 1 || tables[0] !== element) return [];
     const totals = Array.from(root.querySelectorAll('.ant-pagination-total-text')).filter(visible);
     if (totals.length !== 1) return [];
-    const pager = totals[0].closest('.ant-pagination') || totals[0].parentElement;
-    const current = pager && pager.querySelector('.ant-pagination-item-active,[aria-current="page"]');
-    const pageItems = pager ? Array.from(pager.querySelectorAll('.ant-pagination-item')).filter(visible) : [];
-    const currentText = current && (current.innerText || '').trim();
-    const pageCount = pageItems.reduce((max, item) => {
-        const value = Number.parseInt((item.innerText || '').trim(), 10);
-        return Number.isFinite(value) ? Math.max(max, value) : max;
-    }, 0);
-    const totalText = (totals[0].innerText || '').trim();
-    const summary = currentText && pageCount > 0 ? `${totalText} ${currentText} / ${pageCount}` : totalText;
-    return summary ? [summary] : [];
+    return totals[0].innerText.split(/\\r?\\n/).map(text => text.trim())
+        .filter(text => text && !/^[\\d\\s/.,-]+$/.test(text)).slice(0, 4);
 }"""
 
 
@@ -1975,10 +3095,7 @@ READER_CARD_COLLECTION_SCRIPT = """() => {
         const parent = card.parentElement;
         if (!groups.has(parent)) groups.set(parent, []);
         const values = groups.get(parent);
-        // A Team Members roster commonly contains more than four cards. Keep
-        // the full rendered roster so downstream team-scope checks do not
-        // silently drop the last member.
-        if (values.length >= 40) continue;
+        if (values.length >= 4) continue;
         const fragments = [];
         const walk = node => {
             if (node.nodeType === Node.TEXT_NODE) {
@@ -2347,7 +3464,13 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
             continue
         name = _sanitize_reader_text(await tab.inner_text(), max_chars=200)
         if name:
-            tab_controls.append({"name": name, "selected": bool((await _reader_tab_selection(tab)).get("selected"))})
+            group_ref = await tab.evaluate("""element => {
+                const group = element.closest('[role="tablist"]');
+                const index = Array.from(document.querySelectorAll('[role="tablist"]')).indexOf(group);
+                return index < 0 ? '' : 'tab-group-' + index;
+            }""")
+            tab_controls.append({"name": name, "selected": bool((await _reader_tab_selection(tab)).get("selected")),
+                                 "groupRef": group_ref if isinstance(group_ref, str) else ""})
         if len(tab_controls) >= 20:
             break
     for container_index, container in visible_containers:
@@ -2386,7 +3509,7 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
     for card_index, collection in enumerate(card_collections if isinstance(card_collections, list) else []):
         if not isinstance(collection, dict) or not isinstance(collection.get("cardSummaries"), list):
             continue
-        cards = [_sanitize_reader_text(value, max_chars=300) for value in collection["cardSummaries"][:min(limit, 40)]
+        cards = [_sanitize_reader_text(value, max_chars=300) for value in collection["cardSummaries"][:min(limit, 4)]
                  if isinstance(value, str) and value.strip()]
         if not cards:
             continue
@@ -2591,6 +3714,7 @@ async def _execute_reader_actions(
     request: AdminPortalReadRequest,
     portal_origin: str,
     permitted_navigation_paths: tuple[str, ...] = (),
+    *, initially_settled: bool = False,
 ) -> tuple[list[str], list[str], list[str], bool, dict[str, Any] | None]:
     facts: list[str] = []
     visited: list[str] = []
@@ -2619,6 +3743,9 @@ async def _execute_reader_actions(
             raise RuntimeError("reader_origin_changed")
         path = parsed.path or "/"
         if not any(_path_is_permitted(path, (allowed,)) for allowed in declared_paths):
+            health = getattr(page, '_reader_health', {})
+            health['navigationFailure'] = {'requestedPath': urlsplit(request.start_path).path,
+                'actualPath': path, 'queryKeys': sorted({k for k, _ in parse_qsl(parsed.query)})[:20]}
             raise RuntimeError("reader_undeclared_navigation")
         if path not in visited:
             visited.append(path)
@@ -2626,7 +3753,11 @@ async def _execute_reader_actions(
             raise RuntimeError("page_limit_exceeded")
 
     await record_page()
-    await _settle_page(page)
+    # The main executor already settled this navigation. Repeating all readiness
+    # waits can exhaust the total budget on valid pages without heading markup.
+    # Every subsequent navigation/action and observation still checks readiness.
+    if not initially_settled:
+        await _settle_page(page)
     for action_index, action in enumerate(request.actions, start=1):
         action_type = action.type.strip().casefold().replace("-", "_")
         _reader_set_api_discovery_trigger(page, f"action:{action_index}:{action_type}")
@@ -2644,7 +3775,9 @@ async def _execute_reader_actions(
             if path:
                 response = await page.goto(urljoin(portal_origin + "/", path.lstrip("/")), wait_until="domcontentloaded")
                 if response and response.status in {401, 403}:
-                    raise PermissionError("page_not_permitted")
+                    raise PermissionError("portal_login_required" if response.status == 401 else "page_not_permitted")
+                if response and (response.status == 404 or response.status >= 500):
+                    raise HTTPException(status_code=response.status, detail="page_response_failed")
                 await _settle_page(page)
                 await record_page()
                 pending_filters.clear()
@@ -2706,6 +3839,13 @@ async def _execute_reader_actions(
     if observation is None:
         observation = {}
     await _reader_wait_for_api_response_evidence(page)
+    # Attest the final browser location; visited[0] is only the entry page.
+    actual = urlsplit(page.url)
+    if f"{actual.scheme}://{actual.netloc}" != portal_origin:
+        raise RuntimeError("reader_origin_changed")
+    observation["pageIdentity"] = {"path": actual.path or "/", "parameterHashes": {
+        key: _collection_digest(value) for key, value in parse_qsl(actual.query)
+        if not re.search(r"token|password|secret|cookie|authorization", key, re.I)}}
     observation["appliedFilters"] = [_sanitize_reader_text(value, max_chars=120) for value in applied_filters[:12]]
     observation["apiDiscovery"] = _reader_api_discovery_snapshot(page)
     return facts[: request.max_output_items], visited[: request.max_pages], observed_fields, confirmed_empty, observation
@@ -2825,8 +3965,27 @@ async def admin_portal_read(
     x_request_id: str | None = Header(default=None),
     x_user_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Execute a serialized, same-origin, read-only Admin Portal inspection."""
+    """Bound identity, queueing and browser work within one request budget."""
+    progress = {'stage': 'identity'}
+    progress_token = READER_PROGRESS.set(progress)
+    try:
+        async with asyncio.timeout(request.timeout_seconds):
+            return await _execute_admin_portal_read(request, authorization, x_request_id, x_user_id)
+    except TimeoutError:
+        return _sanitize_reader_output({"status": "load_failed", "summary": "The Admin Portal read timed out.",
+                                        "limitations": ["reader_total_timeout"],
+                                        "diagnostics": {"stage": progress['stage'], "budgetSeconds": request.timeout_seconds}})
+    finally:
+        READER_PROGRESS.reset(progress_token)
 
+
+async def _execute_admin_portal_read(request, authorization, x_request_id, x_user_id):
+    """Execute a serialized, same-origin, read-only Admin Portal inspection."""
+    stage = 'identity'
+    progress = READER_PROGRESS.get()
+    if progress is None:
+        progress = {'stage': stage}
+    reader_health: dict[str, Any] = {}
     forwarded = _require_umc_token(authorization)
     _validate_reader_request(request)
     # Revalidate the identity inside the executor immediately before opening a
@@ -2838,11 +3997,21 @@ async def admin_portal_read(
             "/api/AdminUser/GetUserInfo",
             authorization=forwarded,
             request_id=x_request_id,
+            identity_retry=True,
         )
     except HTTPException as exc:
         if exc.status_code in {401, 403}:
-            return {"status": "no_permission", "summary": "The Admin Portal session is not permitted."}
-        return {"status": "load_failed", "summary": "The Admin Portal identity could not be loaded."}
+            return {"status": "no_permission", "summary": "The Admin Portal session is not permitted.",
+                    "diagnostics": {"stage": "identity", "upstreamStatus": exc.status_code}}
+        return {"status": "load_failed", "summary": "The Admin Portal identity could not be loaded.",
+                "limitations": ["reader_identity_unavailable"],
+                "diagnostics": {"stage": "identity", "gatewayStatus": exc.status_code,
+                    **({k: exc.detail[k] for k in ('attempts', 'errorType') if k in exc.detail} if isinstance(exc.detail, dict) else {}),
+                    **({'upstreamStatus': exc.detail['upstreamStatus']} if isinstance(exc.detail, dict)
+                       and type(exc.detail.get('upstreamStatus')) is int else {})}}
+    if request.native_record_lookup is not None:
+        _validate_gateway_permissions(user_info, request.start_path, x_user_id, require_page_access=False)
+        return await _native_record_lookup_outcome(request, forwarded, x_request_id)
     permission_context = _validate_gateway_permissions(user_info, request.start_path, x_user_id)
     for action in request.actions:
         for path in (action.path, action.url):
@@ -2859,6 +4028,9 @@ async def admin_portal_read(
     raw_token = forwarded[7:].strip()
 
     async def execute() -> tuple[list[str], list[str], list[str], bool, dict[str, Any] | None]:
+        nonlocal stage
+        stage = 'browser_start'
+        progress['stage'] = stage
         if async_playwright is None:
             raise RuntimeError("reader_browser_unavailable")
         async with async_playwright() as playwright:
@@ -2866,18 +4038,20 @@ async def admin_portal_read(
                 headless=True,
                 args=["--disable-dev-shm-usage", "--no-sandbox"],
             )
+            auxiliary_context = None
             try:
                 context = await browser.new_context(
                     accept_downloads=False,
                     viewport={"width": 1920, "height": 1080},
                     extra_http_headers={"Authorization": forwarded},
                     service_workers="block",
+                    **_dashboard_browser_context_options(request.dashboard_context),
                 )
                 await context.add_init_script(_auth_init_script(raw_token))
-                reader_health: dict[str, Any] = {
+                reader_health.update({
                     "blocked": [], "failed": {}, "pending": {}, "responses": {},
                     "responseCaptureTasks": set(),
-                }
+                })
 
                 async def route_handler(route: Route) -> None:
                     declared_path_values = (
@@ -2896,6 +4070,14 @@ async def admin_portal_read(
                 await context.route("**/*", route_handler)
                 page = await context.new_page()
                 setattr(page, "_reader_health", reader_health)
+                if request.related_reads or request.page_reads:
+                    # Use the same verified bearer principal in an isolated API
+                    # transport. Browser cookies/navigation state must not affect
+                    # supplementary GETs; operation policy is checked separately.
+                    auxiliary_context = await playwright.request.new_context(
+                        extra_http_headers={"Authorization": forwarded,
+                            "Accept": "application/json", "Accept-Language": "en"})
+                    setattr(page, '_reader_request_context', auxiliary_context)
                 def request_finished(request_obj: Any) -> None:
                     request_id = id(request_obj)
                     request_path = reader_health["pending"].pop(request_id, "")
@@ -2928,23 +4110,69 @@ async def admin_portal_read(
                 page.on("requestfinished", request_finished)
                 page.on("requestfailed", request_failed)
                 page.on("response", response_seen)
-                page.set_default_timeout(min(request.timeout_seconds * 1_000, 10_000))
+                page.set_default_timeout(min(request.timeout_seconds * 1_000, READER_ACTION_TIMEOUT_MS))
+                page.set_default_navigation_timeout(min(request.timeout_seconds * 1_000, READER_NAVIGATION_TIMEOUT_MS))
                 page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
                 page.on("download", lambda download: asyncio.create_task(download.cancel()))
                 start_url = urljoin(portal_origin + "/", request.start_path.lstrip("/"))
+                stage = 'navigation'
+                progress['stage'] = stage
                 response = await page.goto(start_url, wait_until="domcontentloaded")
                 if response and response.status in {401, 403}:
-                    raise PermissionError("page_not_permitted")
+                    raise PermissionError("portal_login_required" if response.status == 401 else "page_not_permitted")
+                if response and (response.status == 404 or response.status >= 500):
+                    raise HTTPException(status_code=response.status, detail="page_response_failed")
+                stage = 'settle'
+                progress['stage'] = stage
                 await _settle_page(page)
                 if urlsplit(page.url).path.casefold().rstrip("/").endswith("/login"):
                     raise PermissionError("portal_login_required")
+                stage = 'dashboard_context'
+                progress['stage'] = stage
+                dashboard_receipt = await _restore_dashboard_context(
+                    page, request.dashboard_context, portal_origin, permission_context['userId'])
+                stage = 'actions'
+                progress['stage'] = stage
                 result = await _execute_reader_actions(
                     page,
                     request,
                     portal_origin,
                     (*permission_context["pages"], *permission_context["subpages"]),
+                    initially_settled=True,
                 )
+                if dashboard_receipt is not None:
+                    # Every answer observation must retain the verified constraints.
+                    # Conflicting planner actions never reuse the pre-action receipt.
+                    stage = 'dashboard_context_final'
+                    progress['stage'] = stage
+                    await _restore_dashboard_context(page, request.dashboard_context, portal_origin,
+                                                     permission_context['userId'], allow_restore=False)
+                    observation = result[4] or {}
+                    observation['dashboardContextReceipt'] = dashboard_receipt
+                    result = (*result[:4], observation)
+                if request.page_reads:
+                    stage = 'supplemental_page_read'
+                    progress['stage'] = stage
+                    observation = result[4] or {}
+                    observation['pageReadOutcomes'] = await _reader_page_reads(page, request.page_reads, portal_origin)
+                    observation['apiDiscovery'] = _reader_api_discovery_snapshot(page)
+                    result = (*result[:4], observation)
+                if request.related_reads:
+                    stage = 'related_read'
+                    progress['stage'] = stage
+                    observation = result[4] or {}
+                    observation['relatedReadOutcomes'] = await _reader_related(page, request.related_reads, portal_origin)
+                    observation['apiDiscovery'] = _reader_api_discovery_snapshot(page)
+                    result = (*result[:4], observation)
+                if request.collections:
+                    stage = 'collection'
+                    progress['stage'] = stage
+                    observation = result[4] or {}
+                    observation["collections"] = await _reader_collect(page, request.collections, portal_origin)
+                    result = (*result[:4], observation)
                 if request.completion_period:
+                    stage = 'completion'
+                    progress['stage'] = stage
                     observation = result[4] or {}
                     try:
                         observation['completionAggregate'] = await _completed_period_aggregate(
@@ -2954,17 +4182,26 @@ async def admin_portal_read(
                             'reason': str(exc)[:120] if isinstance(exc, ValueError) else 'completion_source_unavailable'}
                 return result
             finally:
+                if auxiliary_context is not None:
+                    await auxiliary_context.dispose()
                 await browser.close()
 
     try:
         # Authentication is currently shared between browser task spaces in
         # the Admin Portal. Serialize execution until isolation is proven.
+        stage = 'queue'
+        progress['stage'] = stage
         async with READER_LOCK:
             facts, pages, observed_fields, confirmed_empty, observation = await asyncio.wait_for(execute(), timeout=request.timeout_seconds)
-    except PermissionError:
-        return _sanitize_reader_output({"status": "no_permission", "summary": "The requested Admin Portal page is not permitted."})
+    except PermissionError as exc:
+        return _sanitize_reader_output({"status": "no_permission", "summary": "The requested Admin Portal page is not permitted.",
+            "diagnostics": {"stage": stage, "upstreamStatus": 401 if str(exc) == "portal_login_required" else 403}})
+    except HTTPException as exc:
+        return _sanitize_reader_output({"status": "no_permission" if exc.status_code in {401, 403} else "load_failed",
+            "summary": "The requested Admin Portal page could not be read.",
+            "diagnostics": {"stage": stage, "upstreamStatus": exc.status_code}})
     except asyncio.TimeoutError:
-        return _sanitize_reader_output({"status": "load_failed", "summary": "The Admin Portal read timed out.", "limitations": ["reader_timeout"]})
+        return _sanitize_reader_output({"status": "load_failed", "summary": "The Admin Portal read timed out.", "limitations": [f"reader_{stage}_timeout"]})
     except Exception as exc:
         code = str(exc)
         target_not_confirmed = {
@@ -2978,18 +4215,25 @@ async def admin_portal_read(
             "no_permission"
             if code in {"action_not_read_only", "page_not_permitted"}
             else "not_confirmed"
-            if code in target_not_confirmed
+            if code in target_not_confirmed or code.startswith("dashboard_")
             else "load_failed"
         )
+        # Never return raw Playwright exception text (URLs and input data).
+        reason = code if re.fullmatch(r'[a-z][a-z0-9_]{0,100}', code) else (
+            f'reader_{stage}_timeout' if type(exc).__name__ == 'TimeoutError' else f'reader_{stage}_failed')
         logger.info(
-            "admin_portal_reader_result request_id=%s token_ref=%s status=%s error=%s",
+            "admin_portal_reader_result request_id=%s token_ref=%s status=%s error=%s stage=%s reason=%s",
             _trace_id(x_request_id),
             _token_ref(forwarded),
             status,
             type(exc).__name__,
+            stage,
+            reason,
         )
         return _sanitize_reader_output(
-            {"status": status, "summary": "The Admin Portal page could not be read.", "limitations": [code[:120]]}
+            {"status": status, "summary": "The Admin Portal page could not be read.", "limitations": [reason],
+             "diagnostics": {**_reader_failure_diagnostics(stage, exc, reader_health), **({'navigation': reader_health['navigationFailure']}
+                                if reader_health.get('navigationFailure') else {})}}
         )
 
     missing_fields = [field for field in request.expected_fields if field not in observed_fields]
