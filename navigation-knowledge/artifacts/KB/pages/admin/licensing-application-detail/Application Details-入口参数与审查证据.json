@@ -1,0 +1,185 @@
+{
+  "schemaVersion": "1.0",
+  "bundleId": "page-supplement.admin.page-docs.licensing.application-detail.routing-evidence",
+  "createdAt": "2026-09-27T18:57:24.671337+00:00",
+  "packageStatus": "active",
+  "records": [
+    {
+      "id": "admin.page-docs.licensing.application-detail.routing-evidence",
+      "kind": "page_definition",
+      "revision": 4,
+      "status": "active",
+      "title": "Application Details",
+      "applicability": {
+        "portal": "admin",
+        "environments": [
+          "local"
+        ],
+        "pageRefs": [
+          "/licensing/applications/applicationsDetails"
+        ],
+        "sourceSnapshot": "source-inspected-20260924",
+        "runtimeVerification": "pending",
+        "deployedBuildMatch": "unknown"
+      },
+      "sources": [
+        {
+          "kind": "source_code",
+          "reference": "navigation-knowledge/sources/umc-admin-portal-target/src/pages/ApplicationsDetails/index.tsx",
+          "revision": "a4fa7dd9b78a3b5d3a23ebce16a55575d920c7261639fa3f1c33714f1ad36755",
+          "locator": "taskId query parsing; detail request; formData and timeline rendering",
+          "verification": "source_inspected"
+        },
+        {
+          "kind": "source_code",
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.Application/Services/ApplicationApp/ApplicationAppService.cs",
+          "revision": "22e94773e70c95fab9ce479919b51d0241e046bf085cd0c3f8b5991b9004772e",
+          "locator": "GetMyReviewDetailAsync; GetReviewListByTaskIdAsync; CanViewWorkflowTaskDetail",
+          "verification": "source_inspected"
+        },
+        {
+          "kind": "source_code",
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.Application/Dtos/Application/ApplicationDto.cs",
+          "revision": "3efae9b26845ec68130f314cbccfd0861bb76f19a22ab6d083f5ec9435042cdc",
+          "locator": "MyReviewDetailResponse; ApplicationTimeLineResponse; ContentAiEvidenceDto",
+          "verification": "source_inspected"
+        },
+        {
+          "kind": "source_code",
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.Application/Services/ApplicationMaterials/ApplicationMaterialStatusService.cs",
+          "revision": "02393670290b376dd377b628a2f6f2d8e26e487ea05e8ef21fb502d43e1b390f",
+          "locator": "GetReviewFormDataAsync; EnsureAllStatusesAssignedAsync",
+          "verification": "source_inspected"
+        },
+        {
+          "kind": "source_code",
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.Domain/Models/ServiceConfig.cs",
+          "revision": "1eb8aa67ac45e740917d0e1c6e6ba1b83af6d9529c886843d83883f29bd33310",
+          "locator": "Id, Version and IsCurrentVersion",
+          "verification": "source_inspected"
+        }
+      ],
+      "payload": {
+        "pageIdentity": {
+          "catalogId": "a3780c35dd57_da1a77697e11:Page:ea98b3b3ff504cb62c04",
+          "component": "ApplicationsDetails",
+          "route": "/licensing/applications/applicationsDetails",
+          "name": "Application Details"
+        },
+        "entryConditions": [
+          "A permitted current list record supplies taskId. Read permission must also pass on the detail endpoint."
+        ],
+        "views": [],
+        "readinessAssertions": [
+          "A current non-null data.detail exists and its applicationNumber and taskId match the requested record and observed mapped task."
+        ],
+        "routing": {
+          "parameters": [
+            {
+              "id": "todo_task",
+              "name": "taskId",
+              "from": "previous_record",
+              "operationRef": "POST /api/Application/MyTodoPage",
+              "sourcePath": "/data/page/items",
+              "identityField": "applicationNumber",
+              "keyFields": [
+                "id"
+              ],
+              "field": "taskId",
+              "unique": false,
+              "required": true
+            },
+            {
+              "id": "completed_task",
+              "name": "taskId",
+              "from": "previous_record",
+              "operationRef": "POST /api/Application/MyComplatedPage",
+              "sourcePath": "/data/page/items",
+              "identityField": "applicationNumber",
+              "keyFields": [
+                "id"
+              ],
+              "field": "taskId",
+              "unique": false,
+              "required": true
+            }
+          ],
+          "records": [
+            {
+              "id": "detail_application",
+              "operationRef": "GET /api/Application/MyReviewDetail/{taskId}",
+              "sourcePath": "/data/detail",
+              "identityField": "applicationNumber",
+              "keyFields": [
+                "id"
+              ],
+              "unique": false
+            }
+          ]
+        },
+        "readOperation": {
+          "operationRef": "GET /api/Application/MyReviewDetail/{taskId}",
+          "navigationSource": "/licensing/applications",
+          "responseRoot": "/data",
+          "detailPath": "/data/detail",
+          "timelinePath": "/data/applicationTimeline",
+          "formDataPath": "/data/formData"
+        },
+        "fields": {
+          "detail.id": "Application key.",
+          "detail.applicationNumber": "Business number to compare with the user supplied identity.",
+          "detail.taskId": "Workflow task key used by this endpoint.",
+          "detail.status": "Current application/process state.",
+          "detail.taskStatus": "Current workflow node; not the Completed list decision projection.",
+          "detail.assignee": "Current handler key.",
+          "detail.assignedTo": "Current handler display.",
+          "detail.serviceId": "The application service record ID. ServiceConfig records carry Version and IsCurrentVersion, so this is a service-version lookup anchor; the number alone is not a form version string or proof of the applicable policy.",
+          "detail.serviceCode": "Service code; alone does not identify a historical rule version.",
+          "isCurrentHandler": "Whether the logged-in user is this task assignee.",
+          "formData": "JSON text containing merged form structure and submitted values; it is not a scalar material completeness verdict.",
+          "applicationTimeline": "Application-scoped review history including original and recall process rounds.",
+          "applicationTimeline[].userId": "Recorded historical actor key, different from the current assignee.",
+          "applicationTimeline[].userName": "Historical actor display.",
+          "applicationTimeline[].approvalTime": "Recorded action time.",
+          "applicationTimeline[].approvalResult": "Historical action result, not the current application state.",
+          "applicationTimeline[].reasonEn": "Recorded reason; disclose only under current field permission."
+        },
+        "materialAssessment": {
+          "availableEvidence": "GetReviewFormDataAsync merges the stored form structure and form values for this applicationId/applicationDetailId.",
+          "requiredInputs": [
+            "Applicable service/version form requirements",
+            "Conditional requiredness",
+            "Actual submitted values and authorized attachment metadata",
+            "Current workflow stage"
+          ],
+          "interpretation": "Missing material requires a required applicable item with an absent submitted value. A null form, unavailable file content or unchecked review status is not proof of missing material.",
+          "capabilityBoundary": "Form structure and submitted values need the exact service version and complete applicability/visibility conditions. A missing or unreadable form is not proof that a required material was not submitted."
+        },
+        "ruleSources": {
+          "binding": "Use the application serviceId/serviceCode and applicable workflow/form version to locate authoritative service requirements.",
+          "limits": "The inspected page source is not the published legal standard, escalation matrix, exception approval policy or license restoration policy. No unseen rule text is asserted here."
+        },
+        "constraints": [
+          "Source-inspected definitions; the remote deployed build has not been matched to this snapshot. Validate current authorized response shape and request context before using these definitions.",
+          "This page knowledge does not authorize API access or business writes. A blocked or failed response is not an empty population.",
+          "A bounded page is not a complete population. Counts and grouping require complete collection at the requested entity grain and stable request context.",
+          "No global uniqueness guarantee for applicationNumber was established. Detail object shape alone cannot substitute for verified mapping from the requested business identifier.",
+          "If multiple permitted list rows map to different taskId values, task/view disambiguation is required; do not select an arbitrary row.",
+          "Reject bypass requests and business writes under the existing capability boundary; knowledge cannot authorize skipping a workflow check."
+        ],
+        "knowledgeDependencies": [
+          {
+            "purpose": "analysis",
+            "operationRef": "GET /api/Application/MyReviewDetail/{taskId}",
+            "document": "Application Details-属性与表单证据绑定.json"
+          },
+          {
+            "purpose": "analysis",
+            "operationRef": "GET /api/Application/MyReviewDetail/{taskId}",
+            "document": "Application Details-英阿对象名称与范围.json"
+          }
+        ]
+      }
+    }
+  ]
+}
