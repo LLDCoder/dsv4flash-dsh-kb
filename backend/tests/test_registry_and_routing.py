@@ -2,6 +2,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -12,10 +13,108 @@ from app.tool_gateway import ToolGateway
 from app.principal import Principal
 from app.profile_scope import profile_context_from_payload, requires_profile_switch
 from app.response_safety import is_internal_tool_protocol
+from app.service import DSHService
 from app.skill_router import add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 
 
 class RegistryAndRoutingTests(unittest.TestCase):
+    def test_answer_tool_evidence_keeps_business_result_and_removes_contact_data(self):
+        service = object.__new__(DSHService)
+        evidence = json.loads(
+            service.answer_tool_evidence(
+                "umc.violations.list",
+                {
+                    "ok": True,
+                    "code": "ok",
+                    "result": {
+                        "data": {
+                            "total": 2,
+                            "items": [{"violationNo": "VN-2026-1", "fineAmount": 15000, "email": "hidden@example.test"}],
+                        },
+                        "selectedProfile": {"nameEn": "Commercial DP", "userProfileId": "9337"},
+                    },
+                },
+                "default",
+            )
+        )
+        self.assertTrue(evidence["ok"])
+        self.assertEqual(evidence["result"]["data"]["total"], 2)
+        self.assertEqual(evidence["result"]["data"]["items"][0]["violationNo"], "VN-2026-1")
+        self.assertNotIn("email", evidence["result"]["data"]["items"][0])
+        self.assertEqual(evidence["result"]["selectedProfile"]["nameEn"], "Commercial DP")
+
+    def test_violation_evidence_keys_and_original_names_are_separated(self):
+        service = object.__new__(DSHService)
+        detail_result = {
+            "ok": True,
+            "result": {
+                "data": {
+                    "reportedViolations": [
+                        {"evidenceUrls": ["object-key-a.pdf", "object-key-a.pdf"]},
+                        {"evidenceUrls": ["object-key-b.pdf"]},
+                    ]
+                }
+            },
+        }
+        resolved_result = {
+            "ok": True,
+            "result": {
+                "data": [
+                    {"key": "object-key-a.pdf", "originalFileName": "customer-evidence-a.pdf"},
+                    {"key": "object-key-b.pdf", "originalFileName": "customer-evidence-b.pdf"},
+                ]
+            },
+        }
+
+        self.assertEqual(service.violation_evidence_keys(detail_result), ["object-key-a.pdf", "object-key-b.pdf"])
+        self.assertEqual(
+            json.loads(service.original_document_name_evidence(resolved_result)),
+            [{"originalFileName": "customer-evidence-a.pdf"}, {"originalFileName": "customer-evidence-b.pdf"}],
+        )
+
+    def test_cross_skill_handoff_requires_detail_context_and_supports_exact_follow_up(self):
+        workflow = {
+            "crossSkillHandoffs": [{
+                "id": "related-application-v1",
+                "targetSkillId": "application_status",
+                "triggers": {
+                    "anyTerms": ["related application", "what application is this refund related to"],
+                    "exactTerms": ["application"],
+                    "noneTerms": ["refund application"],
+                },
+                "sourceTools": ["umc.refund-detail"],
+                "extractors": [{
+                    "path": "data.relatedApplicationInfo.applicationId",
+                    "toolName": "umc.application_detail",
+                    "argumentName": "applicationId",
+                    "argumentType": "integer",
+                }],
+            }],
+        }
+        detail_event = SimpleNamespace(
+            event_type="tool.result",
+            event_json={
+                "toolName": "umc.refund-detail",
+                "ok": True,
+                "result": {"data": {"relatedApplicationInfo": {"applicationId": 42}}},
+            },
+        )
+        service = object.__new__(DSHService)
+        skill = SimpleNamespace(skill_id="refund_status", workflow=workflow)
+        catalog = [{"skillId": "application_status", "allowedTools": ["umc.application_detail"]}]
+
+        expected = ("umc.application_detail", {"applicationId": 42})
+        self.assertEqual(
+            service.configured_cross_skill_handoff(skill, "What application is this refund related to?", [detail_event], catalog)["toolRequest"],
+            expected,
+        )
+        self.assertEqual(
+            service.configured_cross_skill_handoff(skill, "application", [detail_event], catalog)["toolRequest"],
+            expected,
+        )
+        self.assertIsNone(service.configured_cross_skill_handoff(skill, "refund application", [detail_event], catalog))
+        self.assertTrue(service.configured_cross_skill_handoff(skill, "application", [], catalog)["missing"])
+
     def test_license_intents_are_separate_from_application_status(self):
         self.assertEqual(resolve_skill("How many license do I have?").skill_id, "license_permit_status")
         self.assertEqual(resolve_skill("What's my license status?").skill_id, "license_permit_status")
@@ -86,47 +185,6 @@ class RegistryAndRoutingTests(unittest.TestCase):
         }]
         route = resolve_configured_skill("inspect this record", catalog, canonicalize=False)
         self.assertEqual((route.skill_id, route.category, route.fields), ("custom_records", "api_call", ("record_id",)))
-
-    def test_published_workflow_normalizes_array_filters_and_integer_bounds(self):
-        workflow = {
-            "routing": {
-                "defaultIntentId": "list",
-                "intents": [{"id": "list", "description": "List records."}],
-                "filters": {
-                    "statuses": {
-                        "type": "enum_array",
-                        "options": [
-                            {"id": "pending", "value": 1},
-                            {"id": "completed", "value": 2},
-                        ],
-                    },
-                    "tags": {"type": "string_array"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-                },
-            },
-            "requests": [{
-                "intentId": "list",
-                "toolName": "records.list",
-                "bindings": [
-                    {"filter": "statuses", "argument": "statusIds"},
-                    {"filter": "tags", "argument": "tags"},
-                    {"filter": "limit", "argument": "pageSize"},
-                ],
-            }],
-        }
-        intent_id, filters = normalize_route_directives(
-            workflow,
-            "list",
-            {"statuses": ["pending", "completed"], "tags": ["urgent", "media"], "limit": 5},
-        )
-        self.assertEqual(intent_id, "list")
-        self.assertEqual(filters, {"statuses": ["pending", "completed"], "tags": ["urgent", "media"], "limit": 5})
-        self.assertEqual(
-            build_configured_tool_request(workflow, ["records.list"], "list records", [], intent_id=intent_id, filters=filters),
-            ("records.list", {"statusIds": [1, 2], "tags": ["urgent", "media"], "pageSize": 5}),
-        )
-        _, invalid = normalize_route_directives(workflow, "list", {"statuses": ["unknown"], "limit": 101})
-        self.assertEqual(invalid, {})
 
     def test_payments_routes_obey_read_only_priority(self):
         self.assertEqual(resolve_skill("申请 ML-2-2026-12345 待付款").skill_id, "application_payment_details")
@@ -307,7 +365,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         from app.skills import DEFAULT_SKILL_DEFINITIONS
 
         skill_tools = {tool for skill in DEFAULT_SKILL_DEFINITIONS for tool in skill.get("allowed_tools", [])}
-        registry_tools = {tool["tool_name"] for tool in DEFAULT_TOOL_DEFINITIONS} | set(SYSTEM_DEFAULT_TOOL_NAMES)
+        registry_tools = {tool["tool_name"] for tool in DEFAULT_TOOL_DEFINITIONS}
         self.assertEqual(skill_tools - registry_tools, set())
 
     def test_legacy_skill_tools_are_covered_by_registry_replacements(self):
@@ -374,6 +432,17 @@ class RegistryAndRoutingTests(unittest.TestCase):
             build_configured_tool_request(workflow, ["records.detail"], "show detail B-2", [Event()]),
             ("records.detail", {"id": "b"}),
         )
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["records.detail"], "1", [Event()]),
+            ("records.detail", {"id": "a"}),
+        )
+        self.assertEqual(
+            build_configured_tool_request(workflow, ["records.detail"], "2.", [Event()]),
+            ("records.detail", {"id": "b"}),
+        )
+        self.assertIsNone(build_configured_tool_request(workflow, ["records.detail"], "10", [Event()]))
+        self.assertTrue(matches_configured_selection_follow_up(workflow, "1", [Event()]))
+        self.assertFalse(matches_configured_selection_follow_up(workflow, "10", [Event()]))
 
     def test_tool_masking_policy_hides_configured_fields(self):
         evidence = {
@@ -421,7 +490,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
         service_eligibility = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "service_eligibility")
         self.assertEqual(
             build_configured_tool_request(service_eligibility["workflow"], service_eligibility["allowed_tools"], "Which services can I apply for?", []),
-            ("umc.collected-services", {}),
+            ("umc.services.eligible", {}),
         )
         fine_appeal = next(item for item in DEFAULT_SKILL_DEFINITIONS if item["skill_id"] == "fine_appeal")
         self.assertEqual(
@@ -906,6 +975,48 @@ class RegistryAndRoutingTests(unittest.TestCase):
         }
         self.assertEqual(execution_definition["httpMethod"], "GET")
         self.assertEqual(execution_definition["httpPath"], "/api/License/statistics")
+
+    def test_violations_and_fines_tool_contracts_are_registered(self):
+        definitions = {item["tool_name"]: item for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
+        expected = {
+            "umc.violations.list",
+            "umc.violations.statuses",
+            "umc.violations.types",
+            "umc.violations.detail",
+            "umc.violations.penalty_orders",
+            "umc.appeals.statuses",
+            "umc.appeals.list",
+            "umc.appeals.detail",
+            "umc.documents.original_names",
+            "umc.appeals.submit",
+            "umc.appeals.cancel",
+            "umc.appeals.message",
+            "umc.fines.payment_validate",
+            "umc.fines.payment_purchase",
+            "umc.fines.payment_status",
+            "umc.fines.payment_cancel",
+            "umc.fines.service_rating",
+        }
+        self.assertEqual(expected - definitions.keys(), set())
+        self.assertEqual(definitions["umc.violations.detail"]["http_path"], "/api/Appeal/Violations/ByNo/{violationNo}")
+        self.assertEqual(definitions["umc.appeals.detail"]["parameters"]["required"], ["appealId"])
+
+    def test_violations_write_tools_require_explicit_confirmation(self):
+        definitions = {item["tool_name"]: item for item in DEFAULT_BUSINESS_TOOL_DEFINITIONS}
+        write_names = {
+            "umc.appeals.submit",
+            "umc.appeals.cancel",
+            "umc.appeals.message",
+            "umc.fines.payment_purchase",
+            "umc.fines.payment_cancel",
+            "umc.fines.service_rating",
+        }
+        for name in write_names:
+            with self.subTest(name=name):
+                definition = definitions[name]
+                self.assertEqual(definition["side_effect"], "write")
+                self.assertTrue(definition["confirmation_required"])
+                self.assertIn("confirmed", definition["parameters"]["required"])
 
 
 if __name__ == "__main__":

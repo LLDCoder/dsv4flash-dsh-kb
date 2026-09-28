@@ -65,10 +65,13 @@ CUSTOMER_FACING_KNOWLEDGE_EVIDENCE_POLICY = (
 
 CROSS_LANGUAGE_CONSISTENCY_RULES: tuple[str, ...] = (
     "First establish one language-neutral answer plan from the user's intent and the trusted evidence, then render that same plan in the required response language.",
-    "Across languages, preserve the same substantive facts, eligibility conditions, timelines, caveats, uncertainty, refusal boundaries, alternatives, section order, and level of detail.",
-    "Do not add a policy claim, procedural rule, fee, deadline, exception, or technical explanation in one language unless the same claim is supported by the evidence and included in the other language.",
+    "Across languages, preserve the same substantive facts, eligibility conditions, timelines, caveats, uncertainty, refusal boundaries, alternatives, section order, list count, and level of detail.",
+    "Use the same answer outline whenever those sections apply: outcome, verified information, information needed, ordered steps, limitations, and next action. Do not omit a confirmed prerequisite, preview, confirmation condition, or limitation in one language.",
+    "Do not add a policy claim, procedural rule, fee, deadline, exception, or technical explanation in one language unless the same claim is supported by the evidence and included in the language-neutral plan.",
     "For safety refusals, keep the refusal scope and safe alternatives equivalent; do not invent extra internal control mechanics in one language.",
+    "Use only the required response language for explanatory prose, headings, list labels, and portal-action labels. Do not append bilingual translations or source-language labels in parentheses. Preserve only immutable identifiers, URLs, and exact legal proper names when necessary.",
     "Translate the approved answer faithfully rather than summarizing it differently. Keep proper names and links consistent, and state unconfirmed details as unconfirmed in every language.",
+    "Treat standalone numbers, ordinals, and labels in the user message as context only unless they are verified business identifiers or requested fields; never repeat a stray number or explain that it maps to no option.",
     "Complete every sentence and list before sending; never end with an unfinished fragment, placeholder, or dangling question.",
 )
 

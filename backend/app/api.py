@@ -303,7 +303,17 @@ def make_router(service: DSHService) -> APIRouter:
         await db.commit()
         return {"deleted": True, "conversation_id": conversation_id}
 
-    @router.post("/ai-chat/messages/stream", tags=["Chatbot compatibility"])
+    @router.post(
+        "/ai-chat/messages/stream",
+        tags=["Chatbot compatibility"],
+        summary="Stream a Customer chatbot response within the authenticated scope",
+        description=(
+            "Record and Profile lookups are restricted to the trusted UMC token scope. "
+            "User-supplied account or Profile names are not authorization selectors; "
+            "cross-account requests receive a target-free refusal regardless of whether "
+            "the reference exists."
+        ),
+    )
     async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
         """Stream a customer-chat turn.
 

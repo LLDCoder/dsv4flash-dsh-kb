@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import make_router
@@ -79,6 +80,57 @@ app = FastAPI(
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.add_middleware(ConsoleAuthMiddleware, get_password=lambda: service.console_password)
 app.include_router(make_router(service))
+
+
+def custom_openapi():
+    """Expose the WebSocket event contract alongside the generated OpenAPI schema."""
+
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    schema["x-websocket-events"] = {
+        "/api/v1/ws": {
+            "description": (
+                "Authenticated JSON WebSocket used by the Customer AI Chatbot. "
+                "The assistant.message event may include profileAction when the "
+                "request must be answered in another authorized Profile."
+            ),
+            "authentication": {
+                "frame": {"type": "auth", "umctoken": "string"},
+                "requirements": ["UMC bearer token", "owned conversation"],
+            },
+            "assistantMessage": {
+                "profileAction": {
+                    "type": "open_profile_menu",
+                    "code": [
+                        "profile_selection_required",
+                        "profile_switch_required",
+                        "selected_profile_not_available",
+                        "no_results_current_profile",
+                    ],
+                    "targetProfile": {
+                        "profileId": "authorized profile identifier",
+                        "profileName": "display name",
+                    },
+                },
+                "scope": (
+                    "targetProfile is present only for an authorized profile resolved "
+                    "from the current account context; clients must still match it "
+                    "against their refreshed authorized profile list before switching."
+                ),
+            },
+        },
+    }
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 @app.get("/healthz")

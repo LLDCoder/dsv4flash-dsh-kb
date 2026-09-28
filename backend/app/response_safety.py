@@ -52,3 +52,15 @@ def is_internal_tool_protocol(content: str) -> bool:
         if _is_tool_invocation(payload):
             return True
     return False
+
+
+_RESPONSE_SCRIPT_PATTERNS = {
+    "en": re.compile(r"[\u0600-\u08ff\ufb50-\ufeff\u3400-\u9fff]"),
+    "ar": re.compile(r"[\u3400-\u9fff]"),
+}
+
+
+def contains_unexpected_response_script(content: str, response_language: str) -> bool:
+    """Return True when a public draft contains a disallowed natural-language script."""
+    pattern = _RESPONSE_SCRIPT_PATTERNS.get(response_language)
+    return bool(pattern and pattern.search(content or ""))

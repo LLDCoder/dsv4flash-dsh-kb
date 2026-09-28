@@ -20,8 +20,8 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
-from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requires_profile_switch
-from .response_safety import is_internal_tool_protocol
+from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requires_profile_switch
+from .response_safety import contains_unexpected_response_script, is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
 from .skill_workflow import build_configured_tool_request, mask_tool_result, matches_configured_selection_follow_up, normalize_route_directives
@@ -64,6 +64,174 @@ class EventBroker:
 
 
 class DSHService:
+    @staticmethod
+    def is_cross_account_record_request(content: str, profile_context: ProfileContext | None) -> bool:
+        """Detect a record lookup explicitly scoped to an unknown account name."""
+
+        if requested_profile(content, profile_context):
+            return False
+        text = " ".join(str(content or "").casefold().split())
+        record_categories = (
+            ("license", "licence", "permit", "许可证", "执照", "牌照", "رخصة", "رخص", "ترخيص", "تراخيص"),
+            ("fine", "violation", "罚单", "罚款", "违规", "مخالفة", "مخالفات", "غرامة", "غرامات"),
+            ("pending action", "pending task", "to-do", "todo", "待办", "待处理", "إجراء معلق", "مهام", "معلقة"),
+            ("application", "request", "申请", "请求", "طلب", "طلبات"),
+        )
+        if not any(any(term in text for term in category) for category in record_categories):
+            return False
+        target_patterns = (
+            r"(?:查询|查找|查看|搜索)\s*([^\s，,。！？?]{1,80})\s*的",
+            r"\b(?:show|find|query|list|check|search)\s+(?:me\s+)?([\w.@+-]{1,80})(?:'s|’s)\b",
+            r"\b(?:show|find|query|list|check|search)\s+me\s+([\w.@+-]{1,80})\s+(?=(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?|pending\s+(?:actions?|tasks?))\b)",
+            r"\b(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?)\s+(?:for|of)\s+([\w.@+-]{1,80})\b",
+            r"(?:اعرض|أعرض|أظهر|اظهر|ابحث|استعلم)\s+(?:لي\s+)?(?:[\w]+\s+){1,8}([\w.@+-]{1,80})(?=\s+(?:المعلقة|معلقة|المعلّقة|معلّقة|له|لديه|لديها|الخ))",
+        )
+        self_targets = {"i", "me", "my", "mine", "our", "ours", "我", "我的", "本人", "当前账号", "当前账户"}
+        arabic_record_terms = {"رخصة", "رخص", "ترخيص", "تراخيص", "مخالفة", "مخالفات", "غرامة", "غرامات", "مهام", "طلب", "طلبات"}
+        for pattern in target_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if not match:
+                continue
+            candidate = match.group(1).strip().casefold()
+            if candidate in self_targets:
+                continue
+            # Arabic possessive forms such as تراخيصي، غراماتي، ومهامي
+            # describe the caller's own records, not an external account.
+            arabic_candidate = candidate.lstrip("وفب")
+            is_arabic_self_record = any(
+                arabic_candidate.endswith(suffix) and arabic_candidate[:-len(suffix)] in arabic_record_terms
+                for suffix in ("ي", "نا")
+            )
+            if is_arabic_self_record:
+                continue
+            return True
+        return False
+
+    @staticmethod
+    def is_global_application_reference_request(content: str, profile_context: ProfileContext | None) -> bool:
+        """Allow an exact own-application lookup in Global View.
+
+        ``application_status`` uses the token-scoped, read-only
+        ``umc.applications`` endpoint. An explicit UMC application reference
+        can therefore be resolved from the authenticated account without
+        binding a client-supplied Profile ID. Keep this narrow: generic
+        record requests still require a concrete Profile.
+        """
+
+        if not profile_context or not profile_context.is_global_view:
+            return False
+        text = " ".join(str(content or "").casefold().split())
+        if not re.search(r"\b[A-Z]{2,6}(?:-\d{1,8}){3,}\b", text, re.IGNORECASE):
+            return False
+        application_terms = (
+            "application", "request", "status", "stage", "progress", "next step",
+            "申请", "申请状态", "申请进度", "当前状态", "下一步",
+            "طلب", "طلبات", "حالة", "الحالة", "الخطوة التالية",
+        )
+        own_terms = (
+            "my ", "mine", "myself", "my application", "my request",
+            "طلبي", "طلباتي", "حسابي", "ملفي", "الخاصة بي",
+        )
+        return any(term in text for term in application_terms) and any(term in text for term in own_terms)
+
+    @staticmethod
+    def is_global_profile_record_request(content: str, profile_context: ProfileContext | None) -> bool:
+        """Recognize a first-person profile-record query while Global View is active."""
+
+        if not profile_context or not profile_context.is_global_view:
+            return False
+        text = " ".join(str(content or "").casefold().split())
+        record_terms = (
+            "license", "licence", "permit", "fine", "violation", "pending", "application", "request",
+            "رخصة", "رخص", "ترخيص", "تراخيص", "غرامة", "غرامات", "مخالفة", "مخالفات", "مهام", "طلبات", "طلب",
+        )
+        own_terms = (
+            "my ", "mine", "myself", "my account", "my profile", "my requests",
+            "تراخيصي", "غراماتي", "مخالفاتي", "مهامي", "طلبي", "طلباتي", "حسابي", "ملفي", "لي ", "الخاصة بي",
+        )
+        if DSHService.is_global_application_reference_request(content, profile_context):
+            return False
+        return any(term in text for term in record_terms) and any(term in text for term in own_terms)
+
+    @staticmethod
+    def is_application_list_request(content: str) -> bool:
+        """Recognize read-only My Requests lookups before LLM skill routing.
+
+        Profile words often appear in the same sentence (for example,
+        ``Show my applications in the Government UMC profile``).  The
+        generic router can otherwise select ``profile_status`` and never
+        execute the already-published ``umc.applications`` tool.  Keep this
+        detector narrow and limited to the caller's own application records.
+        """
+
+        text = " ".join(str(content or "").casefold().split())
+        if not text:
+            return False
+        if re.search(r"\b[A-Z]{2,6}(?:-\d{1,8}){3,}\b", text, re.IGNORECASE):
+            return any(term in text for term in (
+                "application", "request", "status", "progress", "申请", "请求", "状态", "进度",
+                "طلب", "طلبات", "حالة", "الحالة", "التقدم",
+            ))
+        list_terms = (
+            "my applications", "my requests", "show my application", "show my requests",
+            "list my application", "list my requests", "find my application", "search my application",
+            "application status", "application progress", "applications in", "requests in",
+            "我的申请", "我的请求", "申请列表", "申请状态", "申请进度",
+            "أرني طلباتي", "اعرض طلباتي", "قائمة طلباتي", "حالة طلباتي", "حالة طلبي",
+        )
+        return any(term in text for term in list_terms)
+
+    @staticmethod
+    def profile_scope_guard(content: str, response_language: str, profile_context: ProfileContext | None) -> dict[str, Any] | None:
+        """Return deterministic scope responses before routing or model generation."""
+
+        requested = requested_profile(content, profile_context)
+        if (
+            requested
+            and profile_context
+            and (profile_context.is_global_view or requested.profile_id != profile_context.active_profile_id)
+            and not DSHService.is_global_application_reference_request(content, profile_context)
+        ):
+            return {
+                "code": "profile_switch_required",
+                "profileAction": {
+                    "type": "open_profile_menu",
+                    "code": "profile_switch_required",
+                    "targetProfile": {
+                        "profileId": requested.profile_id,
+                        "profileName": requested.name,
+                    },
+                },
+                "content": (
+                    f"أنت تستخدم حالياً ملف {profile_context.active_profile_name or 'الحالي'}. يتطلب هذا الطلب ملف {requested.name}. بدّل إلى هذا الملف المخول للمتابعة."
+                    if response_language == "ar"
+                    else f"You are currently using {profile_context.active_profile_name or 'the current profile'}. This request needs {requested.name}. Switch to that authorized profile to continue."
+                ),
+            }
+        if DSHService.is_cross_account_record_request(content, profile_context):
+            return {
+                "code": "external_account_lookup",
+                "content": (
+                    "يمكنني المساعدة فقط في البيانات الواقعة ضمن نطاق الحساب المخول حالياً."
+                    if response_language == "ar"
+                    else "I can only help with data in your currently authorized account scope."
+                ),
+            }
+        if DSHService.is_global_profile_record_request(content, profile_context):
+            return {
+                "code": "profile_selection_required",
+                "profileAction": {
+                    "type": "open_profile_menu",
+                    "code": "profile_selection_required",
+                },
+                "content": (
+                    "لا يمكنني عرض هذه السجلات حالياً لأن البوابة في العرض الشامل ولم يتم اختيار ملف شخصي محدد. يرجى اختيار الملف الشخصي المطلوب من البوابة ثم إعادة السؤال."
+                    if response_language == "ar"
+                    else "I can't pull those records yet because the portal is currently in Global View and no concrete profile is selected. Please select the specific profile in the portal, then ask again."
+                ),
+            }
+        return None
+
     @staticmethod
     def is_profile_sensitive_data_request(content: str) -> bool:
         """Detect direct requests to reveal Profile identifiers or credentials."""
@@ -1125,6 +1293,39 @@ class DSHService:
                         response_language,
                         request_id=principal.request_id,
                     )
+                    scope_guard = self.profile_scope_guard(latest_content, response_language, profile_context)
+                    if scope_guard:
+                        await self.append_audit(
+                            db,
+                            conversation,
+                            "profile.scope.guard",
+                            {"requestId": principal.request_id, "runtimeId": conversation.runtime_id, "code": scope_guard["code"]},
+                            request_id=principal.request_id,
+                            runtime_id=conversation.runtime_id,
+                        )
+                        await self.append_event(
+                            db,
+                            conversation,
+                            "assistant.message",
+                            {
+                                "content": scope_guard["content"],
+                                "profileAction": scope_guard.get("profileAction"),
+                                "requestId": principal.request_id,
+                            },
+                        )
+                        await self.append_event(
+                            db,
+                            conversation,
+                            "turn.completed",
+                            {"requestId": principal.request_id, "runtimeId": conversation.runtime_id},
+                        )
+                        conversation.status = "READY"
+                        conversation.last_activity_at = datetime.now(timezone.utc)
+                        await db.commit()
+                        lease = self.runtime_manager.get(conversation_id)
+                        if lease:
+                            lease.state = "READY"
+                        return
                     # Published Skill workflow is authoritative for deterministic
                     # routing. Built-in definitions are only a cold-start fallback.
                     route_catalog = await self.skill_catalog.load(db)
@@ -1132,6 +1333,18 @@ class DSHService:
                         resolve_configured_skill(latest_content, route_catalog, canonicalize=False)
                         or resolve_skill(latest_content)
                     )
+                    if self.is_application_list_request(latest_content):
+                        application_status_entry = next(
+                            (item for item in route_catalog if str(item.get("skillId") or "") == "application_status"),
+                            None,
+                        )
+                        if application_status_entry:
+                            # Keep application list lookups on the published,
+                            # read-only UMC workflow even when the sentence
+                            # also names a Profile.
+                            keyword_route = self.route_shape_for_skill(
+                                "application_status", route_catalog, routing_locked=True
+                            )
                     route_context = route_context_from_history(history, route_catalog)
                     # The current question is sent separately to the router;
                     # keep only preceding turns in the auxiliary context.
@@ -1446,7 +1659,25 @@ class DSHService:
                                 else "Please select a profile in the portal, then ask again."
                             )
                             await self.append_event(db, conversation, "profile.scope", {"outcome": "switch_required" if target_profile else "selection_required", "targetProfileId": target_profile.profile_id if target_profile else None, "requestId": principal.request_id})
-                            await self.append_event(db, conversation, "assistant.message", {"content": switch_message, "requestId": principal.request_id})
+                            profile_action: dict[str, Any] = {
+                                "type": "open_profile_menu",
+                                "code": "profile_switch_required" if target_profile else "profile_selection_required",
+                            }
+                            if target_profile:
+                                profile_action["targetProfile"] = {
+                                    "profileId": target_profile.profile_id,
+                                    "profileName": target_profile.name,
+                                }
+                            await self.append_event(
+                                db,
+                                conversation,
+                                "assistant.message",
+                                {
+                                    "content": switch_message,
+                                    "profileAction": profile_action,
+                                    "requestId": principal.request_id,
+                                },
+                            )
                             await self.append_event(db, conversation, "turn.completed", {"requestId": principal.request_id, "runtimeId": conversation.runtime_id})
                             conversation.status = "READY"
                             conversation.last_activity_at = datetime.now(timezone.utc)
@@ -1850,6 +2081,27 @@ class DSHService:
                                     "تعذر تنسيق النتيجة المطلوبة. يرجى المحاولة مرة أخرى."
                                     if response_language == "ar"
                                     else "I could not format the requested result. Please try again."
+                                )
+                            if contains_unexpected_response_script(content, response_language):
+                                language_retry_messages = [
+                                    *messages,
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            "Rewrite the previous draft completely in the required response language. "
+                                            "Preserve the same verified facts, ordered steps, prerequisites, preview or confirmation conditions, "
+                                            "limitations, and next action. Do not include bilingual labels, translated parenthetical labels, "
+                                            "or foreign-script prose; retain only immutable identifiers and URLs when necessary."
+                                        ),
+                                    },
+                                ]
+                                content, retry_reasoning = await draft_answer(language_retry_messages)
+                                reasoning += retry_reasoning
+                            if contains_unexpected_response_script(content, response_language):
+                                content = (
+                                    "تعذر علي إعداد الرد باللغة المطلوبة. يرجى المحاولة مرة أخرى."
+                                    if response_language == "ar"
+                                    else "I could not prepare the response in the requested language. Please try again."
                                 )
                             if content:
                                 await self.publish_stream_event(

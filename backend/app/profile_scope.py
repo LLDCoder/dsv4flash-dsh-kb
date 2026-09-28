@@ -85,8 +85,10 @@ def profile_context_from_payload(value: object, *, trusted_profile_id: str | Non
     profiles: list[ProfileReference] = []
     for item in value.get("profiles", [])[:50] if isinstance(value.get("profiles"), list) else []:
         if isinstance(item, dict):
-            profile_id = str(item.get("id") or "").strip()
-            name = str(item.get("name") or "").strip()[:256]
+            # The Customer portal's wire model uses profileId/profileName;
+            # accept the compact id/name form as well for older clients.
+            profile_id = str(item.get("id") or item.get("profileId") or "").strip()
+            name = str(item.get("name") or item.get("profileName") or "").strip()[:256]
             if profile_id and name:
                 profiles.append(ProfileReference(profile_id, name))
     if active_profile_id and active_profile_name and (trusted_profile_id is None or client_profile_id == active_profile_id) and all(item.profile_id != active_profile_id for item in profiles):
