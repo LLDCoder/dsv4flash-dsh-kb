@@ -2383,7 +2383,20 @@ class ReadOnlyPortalPolicy:
             return "invalid_navigation_path"
         if self._is_mutation_route(request.start_path):
             return "action_not_read_only"
-        if not request.actions or len(request.actions) > self.max_actions:
+        # Pagination is expanded internally for collection-wide reads. Keep
+        # the planner's ordinary action budget, but allow the bounded series
+        # of read-only Next-page actions needed to traverse every page.
+        action_types = tuple(
+            str(action.get("type") or "").strip().casefold().replace("-", "_")
+            for action in request.actions
+        )
+        non_pagination_actions = sum(action_type != "paginate" for action_type in action_types)
+        pagination_actions = sum(action_type == "paginate" for action_type in action_types)
+        if (
+            not request.actions
+            or non_pagination_actions > self.max_actions
+            or pagination_actions > 50
+        ):
             return "invalid_action_count"
         page_paths = {request.start_path}
         allowed_pages = tuple(path for path in (*permissions.pages, *permissions.subpages) if path.startswith("/"))
@@ -8797,11 +8810,14 @@ def _guard_subject_record_substitution(outcome: ReaderOutcome, question: str) ->
     matches = [row for row in rows if _subject_identifier_is_in_row(row, identifiers)]
     if len(matches) == len(rows):
         return outcome
+    pagination_complete = bool(
+        isinstance(observation, dict) and observation.get("paginationComplete") is True
+    )
     guarded = replace(
         result,
         status="not_confirmed",
         summary="The visible records were not verified as belonging to the requested subject.",
-        completeness="unknown",
+        completeness="complete" if pagination_complete else "unknown",
         facts=(
             "No visible record was verified as belonging to the requested subject.",
             "The current page rows are not used as a substitute for the requested subject.",
@@ -9510,6 +9526,12 @@ def _native_fine_decision_result(outcome: ReaderOutcome, question: str) -> Reade
             "The decision itself and any appeal stay with the responsible committee through the portal workflow."
         )
     else:
+        # An explicitly named subject with no matching row is a boundary
+        # failure, not a license to summarize whatever happens to be visible
+        # on the current page. Leave the original observation intact so the
+        # subject guard can produce its deterministic no-substitute result.
+        if _explicit_subject_identifiers(question) and not matched:
+            return outcome
         visible = [
             " | ".join(str(part) for part in (
                 row.get("violationNo"), row.get("violationTypeName"), row.get("statusName"),
@@ -11397,7 +11419,7 @@ class AdminPortalReader:
                                 for _ in range(page_number - 1)
                             ))
                             candidate_request = replace(request, actions=page_actions)
-                            if len(page_actions) > self.policy.max_actions or validate_policy(candidate_request, reason="paginate_all_pages"):
+                            if validate_policy(candidate_request, reason="paginate_all_pages"):
                                 continue
                             try:
                                 candidate_result = await _await_reader_stage(
