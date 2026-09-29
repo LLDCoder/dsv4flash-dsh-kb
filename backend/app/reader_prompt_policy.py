@@ -6,7 +6,7 @@ business statuses, endpoint mappings or permission grants.
 import re
 
 
-PROMPT_POLICY_VERSION = 'reader-language/38-request-boundary-4-content-inspection-5-finance-3-licensing-happiness-6'
+PROMPT_POLICY_VERSION = 'reader-language/39-session-capabilities-checklist-today-rollup-transfer-history-7'
 
 COMMON = """Language and evidence contract:
 Use originalQuestion as the authority for requested meaning; canonicalQuestion is a translation aid.

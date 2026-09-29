@@ -35,7 +35,7 @@ class PlatformGatewayClient:
 
         # Retry only this read-only identity lookup. Never cache or substitute
         # another principal, and never retry an authentication/permission denial.
-        async with asyncio.timeout(self.timeout):
+        async def request_identity() -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=min(self.timeout, 8), follow_redirects=False) as client:
                 for attempt in range(3):
                     try:
@@ -49,6 +49,7 @@ class PlatformGatewayClient:
                         if not retryable or attempt == 2:
                             raise
                         await asyncio.sleep(0.2 * (attempt + 1))
+        return await asyncio.wait_for(request_identity(), timeout=self.timeout)
 
     async def admin_portal_read(
         self,

@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 from urllib.parse import unquote, urlsplit
 
+
 import httpx
 
 from .principal import Principal
@@ -2093,6 +2094,17 @@ def bounded_portal_observation(value: Any) -> Any:
             if isinstance(raw_candidate.get('assignmentEvidence'), list):
                 candidate['assignmentEvidence'] = _bounded_api_json(raw_candidate['assignmentEvidence'],
                     max_depth=8, max_items=20, max_string=120)
+            if isinstance(raw_candidate.get('identityRows'), list):
+                candidate['identityRows'] = [
+                    {
+                        'taskNo': str(row.get('taskNo'))[:120],
+                        'id': str(row.get('id'))[:120],
+                    }
+                    for row in raw_candidate['identityRows'][:60]
+                    if isinstance(row, dict)
+                    and re.fullmatch(r'IN-[A-Za-z0-9_-]{3,120}', str(row.get('taskNo') or ''), re.I)
+                    and re.fullmatch(r'[A-Za-z0-9_-]{1,120}', str(row.get('id') or ''))
+                ]
     return projected
 
 
@@ -8576,6 +8588,8 @@ _SELF_PROFILE_PATTERNS: tuple[str, ...] = (
     r"能帮我(?:做|干)什么",
     r"我可以做什么",
     r"你能帮我做什么",
+    r"\blist\s+(?:every|all)\s+(?:business\s+)?(?:module|modules|capabilit(?:y|ies))",
+    r"\bwhich\s+(?:business\s+)?(?:modules?|capabilit(?:y|ies))\s+(?:can|may)\s+(?:my|this)\s+account\s+access",
     r"\bwhat can you help\b",
     r"\bhow can you help\b",
     r"ماذا يمكنك أن تفعل",
@@ -8598,23 +8612,31 @@ def _self_profile_requested(question: str) -> bool:
 
 
 def _self_profile_result(question: str, context: UserPermissionContext, page_hint: str = "") -> ReaderResult | None:
-    """Answer identity/capability questions from the verified GetUserInfo context."""
+    """Answer identity/capability questions from the verified current session.
+
+    This is intentionally a projection of display labels and currently
+    authorized navigation.  The old implementation listed every Admin module
+    and exposed the internal GetUserInfo name, which made a restricted account
+    look like it could read the whole portal.
+    """
 
     if not _self_profile_requested(question):
         return None
     scope = _permission_result_scope(context)
     role = (context.current_role or (context.roles[0] if context.roles else "")).strip()
-    departments = ", ".join(str(value) for value in context.departments[:6]) or "not returned by the portal"
+    departments = ", ".join(_display_permission_label(value) for value in context.departments if _display_permission_label(value))
+    departments = departments or "not provided as a display label by the current session"
+    pages = _authorized_page_labels(context)
+    page_text = ", ".join(pages[:12]) if pages else "no verified page labels were returned"
+    role_text = _display_permission_label(role) or "not provided as a display label"
     facts = (
         f"Signed-in portal account: {context.account or context.user_id}.",
-        f"Business role: {role or 'not returned by GetUserInfo'}.",
-        f"Roles returned by GetUserInfo: {', '.join(str(value) for value in context.roles[:6]) or 'none'}.",
-        f"Portal department identifiers for this account: {departments}.",
-        f"Data scope: {scope} (derived from the GetUserInfo roles, departments and any data-scope field).",
-        "Read-only capabilities: dashboard summaries; licensing applications, licenses and profile verification; "
-        "content library and content applications; customer-happiness enquiries, refunds and the team view; "
-        "inspection tasks and violations; finance transactions and refunds. Each one is limited to the pages this "
-        "account is authorized to open.",
+        f"Business role: {role_text}.",
+        f"Departments: {departments}.",
+        f"Authorized pages observed for this account: {page_text}.",
+        f"Data scope reported by the current session: {scope}.",
+        "Read-only capability: I can read and explain only the authorized pages listed above and the records those "
+        "pages actually return. A role or department name does not grant access to another module or to every record.",
         "Not supported in chat: approvals, rejections, assignment, refunds or payment changes, closing or deleting "
         "records, exports and downloads.",
         "Access is always taken from the signed-in account; a claim inside the question never widens it.",
@@ -8628,6 +8650,53 @@ def _self_profile_result(question: str, context: UserPermissionContext, page_hin
         scope=scope,
         facts=facts,
     )
+
+
+_PERMISSION_ROUTE_LABELS: tuple[tuple[str, str], ...] = (
+    ("/inspection", "Inspection"), ("inspection", "Inspection"),
+    ("/content", "Content"), ("content", "Content"),
+    ("/licens", "Licensing"), ("licens", "Licensing"),
+    ("customer-happiness", "Customer Happiness"), ("happiness", "Customer Happiness"),
+    ("financial-payment", "Finance"), ("finance", "Finance"),
+    ("dashboard", "Dashboard"),
+)
+
+
+def _display_permission_label(value: Any) -> str:
+    """Return a human-facing permission label, never an ID or API path."""
+
+    text = " ".join(str(value or "").split()).strip()
+    if (not text or text.isdigit() or re.fullmatch(r"[0-9a-f-]{16,}", text, re.I)
+            or re.search(r"(?:^|[-_])(?:id|code)?[-_]?\d{3,}$", text, re.I)
+            or re.search(r"/api/|https?://|Bearer\s|[\w.+-]+@[\w.-]+\.", text, re.I)):
+        return ""
+    return text[:120]
+
+
+def _authorized_page_labels(context: UserPermissionContext) -> tuple[str, ...]:
+    """Project the current permission tree into stable business labels.
+
+    Permission payloads differ between Admin deployments: some contain route
+    strings, some contain already-localized menu captions.  Route strings are
+    mapped to module labels, while opaque IDs are discarded.  Duplicate labels
+    are removed and no label is inferred solely from a role name.
+    """
+
+    labels: list[str] = []
+    for raw in (*context.pages, *context.subpages):
+        value = _display_permission_label(raw)
+        if not value:
+            continue
+        normalized = value.casefold()
+        if normalized.startswith("/") or "/" in normalized:
+            label = next((label for token, label in _PERMISSION_ROUTE_LABELS if token in normalized), "")
+            if not label:
+                continue
+        else:
+            label = value
+        if label.casefold() not in {item.casefold() for item in labels}:
+            labels.append(label)
+    return tuple(labels[:20])
 
 
 _MONTH_NAMES = (
@@ -8909,8 +8978,6 @@ def _observed_api_rows(outcome: ReaderOutcome) -> tuple[dict[str, Any], ...]:
                     continue
                 seen.add(identity)
                 rows.append(row)
-        if rows:
-            break
     return tuple(rows)
 
 
@@ -8994,7 +9061,97 @@ _RECORD_DETAIL_REQUEST = re.compile(
 )
 _HISTORY_OPERATION_PREFIX = "GET /api/ContentLibrary/GetHistoryList"
 _REVIEW_DETAIL_OPERATION_PREFIX = "GET /api/Application/MyReviewDetail"
+_INSPECTION_TASK_DETAIL_OPERATION = "GET /api/admin/inspection/tasks/{id}"
+_INSPECTION_CHECKLIST_OPERATION = "GET /api/admin/inspection/tasks/{id}/checklist-template"
+_INSPECTION_TASK_TARGET_HISTORY_OPERATION = "GET /api/admin/inspection/tasks/by-target"
+_INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION = "GET /api/admin/inspection/violations/by-target"
+_INSPECTION_TARGET_OPERATION_PREFIX = "GET /api/admin/inspection/violations/"
 _DOCUMENT_LABEL = re.compile(r"\"(?:label|title|name)\s*\"?\s*:\s*\"([^\"]{3,60})\"")
+
+
+def _inspection_history_request(question: str) -> bool:
+    return bool(re.search(
+        r"\b(?:past|previous|historical|history|all)\s+(?:inspection|inspections|penalt|violations?|contacts?)\b|"
+        r"\b(?:inspection|inspections)\s+(?:history|historical)\b|"
+        r"历史(?:检查|巡查|处罚|违规)|过去的?(?:检查|巡查)|机构.*(?:历史|联系人)|"
+        r"سجل\s*(?:التفتيش|المخالفات)|عمليات التفتيش السابقة",
+        str(question or ""), re.I,
+    ))
+
+
+def _inspection_today_request(question: str) -> bool:
+    return bool(re.search(r"\b(?:today|today's|current day)\b|今天|今日|اليوم", str(question or ""), re.I))
+
+
+def _row_date(row: dict[str, Any]) -> Any:
+    """Parse a date from a portal row without guessing a business timezone."""
+
+    for key, value in row.items():
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+        if not any(token in normalized for token in (
+                "date", "created", "updated", "submitted", "scheduled", "completed", "due", "sladue")):
+            continue
+        text = str(value or "").strip()
+        for pattern in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
+                        "%d/%m/%Y", "%d/%m/%Y %H:%M:%S", "%m/%d/%Y", "%m/%d/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(text[:26], pattern).date()
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _inspection_today_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcome | None:
+    """Build a date-bounded inspector rollup from all observed task rows.
+
+    A stale page is not silently relabeled as today.  If the API did not
+    return a date field, the result stays unconfirmed; if it returned dated
+    rows but none for today, the result is an explicit empty result.
+    """
+
+    if not (_inspection_today_request(question) and _PERSON_ROLLUP_REQUEST.search(str(question or ""))):
+        return None
+    rows = list(_observed_api_rows(outcome))
+    if not rows:
+        return None
+    today = datetime.now(timezone.utc).date()
+    dated = [(row, _row_date(row)) for row in rows]
+    if not any(parsed is not None for _row, parsed in dated):
+        return ReaderOutcome(replace(outcome.result, status="not_confirmed", answer_shape="count",
+                                     completeness="bounded", missing=("today_date_not_observed",),
+                                     facts=("The inspection task response did not expose a verifiable task date, so a today-only rollup cannot be confirmed.",)),
+                             {**outcome.audit_evidence, "nativeTodayPersonRollup": {"verified": False},
+                              "result": replace(outcome.result, status="not_confirmed", answer_shape="count",
+                                                 completeness="bounded", missing=("today_date_not_observed",),
+                                                 facts=("The inspection task response did not expose a verifiable task date, so a today-only rollup cannot be confirmed.",)).public_json()})
+    today_rows = [row for row, parsed in dated if parsed == today]
+    if not today_rows:
+        result = replace(outcome.result, status="no_data", answer_shape="count", completeness="bounded", missing=(),
+                         facts=(f"No inspection tasks dated {today.isoformat()} were returned for this account; older task rows were not counted as today.",))
+        return ReaderOutcome(result, {**outcome.audit_evidence, "nativeTodayPersonRollup": {
+            "verified": True, "date": today.isoformat(), "rows": 0,
+        }, "result": result.public_json()})
+    grouped: dict[str, dict[str, int]] = {}
+    for row in today_rows:
+        person = str(row.get("inspectorName") or row.get("Inspector") or row.get("Assigned To") or row.get("Current Handler") or "").strip() or "unassigned"
+        bucket = grouped.setdefault(person, {"total": 0, "overdue": 0, "completed": 0})
+        bucket["total"] += 1
+        status = str(row.get("statusName") or row.get("Status") or row.get("status") or "")
+        if re.search(r"overdue|past due|逾期|متأخر", str(row.get("SLA") or row.get("sla") or ""), re.I):
+            bucket["overdue"] += 1
+        if re.search(r"completed|complete|closed|done|已完成|مكتمل", status, re.I):
+            bucket["completed"] += 1
+    facts = tuple(json.dumps({"Date": today.isoformat(), "Inspector": person,
+                              "Tasks": data["total"], "Overdue": data["overdue"],
+                              "Completed": data["completed"],
+                              "Completion rate": round(data["completed"] / data["total"] * 100, 1)},
+                             ensure_ascii=False, separators=(",", ":"))
+                  for person, data in sorted(grouped.items()))
+    result = replace(outcome.result, status="success", answer_shape="count", completeness="bounded", missing=(), facts=facts + (
+        "The rollup is limited to task rows dated today in the authorized task response; no older row was included.",))
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativeTodayPersonRollup": {
+        "verified": True, "date": today.isoformat(), "rows": len(today_rows), "people": len(grouped),
+    }, "result": result.public_json()})
 
 
 def _api_rows_by_prefix(observation: Any, prefix: str) -> tuple[dict[str, Any], ...]:
@@ -9008,6 +9165,8 @@ def _api_rows_by_prefix(observation: Any, prefix: str) -> tuple[dict[str, Any], 
         if not str(candidate.get("operationKey") or "").startswith(prefix):
             continue
         payload = candidate.get("responseEvidence")
+        if isinstance(payload, dict) and isinstance(payload.get("data"), (dict, list)):
+            payload = payload["data"]
         # Unwrap a service envelope before treating the payload as rows.
         while isinstance(payload, dict) and "data" in payload and (
             "isSuccess" in payload or "statusCode" in payload or "message" in payload
@@ -9021,6 +9180,42 @@ def _api_rows_by_prefix(observation: Any, prefix: str) -> tuple[dict[str, Any], 
                 return tuple(item for item in items if isinstance(item, dict))
             return (payload,)
     return ()
+
+
+def _api_candidate_by_operation(observation: Any, operation_key: str) -> dict[str, Any] | None:
+    """Return one exact observed operation, never a similarly-prefixed detail call."""
+
+    if not isinstance(observation, dict):
+        return None
+    for candidate in (observation.get("apiDiscovery") or {}).get("candidates") or ():
+        if isinstance(candidate, dict) and candidate.get("operationKey") == operation_key:
+            return candidate
+    return None
+
+
+def _api_rows_by_operation(observation: Any, operation_key: str) -> tuple[dict[str, Any], ...]:
+    candidate = _api_candidate_by_operation(observation, operation_key)
+    if not candidate or candidate.get("status") != 200:
+        return ()
+    identity_rows = candidate.get("identityRows")
+    if operation_key == "GET /api/admin/inspection/tasks" and isinstance(identity_rows, list):
+        return tuple(row for row in identity_rows if isinstance(row, dict))
+    payload = candidate.get("responseEvidence")
+    if isinstance(payload, dict) and isinstance(payload.get("data"), (dict, list)):
+        payload = payload["data"]
+    if isinstance(payload, dict):
+        items = payload.get("items")
+        if isinstance(items, list):
+            return tuple(item for item in items if isinstance(item, dict))
+    if isinstance(payload, list):
+        return tuple(item for item in payload if isinstance(item, dict))
+    return ()
+
+
+def _api_collection_receipt(observation: Any, operation_key: str) -> dict[str, Any]:
+    candidate = _api_candidate_by_operation(observation, operation_key) or {}
+    receipt = candidate.get("relatedReadReceipt")
+    return receipt if isinstance(receipt, dict) else {}
 
 
 def _review_detail_documents(observation: Any) -> tuple[str, ...]:
@@ -9046,6 +9241,92 @@ def _record_detail_facts(question: str, observation: Any, identity: str) -> tupl
     """Project the record's own detail page into bounded answer facts."""
 
     facts: list[str] = []
+    candidates = (observation.get("apiDiscovery") or {}).get("candidates") if isinstance(observation, dict) else []
+    candidate_text = json.dumps(candidates or [], ensure_ascii=False, default=str)
+    # Inspection task detail pages issue a checklist-template request after the
+    # task row is opened.  Preserve the checklist fields returned by that
+    # request instead of falling back to a generic "open the detail page" note.
+    checklist_rows = _api_rows_by_operation(observation, _INSPECTION_CHECKLIST_OPERATION)
+    checklist_values: list[str] = []
+    for row in checklist_rows:
+        for key, value in row.items():
+            if not re.search(r"material|document|attachment|requisite|step|item|check", str(key), re.I):
+                continue
+            if isinstance(value, list):
+                checklist_values.extend(str(item.get("name") or item.get("label") or item.get("title") or item)
+                                       for item in value[:20])
+            elif value not in (None, ""):
+                checklist_values.append(str(value))
+    checklist_values = list(dict.fromkeys(value.strip() for value in checklist_values if value.strip()))
+    if _api_candidate_by_operation(observation, _INSPECTION_CHECKLIST_OPERATION) or "checklist-template" in candidate_text:
+        if checklist_values:
+            facts.append("Inspection checklist materials/steps returned for " + identity + ": " + "; ".join(checklist_values[:20]) + ".")
+        else:
+            facts.append("The inspection checklist endpoint returned no materials or steps for " + identity + ".")
+        return tuple(facts[:6])
+
+    # Target-scoped history is requested from the verified task detail.  The
+    # two collections have different grains; keep them separate and expose
+    # the collection receipt so an incomplete page cannot be reported as all
+    # history.
+    if _inspection_history_request(question):
+        task_history = _api_rows_by_operation(observation, _INSPECTION_TASK_TARGET_HISTORY_OPERATION)
+        violation_history = _api_rows_by_operation(observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION)
+        task_receipt = _api_collection_receipt(observation, _INSPECTION_TASK_TARGET_HISTORY_OPERATION)
+        violation_receipt = _api_collection_receipt(observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION)
+        if task_history:
+            for row in task_history[:12]:
+                facts.append(json.dumps({
+                    "Task No.": row.get("taskNo"),
+                    "Target": row.get("targetName") or row.get("establishmentName") or row.get("fullName"),
+                    "Status": row.get("statusName"),
+                    "Inspector": row.get("inspectorName"),
+                    "Created On": str(row.get("createdOn") or "")[:19],
+                    "Due Date": str(row.get("dueDate") or "")[:19],
+                }, ensure_ascii=False, separators=(",", ":")))
+            if task_receipt.get("complete") is True:
+                facts.append("All authorized task-history pages were read with the verified task target scope.")
+            else:
+                facts.append("The target-scoped task history read was incomplete; the returned rows are not the full history.")
+        elif _api_candidate_by_operation(observation, _INSPECTION_TASK_TARGET_HISTORY_OPERATION):
+            facts.append("No authorized inspection task history was returned for this verified target.")
+        if violation_history:
+            for row in violation_history[:12]:
+                facts.append(json.dumps({
+                    "Violation No.": row.get("violationNo"),
+                    "Task No.": row.get("sourceTaskNo"),
+                    "Type": row.get("violationTypeName"),
+                    "Status": row.get("statusName"),
+                    "Fine Amount": row.get("fineAmount"),
+                    "Created On": str(row.get("createdOn") or "")[:19],
+                    "Paid Time": str(row.get("paidTime") or "")[:19],
+                }, ensure_ascii=False, separators=(",", ":")))
+            if violation_receipt.get("complete") is True:
+                facts.append("All authorized target-scoped violation rows were read for this verified target.")
+            else:
+                facts.append("The target-scoped violation read was incomplete; the returned rows are not the full history.")
+        elif _api_candidate_by_operation(observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION):
+            facts.append("No authorized violation history was returned for this verified target.")
+        if task_history or violation_history or task_receipt or violation_receipt:
+            facts.append("Task history and violation history are target-scoped to the verified task; the ordinary Violations list was not used as a substitute.")
+            return tuple(facts[:18])
+
+    # When an institution target is exposed by the violation detail page,
+    # report only that target-scoped overview/timeline.  Do not turn a generic
+    # violation list into a claim about all historical inspections.
+    target_rows = _api_rows_by_prefix(observation, _INSPECTION_TARGET_OPERATION_PREFIX)
+    if target_rows and _inspection_history_request(question):
+        for row in target_rows[:5]:
+            selected = {key: row[key] for key in row if re.search(r"institution|establishment|target|violation|inspection|penalt|fine|contact", str(key), re.I)}
+            if selected:
+                facts.append(json.dumps(selected, ensure_ascii=False, separators=(",", ":")))
+        if facts:
+            facts.append("Only the institution/target fields returned by this authorized detail request are shown; no unrelated institution history was substituted.")
+            return tuple(facts[:6])
+    if _inspection_history_request(question):
+        facts.append("The authorized response did not return a historical inspection collection for this institution. I cannot claim all past inspections or penalties from the current task/violation page.")
+        facts.append("Contact details are not returned unless the institution detail response explicitly exposes them to this account.")
+        return tuple(facts[:6])
     history = _api_rows_by_prefix(observation, _HISTORY_OPERATION_PREFIX)
     if history:
         for row in history[:5]:
@@ -9098,6 +9379,13 @@ def _native_fine_decision_result(outcome: ReaderOutcome, question: str) -> Reade
     """
 
     if not _FINE_DECISION_REQUEST.search(str(question or "")):
+        return outcome
+    # When the same question requested an institution's history, the reader
+    # has already followed the exact task into its target-scoped detail reads.
+    # Do not replace those verified facts with the ordinary Violations list;
+    # that list has a different grain and was the source of ACC-032's false
+    # "no matching fine" answer.
+    if isinstance(outcome.audit_evidence.get("recordDetail"), dict):
         return outcome
     page = str(outcome.result.page or "")
     if "violations" not in page:
@@ -9402,6 +9690,8 @@ def _native_person_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcom
     if not _PERSON_ROLLUP_REQUEST.search(str(question or "")):
         return outcome
     if outcome.result.status not in {"success", "not_confirmed", "no_data"}:
+        return outcome
+    if isinstance(outcome.audit_evidence.get("nativeTodayPersonRollup"), dict):
         return outcome
     observation = outcome.audit_evidence.get("observation") or (
         (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
@@ -9736,15 +10026,15 @@ def _guard_unfound_record_identity(outcome: ReaderOutcome, question: str) -> Rea
 
 
 _MUTATION_REQUEST_PATTERNS: tuple[str, ...] = (
-    r"\b(?:please\s+)?(?:approve|reject|assign|reassign|refund|close|delete|remove|export|send|pay|waive|"
+    r"\b(?:please\s+)?(?:approve|reject|assign|reassign|transfer|delegate|move|refund|close|delete|remove|export|send|pay|waive|"
     r"reset|disable|merge|cancel|change|update|set)\b[^.]{0,30}\b(?:application|licen[cs]e|content|ticket|refund|payment|transaction|task|case|record|account|user|photo|note|fine|penalt(?:y|ies)|fee|profile|complaint|enquir(?:y|ies)|report)\b",
-    r"\b(?:approve|reject|assign|refund|close|delete|export|send|waive|reset|disable|merge|cancel)\b"
+    r"\b(?:approve|reject|assign|reassign|transfer|delegate|move|refund|close|delete|export|send|waive|reset|disable|merge|cancel)\b"
     r"[^.]{0,20}\b(?:it|this|that|them|the record)\b",
-    r"(?:帮我|请|直接|把)[^。]{0,14}(?:批准|驳回|分派|指派|退款|关闭|删除|修改|改成|标记|标注|设为|判为|导出|发送|免除|重置|停用|合并|跳过|执行)",
-    r"(?:批准|驳回|分派|退款|关闭|删除|修改|导出|发送|免除|重置|停用|合并|改为|改成)(?:这|该|此|本)?"
+    r"(?:帮我|请|直接|把)[^。]{0,14}(?:批准|驳回|分派|指派|转派|转移|移交|委派|退款|关闭|删除|修改|改成|标记|标注|设为|判为|导出|发送|免除|重置|停用|合并|跳过|执行)",
+    r"(?:批准|驳回|分派|转派|转移|移交|委派|退款|关闭|删除|修改|导出|发送|免除|重置|停用|合并|改为|改成)(?:这|该|此|本)?"
     r"(?:个|项|张|条|笔)?(?:申请|内容|投诉|工单|退款|付款|交易|任务|案件|记录|账号|用户|罚单|报告|备注)",
     r"(?:跳过|绕过|规避)[^。]{0,16}(?:检查|审批|审核|现场|复核|流程|审计)",
-    r"(?:وافق|ارفض|عيّن|استرد|أغلق|احذف|عدّل|صدّر|أرسل|تجاوز|ألغِ|صفّر)[^.]{0,24}"
+    r"(?:وافق|ارفض|عيّن|حوّل|انقل|فوّض|استرد|أغلق|احذف|عدّل|صدّر|أرسل|تجاوز|ألغِ|صفّر)[^.]{0,24}"
     r"(?:الطلب|الرخصة|المحتوى|التذكرة|الاسترداد|الدفع|المهمة|السجل|الحساب|المراجعة|التدقيق)",
 )
 
@@ -9760,11 +10050,22 @@ def _mutation_request_refusal_result(question: str) -> ReaderResult | None:
     text = str(question or "")
     if not any(re.search(pattern, text, re.I) for pattern in _MUTATION_REQUEST_PATTERNS):
         return None
+    transfer = bool(re.search(r"\b(?:transfer|reassign|delegate|move)\b|转派|转移|移交|委派|انقل|حوّل|فوّض", text, re.I))
+    if transfer:
+        summary = "The assistant cannot transfer or change inspection ownership in chat."
+        missing = ("action_not_read_only", "transfer_rule_not_verified")
+    else:
+        summary = "The request asks for a business change, which the read-only reader cannot perform."
+        missing = ("action_not_read_only",)
     return ReaderResult(
         status="not_confirmed",
-        summary="The request asks for a business change, which the read-only reader cannot perform.",
+        summary=summary,
         answer_shape="detail",
-        missing=("action_not_read_only",),
+        facts=(
+            "No transfer, assignment or other business change was performed.",
+            "To transfer an inspection task, open Inspection > Task Management, select the task, verify the portal's permitted department/assignee workflow, and submit it there. The chat reader is read-only.",
+        ) if transfer else (),
+        missing=missing,
     )
 
 
@@ -9861,6 +10162,9 @@ class AdminPortalReader:
         outcome = _native_profile_type_count(outcome, question)
         outcome = _native_personal_task_counts(outcome, question)
         outcome = _native_queue_priority_advice(outcome, question)
+        today_rollup = _inspection_today_rollup(outcome, question)
+        if today_rollup is not None:
+            outcome = today_rollup
         outcome = _native_person_rollup(outcome, question)
         outcome = _guard_unfound_record_identity(outcome, question)
         outcome = _guard_related_record_substitution(outcome, question, intent_state)
@@ -9892,19 +10196,77 @@ class AdminPortalReader:
         # needs the record's detail page, which the list surface does not load.
         detail_identity = _explicit_record_identity(question)
         detail_page = str(outcome.result.page or "")
-        if (detail_identity and detail_page and _RECORD_DETAIL_REQUEST.search(str(question or ""))
-                ):
-            detail_observation = await self._open_record_detail(principal, detail_page, detail_identity)
+        # Institution-history questions may initially land on Violations, but
+        # the task detail is the only authorized place that can bind the task
+        # number to its institution.  Read that detail as a supplemental,
+        # read-only request when the current session exposes Inspection tasks.
+        if detail_identity and _inspection_history_request(question):
+            detail_page = "/inspection/tasks"
+        if (detail_identity and detail_page and (
+                _RECORD_DETAIL_REQUEST.search(str(question or ""))
+                or _inspection_history_request(question)
+                )):
+            parent_observation = outcome.audit_evidence.get("observation")
+            if not isinstance(parent_observation, dict):
+                parent_observation = ((outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
+            # History questions may initially route to Violations, whose
+            # observation has no task-list identity receipt. Read the task
+            # queue once before following the exact task id; never derive the
+            # opaque id from the task number.
+            if detail_page == "/inspection/tasks" and not _api_rows_by_operation(
+                parent_observation if isinstance(parent_observation, dict) else {},
+                "GET /api/admin/inspection/tasks",
+            ):
+                try:
+                    seed = await asyncio.wait_for(
+                        self.gateway.invoke(
+                            principal,
+                            "admin.portal.read",
+                            {"startPath": "/inspection/tasks", "actions": [{"type": "observe"}]},
+                            allowed_tools=self.allowed_tools,
+                        ),
+                        timeout=min(45.0, self.timeout_budget.portal_read_seconds),
+                    )
+                    seed_payload = seed.get("result") if isinstance(seed, dict) else None
+                    seed_observation = seed_payload.get("observation") if isinstance(seed_payload, dict) else None
+                    if isinstance(seed_observation, dict):
+                        parent_observation = seed_observation
+                except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+                    pass
+            detail_observation = await self._open_record_detail(
+                principal,
+                detail_page,
+                detail_identity,
+                question,
+                parent_observation if isinstance(parent_observation, dict) else None,
+            )
             if detail_observation:
                 detail_facts = _record_detail_facts(question, detail_observation, detail_identity)
                 if detail_facts:
                     existing = {re.sub(r"\s+", " ", str(fact)).strip().casefold() for fact in outcome.result.facts}
                     additions = [fact for fact in detail_facts if fact.casefold() not in existing]
                     if additions:
+                        # The first list read may already have added a generic
+                        # "not rendered" note.  Once the exact detail/checklist
+                        # response is verified, that note is stale and must not
+                        # sit beside the authoritative detail facts.
+                        has_checklist_evidence = any(
+                            str(fact).startswith("Inspection checklist materials/steps returned for ")
+                            or str(fact).startswith("The inspection checklist endpoint returned no materials or steps for ")
+                            for fact in detail_facts
+                        )
+                        retained_facts = tuple(
+                            fact for fact in outcome.result.facts
+                            if not (
+                                has_checklist_evidence
+                                and "Required materials/attachments are not rendered on the page that was read" in str(fact)
+                            )
+                        )
                         merged = replace(
                             outcome.result,
                             status="success",
-                            facts=(*outcome.result.facts, *additions)[:24],
+                            page=detail_page,
+                            facts=(*retained_facts, *additions)[:24],
                             missing=tuple(
                                 code for code in outcome.result.missing
                                 if code not in {"knowledge_not_grounded"}
@@ -9913,7 +10275,11 @@ class AdminPortalReader:
                         outcome = ReaderOutcome(merged, {
                             **outcome.audit_evidence,
                             "stage": "record_detail_read",
-                            "recordDetail": {"identity": detail_identity, "factCount": len(additions)},
+                            "recordDetail": {
+                                "identity": detail_identity,
+                                "factCount": len(additions),
+                                "checklistVerified": has_checklist_evidence,
+                            },
                             "result": merged.public_json(),
                         })
         # These run last: they add fields the page's own read API returned and
@@ -10093,6 +10459,8 @@ class AdminPortalReader:
         principal: Principal,
         page: str,
         identity: str,
+        question: str = "",
+        parent_observation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Open one record's own detail page through the page's row/cell click.
 
@@ -10104,17 +10472,74 @@ class AdminPortalReader:
 
         if not page or not identity:
             return {}
+        related_reads: list[dict[str, Any]] = []
+        parent_operation = _INSPECTION_TASK_DETAIL_OPERATION
+        task_id: str | None = None
+        if page == "/inspection/tasks" and isinstance(parent_observation, dict):
+            # The task table is the verified parent when the UI exposes no
+            # usable detail click. Bind the requested task number to the
+            # exact opaque id returned by that table; never derive an id.
+            for row in _api_rows_by_operation(parent_observation, "GET /api/admin/inspection/tasks"):
+                if str(row.get("taskNo") or "").strip() != str(identity).strip():
+                    continue
+                candidate_id = row.get("id")
+                if type(candidate_id) in {str, int} and re.fullmatch(r"[A-Za-z0-9_-]{1,120}", str(candidate_id)):
+                    task_id = str(candidate_id)
+                break
+        if page == "/inspection/tasks" and _inspection_history_request(question):
+            # These are reviewed, read-only request-parameter collections. The
+            # gateway resolves taskId from the exact detail response and then
+            # verifies every page against that same target scope.
+            for operation, relationship, fields in (
+                (
+                    _INSPECTION_TASK_TARGET_HISTORY_OPERATION,
+                    "admin.inspection.task.target-history",
+                    ["id", "taskNo", "targetName", "targetTypeName", "statusName", "inspectorName", "createdOn", "dueDate", "assignmentState"],
+                ),
+                (
+                    _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION,
+                    "admin.inspection.violation.target-history",
+                    ["violationId", "violationNo", "violatorName", "violationTypeName", "fineAmount", "statusName", "sourceTaskId", "sourceTaskNo", "reportedByName", "createdOn", "paidTime"],
+                ),
+            ):
+                related_reads.append({
+                    "relationshipRef": relationship,
+                    "operationKey": operation,
+                    "parentOperationKey": parent_operation,
+                    "parentPath": "/data",
+                    "parentField": "id",
+                    "parameter": "taskId",
+                    "ownership": "request_parameter_collection",
+                    "collectionPath": "/data/items",
+                    "projections": [{"path": "/data/items", "fields": fields}],
+                })
+        elif page == "/inspection/tasks" and _RECORD_DETAIL_REQUEST.search(str(question or "")):
+            related_reads.append({
+                "operationKey": _INSPECTION_CHECKLIST_OPERATION,
+                "parentOperationKey": parent_operation,
+                "parentPath": "/data",
+                "parentField": "id",
+                "parameter": "id",
+                "responseKeyPath": "/data/taskId",
+            })
+        actions: list[dict[str, Any]]
+        page_reads: list[dict[str, Any]] = []
+        if task_id is not None:
+            page_reads.append({"operationKey": parent_operation, "parameters": {"id": task_id}})
+            actions = [{"type": "observe"}]
+        else:
+            actions = [{"type": "show_detail", "role": "cell", "name": identity, "value": identity}]
         try:
             result = await asyncio.wait_for(
                 self.gateway.invoke(
                     principal,
                     "admin.portal.read",
-                    {"startPath": page, "actions": [
-                        {"type": "show_detail", "role": "cell", "name": identity, "value": identity},
-                    ]},
+                    {"startPath": page, "actions": actions,
+                     **({"pageReads": page_reads} if page_reads else {}),
+                     **({"relatedReads": related_reads} if related_reads else {})},
                     allowed_tools=self.allowed_tools,
                 ),
-                timeout=min(45.0, self.timeout_budget.portal_read_seconds),
+                timeout=min(60.0, max(45.0, self.timeout_budget.portal_read_seconds)),
             )
         except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
             return {}

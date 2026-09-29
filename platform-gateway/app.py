@@ -829,6 +829,41 @@ def _reader_request_variant(request_obj: Any) -> str:
     ).hexdigest()
 
 
+def _reader_inspection_identity_rows(payload: Any) -> list[dict[str, str]]:
+    """Project only the stable task-list identity needed for a detail read."""
+
+    current = payload
+    # The Admin service wraps list responses in one or more ``data`` objects.
+    # Unwrap those envelopes without making assumptions about other fields.
+    for _ in range(4):
+        if not isinstance(current, dict):
+            break
+        nested = current.get("data")
+        if isinstance(nested, (dict, list)):
+            current = nested
+        else:
+            break
+    items = current.get("items") if isinstance(current, dict) else current
+    if not isinstance(items, list):
+        return []
+    projected: list[dict[str, str]] = []
+    for row in items[:READER_MAX_OUTPUT_ITEMS]:
+        if not isinstance(row, dict):
+            continue
+        task_no = row.get("taskNo")
+        row_id = row.get("id")
+        if not isinstance(task_no, (str, int)) or not isinstance(row_id, (str, int)):
+            continue
+        task_text = str(task_no).strip()
+        id_text = str(row_id).strip()
+        if not task_text or not re.fullmatch(r"IN-[A-Za-z0-9_-]{3,120}", task_text, re.I):
+            continue
+        if not id_text or not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", id_text):
+            continue
+        projected.append({"taskNo": task_text[:120], "id": id_text[:120]})
+    return projected
+
+
 def _reader_field_evidence(original: Any, captured: Any) -> dict:
     """Field-level transport proof; never returns the original values."""
     receipts = {}
@@ -913,11 +948,19 @@ def _reader_bounded_api_evidence(value: Any, *, projected_array_paths: set[str] 
 
     def visit(item: Any, depth: int = 0, path: str = '') -> Any:
         nonlocal remaining_nodes, remaining_chars, truncated
-        if (
-            remaining_nodes <= 0
-            or remaining_chars <= 0
-            or depth >= READER_MAX_API_EVIDENCE_DEPTH
-        ):
+        # Preserve only verified business identity scalars at the depth edge
+        # (needed to bind a list row to its detail endpoint) and scalars under
+        # an explicitly reviewed related-array projection. All other deep
+        # content remains truncated as before.
+        depth_edge_scalar = (
+            depth >= READER_MAX_API_EVIDENCE_DEPTH
+            and isinstance(item, (str, bool, int, float))
+            and (
+                re.fullmatch(r'/data/items/\d+/(?:id|taskNo)', path)
+                or any(path.startswith(prefix.rstrip('/') + '/') for prefix in (projected_array_paths or set()))
+            )
+        )
+        if remaining_nodes <= 0 or remaining_chars <= 0 or (depth >= READER_MAX_API_EVIDENCE_DEPTH and not depth_edge_scalar):
             truncated = True
             return omitted
         remaining_nodes -= 1
@@ -1159,6 +1202,17 @@ async def _reader_capture_api_response_evidence(
     candidate["responseEvidence"] = evidence
     candidate["responseEvidenceTruncated"] = truncated
     candidate["fieldEvidence"] = _reader_field_evidence(payload, evidence)
+    # The generic bounded response projection may truncate nested list rows at
+    # the observation boundary.  For the inspection task list we still need a
+    # verifiable binding between the rendered task number and the opaque
+    # detail id.  Retain only that pair (never the full row) as a bounded,
+    # reviewed identity receipt so the backend can issue the exact detail read.
+    if operation_key == "GET /api/admin/inspection/tasks":
+        identity_rows = _reader_inspection_identity_rows(payload)
+        if identity_rows:
+            candidate["identityRows"] = identity_rows
+        else:
+            candidate.pop("identityRows", None)
     candidate["structuredDocuments"] = _reader_structured_documents(payload)
     # Private request material stays in this browser session. Only a digest,
     # field names and response schema cross the discovery boundary.
@@ -1493,14 +1547,28 @@ async def _collect_projected_rows(spec: ProjectedCollectionRequest, captured: di
 def _page_read_target(spec, portal_origin):
     if not spec.operationKey.startswith(('GET ', 'POST ')):
         raise ValueError('page_read_not_readonly')
-    method, path = spec.operationKey.split(' ', 1)
-    if ('{' in path or not any(x['method'] == method and x['path'] == path for x in READER_OPERATION_CATALOG)):
+    method, template = spec.operationKey.split(' ', 1)
+    placeholders = re.findall(r'\{([^}]+)\}', template)
+    if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', name) for name in placeholders):
+        raise ValueError('page_read_parameter_invalid')
+    if not any(x['method'] == method and x['path'] == template for x in READER_OPERATION_CATALOG):
         raise ValueError('page_read_not_registered')
     if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', key) or COLLECTION_RESTRICTED.search(key)
             or len(str(value)) > 120 for key, value in spec.parameters.items()):
         raise ValueError('page_read_parameter_invalid')
-    params = {key: str(value).lower() if type(value) is bool else str(value) for key, value in spec.parameters.items()}
-    url = portal_origin + path + ('?' + urlencode(params) if params and method == 'GET' else '')
+    if set(placeholders) - set(spec.parameters):
+        raise ValueError('page_read_parameter_invalid')
+    path = template
+    for name in placeholders:
+        value = str(spec.parameters[name])
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,120}', value):
+            raise ValueError('page_read_parameter_invalid')
+        path = path.replace('{' + name + '}', value)
+    query_params = {
+        key: str(value).lower() if type(value) is bool else str(value)
+        for key, value in spec.parameters.items() if key not in placeholders
+    }
+    url = portal_origin + path + ('?' + urlencode(query_params) if query_params and method == 'GET' else '')
     if not _reader_api_configured_policy_allows(SimpleNamespace(url=url, method=method), portal_origin):
         raise ValueError('page_read_not_allowed')
     return url
@@ -1569,7 +1637,22 @@ async def _reader_page_reads(page, specs, portal_origin):
 
 
 def _related_read_target(spec, candidates, portal_origin):
+    # Supplemental page reads are recorded with a context-qualified storage
+    # key so multiple parameterised reads cannot overwrite one another.  A
+    # reviewed related-read contract, however, refers to the stable operation
+    # key.  Resolve that one exact operation here rather than treating a
+    # successful page read as if it had no parent response.
     parent = candidates.get(spec.parentOperationKey, {})
+    if not isinstance(parent, dict) or parent.get("operationKey") != spec.parentOperationKey:
+        matches = [
+            candidate
+            for candidate in candidates.values()
+            if isinstance(candidate, dict) and candidate.get("operationKey") == spec.parentOperationKey
+        ]
+        # One reviewed parent operation is unambiguous.  Multiple parameter
+        # variants remain deliberately rejected: their IDs must never be
+        # guessed or mixed when following a relationship.
+        parent = matches[0] if len(matches) == 1 else {}
     if (parent.get('policyState') != 'allowed' or not isinstance(parent.get('status'), int)
             or not 200 <= parent['status'] < 300):
         raise ValueError('related_parent_not_authorized')
@@ -1578,7 +1661,9 @@ def _related_read_target(spec, candidates, portal_origin):
     template = spec.operationKey[4:]
     if not any(x['method'] == 'GET' and x['path'] == template for x in READER_OPERATION_CATALOG):
         raise ValueError('related_operation_not_registered')
-    if (re.findall(r'\{([^}]+)\}', template) != [spec.parameter]
+    placeholders = re.findall(r'\{([^}]+)\}', template)
+    if ((placeholders and placeholders != [spec.parameter])
+            or (not placeholders and spec.ownership != 'request_parameter_collection')
             or COLLECTION_RESTRICTED.search(spec.parentField)
             or COLLECTION_RESTRICTED.search(spec.responseKeyPath or spec.collectionPath or '')):
         raise ValueError('related_parameter_invalid')
@@ -1597,7 +1682,14 @@ def _related_read_target(spec, candidates, portal_origin):
     key_receipt = parent.get('fieldEvidence', {}).get(key_path, {})
     if key_receipt.get('status') != 'complete' or key_receipt.get('valueHash') != _collection_digest(key):
         raise ValueError('related_parent_key_unverified')
-    url = portal_origin + template.replace('{'+spec.parameter+'}', str(key))
+    if placeholders:
+        url = portal_origin + template.replace('{'+spec.parameter+'}', str(key))
+    else:
+        # Target-history endpoints accept the verified parent id as a query
+        # parameter rather than a path segment. The operation remains a
+        # catalogued static GET; only the observed parent key is substituted.
+        separator = '&' if '?' in template else '?'
+        url = portal_origin + template + separator + urlencode({spec.parameter: str(key)})
     if not _reader_api_configured_policy_allows(SimpleNamespace(url=url, method='GET'), portal_origin):
         raise ValueError('related_operation_not_allowed')
     receipt = {**spec.model_dump(), 'parentValueHash': _collection_digest({spec.parentField: key}), 'keyHash': _collection_digest(key)}
@@ -1680,6 +1772,58 @@ async def _reader_related(page, specs, portal_origin):
         try:
             url, receipt = _related_read_target(spec, candidates, portal_origin)
             payload, status = await _reader_get_document(page, url)
+            collection_complete = True
+            collection_total = None
+            collection_pages = 1
+            if spec.ownership == 'request_parameter_collection':
+                # Target-scoped task history is paginated by the UMC service.
+                # Read every page with the same verified target parameter and
+                # reject a changing total or repeated page before answering.
+                data = payload.get('data') if isinstance(payload, dict) else None
+                rows_key = spec.collectionPath.rsplit('/', 1)[-1]
+                if isinstance(data, dict) and isinstance(data.get(rows_key), list):
+                    first_rows = data.get(rows_key) or []
+                    total_value = data.get('totalCount', data.get('total'))
+                    page_size_value = data.get('pageSize')
+                    page_index_value = data.get('pageIndex', 1)
+                    if type(total_value) is int and total_value >= 0:
+                        collection_total = total_value
+                        if total_value > len(first_rows):
+                            if type(page_size_value) is not int or page_size_value <= 0:
+                                raise ValueError('related_collection_pagination_missing')
+                            page_index = page_index_value if type(page_index_value) is int and page_index_value > 0 else 1
+                            seen_pages = {_collection_digest(first_rows)} if first_rows else set()
+                            while len(data[rows_key]) < total_value:
+                                page_index += 1
+                                next_url = url + ('&' if '?' in url else '?') + urlencode({
+                                    'pageIndex': page_index,
+                                    'pageSize': page_size_value,
+                                })
+                                next_payload, next_status = await _reader_get_document(page, next_url)
+                                if next_status != status:
+                                    raise ValueError('related_collection_status_changed')
+                                next_data = next_payload.get('data') if isinstance(next_payload, dict) else None
+                                if not isinstance(next_data, dict) or not isinstance(next_data.get(rows_key), list):
+                                    raise ValueError('related_collection_page_invalid')
+                                next_total = next_data.get('totalCount', next_data.get('total'))
+                                if next_total != total_value:
+                                    raise ValueError('related_collection_total_changed')
+                                next_rows = next_data.get(rows_key) or []
+                                page_digest = _collection_digest(next_rows)
+                                if next_rows and page_digest in seen_pages:
+                                    raise ValueError('related_collection_repeated_page')
+                                seen_pages.add(page_digest)
+                                data[rows_key].extend(next_rows)
+                                collection_pages += 1
+                                if len(data[rows_key]) > total_value or not next_rows:
+                                    raise ValueError('related_collection_page_incomplete')
+                            collection_complete = len(data[rows_key]) == total_value
+                        else:
+                            collection_complete = len(first_rows) == total_value
+                    elif rows_key == 'items':
+                        # A non-paginated target collection is complete only
+                        # when its explicit total agrees with its rows.
+                        collection_complete = type(data.get('total')) is int and len(first_rows) == data.get('total')
             if spec.ownership == 'echoed_key' and _collection_digest(_collection_pointer(payload, spec.responseKeyPath)) != receipt['keyHash']:
                 raise ValueError('related_response_identity_mismatch')
             projected, projection_receipts = _reader_project_related_arrays(payload, spec.projections, spec.responseKeyPath)
@@ -1705,6 +1849,8 @@ async def _reader_related(page, specs, portal_origin):
                         or array_receipt.get('valueHash') != _collection_digest(rows)
                         or projection_receipts[0]['projectedArrayHash'] != _collection_digest(rows)):
                     raise ValueError('related_collection_incomplete')
+            receipt.update(complete=collection_complete, pagesRead=collection_pages,
+                           **({'total': collection_total} if collection_total is not None else {}))
             trigger = 'verified_related_collection' if collection else 'verified_related_read'
             candidates[spec.operationKey] = {'operationKey': spec.operationKey, 'method': 'GET',
                 'path': spec.operationKey[4:], 'pathTemplate': spec.operationKey[4:], 'status': status,
@@ -2821,6 +2967,24 @@ async def _detail_identity_is_visible(page: Page, identity: str, *, overlay_open
     locator = root.get_by_text(identity, exact=True)
     for index in range(await locator.count()):
         if await locator.nth(index).is_visible():
+            return True
+    # Detail cards commonly render a verified identifier with its field label
+    # (for example, ``Task No: IN-2026-0141753``) rather than as a standalone
+    # text node.  Accept that presentation only when the complete identifier
+    # appears as a bounded token in a small visible element; this keeps the
+    # click/route proof tied to the requested record and avoids accepting a
+    # partial ID or a huge page-level container.
+    token = re.compile(rf"(?<![A-Za-z0-9]){re.escape(identity)}(?![A-Za-z0-9])")
+    labelled = root.get_by_text(token)
+    for index in range(min(await labelled.count(), 40)):
+        item = labelled.nth(index)
+        if not await item.is_visible():
+            continue
+        try:
+            text = re.sub(r"\s+", " ", await item.inner_text()).strip()
+        except Exception:
+            continue
+        if len(text) <= 500 and token.search(text):
             return True
     return False
 
@@ -3969,9 +4133,11 @@ async def admin_portal_read(
     progress = {'stage': 'identity'}
     progress_token = READER_PROGRESS.set(progress)
     try:
-        async with asyncio.timeout(request.timeout_seconds):
-            return await _execute_admin_portal_read(request, authorization, x_request_id, x_user_id)
-    except TimeoutError:
+        return await asyncio.wait_for(
+            _execute_admin_portal_read(request, authorization, x_request_id, x_user_id),
+            timeout=request.timeout_seconds,
+        )
+    except asyncio.TimeoutError:
         return _sanitize_reader_output({"status": "load_failed", "summary": "The Admin Portal read timed out.",
                                         "limitations": ["reader_total_timeout"],
                                         "diagnostics": {"stage": progress['stage'], "budgetSeconds": request.timeout_seconds}})

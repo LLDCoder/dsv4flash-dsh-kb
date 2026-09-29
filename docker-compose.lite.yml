@@ -39,9 +39,11 @@ services:
       PORTAL_READER_WHITELIST_ENABLED: ${PORTAL_READER_WHITELIST_ENABLED:-true}
       PORTAL_READER_WHITELIST_FILE: /app/config/reader-network-policy.json
       PORTAL_READER_OPERATION_CATALOG: /app/config/reader-operation-catalog.json
+      PORTAL_READER_RELATED_COLLECTION_CONTRACTS: /app/config/reader-related-collection-contracts.json
     volumes:
       - ./platform-gateway/config/reader-network-policy.json:/app/config/reader-network-policy.json:ro
       - ./platform-gateway/config/reader-operation-catalog.json:/app/config/reader-operation-catalog.json:ro
+      - ./platform-gateway/config/reader-related-collection-contracts.json:/app/config/reader-related-collection-contracts.json:ro
     expose:
       - "8102"
     command: uvicorn app:app --host 0.0.0.0 --port 8102

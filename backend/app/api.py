@@ -47,18 +47,21 @@ _DUMMY_AUDIT_PASSWORD_HASH = hash_password("audit-console-invalid-password")
 async def websocket_identity(platform, token: str, request_id: str) -> tuple[str | None, str | None]:
     """Use the same configured identity client as Reader; never call a timeout a denial."""
     budget = min(max(float(getattr(platform, "timeout", 50)), 1), 60)
+
+    async def resolve() -> tuple[str | None, str | None]:
+        for attempt in range(2):
+            identity, error = await _websocket_identity_once(platform, token, request_id)
+            if error not in {"identity_dependency_timeout", "identity_dependency_unavailable"}:
+                return identity, error
+            logger.info("umc_ws_identity_dependency request_id=%s attempt=%s code=%s",
+                        request_id[:128], attempt + 1, error)
+            if attempt == 0:
+                await asyncio.sleep(0.15)
+        return None, error
+
     try:
-        async with asyncio.timeout(budget):
-            for attempt in range(2):
-                identity, error = await _websocket_identity_once(platform, token, request_id)
-                if error not in {"identity_dependency_timeout", "identity_dependency_unavailable"}:
-                    return identity, error
-                logger.info("umc_ws_identity_dependency request_id=%s attempt=%s code=%s",
-                            request_id[:128], attempt + 1, error)
-                if attempt == 0:
-                    await asyncio.sleep(0.15)
-            return None, error
-    except TimeoutError:
+        return await asyncio.wait_for(resolve(), timeout=budget)
+    except asyncio.TimeoutError:
         return None, "identity_dependency_timeout"
 
 
@@ -1077,6 +1080,15 @@ def make_router(service: DSHService) -> APIRouter:
         Topic retrieval does not use unrelated permitted routes as search terms.
         Recovery proposes the best documented local route for permission validation;
         an unavailable target is not replaced with an accessible sibling page.
+        Current-session capability answers are projected from authorized display
+        pages and never enumerate fixed modules or internal permission API names.
+        Inspection task detail reads may include the allowlisted checklist-template
+        response. Today-by-inspector summaries filter by an observed task date and
+        never count stale rows as today. Transfer/reassignment requests are read-only
+        refusals with the portal workflow. Inspection institution-history reads use
+        the verified task detail as the parent, then the allowlisted task/violation
+        by-target GET collections with stable target parameters and complete-page
+        receipts; an ordinary violations list is never substituted for that scope.
         """
         try:
             return await service.submit_message(
