@@ -4,26 +4,40 @@ import hmac
 import json
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import httpx
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import String, cast, delete, func, not_, or_, select
+from sqlalchemy import String, and_, cast, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
+from .audit_auth import (
+    AUDIT_ROLE_ADMINISTRATOR,
+    AUDIT_SESSION_COOKIE,
+    AuditPrincipal,
+    LoginRateLimiter,
+    hash_password,
+    issue_session_token,
+    normalize_username,
+    session_token_digest,
+    valid_role,
+    verify_password,
+)
 from .config import config_catalog, get_settings
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, CONSOLE_SESSION_COOKIE, CONSOLE_SESSION_MAX_AGE_SECONDS, issue_session, verify_session
 from .customer_documents import CustomerDocumentNotConfigured
-from .db import AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, Tool, get_db
+from .db import AuditOperator, AuditOperatorEvent, AuditOperatorSession, AuditRecord, ConfigEntry, Conversation, MessageFeedback, MessageIdempotency, SessionEvent, Skill, Tool, get_db
 from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .profile_scope import normalize_profile_scope
-from .schemas import ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
+from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
 from .service import DSHService
+from .schemas import AuditLogoutResponse, AuditSessionResponse
 from .testcases import generate_test_cases, run_test_cases
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key, is_system_default_tool, system_default_tool_definitions
 from .umc_auth import UMCAuthError
@@ -31,6 +45,15 @@ from .umc_auth import UMCAuthError
 # Uvicorn configures this logger at INFO for container output. Using it keeps
 # correlation records visible without changing the global logging policy.
 logger = logging.getLogger("uvicorn.error")
+
+# An unknown username still performs one real password derivation, reducing
+# the timing difference between missing and existing audit-console accounts.
+_DUMMY_AUDIT_PASSWORD_HASH = hash_password("audit-console-invalid-password")
+
+# The customer audit console exposes operational DSH settings while keeping the
+# deployment pinned to the Customer Portal environment.
+_AUDIT_CONFIG_HIDDEN_KEYS = {"umc_admin_base_url", "umc_public_base_url"}
+_AUDIT_CONFIG_READ_ONLY_KEYS = {"umc_portal"}
 
 
 def message_feedback_change(
@@ -134,23 +157,25 @@ def audit_identity_from_user_info(payload: Any) -> dict[str, str]:
 def audit_identity_from_payloads(payloads: list[Any]) -> dict[str, str]:
     """Project the latest available customer identity into the audit overview."""
 
+    result = {"account": "", "currentRole": ""}
     for payload in payloads:
         identity = payload.get("auditIdentity") if isinstance(payload, dict) else None
         if not isinstance(identity, dict):
             continue
         account = identity.get("account")
         current_role = identity.get("currentRole")
-        result = {
-            "account": str(account).strip()[:300] if isinstance(account, (str, int)) else "",
-            "currentRole": str(current_role).strip()[:300] if isinstance(current_role, (str, int)) else "",
-        }
-        if result["account"] or result["currentRole"]:
-            return result
-    return {"account": "", "currentRole": ""}
+        if not result["account"] and isinstance(account, (str, int)):
+            result["account"] = str(account).strip()[:300]
+        if not result["currentRole"] and isinstance(current_role, (str, int)):
+            result["currentRole"] = str(current_role).strip()[:300]
+        if result["account"] and result["currentRole"]:
+            break
+    return result
 
 
 def make_router(service: DSHService) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
+    audit_login_limiter = LoginRateLimiter()
 
     def token_profile_id(token: str | None) -> str | None:
         if not token:
@@ -229,6 +254,96 @@ def make_router(service: DSHService) -> APIRouter:
         if not verify_session(request.cookies.get(CONSOLE_SESSION_COOKIE), password):
             raise HTTPException(status_code=401, detail="console authentication required")
 
+    def aware_utc(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+    def audit_remote_address(request: Request) -> str:
+        return (request.client.host if request.client else "")[:128]
+
+    def audit_operator_json(operator: AuditOperator) -> dict[str, object]:
+        return {
+            "id": operator.id,
+            "username": operator.username,
+            "displayName": operator.display_name,
+            "role": operator.role,
+            "disabled": operator.disabled,
+            "lockedUntil": operator.locked_until.isoformat() if operator.locked_until else None,
+            "lastLoginAt": operator.last_login_at.isoformat() if operator.last_login_at else None,
+            "createdAt": operator.created_at.isoformat() if operator.created_at else None,
+            "updatedAt": operator.updated_at.isoformat() if operator.updated_at else None,
+        }
+
+    async def resolve_audit_session(request: Request, db: AsyncSession) -> tuple[AuditPrincipal, AuditOperator] | None:
+        token = request.cookies.get(AUDIT_SESSION_COOKIE)
+        if not token:
+            return None
+        result = await db.execute(
+            select(AuditOperatorSession, AuditOperator)
+            .join(AuditOperator, AuditOperator.id == AuditOperatorSession.operator_id)
+            .where(AuditOperatorSession.token_digest == session_token_digest(token))
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        session, operator = row
+        now = datetime.now(timezone.utc)
+        idle_seconds = max(60, int(service.settings.audit_session_idle_seconds))
+        is_expired = (
+            session.revoked_at is not None
+            or aware_utc(session.expires_at) <= now
+            or aware_utc(session.last_seen_at) + timedelta(seconds=idle_seconds) <= now
+            or aware_utc(session.created_at) < aware_utc(operator.password_changed_at)
+        )
+        if operator.disabled or not valid_role(operator.role) or is_expired:
+            if session.revoked_at is None:
+                session.revoked_at = now
+                await db.commit()
+            return None
+        session.last_seen_at = now
+        await db.commit()
+        return AuditPrincipal(
+            operator_id=operator.id,
+            username=operator.username,
+            display_name=operator.display_name,
+            role=operator.role,
+            session_id=session.id,
+        ), operator
+
+    async def require_audit_session(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+    ) -> AuditPrincipal:
+        resolved = await resolve_audit_session(request, db)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="audit authentication required")
+        return resolved[0]
+
+    async def require_audit_administrator(
+        principal: AuditPrincipal = Depends(require_audit_session),
+    ) -> AuditPrincipal:
+        if not principal.is_administrator:
+            raise HTTPException(status_code=403, detail="administrator role required")
+        return principal
+
+    def ensure_not_last_administrator(
+        locked_operators: list[AuditOperator],
+        operator: AuditOperator,
+        *,
+        next_role: str,
+        next_disabled: bool,
+    ) -> None:
+        if operator.role != AUDIT_ROLE_ADMINISTRATOR or operator.disabled:
+            return
+        if next_role == AUDIT_ROLE_ADMINISTRATOR and not next_disabled:
+            return
+        active_administrator_ids = [
+            item.id
+            for item in locked_operators
+            if item.role == AUDIT_ROLE_ADMINISTRATOR and not item.disabled
+        ]
+        if not any(operator_id != operator.id for operator_id in active_administrator_ids):
+            raise HTTPException(status_code=409, detail="the last active Administrator cannot be disabled or demoted")
+
     @router.post("/console/login", tags=["Test console"])
     async def console_login(payload: ConsoleLogin, request: Request, db: AsyncSession = Depends(get_db)):
         """Unlock the Docker test console and issue an HttpOnly session cookie."""
@@ -260,6 +375,298 @@ def make_router(service: DSHService) -> APIRouter:
         response = JSONResponse({"authenticated": False})
         response.delete_cookie(key=CONSOLE_SESSION_COOKIE, path="/")
         return response
+
+    @router.post(
+        "/audit-auth/login", tags=["Audit console"], response_model=AuditSessionResponse,
+        summary="Sign in to the Customer audit console",
+        description="Authenticate a named Customer audit operator using username and password. "
+        "Success sets the independent HttpOnly, SameSite=Strict dsh_audit_session cookie. "
+        "The legacy shared console password is not an audit account password.",
+        responses={401: {"description": "Invalid credentials or disabled account"},
+                   429: {"description": "Account locked or source login rate limit exceeded"}},
+    )
+    async def audit_login(payload: AuditLogin, request: Request, db: AsyncSession = Depends(get_db)):
+        """Authenticate a named audit operator and issue an opaque session."""
+
+        username = normalize_username(payload.username)
+        remote_address = audit_remote_address(request)
+        rate_key = f"{remote_address}\n{username}"
+        retry_after = audit_login_limiter.check(
+            rate_key,
+            limit=int(service.settings.audit_login_rate_max_attempts),
+            window_seconds=int(service.settings.audit_login_rate_window_seconds),
+        )
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="too many login attempts",
+                headers={"Retry-After": str(retry_after)},
+            )
+        result = await db.execute(select(AuditOperator).where(AuditOperator.username == username).with_for_update())
+        operator = result.scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        if operator is None:
+            await asyncio.to_thread(verify_password, payload.password, _DUMMY_AUDIT_PASSWORD_HASH)
+            db.add(AuditOperatorEvent(
+                username=username,
+                event_type="login.failed",
+                remote_address=remote_address,
+                detail={"reason": "invalid_credentials"},
+            ))
+            await db.commit()
+            raise HTTPException(status_code=401, detail="invalid username or password")
+
+        if operator.disabled:
+            await asyncio.to_thread(verify_password, payload.password, operator.password_hash)
+            db.add(AuditOperatorEvent(
+                target_operator_id=operator.id,
+                username=operator.username,
+                event_type="login.failed",
+                remote_address=remote_address,
+                detail={"reason": "invalid_credentials"},
+            ))
+            await db.commit()
+            raise HTTPException(status_code=401, detail="invalid username or password")
+
+        if operator.locked_until and aware_utc(operator.locked_until) > now:
+            db.add(AuditOperatorEvent(
+                target_operator_id=operator.id,
+                username=operator.username,
+                event_type="login.blocked",
+                remote_address=remote_address,
+                detail={},
+            ))
+            await db.commit()
+            raise HTTPException(status_code=429, detail="account temporarily locked")
+
+        if operator.locked_until:
+            operator.locked_until = None
+            operator.failed_login_attempts = 0
+
+        if not await asyncio.to_thread(verify_password, payload.password, operator.password_hash):
+            operator.failed_login_attempts += 1
+            locked = operator.failed_login_attempts >= max(1, int(service.settings.audit_login_max_failures))
+            if locked:
+                operator.locked_until = now + timedelta(seconds=max(1, int(service.settings.audit_login_lock_seconds)))
+            db.add(AuditOperatorEvent(
+                target_operator_id=operator.id,
+                username=operator.username,
+                event_type="login.failed",
+                remote_address=remote_address,
+                detail={"locked": locked},
+            ))
+            await db.commit()
+            if locked:
+                raise HTTPException(status_code=429, detail="account temporarily locked")
+            raise HTTPException(status_code=401, detail="invalid username or password")
+
+        operator.failed_login_attempts = 0
+        operator.locked_until = None
+        operator.last_login_at = now
+        raw_token, token_digest = issue_session_token()
+        max_age = max(300, int(service.settings.audit_session_max_age_seconds))
+        audit_session = AuditOperatorSession(
+            operator_id=operator.id,
+            token_digest=token_digest,
+            created_at=now,
+            last_seen_at=now,
+            expires_at=now + timedelta(seconds=max_age),
+        )
+        db.add(audit_session)
+        db.add(AuditOperatorEvent(
+            actor_operator_id=operator.id,
+            target_operator_id=operator.id,
+            username=operator.username,
+            event_type="login.succeeded",
+            remote_address=remote_address,
+            detail={},
+        ))
+        await db.commit()
+        audit_login_limiter.reset(rate_key)
+        response = JSONResponse({
+            "authenticated": True,
+            "expiresInSeconds": max_age,
+            "user": audit_operator_json(operator),
+        })
+        response.set_cookie(
+            key=AUDIT_SESSION_COOKIE,
+            value=raw_token,
+            max_age=max_age,
+            httponly=True,
+            secure=bool(service.settings.audit_cookie_secure or request.url.scheme == "https"),
+            samesite="strict",
+            path="/",
+        )
+        return response
+
+    @router.get(
+        "/audit-auth/session", tags=["Audit console"], response_model=AuditSessionResponse,
+        summary="Check the Customer audit session",
+        description="Reads the dsh_audit_session cookie. Missing, revoked, or expired sessions "
+        "return authenticated=false and user=null. No UMC Portal login is required.",
+    )
+    async def audit_session(request: Request, db: AsyncSession = Depends(get_db)):
+        resolved = await resolve_audit_session(request, db)
+        if resolved is None:
+            return {"authenticated": False, "expiresInSeconds": 0, "user": None}
+        principal, operator = resolved
+        session_row = await db.get(AuditOperatorSession, principal.session_id)
+        now = datetime.now(timezone.utc)
+        expires_in = max(0, int((aware_utc(session_row.expires_at) - now).total_seconds())) if session_row else 0
+        return {"authenticated": True, "expiresInSeconds": expires_in, "user": audit_operator_json(operator)}
+
+    @router.post(
+        "/audit-auth/logout", tags=["Audit console"], response_model=AuditLogoutResponse,
+        summary="Sign out of the Customer audit console",
+        description="Revokes the current dsh_audit_session in the Customer database and clears "
+        "the browser cookie. Safe to call without a session.",
+    )
+    async def audit_logout(request: Request, db: AsyncSession = Depends(get_db)):
+        resolved = await resolve_audit_session(request, db)
+        if resolved is not None:
+            principal, operator = resolved
+            session_row = await db.get(AuditOperatorSession, principal.session_id)
+            if session_row:
+                session_row.revoked_at = datetime.now(timezone.utc)
+            db.add(AuditOperatorEvent(
+                actor_operator_id=operator.id,
+                target_operator_id=operator.id,
+                username=operator.username,
+                event_type="logout",
+                remote_address=audit_remote_address(request),
+                detail={},
+            ))
+            await db.commit()
+        response = JSONResponse({"authenticated": False})
+        response.delete_cookie(key=AUDIT_SESSION_COOKIE, path="/")
+        return response
+
+    @router.get("/audit/users", tags=["Audit console"])
+    async def list_audit_users(
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        result = await db.execute(select(AuditOperator).order_by(AuditOperator.created_at.asc(), AuditOperator.id.asc()))
+        return {"users": [audit_operator_json(operator) for operator in result.scalars().all()]}
+
+    @router.post("/audit/users", tags=["Audit console"], status_code=201)
+    async def create_audit_user(
+        payload: AuditOperatorCreate,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        username = normalize_username(payload.username)
+        display_name = payload.display_name.strip()
+        if len(username) < 3 or not display_name:
+            raise HTTPException(status_code=422, detail="username and displayName must not be blank")
+        operator = AuditOperator(
+            username=username,
+            display_name=display_name,
+            password_hash=await asyncio.to_thread(hash_password, payload.password),
+            role=payload.role,
+        )
+        db.add(operator)
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="username already exists") from exc
+        db.add(AuditOperatorEvent(
+            actor_operator_id=principal.operator_id,
+            target_operator_id=operator.id,
+            username=operator.username,
+            event_type="account.created",
+            remote_address=audit_remote_address(request),
+            detail={"role": operator.role},
+        ))
+        await db.commit()
+        await db.refresh(operator)
+        return {"user": audit_operator_json(operator)}
+
+    @router.patch("/audit/users/{operator_id}", tags=["Audit console"])
+    async def update_audit_user(
+        operator_id: int,
+        payload: AuditOperatorUpdate,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        # Account updates always acquire the complete operator set in one
+        # stable order. This avoids target-first/all-admin lock inversions.
+        locked_operators = list((await db.execute(
+            select(AuditOperator).order_by(AuditOperator.id.asc()).with_for_update()
+        )).scalars().all())
+        operator = next((item for item in locked_operators if item.id == operator_id), None)
+        if operator is None:
+            raise HTTPException(status_code=404, detail="audit user not found")
+        next_role = payload.role if payload.role is not None else operator.role
+        next_disabled = payload.disabled if payload.disabled is not None else operator.disabled
+        ensure_not_last_administrator(
+            locked_operators,
+            operator,
+            next_role=next_role,
+            next_disabled=next_disabled,
+        )
+        changed: dict[str, object] = {}
+        if payload.role is not None and payload.role != operator.role:
+            changed["role"] = {"from": operator.role, "to": payload.role}
+            operator.role = payload.role
+        if payload.disabled is not None and payload.disabled != operator.disabled:
+            changed["disabled"] = {"from": operator.disabled, "to": payload.disabled}
+            operator.disabled = payload.disabled
+        if changed:
+            if operator.disabled or "role" in changed:
+                await db.execute(
+                    AuditOperatorSession.__table__.update()
+                    .where(AuditOperatorSession.operator_id == operator.id, AuditOperatorSession.revoked_at.is_(None))
+                    .values(revoked_at=datetime.now(timezone.utc))
+                )
+            db.add(AuditOperatorEvent(
+                actor_operator_id=principal.operator_id,
+                target_operator_id=operator.id,
+                username=operator.username,
+                event_type="account.updated",
+                remote_address=audit_remote_address(request),
+                detail=changed,
+            ))
+            await db.commit()
+            await db.refresh(operator)
+        return {"user": audit_operator_json(operator)}
+
+    @router.post("/audit/users/{operator_id}/password", tags=["Audit console"])
+    async def reset_audit_user_password(
+        operator_id: int,
+        payload: AuditPasswordReset,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        operator = (await db.execute(
+            select(AuditOperator).where(AuditOperator.id == operator_id).with_for_update()
+        )).scalar_one_or_none()
+        if operator is None:
+            raise HTTPException(status_code=404, detail="audit user not found")
+        now = datetime.now(timezone.utc)
+        operator.password_hash = await asyncio.to_thread(hash_password, payload.password)
+        operator.password_changed_at = now
+        operator.failed_login_attempts = 0
+        operator.locked_until = None
+        await db.execute(
+            AuditOperatorSession.__table__.update()
+            .where(AuditOperatorSession.operator_id == operator.id, AuditOperatorSession.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+        db.add(AuditOperatorEvent(
+            actor_operator_id=principal.operator_id,
+            target_operator_id=operator.id,
+            username=operator.username,
+            event_type="password.reset",
+            remote_address=audit_remote_address(request),
+            detail={},
+        ))
+        await db.commit()
+        return {"reset": True, "userId": operator.id}
 
     @router.get("/ai-chat/config", tags=["Chatbot compatibility"])
     async def ai_chat_config(principal: Principal = Depends(chat_principal)):
@@ -311,7 +718,9 @@ def make_router(service: DSHService) -> APIRouter:
             "Record and Profile lookups are restricted to the trusted UMC token scope. "
             "User-supplied account or Profile names are not authorization selectors; "
             "cross-account requests receive a target-free refusal regardless of whether "
-            "the reference exists."
+            "the reference exists. Sentence punctuation around an account identifier "
+            "does not change this boundary. Reply language follows the question, "
+            "independently of the portal display language."
         ),
     )
     async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
@@ -525,20 +934,22 @@ def make_router(service: DSHService) -> APIRouter:
         page: int,
         page_size: int,
     ) -> dict[str, object]:
-        conversation_ids = [conversation.conversation_id for conversation in conversations]
+        conversation_ids = [conversation.dsh_session_id for conversation in conversations]
         title_by_conversation: dict[str, str] = {}
+        identity_by_conversation: dict[str, dict[str, str]] = {}
+        identity_by_owner: dict[tuple[str, str], dict[str, str]] = {}
         if conversation_ids:
             ranked_events = (
                 select(
-                    SessionEvent.conversation_id.label("conversation_id"),
+                    SessionEvent.dsh_session_id.label("conversation_id"),
                     SessionEvent.event_json.label("event_json"),
                     func.row_number().over(
-                        partition_by=SessionEvent.conversation_id,
+                        partition_by=SessionEvent.dsh_session_id,
                         order_by=(SessionEvent.created_at.asc(), SessionEvent.id.asc()),
                     ).label("row_number"),
                 )
                 .where(
-                    SessionEvent.conversation_id.in_(conversation_ids),
+                    SessionEvent.dsh_session_id.in_(conversation_ids),
                     SessionEvent.event_type == "user.message",
                 )
                 .subquery()
@@ -550,10 +961,81 @@ def make_router(service: DSHService) -> APIRouter:
                 str(conversation_id): str((event_json or {}).get("content", "")).strip()[:160]
                 for conversation_id, event_json in title_result.all()
             }
+            recent_identity_events = (
+                select(
+                    SessionEvent.dsh_session_id.label("conversation_id"),
+                    SessionEvent.event_json.label("event_json"),
+                    func.row_number().over(
+                        partition_by=SessionEvent.dsh_session_id,
+                        order_by=(SessionEvent.created_at.desc(), SessionEvent.id.desc()),
+                    ).label("row_number"),
+                )
+                .where(
+                    SessionEvent.dsh_session_id.in_(conversation_ids),
+                    SessionEvent.event_type == "user.message",
+                )
+                .subquery()
+            )
+            identity_result = await db.execute(
+                select(recent_identity_events.c.conversation_id, recent_identity_events.c.event_json)
+                .where(recent_identity_events.c.row_number <= 25)
+                .order_by(recent_identity_events.c.conversation_id, recent_identity_events.c.row_number)
+            )
+            identity_payloads: dict[str, list[Any]] = {}
+            for conversation_id, event_json in identity_result.all():
+                identity_payloads.setdefault(str(conversation_id), []).append(event_json or {})
+            identity_by_conversation = {
+                conversation_id: audit_identity_from_payloads(payloads)
+                for conversation_id, payloads in identity_payloads.items()
+            }
+            owner_keys = {(conversation.tenant_id, conversation.user_id) for conversation in conversations}
+            recent_owner_identity_events = (
+                select(
+                    SessionEvent.tenant_id,
+                    SessionEvent.user_id,
+                    SessionEvent.event_json,
+                    func.row_number().over(
+                        partition_by=(SessionEvent.tenant_id, SessionEvent.user_id),
+                        order_by=(SessionEvent.created_at.desc(), SessionEvent.id.desc()),
+                    ).label("row_number"),
+                )
+                .where(
+                    or_(*(
+                        and_(SessionEvent.tenant_id == tenant_id, SessionEvent.user_id == user_id)
+                        for tenant_id, user_id in owner_keys
+                    )),
+                    SessionEvent.event_type == "user.message",
+                )
+                .subquery()
+            )
+            owner_identity_result = await db.execute(
+                select(
+                    recent_owner_identity_events.c.tenant_id,
+                    recent_owner_identity_events.c.user_id,
+                    recent_owner_identity_events.c.event_json,
+                )
+                .where(recent_owner_identity_events.c.row_number <= 25)
+                .order_by(
+                    recent_owner_identity_events.c.tenant_id,
+                    recent_owner_identity_events.c.user_id,
+                    recent_owner_identity_events.c.row_number,
+                )
+            )
+            owner_identity_payloads: dict[tuple[str, str], list[Any]] = {}
+            for tenant_id, user_id, event_json in owner_identity_result.all():
+                owner_identity_payloads.setdefault((str(tenant_id), str(user_id)), []).append(event_json or {})
+            identity_by_owner = {
+                owner_key: audit_identity_from_payloads(payloads)
+                for owner_key, payloads in owner_identity_payloads.items()
+            }
         items: list[dict] = []
         for conversation in conversations:
-            item = {**service.conversation_json(conversation), "title": title_by_conversation.get(conversation.conversation_id, "")}
+            item = {**service.conversation_json(conversation), "title": title_by_conversation.get(conversation.dsh_session_id, "")}
             if is_admin:
+                event_identity = identity_by_conversation.get(conversation.dsh_session_id, {})
+                owner_identity = identity_by_owner.get((conversation.tenant_id, conversation.user_id), {})
+                item["ownerAccount"] = conversation.owner_account or event_identity.get("account") or owner_identity.get("account") or ""
+                item["ownerCurrentRole"] = event_identity.get("currentRole") or owner_identity.get("currentRole") or ""
                 item["ownerUserId"] = conversation.user_id
                 item["ownerTenantId"] = conversation.tenant_id
             items.append(item)
@@ -570,19 +1052,32 @@ def make_router(service: DSHService) -> APIRouter:
         is_admin: bool,
         principal: Principal | None = None,
     ) -> dict[str, object]:
-        base_conditions = [AuditRecord.conversation_id == conversation.conversation_id]
+        base_conditions = [AuditRecord.dsh_session_id == conversation.dsh_session_id]
         if not is_admin and principal:
             base_conditions.extend((
                 AuditRecord.tenant_id == principal.tenant_id,
                 AuditRecord.user_id == principal.user_id,
             ))
         has_audit_records = (await db.execute(select(AuditRecord.id).where(*base_conditions).limit(1))).scalar_one_or_none() is not None
-        identity_payloads = list((await db.execute(
+        identity_payloads: list[Any] = []
+        if conversation.owner_account:
+            identity_payloads.append({"auditIdentity": {"account": conversation.owner_account}})
+        identity_payloads.extend(list((await db.execute(
             select(AuditRecord.payload)
             .where(*base_conditions, AuditRecord.record_type == "user.message")
             .order_by(AuditRecord.created_at.desc(), AuditRecord.id.desc())
             .limit(25)
+        )).scalars().all()))
+        event_identity_payloads = list((await db.execute(
+            select(SessionEvent.event_json)
+            .where(
+                SessionEvent.dsh_session_id == conversation.dsh_session_id,
+                SessionEvent.event_type == "user.message",
+            )
+            .order_by(SessionEvent.created_at.desc(), SessionEvent.id.desc())
+            .limit(25)
         )).scalars().all())
+        identity_payloads.extend(event_identity_payloads)
         query = select(AuditRecord).where(*base_conditions)
         if category:
             query = query.where(AuditRecord.category == category.strip().lower())
@@ -598,7 +1093,7 @@ def make_router(service: DSHService) -> APIRouter:
                 "recordType": record.record_type,
                 "requestId": record.request_id,
                 "runtimeId": record.runtime_id,
-                "payload": record.payload or {},
+                "payload": service.audit_payload(record.payload or {}),
                 "createdAt": record.created_at.isoformat() if record.created_at else None,
             }
 
@@ -610,7 +1105,7 @@ def make_router(service: DSHService) -> APIRouter:
         # still inspect the historical dialogue and execution flow.
         if not has_audit_records:
             event_query = select(SessionEvent).where(
-                SessionEvent.conversation_id == conversation.conversation_id,
+                SessionEvent.dsh_session_id == conversation.dsh_session_id,
             )
             if not is_admin and principal:
                 event_query = event_query.where(
@@ -627,7 +1122,7 @@ def make_router(service: DSHService) -> APIRouter:
             events, total = await paged_items(db, event_query, page=page, page_size=page_size)
             for event in events:
                 event_category = service.audit_category(event.event_type)
-                payload = event.event_json or {}
+                payload = service.audit_payload(event.event_json or {})
                 items.append(
                     {
                         "id": f"event:{event.id}",
@@ -659,6 +1154,256 @@ def make_router(service: DSHService) -> APIRouter:
             **pagination_json(total, page, page_size),
         }
 
+    def audit_tool_diagnostic_json(item: Tool | dict[str, Any]) -> dict[str, object]:
+        if isinstance(item, Tool):
+            values = {
+                "toolName": item.tool_name,
+                "displayName": item.display_name,
+                "operationId": item.operation_id,
+                "httpMethod": item.http_method,
+                "httpPath": item.http_path,
+                "authStrategy": item.auth_strategy,
+                "sideEffect": item.side_effect,
+                "confirmationRequired": item.confirmation_required,
+                "maskingPolicy": item.masking_policy,
+                "profileScope": item.profile_scope,
+                "source": item.source,
+                "version": item.version,
+                "enabled": item.enabled,
+                "published": item.published,
+                "toolType": "business",
+                "updatedAt": item.updated_at.isoformat() if item.updated_at else None,
+            }
+        else:
+            values = item
+        raw_path = str(values.get("httpPath") or "").strip()
+        parsed_path = urlsplit(raw_path if "://" in raw_path else f"https://audit.invalid/{raw_path.lstrip('/')}")
+        auth_strategy = str(values.get("authStrategy") or "").strip().casefold()
+        return {
+            "toolName": str(values.get("toolName") or ""),
+            "displayName": str(values.get("displayName") or ""),
+            "operationId": str(values.get("operationId") or ""),
+            "httpMethod": str(values.get("httpMethod") or "").upper(),
+            # Hosts, query parameters and fragments are intentionally omitted.
+            "httpPath": parsed_path.path or "/",
+            "source": str(values.get("source") or ""),
+            "version": values.get("version"),
+            "toolType": str(values.get("toolType") or "business"),
+            "enabled": bool(values.get("enabled")),
+            "published": bool(values.get("published")),
+            "sideEffect": str(values.get("sideEffect") or "read"),
+            "confirmationRequired": bool(values.get("confirmationRequired")),
+            "authenticationRequired": auth_strategy not in {"", "none", "anonymous"},
+            "maskingConfigured": bool(values.get("maskingPolicy")),
+            "profileScoped": bool(values.get("profileScope")),
+            "updatedAt": values.get("updatedAt"),
+        }
+
+    async def audit_config_json(db: AsyncSession) -> dict[str, object]:
+        result = await db.execute(select(ConfigEntry).where(ConfigEntry.scope == "system"))
+        entries = {item.key: item for item in result.scalars().all()}
+        fallback_options = await knowledge_fallback_options(db)
+        default_settings = get_settings()
+        items: list[dict[str, object]] = []
+        for spec in config_catalog():
+            key = str(spec["key"])
+            if key in _AUDIT_CONFIG_HIDDEN_KEYS:
+                continue
+            entry = entries.get(key)
+            raw = raw_config_value(entry) if entry else getattr(
+                service.settings,
+                key,
+                getattr(default_settings, key, None),
+            )
+            configured = raw not in (None, "")
+            secret = bool(spec.get("secret"))
+            read_only = key in _AUDIT_CONFIG_READ_ONLY_KEYS
+            options = (
+                fallback_options
+                if spec.get("dynamicOptions") == "knowledge_fallback_skills"
+                else list(spec.get("options", []))
+            )
+            if key == "umc_portal":
+                options = [str(raw or "customer")]
+            items.append({
+                "key": key,
+                "group": spec.get("group"),
+                "env": spec.get("env"),
+                "secret": secret,
+                "multiline": bool(spec.get("multiline")),
+                "options": options,
+                "restartRequired": bool(spec.get("restartRequired")),
+                "configured": configured,
+                "source": "database" if entry else "environment/default",
+                "version": entry.version if entry else 0,
+                "value": "••••••••" if secret and configured else ("" if secret else raw),
+                "readOnly": read_only,
+                "readOnlyReason": (
+                    "protected_infrastructure"
+                    if key in {"database_url", "redis_url"}
+                    else "customer_environment"
+                    if read_only
+                    else None
+                ),
+                "updatedBy": entry.updated_by if entry else None,
+                "updatedAt": entry.updated_at.isoformat() if entry and entry.updated_at else None,
+            })
+        return {"scope": "system", "items": items}
+
+    @router.get("/audit/config", tags=["Audit console"])
+    async def get_audit_config(
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        return await audit_config_json(db)
+
+    @router.patch("/audit/config", tags=["Audit console"])
+    async def patch_audit_config(
+        payload: ConfigPatch,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        principal: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        if payload.scope != "system":
+            raise HTTPException(status_code=422, detail="audit configuration scope must be system")
+        catalog = {str(item["key"]): item for item in config_catalog()}
+        editable = set(catalog) - _AUDIT_CONFIG_HIDDEN_KEYS - _AUDIT_CONFIG_READ_ONLY_KEYS
+        unsupported = sorted(set(payload.patch) - editable)
+        if unsupported:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "read_only_or_unsupported_config", "keys": unsupported},
+            )
+        if "skill_router_fallback_skill_id" in payload.patch:
+            valid_ids = {item["value"] for item in await knowledge_fallback_options(db)}
+            fallback = payload.patch["skill_router_fallback_skill_id"]
+            if not isinstance(fallback, str) or fallback not in valid_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "invalid_knowledge_fallback",
+                        "message": "fallback Skill must be published, enabled, and only bind knowledge.search",
+                    },
+                )
+
+        changed_keys: list[str] = []
+        for key, value in payload.patch.items():
+            spec = catalog[key]
+            if bool(spec.get("secret")) and value in (None, "", "••••••••"):
+                continue
+            result = await db.execute(
+                select(ConfigEntry).where(ConfigEntry.scope == "system", ConfigEntry.key == key)
+            )
+            entry = result.scalar_one_or_none()
+            if entry:
+                if payload.version is not None and entry.version != payload.version:
+                    raise HTTPException(status_code=409, detail=f"config version conflict for {key}")
+                if raw_config_value(entry) == value:
+                    continue
+                entry.version += 1
+                entry.value = value if isinstance(value, dict) else {"value": value}
+                entry.updated_by = f"audit:{principal.operator_id}"
+            else:
+                db.add(ConfigEntry(
+                    scope="system",
+                    key=key,
+                    version=1,
+                    value=value if isinstance(value, dict) else {"value": value},
+                    updated_by=f"audit:{principal.operator_id}",
+                ))
+            changed_keys.append(key)
+
+        if changed_keys:
+            db.add(AuditOperatorEvent(
+                actor_operator_id=principal.operator_id,
+                username=principal.username,
+                event_type="configuration.updated",
+                remote_address=audit_remote_address(request),
+                detail={"scope": "system", "keys": sorted(changed_keys)},
+            ))
+            await db.commit()
+            effective = await db.execute(select(ConfigEntry).where(ConfigEntry.scope == "system"))
+            await service.apply_config_entries(list(effective.scalars().all()))
+        return await audit_config_json(db)
+
+    @router.get("/audit/skills", tags=["Audit console"])
+    async def list_audit_skill_diagnostics(
+        search: str | None = Query(default=None, max_length=160),
+        status: str | None = Query(default=None, max_length=32),
+        enabled: bool | None = Query(default=None),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        query = select(Skill).order_by(Skill.skill_id, Skill.version.desc())
+        skill_match = text_match(search, Skill.skill_id, Skill.name, Skill.source, Skill.status, Skill.scope, Skill.domain)
+        if skill_match is not None:
+            query = query.where(skill_match)
+        if status and status.strip():
+            query = query.where(func.upper(Skill.status) == status.strip().upper())
+        if enabled is not None:
+            query = query.where(Skill.enabled.is_(enabled))
+        skills, total = await paged_items(db, query, page=page, page_size=page_size)
+        registered_tools = set((await db.execute(select(Tool.tool_name))).scalars().all())
+        registered_tools.update(SYSTEM_DEFAULT_TOOL_NAMES)
+        items = []
+        for item in skills:
+            allowed_tools = [str(tool_name) for tool_name in (item.allowed_tools or [])]
+            items.append({
+                "skillId": item.skill_id,
+                "name": item.name,
+                "version": item.version,
+                "source": item.source,
+                "status": item.status,
+                "scope": item.scope,
+                "enabled": item.enabled,
+                "domain": item.domain,
+                "allowedTools": allowed_tools,
+                "missingTools": [tool_name for tool_name in allowed_tools if tool_name not in registered_tools],
+                "dependencies": [str(dependency) for dependency in (item.dependencies or [])],
+                "aliases": [str(alias) for alias in (item.aliases or [])],
+                "workflowConfigured": bool(item.workflow),
+                "contentConfigured": bool((item.content or "").strip()),
+                "updatedAt": item.updated_at.isoformat() if item.updated_at else None,
+            })
+        return {"items": items, "search": (search or "").strip() or None, **pagination_json(total, page, page_size)}
+
+    @router.get("/audit/tools", tags=["Audit console"])
+    async def list_audit_tool_diagnostics(
+        search: str | None = Query(default=None, max_length=160),
+        enabled: bool | None = Query(default=None),
+        published: bool | None = Query(default=None),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_administrator),
+    ):
+        system_items = [audit_tool_diagnostic_json(item) for item in system_default_tool_definitions(service.settings)]
+        result = await db.execute(
+            select(Tool)
+            .where(~Tool.tool_name.in_(SYSTEM_DEFAULT_TOOL_NAMES))
+            .order_by(Tool.tool_name, Tool.version.desc())
+        )
+        items = system_items + [audit_tool_diagnostic_json(item) for item in result.scalars().all()]
+        term = (search or "").strip().casefold()
+        if term:
+            items = [item for item in items if term in " ".join(
+                str(item.get(key) or "") for key in ("toolName", "displayName", "operationId", "httpMethod", "httpPath", "source")
+            ).casefold()]
+        if enabled is not None:
+            items = [item for item in items if item["enabled"] is enabled]
+        if published is not None:
+            items = [item for item in items if item["published"] is published]
+        items.sort(key=lambda item: (str(item["toolName"]), -(int(item["version"] or 0))))
+        total = len(items)
+        offset = (page - 1) * page_size
+        return {
+            "items": items[offset:offset + page_size],
+            "search": (search or "").strip() or None,
+            **pagination_json(total, page, page_size),
+        }
+
     @router.get("/conversations")
     async def list_conversations(
         page: int = Query(default=1, ge=1),
@@ -671,17 +1416,86 @@ def make_router(service: DSHService) -> APIRouter:
         query = select(Conversation)
         if not is_admin:
             query = query.where(Conversation.tenant_id == principal.tenant_id, Conversation.user_id == principal.user_id)
-        conversation_match = text_match(search, Conversation.conversation_id, Conversation.user_id, Conversation.tenant_id)
+        conversation_match = text_match(search, Conversation.conversation_id, Conversation.owner_account, Conversation.user_id, Conversation.tenant_id)
         if conversation_match is not None:
             title_match = select(SessionEvent.id).where(
-                SessionEvent.conversation_id == Conversation.conversation_id,
+                SessionEvent.dsh_session_id == Conversation.dsh_session_id,
                 SessionEvent.event_type == "user.message",
                 cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
             ).exists()
-            query = query.where(or_(conversation_match, title_match))
+            owner_identity_match = select(SessionEvent.id).where(
+                SessionEvent.tenant_id == Conversation.tenant_id,
+                SessionEvent.user_id == Conversation.user_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(conversation_match, title_match, owner_identity_match))
         query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
         conversations, total = await paged_items(db, query, page=page, page_size=page_size)
         return await audit_conversation_list(db, conversations, is_admin=is_admin, total=total, page=page, page_size=page_size)
+
+    @router.get("/audit/conversations", tags=["Audit console"])
+    async def list_audit_conversations(
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100, alias="pageSize"),
+        search: str | None = Query(default=None, max_length=160),
+        status: str | None = Query(default=None, max_length=32),
+        date_from: datetime | None = Query(default=None, alias="dateFrom"),
+        date_to: datetime | None = Query(default=None, alias="dateTo"),
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_session),
+    ):
+        if date_from and date_to and aware_utc(date_from) > aware_utc(date_to):
+            raise HTTPException(status_code=422, detail="dateFrom must not be after dateTo")
+        query = select(Conversation)
+        if status and status.strip():
+            query = query.where(func.upper(Conversation.status) == status.strip().upper())
+        if date_from:
+            query = query.where(Conversation.last_activity_at >= aware_utc(date_from))
+        if date_to:
+            query = query.where(Conversation.last_activity_at <= aware_utc(date_to))
+        conversation_match = text_match(search, Conversation.conversation_id, Conversation.dsh_session_id, Conversation.owner_account, Conversation.user_id, Conversation.tenant_id)
+        if conversation_match is not None:
+            title_match = select(SessionEvent.id).where(
+                SessionEvent.dsh_session_id == Conversation.dsh_session_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            owner_identity_match = select(SessionEvent.id).where(
+                SessionEvent.tenant_id == Conversation.tenant_id,
+                SessionEvent.user_id == Conversation.user_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(conversation_match, title_match, owner_identity_match))
+        query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
+        conversations, total = await paged_items(db, query, page=page, page_size=page_size)
+        return await audit_conversation_list(db, conversations, is_admin=True, total=total, page=page, page_size=page_size)
+
+    @router.get("/audit/conversations/{dsh_session_id}", tags=["Audit console"])
+    async def get_audit_conversation(
+        dsh_session_id: str,
+        category: str | None = Query(default=None),
+        search: str | None = Query(default=None, max_length=160),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100, alias="pageSize"),
+        db: AsyncSession = Depends(get_db),
+        _: AuditPrincipal = Depends(require_audit_session),
+    ):
+        conversation = (await db.execute(
+            select(Conversation).where(Conversation.dsh_session_id == dsh_session_id)
+        )).scalar_one_or_none()
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        return await audit_conversation_detail(
+            db,
+            conversation,
+            category=category,
+            search=search,
+            page=page,
+            page_size=page_size,
+            is_admin=True,
+        )
 
     @router.get("/console/audit/conversations", tags=["Test console"])
     async def list_console_audit_conversations(
@@ -692,14 +1506,20 @@ def make_router(service: DSHService) -> APIRouter:
         _: None = Depends(require_console_session),
     ):
         query = select(Conversation)
-        conversation_match = text_match(search, Conversation.conversation_id, Conversation.user_id, Conversation.tenant_id)
+        conversation_match = text_match(search, Conversation.conversation_id, Conversation.owner_account, Conversation.user_id, Conversation.tenant_id)
         if conversation_match is not None:
             title_match = select(SessionEvent.id).where(
-                SessionEvent.conversation_id == Conversation.conversation_id,
+                SessionEvent.dsh_session_id == Conversation.dsh_session_id,
                 SessionEvent.event_type == "user.message",
                 cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
             ).exists()
-            query = query.where(or_(conversation_match, title_match))
+            owner_identity_match = select(SessionEvent.id).where(
+                SessionEvent.tenant_id == Conversation.tenant_id,
+                SessionEvent.user_id == Conversation.user_id,
+                SessionEvent.event_type == "user.message",
+                cast(SessionEvent.event_json, String).ilike(f"%{search.strip()}%"),
+            ).exists()
+            query = query.where(or_(conversation_match, title_match, owner_identity_match))
         query = query.order_by(Conversation.last_activity_at.desc(), Conversation.id.desc())
         conversations, total = await paged_items(db, query, page=page, page_size=page_size)
         return await audit_conversation_list(db, conversations, is_admin=True, total=total, page=page, page_size=page_size)
@@ -771,6 +1591,27 @@ def make_router(service: DSHService) -> APIRouter:
         After a list response, a bare positive ordinal such as ``1`` or ``2.``
         selects that item and invokes the configured read-only detail Tool.
         Out-of-range ordinals do not select another item by partial matching.
+
+        Customer English/Arabic record queries share a deterministic scope
+        guard before model routing. Unknown account owners receive the same
+        target-free refusal without a Profile action or an existence lookup.
+        Sentence punctuation around account identifiers does not change this
+        boundary. Reply language follows the question, not the portal locale.
+        Global View record queries require an authorized concrete Profile,
+        including exact application references. Authorized cross-Profile
+        queries return ``profileAction.type=open_profile_menu`` and
+        ``code=profile_switch_required``; after portal identity switching,
+        the client resumes the question under the new token's Profile scope.
+
+        Basic Customer English/Arabic application lists and statistics are
+        projected from the successful masked My Requests response, rather
+        than selected by the answer model. Application pages request createdOn
+        descending before pagination; display limits are bounded to 100
+        (default 20). The answer states displayed/total counts, uses public
+        display fields and localized labels/dates, and never performs a write.
+        A partial upstream page is not claimed to be the newest records across
+        the entire Profile; it carries an explicit completeness limitation.
+        Failed/unsupported DTOs and complex questions retain normal handling.
 
         """
         try:

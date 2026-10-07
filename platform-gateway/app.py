@@ -439,10 +439,18 @@ async def swagger_document(authorization: str | None = Header(default=None)) -> 
 
 @app.post("/applications/page")
 async def applications_page(request: ApplicationPageRequest, authorization: str | None = Header(default=None)) -> Any:
+    """Read current-token application records, newest submission first.
+
+    ``pageIndex`` is one-based and ``pageSize`` is limited to 100. Sorting is
+    applied by My Requests before pagination, using its createdOn/descending
+    contract, so a bounded first page cannot silently discard newer records.
+    The original status counts/total and DTO are preserved. No write occurs.
+    Requires the existing UMC bearer token; upstream auth/failures propagate.
+    """
     return await _request(
         "POST",
         "/api/MyRequest/ApplicationPage",
-        json={"pageIndex": request.page_index, "pageSize": request.page_size},
+        json={"pageIndex": request.page_index, "pageSize": request.page_size, "sortBy": "createdOn", "sortDirection": 0},
         headers={"Authorization": authorization} if authorization else None,
     )
 

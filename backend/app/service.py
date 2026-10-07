@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import DEFAULT_SKILL_ROUTER_FALLBACK_SKILL_ID
-from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill, Tool
+from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, SessionEvent, SessionLocal, Skill, Tool, purge_expired_audit_data
 from .customer_documents import CustomerDocumentClient
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
@@ -20,6 +20,8 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
+from .customer_record_intent import customer_record_intent
+from .application_listing import application_list_answer, application_page_arguments, ordered_application_result
 from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requires_profile_switch
 from .response_safety import contains_unexpected_response_script, is_internal_tool_protocol
 from .runtime import RuntimeManager
@@ -66,73 +68,8 @@ class EventBroker:
 class DSHService:
     @staticmethod
     def is_cross_account_record_request(content: str, profile_context: ProfileContext | None) -> bool:
-        """Detect a record lookup explicitly scoped to an unknown account name."""
-
-        if requested_profile(content, profile_context):
-            return False
-        text = " ".join(str(content or "").casefold().split())
-        record_categories = (
-            ("license", "licence", "permit", "许可证", "执照", "牌照", "رخصة", "رخص", "ترخيص", "تراخيص"),
-            ("fine", "violation", "罚单", "罚款", "违规", "مخالفة", "مخالفات", "غرامة", "غرامات"),
-            ("pending action", "pending task", "to-do", "todo", "待办", "待处理", "إجراء معلق", "مهام", "معلقة"),
-            ("application", "request", "申请", "请求", "طلب", "طلبات"),
-        )
-        if not any(any(term in text for term in category) for category in record_categories):
-            return False
-        target_patterns = (
-            r"(?:查询|查找|查看|搜索)\s*([^\s，,。！？?]{1,80})\s*的",
-            r"\b(?:show|find|query|list|check|search)\s+(?:me\s+)?([\w.@+-]{1,80})(?:'s|’s)\b",
-            r"\b(?:show|find|query|list|check|search)\s+me\s+([\w.@+-]{1,80})\s+(?=(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?|pending\s+(?:actions?|tasks?))\b)",
-            r"\b(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?)\s+(?:for|of)\s+([\w.@+-]{1,80})\b",
-            r"(?:اعرض|أعرض|أظهر|اظهر|ابحث|استعلم)\s+(?:لي\s+)?(?:[\w]+\s+){1,8}([\w.@+-]{1,80})(?=\s+(?:المعلقة|معلقة|المعلّقة|معلّقة|له|لديه|لديها|الخ))",
-        )
-        self_targets = {"i", "me", "my", "mine", "our", "ours", "我", "我的", "本人", "当前账号", "当前账户"}
-        arabic_record_terms = {"رخصة", "رخص", "ترخيص", "تراخيص", "مخالفة", "مخالفات", "غرامة", "غرامات", "مهام", "طلب", "طلبات"}
-        for pattern in target_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if not match:
-                continue
-            candidate = match.group(1).strip().casefold()
-            if candidate in self_targets:
-                continue
-            # Arabic possessive forms such as تراخيصي، غراماتي، ومهامي
-            # describe the caller's own records, not an external account.
-            arabic_candidate = candidate.lstrip("وفب")
-            is_arabic_self_record = any(
-                arabic_candidate.endswith(suffix) and arabic_candidate[:-len(suffix)] in arabic_record_terms
-                for suffix in ("ي", "نا")
-            )
-            if is_arabic_self_record:
-                continue
-            return True
-        return False
-
-    @staticmethod
-    def is_global_application_reference_request(content: str, profile_context: ProfileContext | None) -> bool:
-        """Allow an exact own-application lookup in Global View.
-
-        ``application_status`` uses the token-scoped, read-only
-        ``umc.applications`` endpoint. An explicit UMC application reference
-        can therefore be resolved from the authenticated account without
-        binding a client-supplied Profile ID. Keep this narrow: generic
-        record requests still require a concrete Profile.
-        """
-
-        if not profile_context or not profile_context.is_global_view:
-            return False
-        text = " ".join(str(content or "").casefold().split())
-        if not re.search(r"\b[A-Z]{2,6}(?:-\d{1,8}){3,}\b", text, re.IGNORECASE):
-            return False
-        application_terms = (
-            "application", "request", "status", "stage", "progress", "next step",
-            "申请", "申请状态", "申请进度", "当前状态", "下一步",
-            "طلب", "طلبات", "حالة", "الحالة", "الخطوة التالية",
-        )
-        own_terms = (
-            "my ", "mine", "myself", "my application", "my request",
-            "طلبي", "طلباتي", "حسابي", "ملفي", "الخاصة بي",
-        )
-        return any(term in text for term in application_terms) and any(term in text for term in own_terms)
+        """Refuse unknown record owners without querying whether they exist."""
+        return customer_record_intent(content, profile_context).external_owner
 
     @staticmethod
     def is_global_profile_record_request(content: str, profile_context: ProfileContext | None) -> bool:
@@ -140,18 +77,8 @@ class DSHService:
 
         if not profile_context or not profile_context.is_global_view:
             return False
-        text = " ".join(str(content or "").casefold().split())
-        record_terms = (
-            "license", "licence", "permit", "fine", "violation", "pending", "application", "request",
-            "رخصة", "رخص", "ترخيص", "تراخيص", "غرامة", "غرامات", "مخالفة", "مخالفات", "مهام", "طلبات", "طلب",
-        )
-        own_terms = (
-            "my ", "mine", "myself", "my account", "my profile", "my requests",
-            "تراخيصي", "غراماتي", "مخالفاتي", "مهامي", "طلبي", "طلباتي", "حسابي", "ملفي", "لي ", "الخاصة بي",
-        )
-        if DSHService.is_global_application_reference_request(content, profile_context):
-            return False
-        return any(term in text for term in record_terms) and any(term in text for term in own_terms)
+        intent = customer_record_intent(content, profile_context)
+        return intent.query and not intent.external_owner
 
     @staticmethod
     def is_application_list_request(content: str) -> bool:
@@ -164,34 +91,29 @@ class DSHService:
         detector narrow and limited to the caller's own application records.
         """
 
-        text = " ".join(str(content or "").casefold().split())
-        if not text:
-            return False
-        if re.search(r"\b[A-Z]{2,6}(?:-\d{1,8}){3,}\b", text, re.IGNORECASE):
-            return any(term in text for term in (
-                "application", "request", "status", "progress", "申请", "请求", "状态", "进度",
-                "طلب", "طلبات", "حالة", "الحالة", "التقدم",
-            ))
-        list_terms = (
-            "my applications", "my requests", "show my application", "show my requests",
-            "list my application", "list my requests", "find my application", "search my application",
-            "application status", "application progress", "applications in", "requests in",
-            "我的申请", "我的请求", "申请列表", "申请状态", "申请进度",
-            "أرني طلباتي", "اعرض طلباتي", "قائمة طلباتي", "حالة طلباتي", "حالة طلبي",
-        )
-        return any(term in text for term in list_terms)
+        intent = customer_record_intent(content)
+        return "applications" in intent.categories and intent.query
 
     @staticmethod
     def profile_scope_guard(content: str, response_language: str, profile_context: ProfileContext | None) -> dict[str, Any] | None:
         """Return deterministic scope responses before routing or model generation."""
 
+        if DSHService.is_cross_account_record_request(content, profile_context):
+            return {
+                "code": "external_account_lookup",
+                "content": (
+                    "يمكنني المساعدة فقط في بيانات الملفات المخول لك الوصول إليها حالياً."
+                    if response_language == "ar"
+                    else "I can only help with data in your currently authorized profiles."
+                ),
+            }
         requested = requested_profile(content, profile_context)
         if (
             requested
             and profile_context
             and (profile_context.is_global_view or requested.profile_id != profile_context.active_profile_id)
-            and not DSHService.is_global_application_reference_request(content, profile_context)
         ):
+            kind_label = ({"individual": "ملف شخصي", "establishment": "ملف منشأة"} if response_language == "ar" else {"individual": "individual Profile", "establishment": "establishment Profile"}).get(requested.kind, "الملف" if response_language == "ar" else "Profile")
             return {
                 "code": "profile_switch_required",
                 "profileAction": {
@@ -203,18 +125,9 @@ class DSHService:
                     },
                 },
                 "content": (
-                    f"أنت تستخدم حالياً ملف {profile_context.active_profile_name or 'الحالي'}. يتطلب هذا الطلب ملف {requested.name}. بدّل إلى هذا الملف المخول للمتابعة."
+                    f"أنت تستخدم حالياً ملف {profile_context.active_profile_name or 'الحالي'}. يتطلب هذا الطلب {kind_label} {requested.name}. بدّل إلى هذا الملف المخول للمتابعة."
                     if response_language == "ar"
-                    else f"You are currently using {profile_context.active_profile_name or 'the current profile'}. This request needs {requested.name}. Switch to that authorized profile to continue."
-                ),
-            }
-        if DSHService.is_cross_account_record_request(content, profile_context):
-            return {
-                "code": "external_account_lookup",
-                "content": (
-                    "يمكنني المساعدة فقط في البيانات الواقعة ضمن نطاق الحساب المخول حالياً."
-                    if response_language == "ar"
-                    else "I can only help with data in your currently authorized account scope."
+                    else f"You are currently using {profile_context.active_profile_name or 'the current profile'}. This request needs the {kind_label} {requested.name}. Switch to that authorized profile to continue."
                 ),
             }
         if DSHService.is_global_profile_record_request(content, profile_context):
@@ -225,9 +138,9 @@ class DSHService:
                     "code": "profile_selection_required",
                 },
                 "content": (
-                    "لا يمكنني عرض هذه السجلات حالياً لأن البوابة في العرض الشامل ولم يتم اختيار ملف شخصي محدد. يرجى اختيار الملف الشخصي المطلوب من البوابة ثم إعادة السؤال."
+                    "أنت حالياً في العرض الشامل. اختر الملف الشخصي أو ملف المنشأة المخول لك من الخيارات أدناه؛ سأتابع هذا السؤال تلقائياً باستخدام نطاق بيانات الملف الذي تختاره."
                     if response_language == "ar"
-                    else "I can't pull those records yet because the portal is currently in Global View and no concrete profile is selected. Please select the specific profile in the portal, then ask again."
+                    else "You are currently in Global View. Choose your authorized individual or establishment Profile below; I will automatically continue this question using the selected Profile's data scope."
                 ),
             }
         return None
@@ -588,7 +501,7 @@ class DSHService:
         )
 
     @staticmethod
-    def answer_tool_evidence(tool_name: str, tool_result: dict[str, Any], masking_policy: object) -> str:
+    def answer_tool_evidence(tool_name: str, tool_result: dict[str, Any], masking_policy: object, profile_context: ProfileContext | None = None) -> str:
         """Build bounded, masked evidence for the answer-generation model.
 
         Tool execution and answer drafting are separate stages.  The answer
@@ -605,7 +518,11 @@ class DSHService:
             "mobile", "password", "passport", "phone", "secret", "token",
         )
 
+        list_limit = 100 if tool_name == "umc.applications" else 20
+        truncated = False
+
         def compact(value: Any, depth: int = 0) -> Any:
+            nonlocal truncated
             if depth > 6:
                 return None
             if isinstance(value, dict):
@@ -614,6 +531,10 @@ class DSHService:
                     normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
                     if any(fragment in normalized for fragment in blocked_fragments):
                         continue
+                    # Internal relational keys are not public document references.
+                    # Keep the displayable application/certificate numbers instead.
+                    if normalized in {"id", "ids"} or re.search(r"(?:[_ -]ids?$|(?:Id|ID)s?$)", str(key)):
+                        continue
                     safe = compact(nested, depth + 1)
                     if safe not in (None, "", [], {}):
                         result[str(key)[:80]] = safe
@@ -621,7 +542,8 @@ class DSHService:
                         break
                 return result
             if isinstance(value, list):
-                return [safe for item in value[:20] if (safe := compact(item, depth + 1)) not in (None, "", [], {})]
+                truncated = truncated or len(value) > list_limit
+                return [safe for item in value[:list_limit] if (safe := compact(item, depth + 1)) not in (None, "", [], {})]
             if isinstance(value, str):
                 try:
                     decoded = json.loads(value)
@@ -632,16 +554,25 @@ class DSHService:
                 return value
             return str(value)[:1_000]
 
-        evidence = compact(
-            {
+        source = {
                 "toolName": tool_name,
                 "ok": bool(masked.get("ok")),
                 "code": masked.get("code"),
                 "status": masked.get("status"),
-                "result": masked.get("result"),
+                "result": ordered_application_result(masked.get("result")) if tool_name == "umc.applications" else masked.get("result"),
             }
-        )
-        return json.dumps(evidence, ensure_ascii=False)[:16_000]
+        # The current portal identity was bound to the token's Profile claim.
+        # Its label is scope metadata, not an inferred field of each record.
+        if profile_context and not profile_context.is_global_view:
+            source["currentPortalProfile"] = {"name": profile_context.active_profile_name, "scope": "selected_profile_only"}
+        for list_limit in dict.fromkeys(min(list_limit, limit) for limit in (100, 50, 20, 10, 5, 1)):
+            truncated = False
+            evidence = compact(source)
+            evidence["evidenceTruncated"] = truncated
+            serialized = json.dumps(evidence, ensure_ascii=False)
+            if len(serialized) <= 16_000:
+                return serialized
+        return json.dumps({"toolName": tool_name, "ok": bool(masked.get("ok")), "evidenceTruncated": True, "displayableResultUnavailable": True})
 
     @staticmethod
     def violation_evidence_keys(tool_result: dict[str, Any]) -> list[str]:
@@ -918,6 +849,7 @@ class DSHService:
             conversation_id=f"conv_{uuid4().hex[:20]}",
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
+            owner_account=principal.audit_account.strip()[:300] or None,
             dsh_session_id=f"dsh_{uuid4().hex[:20]}",
             runtime_profile=runtime_profile,
             workspace=workspace,
@@ -1029,6 +961,7 @@ class DSHService:
         return {
             "conversationId": conversation.conversation_id,
             "dshSessionId": conversation.dsh_session_id,
+            "ownerAccount": conversation.owner_account,
             "workspace": conversation.workspace,
             "skillProfile": conversation.skill_profile,
             "runtimeProfile": conversation.runtime_profile,
@@ -1181,11 +1114,17 @@ class DSHService:
         if depth > 8:
             return "[max-depth]"
         if isinstance(value, dict):
-            sensitive = {"token", "access_token", "umc_token", "authorization", "password", "api_key", "providerkey", "provider_key"}
-            return {
-                str(key): "[redacted]" if str(key).lower() in sensitive else cls.audit_payload(item, depth + 1)
-                for key, item in value.items()
-            }
+            sensitive = {"token", "accesstoken", "umctoken", "authorization", "password", "apikey", "providerkey"}
+            redacted: dict[str, Any] = {}
+            for key, item in value.items():
+                normalized_key = "".join(character for character in str(key).casefold() if character.isalnum())
+                is_sensitive = (
+                    normalized_key in sensitive
+                    or normalized_key.endswith("token")
+                    or "password" in normalized_key
+                )
+                redacted[str(key)] = "[redacted]" if is_sensitive else cls.audit_payload(item, depth + 1)
+            return redacted
         if isinstance(value, list):
             return [cls.audit_payload(item, depth + 1) for item in value]
         return value
@@ -1216,12 +1155,10 @@ class DSHService:
         await db.commit()
 
     async def purge_expired_audit(self) -> int:
-        retention_days = max(1, int(self.settings.audit_retention_days))
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         async with SessionLocal() as db:
-            result = await db.execute(delete(AuditRecord).where(AuditRecord.created_at < cutoff))
+            deleted = await purge_expired_audit_data(db, self.settings)
             await db.commit()
-            return int(result.rowcount or 0)
+            return sum(deleted.values())
 
     async def submit_message(
         self,
@@ -1235,6 +1172,8 @@ class DSHService:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
+                if principal.audit_account.strip():
+                    conversation.owner_account = principal.audit_account.strip()[:300]
                 existing = await db.execute(select(MessageIdempotency).where(MessageIdempotency.conversation_id == conversation_id, MessageIdempotency.client_message_id == client_message_id))
                 idem = existing.scalar_one_or_none()
                 if idem:
@@ -1638,6 +1577,8 @@ class DSHService:
                     attachment_handoff_result: dict[str, Any] | None = None
                     if tool_request:
                         tool_name, arguments = tool_request
+                        if tool_name == "umc.applications":
+                            arguments = application_page_arguments(arguments)
                         tool_definition = tool_definition_by_name.get(tool_name) or {}
                         target_profile = requires_profile_switch(
                             tool_definition,
@@ -1751,6 +1692,8 @@ class DSHService:
                             )
                         masking_policy = str((tool_definition_by_name.get(tool_name) or {}).get("maskingPolicy") or "default")
                         masked_tool_result = mask_tool_result(tool_result, masking_policy)
+                        if tool_name == "umc.applications" and not latest_attachment and not forced_response_message:
+                            forced_response_message = application_list_answer(latest_content, masked_tool_result, response_language, profile_context)
                         # OCR text is sensitive customer data.  Keep the OCR
                         # output inside this process and persist only bounded
                         # reference hints for the audit trail.
@@ -1817,7 +1760,8 @@ class DSHService:
                                         "Use these returned values as the authoritative source for the answer. "
                                         "Do not ask the user to confirm a profile, category, or record that is already present, "
                                         "and never claim there are no records when this result contains items.\n"
-                                        + self.answer_tool_evidence(tool_name, tool_result, masking_policy)
+                                        "currentPortalProfile is the current portal identity label; use it to explain the selected data scope, even when the records omit a Profile name column. Do not request another switch to that same Profile. evidenceTruncated means this is a bounded excerpt, not missing source records.\n"
+                                        + self.answer_tool_evidence(tool_name, tool_result, masking_policy, profile_context)
                                         + related_document_instruction
                                     ),
                                 },

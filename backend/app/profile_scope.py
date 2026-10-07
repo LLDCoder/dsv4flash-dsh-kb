@@ -63,6 +63,8 @@ def profile_scope_for_definition(definition: dict[str, Any]) -> dict[str, str]:
 class ProfileReference:
     profile_id: str
     name: str
+    kind: str = ""
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,7 +92,9 @@ def profile_context_from_payload(value: object, *, trusted_profile_id: str | Non
             profile_id = str(item.get("id") or item.get("profileId") or "").strip()
             name = str(item.get("name") or item.get("profileName") or "").strip()[:256]
             if profile_id and name:
-                profiles.append(ProfileReference(profile_id, name))
+                kind = str(item.get("profileKind") or "")
+                aliases = tuple(str(alias).strip()[:256] for alias in item.get("nameAliases", [])[:4] if isinstance(alias, str) and alias.strip()) if isinstance(item.get("nameAliases"), list) else ()
+                profiles.append(ProfileReference(profile_id, name, kind if kind in {"individual", "establishment", "global"} else "", aliases))
     if active_profile_id and active_profile_name and (trusted_profile_id is None or client_profile_id == active_profile_id) and all(item.profile_id != active_profile_id for item in profiles):
         profiles.append(ProfileReference(active_profile_id, active_profile_name))
     active_profile_name = next((item.name for item in profiles if item.profile_id == active_profile_id), active_profile_name)
@@ -133,8 +137,9 @@ def requested_profile(text: str, context: ProfileContext | None) -> ProfileRefer
     profile_word_indexes = [index for index, word in enumerate(words) if word == "profile"]
     matches: dict[str, ProfileReference] = {}
     for profile in context.profiles:
-        aliases = _profile_aliases(profile.name)
-        exact_match = _contains_profile_name(text, profile.name)
+        names = (profile.name, *profile.aliases)
+        aliases = set().union(*(_profile_aliases(name) for name in names))
+        exact_match = any(_contains_profile_name(text, name) for name in names)
         contextual_match = False
         for index in profile_word_indexes:
             if index == 0:
