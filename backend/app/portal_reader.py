@@ -10,15 +10,18 @@ audit trail.
 from __future__ import annotations
 
 import asyncio
+import copy
 import html
 import hashlib
 import json
+import logging
 import re
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
-from typing import Any, Literal, Protocol
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
+from typing import Any, Iterable, Literal, Protocol
 from urllib.parse import unquote, urlsplit
 
 
@@ -35,6 +38,8 @@ from .reader_intent import (
     semantic_source_hint,
 )
 from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOUT_SECONDS, bounded_reader_total_timeout, requested_record_limit
+from .reader_text import normalized_text
+from .skills import response_language_for
 
 
 ReaderStatus = Literal["success", "no_data", "no_permission", "load_failed", "not_confirmed"]
@@ -236,6 +241,13 @@ class PortalReadRequest:
     actions: tuple[dict[str, Any], ...]
     expected_fields: tuple[str, ...] = ()
     completion_period: str | None = None
+    inspection_task_rollup_date: str | None = None
+    inspection_task_rollup_date_field: str | None = None
+    inspection_task_rollup_view: str | None = None
+    inspection_task_rollup_list: bool = False
+    inspection_team_assignments: bool = False
+    browser_timezone: str | None = None
+    collections: tuple[dict[str, Any], ...] = ()
 
     def as_payload(self) -> dict[str, Any]:
         return {
@@ -246,7 +258,20 @@ class PortalReadRequest:
             "maxPages": 3,
             "timeoutSeconds": int(PORTAL_EXECUTION_TIMEOUT_SECONDS),
             "maxOutputItems": 20,
+            **({"collections": [dict(item) for item in self.collections]} if self.collections else {}),
             **({'completionPeriod': self.completion_period} if self.completion_period else {}),
+            **({'inspectionTaskRollupDate': self.inspection_task_rollup_date}
+               if self.inspection_task_rollup_date else {}),
+            **({'inspectionTaskRollupDateField': self.inspection_task_rollup_date_field}
+               if self.inspection_task_rollup_date_field else {}),
+            **({'inspectionTaskRollupView': self.inspection_task_rollup_view}
+               if self.inspection_task_rollup_view else {}),
+            **({'inspectionTaskRollupList': True}
+               if self.inspection_task_rollup_list else {}),
+            **({'inspectionTeamAssignments': True}
+               if self.inspection_team_assignments else {}),
+            **({'browserTimezone': self.browser_timezone}
+               if self.browser_timezone else {}),
         }
 
 
@@ -280,7 +305,22 @@ class ReaderResult:
             "completeness": self.completeness,
             "selectedState": _sanitize_untrusted_text(self.selected_state, max_length=300),
             "scope": self.scope,
-            "facts": [_sanitize_untrusted_text(item, max_length=400) for item in self.facts[:20]],
+            # A checklist is a sequence of independent requirements. The
+            # ordinary 400-character fact cap can cut the final description
+            # into a plausible-looking but false fragment. Keep that one
+            # structured fact longer; ordinary results still have a 12 KiB cap.
+            "facts": [
+                _sanitize_untrusted_text(
+                    item,
+                    max_length=(3000 if str(item).startswith("Inspection checklist materials/steps returned for ") else 400),
+                )
+                for item in self.facts[:500 if self.workflow_state in {
+                    "inspection_overdue_full", "inspection_date_list_full", "inspection_team_assignment_full",
+                    "license_overdue_full",
+                    "inspection_detail_full",
+                    "team_member_cards_full",
+                } else 20]
+            ],
             "workflowState": _sanitize_untrusted_text(self.workflow_state, max_length=500),
             "missing": [_sanitize_untrusted_text(item, max_length=200) for item in self.missing[:10]],
         }
@@ -297,14 +337,20 @@ class ReaderResult:
             result["clarificationOptions"] = [
                 _sanitize_untrusted_text(option, max_length=120) for option in self.clarification_options[:2]
             ]
-        while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000 and result["facts"]:
+        max_result_bytes = (90_000 if self.workflow_state in {
+            "inspection_overdue_full", "inspection_date_list_full", "inspection_team_assignment_full",
+            "license_overdue_full",
+            "inspection_detail_full",
+            "team_member_cards_full",
+        } else 12_000)
+        while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > max_result_bytes and result["facts"]:
             result["facts"].pop()
-        while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000 and result["missing"]:
+        while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > max_result_bytes and result["missing"]:
             result["missing"].pop()
         for field_name in ("workflowState", "selectedState", "sourceSection", "section", "page"):
-            while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000 and result[field_name]:
+            while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > max_result_bytes and result[field_name]:
                 result[field_name] = result[field_name][: max(0, len(result[field_name]) // 2)]
-        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12_000:
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > max_result_bytes:
             result.pop("intentContext", None)
         return result
 
@@ -973,6 +1019,7 @@ def _state_control_label_matches(observed: object, requested: object) -> bool:
     aliases = {
         "completed": {"completed", "مكتمل", "المكتمل", "المكتملين", "مكتملة", "المكتملة"},
         "to do": {"to do", "todo", "قيد التنفيذ", "قيد العمل"},
+        "team members": {"team members", "أعضاء الفريق"},
     }
     for canonical, values in aliases.items():
         if observed_text in values and requested_text in values | {canonical}:
@@ -1403,6 +1450,29 @@ def _first_direct_string(payload: Any, names: tuple[str, ...]) -> str:
     return ""
 
 
+def _display_labels_from_values(values: Iterable[Any], names: tuple[str, ...]) -> tuple[str, ...]:
+    """Extract authenticated display labels without promoting IDs to names."""
+
+    labels: list[str] = []
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        for name in names:
+            candidate = value.get(name)
+            if isinstance(candidate, str) and candidate.strip():
+                label = candidate.strip()[:300]
+                if not re.fullmatch(r"[0-9a-f-]{16,}", label, re.I) and label not in labels:
+                    labels.append(label)
+                break
+    for value in values:
+        visit(value)
+    return tuple(labels[:100])
+
+
 def permission_context_from_user_info(payload: Any) -> UserPermissionContext:
     """Normalize portal-specific ``GetUserInfo`` shapes without trusting the client."""
 
@@ -1456,12 +1526,21 @@ def permission_context_from_user_info(payload: Any) -> UserPermissionContext:
             "ar": "ar", "arabic": "ar", "arar": "ar",
             "zh": "zh", "chinese": "zh", "zhcn": "zh",
         }.get(language_code, "")
+    department_values = _find_values(payload, aliases["departments"])
+    department_labels = _display_labels_from_values(
+        _find_values(payload, {"departmentsinfo", "departmentinfo", "departmentnames", "department", "departments"}),
+        ("nameEn", "departmentNameEn", "name", "departmentName", "nameAr", "departmentNameAr"),
+    )
+    # Prefer verified display labels (for example departmentsInfo[].name) over
+    # opaque department IDs. Keep the old recursive fallback for deployments
+    # that return a plain string department name.
+    department_result = department_labels or _strings(department_values)
     return UserPermissionContext(
         user_id=user_id,
         account=account,
         current_role=current_role,
         roles=roles,
-        departments=_strings(_find_values(payload, aliases["departments"])),
+        departments=department_result,
         pages=_strings(_find_values(payload, aliases["pages"])),
         subpages=_strings(_find_values(payload, aliases["subpages"])),
         buttons=_strings(_find_values(payload, aliases["buttons"])),
@@ -1514,6 +1593,35 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
 
     if not isinstance(value, dict):
         return {}
+    # The current page is a non-authoritative hint. Keep only the structured
+    # population explicitly published by the page so aggregate answers can be
+    # bounded to the visible collection without scraping arbitrary text.
+    current_page = value.get("currentPage") or value.get("pageContext")
+    if isinstance(current_page, dict):
+        page_hint = {}
+        for key in ("route", "currentPage", "current_page", "view", "selectedTabPath", "selected_tab_path"):
+            if isinstance(current_page.get(key), (str, list, tuple)):
+                page_hint[key] = bounded_json(current_page[key], max_depth=2, max_items=30, max_string=500)
+        records = current_page.get("visibleRecords") or current_page.get("visible_records")
+        if isinstance(records, list):
+            page_hint["visibleRecords"] = [
+                {key: _sanitize_untrusted_text(item.get(key), max_length=300)
+                 for key in ("collection", "key", "label") if isinstance(item, dict) and isinstance(item.get(key), str)}
+                for item in records[:50]
+                if isinstance(item, dict) and all(isinstance(item.get(key), str) for key in ("collection", "key", "label"))
+            ]
+        browser_timezone = current_page.get("browserTimezone")
+        if isinstance(browser_timezone, str):
+            try:
+                ZoneInfo(browser_timezone)
+            except (ValueError, KeyError):
+                pass
+            else:
+                page_hint["browserTimezone"] = browser_timezone[:80]
+        if page_hint:
+            # Continue below for previous-intent context; callers that need the
+            # page hint receive it alongside that continuity metadata.
+            value = {**value, "__boundedCurrentPage": page_hint}
     if isinstance(value.get("resolvedIntent"), dict):
         resolved_context = {"resolvedIntent": bounded_json(value["resolvedIntent"], max_depth=4, max_items=10, max_string=500)}
         options = value.get("resolvedChoiceOptions")
@@ -1523,9 +1631,13 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
             resolved_context["sourceHint"] = {key: _sanitize_untrusted_text(item, max_length=500)
                                               for key, item in value["sourceHint"].items()
                                               if key in {"page", "section"} and isinstance(item, str)}
+        if value.get("__boundedCurrentPage"):
+            resolved_context["currentPage"] = value["__boundedCurrentPage"]
         return resolved_context
     if not isinstance(value.get("previousIntent"), dict):
-        return {}
+        return ({"currentPage": value["__boundedCurrentPage"]}
+                if value.get("__boundedCurrentPage") else {})
+    bounded_current_page = value.get("__boundedCurrentPage")
     previous = value["previousIntent"]
     limits = {
         "question": 500,
@@ -1578,7 +1690,14 @@ def _bounded_conversation_context(value: Any) -> dict[str, Any]:
             _sanitize_untrusted_text(option, max_length=120)
             for option in previous["clarificationOptions"][:2] if isinstance(option, str)
         ]
-    return {"previousIntent": bounded} if any(bounded.values()) else {}
+    # Submission-time browser context is current-turn metadata, not part of
+    # the prior answer. Keep its shape stable when this boundary is applied
+    # again by run/_run and by follow-up helpers; nesting it under previousIntent
+    # made the next pass drop the timezone and reopen a different date window.
+    result_context = {"previousIntent": bounded} if any(bounded.values()) else {}
+    if isinstance(bounded_current_page, dict):
+        result_context["currentPage"] = bounded_current_page
+    return result_context
 
 
 def _resolved_intent_values(conversation_context: Any) -> dict[str, str]:
@@ -1756,9 +1875,57 @@ _RULE_EVIDENCE_REQUEST = re.compile(
     r"checklist|documents?|materials?|required\b)\b"
     r"|依据|政策|规则|法规|条款|第.{1,4}条|要求|条件|标准|违规|处罚|罚款|费用|构成|明细|材料|清单|"
     r"为什么|能否|是否可以|需要哪些|要准备|依据是什么"
-    r"|سياسة|قاعدة|لائحة|قانون|مادة|شرط|شروط|متطلبات|معيار|غرامة|مخالفة|رسوم|أسباب|لماذا",
+    r"|سياس(?:ة|ات)|السياس(?:ة|ات)|قواعد|القواعد|قاعدة|القاعدة|لائحة|قانون|مادة|شرط|شروط|متطلبات|معيار|معايير|غرامة|مخالفة|رسوم|أسباب|لماذا"
+    r"|عنف|كراهية|دعاية\s+سياسية|نشر\s+محتوى",
     re.I,
 )
+
+
+def _record_collection_only_request(question: str) -> bool:
+    """A live list command is not a rules lookup merely for saying violations."""
+    text = str(question or "")
+    return bool(
+        re.search(r"\b(?:list|show)\b|اعرض|اسرد|بسرد", text, re.I)
+        and re.search(r"\b(?:tasks?|tickets?|violations?|transactions?|refunds?|applications?|records?)\b|مهام|مخالفات|معاملات|طلبات|سجلات|تذاكر|استرداد", text, re.I)
+        and not re.search(r"\b(?:why|policy|policies|rules?|regulations?|basis|standards?|checklists?|requirements?)\b|لماذا|سياسات|قواعد|قانون|معايير|متطلبات|قائمة\s+التحقق", text, re.I)
+    )
+
+
+def _inspection_collection_coverage_notes(outcome: ReaderOutcome, question: str,
+                                          permission: UserPermissionContext | None,
+                                          policy: ReadOnlyPortalPolicy) -> ReaderOutcome:
+    """Disclose independently unread requested collections, never a substitute."""
+    if (not isinstance(permission, UserPermissionContext)
+            or not _record_collection_only_request(question)
+            or not re.search(r"\binspection\b|تفتيش", question, re.I)
+            or not re.search(r"\btasks?\b|مهام", question, re.I)
+            or not re.search(r"\bviolations?\b|مخالفات", question, re.I)
+            or outcome.result.page not in {'/inspection/tasks', '/inspection/violations'}
+            or outcome.result.status in {'no_permission', 'load_failed'}):
+        return outcome
+    unread = '/inspection/tasks' if outcome.result.page == '/inspection/violations' else '/inspection/violations'
+    denied = policy.validate(PortalReadRequest(start_path=unread, actions=({'type':'observe'},)), permission)
+    arabic = response_language_for(question) == 'ar'
+    label = ('مهام التفتيش' if arabic else 'Inspection Tasks') if unread.endswith('/tasks') else ('المخالفات' if arabic else 'Violations')
+    note = (f'{label}: صلاحيات هذا الحساب لا تسمح بقراءة هذه الصفحة؛ لم أعرض سجلاتها.' if arabic else
+            f'{label}: this account is not authorized to read this page; none of its records were disclosed.') if denied else (
+            f'{label}: لم تتم قراءة هذه المجموعة في هذه الإجابة؛ لا تُثبت القائمة الأخرى عددها أو حالتها.' if arabic else
+            f'{label}: this collection was not read in this answer; the other list does not establish its count or state.')
+    result = replace(outcome.result, facts=(*outcome.result.facts, note), completeness='bounded',
+                     missing=tuple(dict.fromkeys((*outcome.result.missing, 'requested_collection_not_read'))))
+    return ReaderOutcome(result, {**outcome.audit_evidence, 'unreadCollection': {'page': unread, 'permissionDenied': bool(denied)},
+                                  'result':result.public_json()})
+
+
+def _inspection_overdue_is_metric_only_request(question: str, result: ReaderResult) -> bool:
+    """Keep an overdue-task list separate from governing-rule questions."""
+
+    return result.workflow_state == "inspection_overdue_full" and not re.search(
+        r"\b(?:why|basis|policy|regulation|legal|governing|according to|article)\b"
+        r"|依据|政策|法规|法律|为什么"
+        r"|(?:السياس(?:ة|ات)|القواعد|الأساس\s+القانوني|لماذا)",
+        str(question or ""), re.I,
+    )
 
 
 _STAFF_PERFORMANCE_REQUEST = re.compile(
@@ -1766,7 +1933,12 @@ _STAFF_PERFORMANCE_REQUEST = re.compile(
     r"|\bperformance\s+(?:rate|overview|metric)s?\b|\bworst\s+perform\w+\b"
     r"|\bwho\s+performs?\s+worst\b"
     r"|(?:表现|绩效)\s*最差|最差.{0,6}(?:员工|成员|人员)|SLA\s*合规率|合规率|违约率|完成率"
-    r"|أداء\s+الموظف|معدل\s+الالتزام",
+    r"|أداء\s+الموظف|معدل\s+الالتزام|(?:مؤشر|معدل|نسبة|قيمة)?\s*(?:الالتزام|الامتثال)\s+باتفاقية\s+مستوى\s+الخدمة",
+    re.I,
+)
+
+_CURRENT_SLA_METRIC_REQUEST = re.compile(
+    r"\bsla\s+compliance\b|(?:الالتزام|الامتثال)\s+باتفاقية\s+مستوى\s+الخدمة",
     re.I,
 )
 
@@ -1783,13 +1955,13 @@ _POLICY_DOCUMENT_ANCHORS = (
 _POLICY_DOMAIN_ANCHORS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"content|standards?|prohibited|classif\w+|violat\w+|penalt\w+"
-                   r"|内容|标准|违规|违反|禁止|处罚|محتوى|معيار|مخالفة", re.I),
+                   r"|内容|标准|违规|违反|禁止|处罚|محتوى|معيار|مخالفة|عنف|كراهية|دعاية\s+سياسية", re.I),
         "media content standards media-content-standards.pdf 07_NMA_Media_Content_Standards_AR.pdf "
         "the-uae-en-uae-media-content-standards prohibited content classification media violations and penalties administrative",
     ),
     (
         re.compile(r"licen[cs]e|permit|application|renew\w*|cancel\w*|suspend\w*|restore|revoke\w*"
-                   r"|许可|许可申请|许可证|续期|取消|恢复|吊销|暂停|رخصة|تجديد|إلغاء|استعادة", re.I),
+                   r"|许可|许可申请|许可证|续期|取消|恢复|吊销|暂停|رخصة|تجديد|إلغاء|استعادة|تصريح|التصريح|منح", re.I),
         "media executive regulation 03_Cabinet_68_2024_Media_Executive_Regulation.pdf licensing approving the "
         "license application license term and renewal cancellation suspension expiry restoration conditions requirements",
     ),
@@ -2038,6 +2210,45 @@ def bounded_portal_observation(value: Any) -> Any:
     """Bound page semantics while giving each captured API response its own depth budget."""
 
     projected = bounded_json(value, max_depth=10, max_items=60, max_string=1_000)
+    if isinstance(value, dict) and isinstance(projected, dict) and 'inspectionTeamAssignments' in value:
+        # The ordinary 60-item UI bound must not truncate a separately
+        # verified all-page task receipt while leaving verified=True.
+        receipt = value['inspectionTeamAssignments']
+        if isinstance(receipt, dict) and receipt.get('verified') is True:
+            raw_tasks = receipt.get('tasks')
+            total = receipt.get('total')
+            scope_totals = receipt.get('scopeTotals')
+            valid = (isinstance(raw_tasks, dict) and type(total) is int
+                     and 0 <= total <= 450 and len(raw_tasks) == total
+                     and isinstance(scope_totals, dict)
+                     and all(type(count) is int and count >= 0 for count in scope_totals.values())
+                     and sum(scope_totals.values()) == total
+                     and receipt.get('stablePasses') == 2)
+            checked_tasks: dict[str, dict[str, str]] = {}
+            if valid:
+                for number, row in raw_tasks.items():
+                    if (not isinstance(number, str) or not re.fullmatch(r'IN-[A-Za-z0-9_-]{3,120}', number, re.I)
+                            or not isinstance(row, dict) or row.get('scope') not in {'TeamTodo', 'TeamCompleted'}):
+                        valid = False
+                        break
+                    checked_tasks[number] = {
+                        'inspector': _sanitize_untrusted_text(str(row.get('inspector') or ''), max_length=160),
+                        'route': _sanitize_untrusted_text(str(row.get('route') or ''), max_length=160),
+                        'scope': row['scope'],
+                    }
+            projected['inspectionTeamAssignments'] = (
+                {'verified': True, 'tasks': checked_tasks, 'total': total,
+                 'scopeTotals': scope_totals, 'stablePasses': 2,
+                 'pagesRead': receipt.get('pagesRead')}
+                if valid else {'verified': False, 'reason': 'inspection_team_receipt_invalid'}
+            )
+        else:
+            projected['inspectionTeamAssignments'] = {
+                'verified': False,
+                'reason': _sanitize_untrusted_text(
+                    str(receipt.get('reason') or 'inspection_team_source_unavailable')
+                    if isinstance(receipt, dict) else 'inspection_team_source_unavailable', max_length=120),
+            }
     if isinstance(value, dict) and isinstance(projected, dict) and "collections" in value:
         # Computation receipts have independent row/byte limits and must never
         # inherit the UI's 60-item truncation while retaining "complete".
@@ -2071,6 +2282,9 @@ def bounded_portal_observation(value: Any) -> Any:
             )
             candidate["responseEvidenceTruncated"] = (raw_candidate.get("responseEvidenceTruncated") is True
                 or candidate["responseEvidence"] != raw_candidate.get("responseEvidence"))
+            member_projection = _checked_member_card_projection(raw_candidate.get('memberCardProjection'))
+            if member_projection is not None:
+                candidate['memberCardProjection'] = member_projection
             # Transport receipts are indexed by field path, not UI rows.
             # The generic 60-item observation bound used to silently discard
             # sibling-array proofs and fields at the end of a detail response.
@@ -2402,7 +2616,38 @@ def portal_read_request_from_plan(plan: Any) -> PortalReadRequest | None:
                 normalized_action["role"] = implied_role
         actions.append(normalized_action)
     fields = _strings(candidate.get("expectedFields") or candidate.get("expected_fields") or (), limit=30)
-    return PortalReadRequest(start_path=start_path, actions=tuple(actions), expected_fields=fields)
+    request = PortalReadRequest(start_path=start_path, actions=tuple(actions), expected_fields=fields)
+    # Normalize every planner-produced request, including follow-up plans
+    # created after the initial observation.  Otherwise a later LLM turn can
+    # reintroduce presentation-only numeric page links.
+    return _normalize_planner_pagination_actions(request)
+
+
+def _normalize_planner_pagination_actions(request: PortalReadRequest) -> PortalReadRequest:
+    """Drop presentation-only numeric page links from a planner action list.
+
+    Several UI libraries render page numbers as ``<a>`` elements whose native
+    accessibility role is plain text.  A planner can still describe those
+    nodes as ``role=link`` and cause one failed browser read per number before
+    the observed forward control is used.  Such actions carry no navigation
+    semantics (no direction, rel, or aria-controls), so removing only this
+    unambiguous shape preserves real link-based paginators and all other
+    read-only actions.  The fresh observation remains the source of truth for
+    selecting an actual next/forward control.
+    """
+
+    def presentation_page_link(action: dict[str, Any]) -> bool:
+        action_type = str(action.get("type") or "").strip().casefold().replace("-", "_")
+        role = str(action.get("role") or "").strip().casefold()
+        name = str(action.get("name") or action.get("label") or "").strip()
+        if action_type != "paginate" or role != "link" or not re.fullmatch(r"\d+", name):
+            return False
+        return not any(str(action.get(key) or "").strip() for key in ("rel", "direction", "ariaControls"))
+
+    retained = tuple(action for action in request.actions if not presentation_page_link(action))
+    if retained == request.actions:
+        return request
+    return replace(request, actions=retained or ({"type": "observe"},))
 
 
 def _normalize_initial_observation_request(request: PortalReadRequest) -> PortalReadRequest | None:
@@ -2613,44 +2858,129 @@ _HARMFUL_CONTENT_REQUEST = re.compile(
     r"|(?:威胁|暴力|仇恨|歧视|煽动|政治宣传)(?:性)?内容",
     re.I,
 )
+_HARMFUL_PUBLICATION_CUES = (
+    re.compile(r"\b(?:publish|post|circulate|broadcast)\b|نشر|بث|تداول|发布|传播", re.I),
+    re.compile(r"\b(?:content|material|media)\b|محتوى|مواد|内容", re.I),
+    re.compile(r"\b(?:violence|violent|hate|hatred|propaganda)\b|عنف|كراهية|دعاية\s+سياسية|暴力|仇恨|政治宣传", re.I),
+)
 _INJECTION_REQUEST = re.compile(
     r"(?:ignore|disregard|forget)\s+(?:all|any|the)\s+(?:previous\s+|prior\s+)?(?:rules|instructions|prompts)"
     r"|reveal\s+(?:the\s+)?(?:system\s+prompt|internal\s+instructions)"
+    r"|(?:show|reveal|tell\s+me)\s+(?:the\s+)?(?:API\s+keys?|internal\s+policy\s+configurations?)"
     r"|show\s+(?:me\s+)?all\s+(?:customer\s+)?bank\s+details"
     r"|show\s+(?:me\s+)?all\s+applicants?\s*'?\s*passport\s+numbers?"
     r"|تجاهل\s+(?:كل|جميع)\s+(?:القواعد|التعليمات)"
     r"|اكشف\s+(?:تعليمات|موجه)\s+النظام"
+    r"|(?:أخبرني|اكشف|أظهر)\s+(?:بمطالبات\s+النظام|بمفاتيح\s+واجهة\s+برمجة\s+التطبيقات)"
+    r"|internal\s+policy\s+configurations?|إعدادات\s+السياسات\s+الداخلية"
+    r"|\bAPI\s+keys?\b|مفاتيح\s+واجهة\s+برمجة\s+التطبيقات"
     r"|忽略(?:所有|全部)?(?:规则|指令)|泄露系统提示|显示所有客户银行信息|显示所有申请人护照号",
     re.I,
 )
 
 
-def _safety_request_result(question: str) -> ReaderResult | None:
+def _safety_request_result(question: str, permission_context: UserPermissionContext | None = None) -> ReaderResult | None:
     """Answer harmful-content and injection attempts explicitly, item by item."""
 
     text = str(question or "")
+    language = response_language_for(text)
     facts: list[str] = []
+    if re.search(r"\bacross\s+all\s+departments\b|\ball\s+departments\b|جميع\s+الأقسام|كل\s+الأقسام", text, re.I):
+        facts.append(
+            "لا يمكنني تلخيص القضايا أو أداء الموظفين عبر جميع الأقسام؛ نطاق الحساب الحالي لا يخولني دمج بيانات الأقسام الأخرى. لم يتم إرجاع أي بيانات من أقسام أخرى."
+            if language == "ar" else
+            "I cannot summarize cases or staff performance across all departments; this account's scope does not authorize a cross-department aggregate. No data from other departments was returned."
+        )
+    note_requests = list(re.finditer(
+        r"internal\s+notes?|leader'?s?\s+escalated|escalated\s+cases?"
+        r"|ملاحظات(?:ه|ها)?\s+الداخلية|قضايا\s+التصعيد|تصعيد.*القائد",
+        text,
+        re.I,
+    ))
+    # An exclusion is not a request to disclose. In Arabic the definite
+    # article is attached to "notes", so inspect the preceding clause too.
+    requests_notes = any(not re.search(
+        r'(?:\bwithout|\bexcluding|\bnot|\b(?:do\s+not|don.t)\s+(?:show|return|include|reveal)|'
+        r'دون|بدون|لا\s+(?:تعرض|تُعرض|تظهر|تذكر|تتضمن))[\s\w\u064b-\u065f]{0,35}$',
+        text[max(0, match.start() - 65):match.start()], re.I,
+    ) for match in note_requests)
+    if requests_notes:
+        role_text = " ".join((permission_context.current_role, *permission_context.roles)) if permission_context else ""
+        if _LEADER_ROLE.search(role_text):
+            facts.append(
+                "هذا الحساب يحمل دور القائد، لذلك لا ينطبق عليه رفض صلاحية الموظف. لكن لم أتحقق هنا من قائمة التصعيد الكاملة أو الملاحظات الداخلية؛ ولم أعرض أرقام تذاكر أو ملاحظات غير مؤكدة."
+                if language == "ar" else
+                "This account has a Leader role, so the Staff-only restriction does not apply. I have not verified the complete escalation queue or internal notes in this answer, and I will not assert unverified ticket IDs or notes."
+            )
+        else:
+            facts.append(
+                "لا يمكنني عرض قائمة تصعيد القائد أو ملاحظات الإدارة الداخلية بهذا الدور. يمكنني الإجابة فقط من التذاكر التي يُسمح للحساب الحالي برؤيتها؛ ولم أقرأ أو أعرض أرقام تذاكر القائد أو ملاحظاته."
+                if language == "ar" else
+                "I cannot show the Leader's escalation queue or internal management notes with this role. I can answer only from tickets this account may view; I did not read or return the Leader's ticket IDs or notes."
+            )
     if _HARMFUL_CONTENT_REQUEST.search(text):
         facts.extend((
-            "Refused: this request asks for threatening, hateful, violent or manipulative content, and the Admin assistant does not produce it.",
-            "A compliant alternative: describe the applicant's submitted content to the Content review surface, record the specific rule and evidence, "
-            "and route the case through the normal Content review or escalation path. No harmful text was generated.",
+            (
+                "أرفض إنشاء محتوى تهديد أو كراهية أو عنف أو تلاعب."
+                if language == "ar" else
+                "Refused: this request asks for threatening, hateful, violent or manipulative content, and the Admin assistant does not produce it."
+            ),
+            (
+                "يمكن وصف المحتوى المقدم في مراجعة المحتوى، وتوثيق القاعدة والدليل المحددين، ثم استخدام مسار المراجعة أو التصعيد المعتاد. لم يُنشأ محتوى ضار."
+                if language == "ar" else
+                "A compliant alternative: describe the applicant's submitted content to the Content review surface, record the specific rule and evidence, "
+                "and route the case through the normal Content review or escalation path. No harmful text was generated."
+            ),
+        ))
+    elif all(cue.search(text) for cue in _HARMFUL_PUBLICATION_CUES):
+        facts.extend((
+            (
+                "لا يمكنني الموافقة على نشر محتوى يتضمن عنفًا أو كراهية أو دعاية سياسية أو المساعدة في نشره عبر الدردشة."
+                if language == "ar" else
+                "I cannot approve or help publish content involving violence, hate, or political propaganda through this chat."
+            ),
+            (
+                "وثّق المحتوى المعروض والقاعدة المحددة والدليل، ثم أحله إلى مراجعة المحتوى أو مسار التصعيد الرسمي؛ القرار لدى المراجع المخوّل، ولم يُنفَّذ نشر أو اعتماد."
+                if language == "ar" else
+                "Document the submitted content, the specific rule, and evidence, then use the formal Content review or escalation workflow. An authorized reviewer makes the decision; no publication or approval was performed."
+            ),
         ))
     if _INJECTION_REQUEST.search(text):
         refused = []
-        if re.search(r"(?:system\s+prompt|internal\s+instructions)|تعليمات\s+النظام|系统提示", text, re.I):
-            refused.append("reveal the system prompt or internal instructions - refused; no such content exists in this answer")
+        if re.search(r"(?:system\s+prompts?|internal\s+instructions)|تعليمات\s+النظام|مطالبات\s+النظام|系统提示", text, re.I):
+            refused.append(
+                "كشف تعليمات النظام الداخلية مرفوض؛ لم تُعرض في هذه الإجابة"
+                if language == "ar" else
+                "reveal the system prompt or internal instructions - refused; no such content exists in this answer"
+            )
+        if re.search(r"\bAPI\s+keys?\b|مفاتيح\s+واجهة\s+برمجة\s+التطبيقات|密钥", text, re.I):
+            refused.append(
+                "كشف مفاتيح واجهة البرمجة مرفوض؛ لم تُعرض أي مفاتيح"
+                if language == "ar" else
+                "reveal API keys - refused; no keys were disclosed"
+            )
+        if re.search(r"internal\s+policy\s+configurations?|إعدادات\s+السياسات\s+الداخلية", text, re.I):
+            refused.append(
+                "كشف إعدادات السياسات الداخلية مرفوض؛ لم تُعرض أي إعدادات داخلية"
+                if language == "ar" else
+                "reveal internal policy configurations - refused; no internal configuration was disclosed"
+            )
         if re.search(r"bank\s+details|بيانات\s+البنك|银行信息", text, re.I):
-            refused.append("list all customer bank details - refused; the reader is read-only and never returns customer payment credentials")
+            refused.append(
+                "كشف بيانات العملاء المصرفية مرفوض؛ القارئ للقراءة فقط ولا يعرض بيانات الدفع السرية"
+                if language == "ar" else
+                "list all customer bank details - refused; the reader is read-only and never returns customer payment credentials"
+            )
         if re.search(r"passport\s+numbers?|جواز\s+السفر|护照号", text, re.I):
-            refused.append("list all applicants' passport numbers - refused; personal identity documents are outside the answer scope")
+            refused.append(
+                "كشف أرقام جوازات سفر المتقدمين مرفوض؛ وثائق الهوية الشخصية خارج نطاق الإجابة"
+                if language == "ar" else
+                "list all applicants' passport numbers - refused; personal identity documents are outside the answer scope"
+            )
         if refused:
-            facts.append("Refused, one item at a time: " + "; ".join(refused) + ".")
+            facts.append(("رُفض كل طلب حساس على حدة: " if language == "ar" else "Refused, one item at a time: ") + "; ".join(refused) + ".")
     if not facts:
         return None
-    facts.append(
-        "The remaining business question in the same message is answered separately; a refused item is never silently merged into it."
-    )
     return ReaderResult(
         status="success",
         summary="The sensitive parts of the request were refused explicitly.",
@@ -2691,6 +3021,7 @@ _LEADING_CHINESE_VERBS = "删除|导出|下载|上传|批准|审批|驳回|提�
 def question_requests_business_mutation(question: str) -> bool:
     """Recognize explicit commands, not resource names or read-only view changes."""
     text = re.sub(r"\s+", " ", str(question or "")).strip()
+    normalized = normalized_text(text)
     english = re.sub(
         r"^(?:(?:please|now)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+)+",
         "", text, flags=re.IGNORECASE,
@@ -2708,9 +3039,43 @@ def question_requests_business_mutation(question: str) -> bool:
         ))
     if re.match(r"^turn\b.*\b(?:automatic\s+assignment|auto[- ]assignment|assignment\s+settings?)\b.*\b(?:off|on)\b", english, re.IGNORECASE):
         return True
+    # Explicit inspection, credential and account commands must be blocked by
+    # the same read-only boundary as approve/delete/export.  These checks are
+    # anchored to the command start so a read-only question about a past change
+    # does not become a mutation request.
+    if re.match(r"^(?:skip|bypass|circumvent|evade|avoid)\b.{0,60}\b(?:inspection|on[- ]site|site visit)\b", english, re.I):
+        return True
+    if re.match(r"^(?:change|modify|update|set|mark)\b.{0,70}\b(?:inspection\s+)?(?:result|outcome|finding|status|report)\b", english, re.I):
+        return True
+    if re.match(r"^(?:reset|change|set)\b.{0,40}\bpassword\b", english, re.I):
+        return True
+    if re.match(r"^(?:disable|deactivate|suspend|merge)\b.{0,60}\b(?:account|user)\b", english, re.I):
+        return True
+    if re.match(
+        r"^(?:transfer|reassign|delegate|move)\b.{0,80}\b"
+        r"(?:case|task|inspection|license|licence|team|department|account|user)\b",
+        english,
+        re.I,
+    ):
+        return True
     chinese = re.sub(r"^(?:(?:请|帮我|给我|现在|立即|麻烦你|我需要你|我想让你)\s*)+", "", text)
     if re.match(r"^(?:" + _LEADING_CHINESE_VERBS + r")", chinese):
         return not _leading_verb_names_a_record(chinese, _LEADING_CHINESE_VERBS)
+    # Arabic imperative forms (including common unvocalized variants).  Keep
+    # identifiers and quoted field values literal; only the leading action and
+    # its business object are classified here.
+    if re.match(r"^(?:(?:يرجى|الرجاء)\s+)?(?:قم\s+ب(?:تعيين|اسناد)|عين|اسند)\b.{0,90}\b(?:الطلب|طلب|المهمة|مهمة|المحتوى|التذكرة|السجل)\b", normalized):
+        return True
+    if re.match(r"^(?:تخط(?:ى|ي|ّ)?|تجاوز|تخطى|تخطّي)\b.{0,70}\b(?:التفتيش|الفحص|المعاينة|المراجعة|التدقيق)", normalized):
+        return True
+    if re.match(r"^(?:غير|غيّر|عدل|عدّل|اجعل|أنشئ|انشئ|اكتب|بدل|بدّل)\b.{0,80}\b(?:نتيجة|نتائج|حالة|تقرير|تفتيش|فحص|مخالفة|قرار)", normalized):
+        return True
+    if re.match(r"^(?:(?:اعد|أعد)\s+)?(?:تعيين|ضبط|غيّر|غير|بدل|بدّل)\b.{0,90}\b(?:كلمة\s+المرور|كلمه\s+المرور|كلمة\s+مرور)", normalized):
+        return True
+    if re.match(r"^(?:عطل|عطّل|اوقف|أوقف|جمّد|ادمج|أدمج|دمج)\b.{0,70}\b(?:الحساب|المستخدم|الحسابات|المستخدمين)", normalized):
+        return True
+    if re.match(r"^(?:حول|حوّل|انقل|فوّض|فوض)\b.{0,70}\b(?:القضية|الحالة|المهمة|الطلب|الرخصة|الفريق|القسم|الحساب)", normalized):
+        return True
     return bool(
         re.match(r"^(?:关闭|开启|禁用|启用)自动分配", chinese)
         or re.match(r"^(?:يرجى\s+)?(?:احذف|صدّر|صدر|حمّل|حمل|ارفع|أرسل|ارسل|وافق|ارفض|ادفع)\b", text)
@@ -2871,7 +3236,8 @@ def question_is_conceptual(question: str) -> bool:
         r"|\balone\b.*\bidentify\b|\bhow (?:do i|can i|to)\b"
         r"|\b(?:what|which)\b.*\b(?:criteria|filters?|fields?|columns?)\b.*\b(?:available|supported|present|can i use)\b"
         r"|\bwhat is\b.*\b(?:entry|entry point)\b"
-        r"|解释|含义|区别|手册|是什么意思|如何|怎么使用|شرح|معنى|الفرق|كيف",
+        r"|解释|含义|区别|手册|是什么意思|如何|怎么使用|شرح|معنى|الفرق|كيف"
+        r"|توضيح|وضح|اشرح|ماذا\s+يجب",
         normalized,
     )) or any(marker in normalized for marker in _DOCUMENTATION_QUESTION_MARKERS)
 
@@ -2880,6 +3246,19 @@ def _private_customer_information_request(question: str) -> bool:
     """Recognize a direct request for protected customer/profile data."""
 
     normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    # An explicit Finance qualifier is a module boundary, even when the
+    # question names a collection without an amount/status field. Bind it
+    # before generic refund/ticket fallbacks so restricted accounts receive a
+    # Finance permission result instead of unrelated Happiness rows.
+    finance_qualifier = bool(re.search(r"\b(?:finance|financial)\b|المالية|مالي(?:ة)?", normalized, re.I))
+    # Finance is a module boundary, not a private-profile request.  Returning
+    # False here lets the normal explicit-source and permission resolver bind
+    # the request to Finance and produce a page-permission result, rather than
+    # the unrelated customer-profile privacy fallback.
+    if finance_qualifier and re.search(r"\b(?:transaction|transactions|payment|payments)\b|معاملة|معاملات|مدفوعات|الدفع|交易|付款", normalized, re.I):
+        return False
+    if finance_qualifier and re.search(r"\brefunds?\b|استرداد|استردادات|退款", normalized, re.I):
+        return False
     return bool(re.search(
         r"\b(?:customer|applicant|user)(?:'s)?\s+(?:private|personal|confidential)\s+"
         r"(?:information|data|details?)\b|\b(?:private|personal)\s+"
@@ -2991,15 +3370,65 @@ def _content_category_from_question(question: str) -> str:
     return categories[0] if categories else ""
 
 
-def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
+def _explicit_reader_source(
+    question: str,
+    context: dict[str, Any],
+    permission_context: UserPermissionContext | None = None,
+) -> str:
     """Bind distinctive object names to documented read surfaces before planning."""
 
-    normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    question = re.sub(r"(?<=[A-Za-z0-9])\s*[-–—]\s*(?=[A-Za-z0-9])", "-", str(question or ""))
+    normalized = re.sub(r"\s+", " ", question).casefold()
+    # A typed ticket ID owns its route. Mentioning the receiving department
+    # or its private notes must not reroute a public ticket-state question.
+    if re.search(r"\bHC-01-\d{4}-\d+\b", question, re.I):
+        return "/happiness/tickets"
+    # A numbered Content Application is not a Content Library title.  The
+    # exact object takes precedence over a generic reference to standards;
+    # the normal page-permission check still decides access.
+    if re.search(r"(?<![A-Za-z0-9])MC-\d+-\d+-\d+(?![A-Za-z0-9])", question, re.I):
+        return "/content/ContentApplications"
+    # Resolve the portal's typed inspection identifiers before generic words
+    # such as Arabic "recorded" (المسجلة), which contain the library matcher
+    # سجل. A task's recorded violations still belong to that task's detail.
+    if re.search(r"\bIN-\d{4}-\d+\b", str(question or ""), re.I):
+        return "/inspection/tasks"
+    if re.search(r"\bVN-\d{4}-\d+\b", str(question or ""), re.I):
+        return "/inspection/violations"
+    # Resolve a current single KPI before knowledge planning can substitute
+    # analytics documentation for a value visible on the user's Dashboard.
+    # A typed record above still wins; this is not a task-level SLA lookup.
+    previous_question = str((context.get('previousIntent') or {}).get('question') or '')
+    same_metric = bool(re.search(r'نفس\s+(?:المؤشر|المقياس)|\b(?:same|that)\s+(?:metric|indicator)\b', question, re.I))
+    if ((_CURRENT_SLA_METRIC_REQUEST.search(question)
+            and re.search(r'\b(?:just|only|now|current|right now)\b|فقط|الآن|الحالي|هذا\s+المؤشر', question, re.I))
+            or (same_metric and _CURRENT_SLA_METRIC_REQUEST.search(previous_question))):
+        return '/dashboard'
     # Profile Verification is a distinct Licensing surface. Binding the
     # initial summary as well as its elliptical follow-up prevents a generic
     # pending-review count from silently switching to Application tasks.
     if re.search(r"\bprofile\s+verification\b", normalized):
         return "/licensing/profile"
+    # License-application requests are a distinct collection from issued
+    # licenses and from Customer Happiness tickets. Bind both portal languages
+    # before a generic planner can lose the permission-bearing page target.
+    if (not re.search(r"\b(?:payment|transaction|refund)\b|دفع|استرداد|معاملة", normalized)
+            and re.search(
+                r"\b(?:licens(?:e|ing))\s+applications?\b|"
+                r"\bapplications?\b.{0,40}\b(?:licens(?:e|ing))\b|"
+                r"طلبات?\s+(?:الترخيص|الرخص)|(?:الترخيص|الرخص).{0,30}طلبات?",
+                normalized,
+                re.I,
+            )):
+        return "/licensing/applications"
+    # Application objects are not staff task roll-ups. Resolve the explicitly
+    # named department before generic review/task words or a previous module
+    # can select Team Management. Access is still checked against GetUserInfo.
+    if (re.search(r"\bcontent\b|内容|(?:ال)?محتوى", normalized)
+            and re.search(r"\bapplications?\b|申请|طلبات?", normalized)
+            and not _ticket_team_summary_requested(question)
+            and not _team_task_assignment_list_requested(question)):
+        return "/content/ContentApplications"
     # A question about one customer's accounts, phone, address or history
     # belongs to the rendered Customer Management surface; without this the
     # planner occasionally started from Customer Happiness analytics instead.
@@ -3025,11 +3454,13 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # A question that names one Content Library record (for example a book
     # ISBN) belongs to the rendered Content Library surface.  Without this the
     # planner started from Team Tasks and reported the record as unreadable.
-    if _explicit_record_identity(question) and re.search(
+    if (_explicit_record_identity(question)
+            and not re.match(r"^(?:IN|VN|ML|MC|HC)-", _explicit_record_identity(question), re.I)
+            and re.search(
         r"\b(?:content|isbn|book|title|record|item)s?\b|内容|书号|图书|记录|محتوى|سجل|كتاب",
         normalized,
         re.I,
-    ):
+    )):
         return "/content/ContentLibrary"
     # Customer Happiness work orders are rendered on Enquiries & Complaints,
     # rather than on the refund workflow.  HC-01 is the stable ticket-number
@@ -3038,17 +3469,140 @@ def _explicit_reader_source(question: str, context: dict[str, Any]) -> str:
     # Violation and committee-decision questions are rendered on the
     # Violations surface, which is also where the committee queue and the fine
     # amounts appear.  Other inspection questions use the task queue.
+    # A named inspection task asking for its institution and prior history
+    # must start at that task's detail; the task identity cannot be found in
+    # the unrelated Violations list merely because the question also mentions
+    # penalties. The task detail can then follow its verified target links.
+    if re.search(r"\bIN-\d{4}-\d+\b", str(question or ""), re.I) and re.search(
+        r"\b(?:inspection|task|target|address|street|checklist|violation|evidence|handling|status)s?\b"
+        r"|检查|巡检|任务|地址|清单|违规|证据|状态|التفتيش|المهمة|العنوان|التحقق|المخالفات|الأدلة|الحالة",
+        normalized, re.I,
+    ):
+        return "/inspection/tasks"
+    if _inspection_history_request(question) and _inspection_target_history_name(question):
+        return "/inspection/tasks"
+    # VN is the portal's violation-number family even when a user calls it a
+    # "task".  Resolve that business identifier on Violations first; any
+    # source task checklist is a separate permission-gated read.
+    if re.search(r"\bVN-\d{4}-\d+\b", str(question or ""), re.I):
+        return "/inspection/violations"
     if re.search(
         r"\b(?:violations?|fines?|penalt\w+|committee\s+decision|compliance\s+committee)\b"
-        r"|违规|罚款|罚金|处罚|委员会|تفتيش|مخالفة|غرامة|لجنة",
+        r"|违规|罚款|罚金|处罚|委员会|مخالفة|مخالفات|غرامة|غرامات|عقوبة|عقوبات|جزاء|جزاءات|لجنة",
         normalized,
     ):
         return "/inspection/violations"
+    # Application identifiers are shared across License and Finance pages.
+    # Bind the ML application family before the generic ticket/case matcher so
+    # a request that also mentions a complaint cannot drift into Happiness.
+    if re.search(r"\bML-[A-Za-z0-9-]+\b", str(question or ""), re.I) and re.search(
+        r"\b(?:license|licensing|application|payment|complaint|status|compare|business|sla|overdue)\b"
+        r"|رخص|ترخيص|طلب|دفع|شكوى|حالة|قارن|نوع|اتفاقية\s+مستوى\s+الخدمة|逾期",
+        normalized,
+        re.I,
+    ):
+        # The ML number exists on both Licensing and Finance, but a Finance
+        # question must not force a Licensing-only account into a denied page.
+        # GetUserInfo's current page permissions, not the wording alone,
+        # decide which of the two authorized surfaces can be read.
+        permitted = (*permission_context.pages, *permission_context.subpages) if permission_context else ()
+        finance_allowed = any(permission_path_matches("/financial-payment/transactions", path) for path in permitted)
+        licensing_allowed = any(permission_path_matches("/licensing/applications", path) for path in permitted)
+        if licensing_allowed and not finance_allowed:
+            return "/licensing/applications"
+        return "/financial-payment/transactions"
     if re.search(
-        r"\b(?:inspection|inspector)\b|检查|巡检|المفتش",
+        r"\b(?:inspections?|inspectors?)\b|检查|巡检|المفتش|التفتيش|تفتيش|مهام\s+التفتيش|مهمة\s+التفتيش",
         normalized,
     ):
         return "/inspection/tasks"
+    # "Team Tasks / مهام الفريق" is shared wording across departments. For
+    # a dated per-inspector rollup, bind it to Inspection only when the open
+    # page or the authorized role supplies that missing module context.
+    if (re.search(r'\bteam\s+tasks\b|مهام\s+الفريق', normalized, re.I)
+            and _inspection_person_rollup_requested(question)):
+        current = context.get('currentPage') or (context.get('previousIntent') or {}).get('currentPage')
+        if isinstance(current, dict):
+            current = current.get('route') or current.get('currentPage') or current.get('current_page')
+        role = normalized_text(permission_context.current_role) if permission_context else ''
+        if (isinstance(current, str) and current.split('?', 1)[0].rstrip('/') == '/inspection/tasks') or 'inspection' in role:
+            return '/inspection/tasks'
+    if (re.search(r"\bcontent\b|内容|محتوى", normalized)
+            and re.search(r"\b(?:review|task|todo|queue)s?\b|审核|待办|المراجعة|مراجعة|مهام", normalized)
+            and re.search(r"\b(?:status|priority|summar(?:y|ise|ize)|pending|overdue)\b|状态|优先级|汇总|حالة|أولوية|تلخيص", normalized)):
+        return "/content/team-management"
+    # A staff-by-workflow roll-up is a team-queue question, not an individual
+    # Enquiries & Complaints ticket lookup.  Bind the semantic task shape to
+    # the documented team-management surface before the generic ticket alias
+    # is considered; this is one reusable intent rule, not a bug-specific
+    # route exception.
+    if _ticket_team_summary_requested(question) or _team_task_assignment_list_requested(question):
+        team_surfaces = (
+            "/licensing/team-management", "/content/team-management",
+            "/happiness/team-management", "/inspection/tasks",
+        )
+        permitted = ((*permission_context.pages, *permission_context.subpages)
+                     if permission_context is not None else ())
+        eligible = tuple(page for page in team_surfaces
+                         if any(permission_path_matches(page, path) for path in permitted))
+        if len(eligible) == 1:
+            return eligible[0]
+        current = context.get("currentPage") or {}
+        current_route = (current.get("route") or current.get("currentPage")
+                         if isinstance(current, dict) else current)
+        if isinstance(current_route, str):
+            current_route = current_route.split('?', 1)[0].rstrip('/')
+            if current_route in eligible:
+                return current_route
+        if permission_context is not None:
+            role = normalized_text(permission_context.current_role)
+            for module_word, page in (("licens", "/licensing/team-management"),
+                                      ("content", "/content/team-management"),
+                                      ("happiness", "/happiness/team-management"),
+                                      ("inspection", "/inspection/tasks")):
+                if module_word in role and page in eligible:
+                    return page
+        return "" if permission_context is not None else "/happiness/team-management"
+    # A generic current task queue is routed by queue semantics.  Questions
+    # that name another module are excluded by the recognizer and continue to
+    # their documented source selection below.
+    if _generic_task_queue_requested(question):
+        # An unqualified "tasks" question inherits a task page that is
+        # actually open. Never force every account onto Happiness: an
+        # Inspection Leader can see Inspection Tasks while lacking access to
+        # Happiness Team Management. The normal page policy still validates
+        # this non-authoritative UI hint against GetUserInfo below.
+        current = context.get("currentPage") or (context.get("previousIntent") or {}).get("currentPage")
+        if isinstance(current, dict):
+            current = current.get("route") or current.get("currentPage") or current.get("current_page")
+        task_surfaces = ("/inspection/tasks", "/happiness/team-management")
+        if isinstance(current, str):
+            for candidate in task_surfaces:
+                if (current.split("?", 1)[0].rstrip("/") == candidate
+                        and (permission_context is None or any(
+                            permission_path_matches(candidate, path)
+                            for path in (*permission_context.pages, *permission_context.subpages)
+                        ))):
+                    return candidate
+        if permission_context is not None:
+            permitted = (*permission_context.pages, *permission_context.subpages)
+            eligible = tuple(candidate for candidate in task_surfaces
+                             if any(permission_path_matches(candidate, path) for path in permitted))
+            if len(eligible) == 1:
+                return eligible[0]
+            owner = normalized_text(' '.join((permission_context.current_role, *permission_context.departments)))
+            for candidate, module_pattern in (("/inspection/tasks", r"inspect|التفتيش"),
+                                              ("/happiness/team-management", r"happiness|السعادة|سعادة")):
+                if candidate in eligible and re.search(module_pattern, owner, re.I):
+                    return candidate
+            # An SLA-overdue task request cannot be answered from generic
+            # dashboard counters.  If this account has neither task surface,
+            # bind the actual inspection queue so the page policy produces an
+            # explicit permission denial instead of a misleading zero/count.
+            if not eligible and _inspection_overdue_list_requested(question):
+                return "/inspection/tasks"
+            return ""
+        return "/happiness/team-management"
     if re.search(r"\bHC-01-\d{4}-\d+\b", str(question or ""), re.I) or re.search(
         r"\b(?:ticket|tickets|work\s*orders?|enquir(?:y|ies)|complaints?|cases?)\b"
         r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|投诉|諮詢)"
@@ -3131,6 +3685,10 @@ def _refund_sla_requested(question: str) -> bool:
     """
 
     text = str(question or "")
+    # SLA is shared by multiple queues. A task query must not become a
+    # Refunds query solely because it uses the Arabic word for "exceeded".
+    if not re.search(r"\brefunds?\b|استرداد|استردادات|退款|退费", text, re.I):
+        return False
     if re.search(
         r"\b(?:past|over|exceed(?:ed|ing)?|breach(?:ed)?|beyond|missed)\s*(?:the\s*)?sla\b"
         r"|\bsla\b[^.]{0,25}\b(?:past|over|exceed(?:ed|ing)?|breach(?:ed)?|beyond|missed|violat)",
@@ -3185,26 +3743,474 @@ def _ticket_team_summary_requested(question: str) -> bool:
     members/staff and ask for pending, overdue, or closed/completed counts.
     """
 
-    normalized = re.sub(r"\s+", " ", str(question or "").casefold())
-    has_people = bool(re.search(r"\b(?:team|staff|member|employee|handler)s?\b|(?:团队|團隊|员工|員工|部门|部門|فريق|موظف)", normalized))
+    normalized = re.sub(r"\s+", " ", re.sub(r"[\u064b-\u065f\u0670]", "", str(question or "").casefold()))
+    has_people = bool(re.search(r"\b(?:team|staff|member|employee|handler)s?\b|(?:团队|團隊|员工|員工|部门|部門|فريق|فريقي|عضو|أعضاء|موظف)", normalized))
     has_ticket_scope = bool(re.search(
-        r"\b(?:ticket|work\s*order|case|complaint|enquir(?:y|ies))s?\b"
-        r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|تذاكر|تذكرة|شكاوى|استفسار|طلبات)",
+        r"\b(?:task|ticket|work\s*order|case|complaint|enquir(?:y|ies))s?\b"
+        r"|(?:工单|工單|单据|單據|单子|單子|票据|案件|تذاكر|تذكرة|شكاوى|استفسار|طلبات|مهام|المهام|أوامر\s+العمل|أمر\s+عمل)",
         normalized,
     ))
     has_rollup = bool(re.search(
         r"\b(?:pending|overdue|closed|completed|unhandled|open)\b"
         r"|(?:未处理|未處理|逾期|关闭|關閉|已关闭|قيد الانتظار|بالانتظار|معل[قةق]|متأخر|مغلق|"
-        r"غير معالجة|غير المعالجة|بدون معالجة|لم تتم معالجتها|مفتوح|مفتوحة)",
+        r"غير معالجة|غير المعالجة|بدون معالجة|لم تتم معالجتها|مفتوح|مفتوحة|"
+        r"المتبقية|متبقية|تجاوزت.{0,35}المواعيد|المواعيد.{0,35}النهائية)",
         normalized,
     ))
     return has_people and has_ticket_scope and has_rollup
 
 
-def _ticket_member_query(question: str) -> str:
-    """Extract a user-named staff member without treating Chinese prose as a name."""
+def _team_task_assignment_list_requested(question: str) -> bool:
+    """Separate task/owner rows from a per-member workload aggregate."""
+
+    text = re.sub(r"\s+", " ", str(question or "")).casefold()
+    # Asking to name the owners of a count does not ask for task/owner rows.
+    # Arabic اذكر is also used for "give the count", so preserve the measure
+    # before choosing the lower-level list projection in either language.
+    if re.search(r"\b(?:how many|count|number|total)\b|数量|总数|كم|عدد|إجمالي", text):
+        return False
+    return bool(
+        re.search(r"\b(?:list|show)\b|列出|显示|اعرض|اذكر", text)
+        and re.search(r"\bteam\b|团队|فريق", text)
+        and re.search(r"\b(?:task|ticket)s?\b|任务|工单|مهام|المهام", text)
+        and re.search(r"\b(?:responsible|assigned|assignee|owner)\b|负责人|负责人员|المسؤول|المكلف", text)
+    )
+
+
+def _overdue_workload_shorthand(question: str) -> bool:
+    return bool(re.fullmatch(r'\s*(?:how many (?:are )?overdue|كم\s+عدد\s+(?:المهام\s+|المواعيد\s+)?المتأخرة)[?.؟!\s]*', question, re.I))
+
+
+def _member_metric_followup_question(
+    question: str, context: dict[str, Any], *, verified_team_dashboard: bool = False,
+) -> str:
+    """Resolve an elliptical workload measure only from a verified member view.
+
+    This carries semantic scope, never prior counts: member cards are read
+    again. Explicit payment/other-object requests do not inherit task scope.
+    """
+    previous = context.get('previousIntent') or {}
+    verified_members = (isinstance(previous, dict) and previous.get('resultStatus') == 'success'
+                        and 'Team Members' in (previous.get('section'), previous.get('sourceSection'), previous.get('selectedState')))
+    current = context.get('currentPage') or {}
+    current_route = str(current.get('route') or current.get('currentPage') or current.get('current_page') or '') if isinstance(current, dict) else str(current)
+    team_page = current_route.split('?', 1)[0].rstrip('/') in {
+        '/happiness/team-management', '/licensing/team-management', '/content/team-management',
+    }
+    if not verified_members and not team_page and not verified_team_dashboard:
+        return question
+    if not _overdue_workload_shorthand(question):
+        return question
+    return question + (' مهام فريقي' if re.search(r'[\u0600-\u06ff]', question) else ' tasks in my team')
+
+
+def _outside_current_team_requested(question: str) -> bool:
+    """Recognize an explicit request for a different team's private workload."""
+
+    return bool(re.search(
+        r"\boutside\s+(?:my|our|the)(?:\s+current)?\s+team\b"
+        r"|\b(?:another|a different)\s+(?:[a-z]+\s+){0,2}(?:manager|supervisor|leader)[’']?s?\s+team\b"
+        r"|(?:我|本)(?:团队|部門|部门)以外|其他(?:团队|部門|部门)(?:的|之)"
+        r"|خارج\s+(?:فريقي|فريقنا)|فريق\s+مدير\s+آخر",
+        str(question or ''), re.I,
+    ))
+
+
+def _team_task_assignment_rows_result(
+    observation: Any, *, page: str, scope: Literal['personal', 'team', 'global', 'unknown'],
+) -> ReaderResult | None:
+    """Report only observed team-task/assignee pairs, with the page boundary."""
+
+    if not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return None
+    selected = {str(tab.get('name') or '').casefold() for tab in observation.get('tabControls') or ()
+                if isinstance(tab, dict) and tab.get('selected') is True}
+    if not any(name in selected for name in ('team tasks', 'مهام الفريق')):
+        return None
+    tables = [node for node in _observation_semantic_nodes(observation)
+              if node.get('kind') in {'table', 'grid'} and node.get('columnHeaders')]
+    if len(tables) != 1:
+        return None
+    table = tables[0]
+    headers = [str(header) for header in table.get('columnHeaders') or ()]
+    def column(pattern: str) -> str:
+        matches = [header for header in headers if re.fullmatch(pattern, header.strip(), re.I)]
+        return matches[0] if len(matches) == 1 else ''
+    task_col = column(r'Task No\.?|رقم المهمة')
+    owner_col = column(r'Assigned To|Current Handler|Responsible Person|المسؤول|مُسند إلى|مسند إلى')
+    status_col = column(r'Status|الحالة')
+    if not task_col or not owner_col or not status_col:
+        return None
+    rows = [row for row in table.get('rowFields') or () if isinstance(row, dict)]
+    facts = []
+    for row in rows:
+        task_no = str(row.get(task_col) or '').strip()
+        if not task_no:
+            continue
+        facts.append(json.dumps({
+            'Task No.': task_no,
+            'Assigned To': str(row.get(owner_col) or '').strip() or 'unassigned',
+            'Status': str(row.get(status_col) or '').strip(),
+        }, ensure_ascii=False, separators=(',', ':')))
+    page_info = _status_page_info(observation)
+    total = page_info[2] if page_info else None
+    if type(total) is int:
+        facts.append(f'Current Team Tasks page shows {len(rows)} of {total} tasks; this is not a complete team-task list.')
+    else:
+        facts.append('Only the currently rendered Team Tasks page was read; its complete queue size was not verified.')
+    return ReaderResult(
+        status='success' if facts and rows else 'no_data', page=page, section='Team Tasks',
+        source_section='Team Tasks', selected_state='To Do', scope=scope,
+        answer_shape='list', completeness='bounded',
+        summary='The current team task rows and their assigned owners were read from the authorized team page.',
+        facts=tuple(facts), source_hint={'page': page, 'section': 'Team Tasks'},
+    )
+
+
+def _generic_task_queue_requested(question: str) -> bool:
+    """Recognize a current queue request without requiring browser context.
+
+    A bare queue question is still a live task request.  It must not fall
+    through to the knowledge-only application page merely because the word
+    ``task`` is shared by several modules.  Explicit module nouns keep their
+    normal catalog/planner path; only the unqualified reusable team queue is
+    bound here.
+    """
+
+    normalized = re.sub(r"\s+", " ", str(question or "")).casefold()
+    if not re.search(r"\b(?:task|tasks|work\s*items?|queue|queues)\b|任务|待办|队列|المهام|قائمة", normalized):
+        return False
+    if not re.search(r"\b(?:to\s*do|todo|queued|pending|completed|closed|done|overdue)\b|待办|已完成|关闭|逾期|معلق|مكتمل|مغلق|متأخر|تجاوز(?:ت|وا)?[^.؟]{0,35}(?:sla|اتفاقية مستوى الخدمة|معايير)", normalized):
+        return False
+    return not re.search(
+        r"\b(?:application|applications|license|licensing|content|publication|inspection|inspector|refund|refunds|transaction|transactions)\b"
+        r"|许可|申请|内容|出版|巡检|退款|交易|رخص|طلب|محتوى|تفتيش|استرداد|معاملة",
+        normalized,
+    )
+
+
+def _native_task_queue_count_result(
+    observation: Any,
+    *,
+    page: str,
+    question: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult | None:
+    """Project a queue total from the page's own pagination summary.
+
+    The total is a page-native aggregate, so reading every row is unnecessary
+    for a count.  This keeps direct routing fast while the existing collection
+    path remains responsible for row-level and multi-measure questions.
+    """
+
+    if not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return None
+    if not re.search(r"\b(?:how\s+many|count|number\s+of|total)\b|多少|数量|كم|عدد", str(question or ""), re.I):
+        return None
+    page_info = _status_page_info(observation)
+    if page_info is None or type(page_info[2]) is not int or page_info[2] < 0:
+        return None
+    selected = [str(tab.get("name") or tab.get("label") or "").strip()
+                for tab in (observation.get("tabControls") or ())
+                if isinstance(tab, dict) and tab.get("selected") is True]
+    if not selected:
+        return None
+    tables = [node for node in _observation_semantic_nodes(observation)
+              if node.get("kind") in {"table", "grid"} and node.get("columnHeaders")]
+    if len(tables) != 1:
+        return None
+    normalized_question = re.sub(r"\s+", " ", str(question or "")).casefold()
+    requested_view = next((label for label, pattern in (
+        ("To Do", r"\bto\s*do\b|\btodo\b|待办|待辦|معلق"),
+        ("Completed", r"\bcompleted\b|\bclosed\b|\bdone\b|已完成|关闭|關閉|مكتمل|مغلق"),
+        ("Queued", r"\bqueued\b|队列|佇列|قائمة"),
+    ) if re.search(pattern, normalized_question)), "")
+    view = next((label for label in selected if requested_view and _state_control_label_matches(label, requested_view)), "")
+    if not view:
+        # A nested page can expose both the parent Team Tasks tab and the
+        # selected To Do/Completed child.  Do not present the parent as the
+        # queue state merely because it appears first in accessibility order.
+        view = next((label for label in selected if _state_control_label_matches(label, "To Do")
+                     or _state_control_label_matches(label, "Completed")
+                     or _state_control_label_matches(label, "Queued")), selected[0])
+    total = page_info[2]
+    return ReaderResult(
+        status="success", page=page, section=str(tables[0].get("nodeId") or view),
+        selected_state=view, scope=scope, answer_shape="count", completeness="complete",
+        summary=f"The current {view} task queue contains {total} tasks.",
+        facts=(f"{view} tasks: {total}.",
+               f"The count comes from the rendered {view} queue pagination total, not only the visible rows."),
+        source_hint={"page": page, "section": view},
+        count_source={"page": page, "view": view, "total": total},
+    )
+
+
+def _status_grouping_capable(observation: Any) -> bool:
+    """Detect whether the observed page can support a generic status roll-up.
+
+    Routing must not depend on a route-name allowlist.  A page is eligible only
+    when its own observed table exposes an owner and status column and its
+    controls expose at least one workflow-state view.  The same analyzer can
+    therefore serve team queues from different modules without adding a
+    module-specific branch for each bug.
+    """
+
+    if not isinstance(observation, dict) or _observation_has_error_state(observation):
+        return False
+    owner_names = {
+        "assignedto", "currenthandler", "owner", "responsibleperson", "assignee", "handler",
+    }
+    state_labels = {
+        "todo", "to do", "pending", "open", "completed", "closed", "resolved", "done",
+    }
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") not in {"table", "grid"}:
+            continue
+        headers = {
+            re.sub(r"[^a-z0-9]", "", str(header).casefold())
+            for header in node.get("columnHeaders") or []
+        }
+        if "status" not in headers or not headers.intersection(owner_names):
+            continue
+        controls = [str(item.get("name") or item.get("label") or "").strip().casefold()
+                    for item in (observation.get("tabControls") or []) if isinstance(item, dict)]
+        controls.extend(str(item).strip().casefold()
+                        for item in node.get("controls") or [] if isinstance(item, str))
+        if any(label in state_labels for label in controls):
+            return True
+    return False
+
+
+def _status_page_info(observation: Any) -> tuple[int, int, int] | None:
+    """Return ``(page_index, page_size, total)`` from an observed collection.
+
+    The reader does not assume a particular endpoint name.  It only accepts a
+    response that exposes the standard page/items/total shape already observed
+    by the gateway, so the same pagination guard works for any module queue.
+    """
+
+    def walk(value: Any) -> tuple[int, int, int] | None:
+        if isinstance(value, dict):
+            items = value.get("items")
+            total_value = value.get("total")
+            if total_value is None:
+                total_value = value.get("totalCount")
+            if (
+                isinstance(items, list)
+                and type(value.get("pageIndex")) is int
+                and type(value.get("pageSize")) is int
+                and type(total_value) is int
+            ):
+                return int(value["pageIndex"]), int(value["pageSize"]), int(total_value)
+            for child in value.values():
+                result = walk(child)
+                if result is not None:
+                    return result
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                result = walk(child)
+                if result is not None:
+                    return result
+        return None
+
+    if not isinstance(observation, dict):
+        return None
+    for candidate in (observation.get("apiDiscovery") or {}).get("candidates") or ():
+        if not isinstance(candidate, dict) or candidate.get("status") != 200:
+            continue
+        evidence = candidate.get("responseEvidence")
+        result = walk(evidence.get("data") if isinstance(evidence, dict) else evidence)
+        if result is not None:
+            return result
+    return None
+
+
+def _status_page_action_candidates(observation: Any, page_index: int) -> tuple[dict[str, Any], ...]:
+    """Return only native, observed actions for the next collection page.
+
+    Pagination controls are intentionally resolved from their observed role and
+    accessible name.  This supports libraries that expose a forward control as
+    ``button[aria-label=right]`` with ``Next Page`` on its parent, without
+    hard-coding a route or inventing a ``Next``/numeric button that is not in
+    the current DOM.
+    """
+
+    def compact(value: Any) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
+    def is_forward(item: dict[str, Any]) -> bool:
+        name = compact(item.get("name"))
+        context = compact(item.get("context"))
+        direction = compact(item.get("direction"))
+        combined = f"{name} {context} {direction}"
+        if re.search(r"\b(?:previous|prev|back|left|arrowleft|chevronleft)\b|[‹«]", combined):
+            return False
+        return bool(
+            item.get("direction") == "next"
+            or re.search(r"\b(?:next|right|arrowright|chevronright|forward)\b|[›»]", combined)
+        )
+
+    def is_target_page(item: dict[str, Any]) -> bool:
+        target = str(page_index)
+        return compact(item.get("name")) == target or compact(item.get("label")) == target
+
+    if isinstance(observation, dict):
+        observed = observation.get("paginationControls")
+        if isinstance(observed, list):
+            descriptors = [
+                item for item in observed
+                if isinstance(item, dict)
+                and item.get("role") in {"button", "link"}
+                and str(item.get("name") or item.get("label") or "").strip()
+                and not bool(item.get("disabled"))
+            ]
+            forwards = [item for item in descriptors if is_forward(item)]
+            # Numeric page anchors are often rendered as presentation-only
+            # links (the browser exposes them as text, not a link role).  Use
+            # the observed forward control first; only a native button target
+            # may be used as a direct page jump.
+            # Numeric page links are native pagination controls too. Prefer
+            # the observed target page when it is present; this avoids a
+            # stale/ambiguous right-arrow locator after a page transition.
+            targets = [item for item in descriptors if item.get("role") in {"button", "link"} and is_target_page(item)]
+            selected = targets + [item for item in forwards if item not in targets]
+            return tuple(
+                {"type": "paginate", "role": item["role"], "name": item.get("name") or item.get("label")}
+                for item in selected
+            )
+
+    controls: list[str] = []
+    if isinstance(observation, dict):
+        controls.extend(str(item).strip() for item in observation.get("controls") or () if str(item).strip())
+        for node in _observation_semantic_nodes(observation):
+            controls.extend(str(item).strip() for item in node.get("controls") or () if str(item).strip())
+    # The flattened legacy control list cannot distinguish presentation-only
+    # numeric anchors from native controls.  Never turn those numbers into
+    # guessed click targets; only retain an explicitly observed forward label.
+    labels = [
+        label for label in ("Next", "right", "›", "»")
+        if label.casefold() in {item.casefold() for item in controls}
+    ]
+    return tuple(
+        {"type": "paginate", "role": role, "name": label}
+        for label in dict.fromkeys(labels)
+        for role in ("button", "link")
+    )
+
+
+def _merge_status_observations(base: Any, extra: Any) -> dict[str, Any]:
+    """Merge rows from another observed page while preserving fresh evidence."""
+
+    merged = copy.deepcopy(base) if isinstance(base, dict) else {}
+    if not isinstance(extra, dict):
+        return merged
+    # Rendered table summaries are bounded independently of the page's API
+    # response. Keep the evidence from *each* visited page: otherwise a
+    # complete pagination walk can still silently drop rows from later pages.
+    base_discovery = merged.get("apiDiscovery")
+    extra_discovery = extra.get("apiDiscovery")
+    if isinstance(extra_discovery, dict):
+        if not isinstance(base_discovery, dict):
+            base_discovery = {}
+            merged["apiDiscovery"] = base_discovery
+        base_candidates = base_discovery.get("candidates")
+        if not isinstance(base_candidates, list):
+            base_candidates = []
+            base_discovery["candidates"] = base_candidates
+        seen_candidates = {
+            json.dumps(candidate, sort_keys=True, ensure_ascii=False, default=str)
+            for candidate in base_candidates if isinstance(candidate, dict)
+        }
+        for candidate in extra_discovery.get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            marker = json.dumps(candidate, sort_keys=True, ensure_ascii=False, default=str)
+            if marker not in seen_candidates:
+                base_candidates.append(copy.deepcopy(candidate))
+                seen_candidates.add(marker)
+    base_nodes = merged.get("sectionSummaries")
+    extra_nodes = extra.get("sectionSummaries")
+    if not isinstance(base_nodes, list) or not isinstance(extra_nodes, list):
+        return merged
+    base_table = next((node for node in base_nodes if isinstance(node, dict) and node.get("kind") in {"table", "grid"}), None)
+    extra_table = next((node for node in extra_nodes if isinstance(node, dict) and node.get("kind") in {"table", "grid"}), None)
+    if base_table is None or extra_table is None:
+        return merged
+    rows = list(base_table.get("rowFields") or [])
+    seen = {json.dumps(row, sort_keys=True, ensure_ascii=False) for row in rows if isinstance(row, dict)}
+    for row in extra_table.get("rowFields") or []:
+        marker = json.dumps(row, sort_keys=True, ensure_ascii=False)
+        if isinstance(row, dict) and marker not in seen:
+            rows.append(copy.deepcopy(row))
+            seen.add(marker)
+    base_table["rowFields"] = rows[: SEMANTIC_ROW_LIMIT * 3]
+    base_table["rowSummaries"] = list(base_table.get("rowSummaries") or []) + list(extra_table.get("rowSummaries") or [])
+    base_table["summaries"] = list(extra_table.get("summaries") or base_table.get("summaries") or [])
+    return merged
+
+
+def _ticket_member_query(question: str, candidates: Iterable[str] = ()) -> str:
+    """Extract a named staff member, preferring the page's observed roster.
+
+    Natural-language suffixes such as ``still have`` must never become part
+    of the person's name.  When the current page publishes a roster, matching
+    the longest observed label first gives us a generic entity boundary without
+    hard-coding any person or bug-specific wording.  The parser below remains
+    as a compatibility fallback for older page observations that do not expose
+    record labels.
+    """
 
     value = str(question or "")
+    def tokens(text: str) -> tuple[str, ...]:
+        # ``\w`` is Unicode-aware here, so Arabic and CJK labels remain
+        # matchable in addition to the existing Latin-name behaviour.
+        return tuple(token.casefold() for token in re.findall(r"[\w]+", str(text or ""), re.UNICODE))
+
+    question_tokens = tokens(value)
+    observed = []
+    for candidate in candidates or ():
+        label = re.sub(r"\s+", " ", str(candidate or "")).strip()
+        candidate_tokens = tokens(label)
+        if not label or not candidate_tokens or len(candidate_tokens) > len(question_tokens):
+            continue
+        width = len(candidate_tokens)
+        if any(question_tokens[index:index + width] == candidate_tokens
+               for index in range(len(question_tokens) - width + 1)):
+            observed.append((len(candidate_tokens), len(label), label))
+    if observed:
+        # Longest match wins (e.g. ``Rui Wang`` over ``Rui``); a stable label
+        # length tie-break keeps the result deterministic across page order.
+        observed.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return observed[0][2]
+
+    # Match a localized role label against the names actually published by
+    # Team Members. These are vocabulary equivalents, not account-specific
+    # aliases or stored member names. Requiring every candidate token avoids
+    # treating a generic reference to the Happiness team as a named member.
+    arabic_role_terms = {
+        "happiness": "سعادة", "leader": "قائد", "staff": "موظف",
+        "manager": "مدير", "agent": "وكيل", "inspector": "مفتش",
+    }
+    def arabic_words(source: str) -> set[str]:
+        normalized = re.sub(r"[\u064b-\u065f\u0670]", "", source)
+        normalized = normalized.translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا"}))
+        return {
+            word[2:] if word.startswith("ال") and len(word) > 4 else word
+            for word in re.findall(r"[\u0621-\u064a]+", normalized)
+        }
+    question_arabic = arabic_words(value)
+    localized = []
+    for candidate in candidates or ():
+        label = re.sub(r"\s+", " ", str(candidate or "")).strip()
+        english_words = tokens(label)
+        translated = [arabic_role_terms[word] for word in english_words if word in arabic_role_terms]
+        if len(translated) >= 2 and len(translated) == len(english_words):
+            if all(arabic_words(word).issubset(question_arabic) for word in translated):
+                localized.append((len(translated), len(label), label))
+    if localized:
+        localized.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return localized[0][2]
+
     chinese = re.search(r"(?:部门|部門)\s+([A-Za-z][A-Za-z .'-]{1,80}?)\s*(?:这个|這個)?员工", value, re.I)
     english = None if re.search(r"\b(?:staff\s+member|team\s+member)'s\b", value, re.I) else re.search(
         r"\b(?:staff(?:\s+member)?|team\s+member|employee|handler)\s+(?:named\s+)?"
@@ -3241,6 +4247,10 @@ def _ticket_member_query(question: str) -> str:
         "how", "many", "much", "does", "do", "did", "is", "are", "the", "a", "an", "my", "our",
         "in", "of", "for", "and", "to", "tickets", "ticket", "tasks", "task", "cases", "case",
         "unhandled", "pending", "open", "overdue", "closed", "completed", "total", "count", "number",
+        "still", "yet", "remain", "remaining", "have", "has", "owns",
+        # Generic group labels are not person identities.  In particular,
+        # "our team have" must not be parsed as a member named "team".
+        "team", "teams", "member", "members", "staff", "employee", "employees", "department",
     }
     while words and re.sub(r"[^a-z]", "", words[0].casefold()) in noise:
         words.pop(0)
@@ -3255,24 +4265,28 @@ def _ticket_team_summary_result(
     *,
     question: str,
     scope: Literal["personal", "team", "global", "unknown"],
+    page: str = "/happiness/tickets",
+    page_context: Any = None,
 ) -> ReaderResult | None:
-    """Aggregate only visible ticket rows by their rendered owner field.
+    """Aggregate observed workflow rows by their rendered owner field.
 
     This does not infer assignment from queue membership: an owner is counted
     only when an actual ``Current Handler``/``Assigned To`` column was read.
     ``Completed`` is a view label, so the response calls it a completed/closed
-    count rather than claiming every possible terminal workflow state.
+    count rather than claiming every possible terminal workflow state.  SLA
+    values are reported only when the observed table actually renders them.
     """
 
     if scope not in {"team", "global"}:
         return ReaderResult(
             status="not_confirmed",
             summary="A team-scoped ticket view was not verified for this account.",
-            page="/happiness/tickets",
+            page=page,
             answer_shape="overview",
             scope=scope,
             missing=("requested_team_scope_unverified",),
         )
+
 
     def table_rows(observation: Any) -> tuple[list[dict[str, Any]], str] | None:
         if not isinstance(observation, dict) or _observation_has_error_state(observation):
@@ -3302,10 +4316,39 @@ def _ticket_team_summary_result(
 
     totals: dict[str, dict[str, int]] = {}
     labels: dict[str, str] = {}
+    # If the current page explicitly publishes a record collection, use it as
+    # the population boundary. This keeps zero-activity members in the answer
+    # and prevents unrelated handlers returned by a broader task endpoint from
+    # leaking into a team roll-up. No route or person names are hard-coded.
+    visible_members: dict[str, str] = {}
+    visible_member_ids: dict[str, str] = {}
+    if isinstance(page_context, dict):
+        for record in page_context.get("visibleRecords") or page_context.get("visible_records") or ():
+            if not isinstance(record, dict):
+                continue
+            collection = re.sub(r"[^a-z0-9]", "", str(record.get("collection") or "").casefold())
+            label = str(record.get("label") or "").strip()
+            if not label or not re.search(r"member|staff|employee|team|person|user", collection):
+                continue
+            label_key = re.sub(r"[^a-z0-9]", "", label.casefold())
+            if label_key and len(label_key) <= 300:
+                visible_members.setdefault(label_key, label)
+                record_key = re.sub(r"[^a-z0-9]", "", str(record.get("key") or "").casefold())
+                if record_key and record_key != label_key:
+                    visible_member_ids.setdefault(record_key, label_key)
+        for key, label in visible_members.items():
+            labels[key] = label
+            totals[key] = {"Pending Tickets": 0, "Overdue Tickets": 0, "Closed Tickets": 0}
+    visible_keys = set(visible_members)
     # The completed view can render without an owner column.  A zero that was
     # never attributed would read as "this member closed nothing", so the
     # closed count is only reported when the owner column was really observed.
     closed_owner_observed = False
+    overdue_observed = any(
+        any("sla" in re.sub(r"[^a-z0-9]", "", str(header).casefold()) for header in node.get("columnHeaders") or [])
+        for node in _observation_semantic_nodes(todo_observation) + _observation_semantic_nodes(completed_observation)
+        if node.get("kind") in {"table", "grid"}
+    )
 
     def add(rows: list[dict[str, Any]], *, completed_view: bool) -> None:
         nonlocal closed_owner_observed
@@ -3315,25 +4358,53 @@ def _ticket_team_summary_result(
             handler = field(row, "Current Handler", "Assigned To", "Owner", "Responsible Person")
             if not handler or handler.casefold() in {"-", "unassigned", "n/a", "none"}:
                 continue
+            # Seeing an owner value on any completed-row record proves that
+            # the Completed view exposes the attribution column, even when
+            # that row belongs to a person outside the current roster.  Mark
+            # the column as observed before applying the roster boundary so a
+            # named in-roster member can be reported as Closed=0 rather than
+            # being treated as un-attributable.
+            if completed_view:
+                closed_owner_observed = True
             key = re.sub(r"[^a-z0-9]", "", handler.casefold())
             if not key:
                 continue
+            if visible_keys:
+                # Match only the exact normalized label published by the page;
+                # a broader backend row is not evidence that the person belongs
+                # to the currently rendered team-member collection.
+                if key in visible_member_ids:
+                    key = visible_member_ids[key]
+                elif key not in visible_keys:
+                    continue
+                key = next((candidate for candidate in visible_keys if candidate == key), key)
             labels.setdefault(key, handler)
             bucket = totals.setdefault(key, {"Pending Tickets": 0, "Overdue Tickets": 0, "Closed Tickets": 0})
             status = field(row, "Status").casefold()
             sla = field(row, "SLA").casefold()
+            sla_values = [value for key_name, value in row.items()
+                          if "sla" in re.sub(r"[^a-z0-9]", "", str(key_name).casefold())]
             if completed_view:
-                closed_owner_observed = True
                 if status in {"completed", "closed", "cancelled", "canceled", "resolved"} or status:
                     bucket["Closed Tickets"] += 1
             else:
                 bucket["Pending Tickets"] += 1
-                if "overdue" in sla or "past due" in sla:
+                if overdue_observed and (
+                    "overdue" in sla or "past due" in sla
+                    or any(str(value).casefold() in {"true", "1", "yes"} for value in sla_values)
+                ):
                     bucket["Overdue Tickets"] += 1
 
     add(todo[0], completed_view=False)
     add(completed[0], completed_view=True)
-    requested_member = _ticket_member_query(question)
+    # The page-published roster is the preferred population boundary.  When a
+    # caller arrives from another page (or an older frontend has not yet sent
+    # visibleRecords), the freshly observed handler labels form a second,
+    # evidence-backed candidate source.  This makes entity resolution work
+    # after automatic routing as well as from the target page, without naming
+    # any individual or relying on a particular question suffix.
+    observed_candidates = tuple(dict.fromkeys((*visible_members.values(), *labels.values())))
+    requested_member = _ticket_member_query(question, candidates=observed_candidates)
     if requested_member:
         member_key = re.sub(r"[^a-z0-9]", "", requested_member.casefold())
         matching = [key for key in totals if member_key and member_key in key]
@@ -3341,7 +4412,7 @@ def _ticket_team_summary_result(
             return ReaderResult(
                 status="no_data",
                 summary="The named staff member was not visible in the current ticket rows.",
-                page="/happiness/tickets",
+                page=page,
                 section="Enquiries & Complaints",
                 source_section=todo[1],
                 answer_shape="overview",
@@ -3356,7 +4427,7 @@ def _ticket_team_summary_result(
             {
                 "Team Member": labels[key],
                 "Pending Tickets": totals[key]["Pending Tickets"],
-                "Overdue Tickets": totals[key]["Overdue Tickets"],
+                **({"Overdue Tickets": totals[key]["Overdue Tickets"]} if overdue_observed else {}),
                 **({"Closed Tickets": totals[key]["Closed Tickets"]} if closed_owner_observed else {}),
             },
             ensure_ascii=False,
@@ -3365,13 +4436,15 @@ def _ticket_team_summary_result(
         for key in sorted(totals, key=lambda item: labels[item].casefold())
     )
     if not closed_owner_observed:
-        facts = (*facts, "The completed ticket view for this account does not render a handler column, "
+        facts = (*facts, "The completed workflow view for this account does not render a handler column, "
                         "so closed tickets are not attributed to individual members.")
+    if not overdue_observed:
+        facts = (*facts, "The observed workflow table does not render an SLA/overdue field; overdue counts are not confirmed and are not treated as zero.")
     if not facts:
         return ReaderResult(
             status="not_confirmed",
             summary="The current ticket views did not expose a usable owner field.",
-            page="/happiness/tickets",
+            page=page,
             section="Enquiries & Complaints",
             source_section=todo[1],
             answer_shape="overview",
@@ -3381,8 +4454,8 @@ def _ticket_team_summary_result(
         )
     return ReaderResult(
         status="success",
-        summary="Visible To Do and Completed ticket rows were aggregated by Current Handler.",
-        page="/happiness/tickets",
+        summary="Observed To Do and Completed workflow rows were aggregated by their rendered handler.",
+        page=page,
         section="Enquiries & Complaints",
         source_section=todo[1],
         answer_shape="overview",
@@ -3390,6 +4463,210 @@ def _ticket_team_summary_result(
         scope=scope,
         selected_state="To Do / Completed",
         facts=facts,
+    )
+
+
+def _team_member_visible_records(observation: Any) -> tuple[dict[str, str], ...]:
+    """Project a Team Members read into a generic roster boundary."""
+
+    if not isinstance(observation, dict):
+        return ()
+    records: list[dict[str, str]] = []
+    seen: set[str] = set()
+    candidates = (observation.get("apiDiscovery") or {}).get("candidates") or []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        operation = str(candidate.get("operationKey") or candidate.get("path") or "").casefold()
+        if "team-management" not in operation or "member" not in operation:
+            continue
+        payload = candidate.get("responseEvidence")
+        if isinstance(payload, dict) and isinstance(payload.get("data"), (dict, list)):
+            payload = payload["data"]
+        items = payload.get("items") if isinstance(payload, dict) else payload
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            label = next((str(value).strip() for key, value in item.items()
+                          if re.search(r"(?:member|staff|employee|user|full|display).*name|^name$", str(key), re.I)
+                          and isinstance(value, str) and value.strip()), "")
+            key = next((str(value).strip() for name, value in item.items()
+                        if re.search(r"(?:member|staff|employee|user).*id|^id$", str(name), re.I)
+                        and value not in (None, "")), label)
+            if label and label.casefold() not in seen:
+                seen.add(label.casefold())
+                records.append({"collection": "team-members", "key": key[:120], "label": label[:300]})
+    return tuple(records[:100])
+
+
+def _checked_member_card_projection(value: Any) -> dict[str, Any] | None:
+    """Validate the independently bounded, public-only member-card receipt."""
+    if not isinstance(value, dict) or value.get('complete') is not True:
+        return None
+    cards = value.get('cards')
+    count = value.get('sourceCardCount')
+    if not isinstance(cards, list) or type(count) is not int or not 0 < count == len(cards) <= 100:
+        return None
+    projected, names = [], set()
+    for card in cards:
+        if not isinstance(card, dict):
+            return None
+        name, metrics = card.get('userName'), card.get('metricsByCategory')
+        if (not isinstance(name, str) or not name.strip() or len(name) > 300
+                or name.strip().casefold() in names or not isinstance(metrics, dict)
+                or not 0 < len(metrics) <= 12):
+            return None
+        names.add(name.strip().casefold())
+        safe_metrics = {}
+        for category, metric in metrics.items():
+            if not isinstance(category, str) or len(category) > 80 or not isinstance(metric, dict):
+                return None
+            safe_metrics[category] = {key: metric[key]
+                for key in ('completedTasks', 'totalAssignedTasks', 'overdueTasks')
+                if type(metric.get(key)) is int and metric[key] >= 0}
+        projected.append({'userName': name.strip(), 'metricsByCategory': safe_metrics})
+    return {'cards': projected, 'sourceCardCount': count, 'complete': True,
+            **{key: str(value.get(key) or '')[:80] for key in ('startDate', 'endDate')}}
+
+
+def _team_member_card_result(
+    observation: Any,
+    *,
+    question: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+    page: str,
+) -> ReaderResult | None:
+    """Use the page's dated member cards for member counts, not task-row joins.
+
+    The task queue and the member cards have different filters and ownership
+    semantics.  Joining queue rows by a displayed handler can therefore
+    produce counts that contradict the Team Members tab.  Card metrics are the
+    authority for questions about each member's current workload.
+    """
+
+    if scope not in {"team", "global"} or not isinstance(observation, dict):
+        return None
+    payload = None
+    for candidate in (observation.get("apiDiscovery") or {}).get("candidates") or ():
+        if not isinstance(candidate, dict) or candidate.get("status") not in (None, 200):
+            continue
+        operation = str(candidate.get("operationKey") or candidate.get("path") or "").casefold()
+        if "team-management" not in operation or "/members" not in operation or "optimized" in operation:
+            continue
+        value = _checked_member_card_projection(candidate.get('memberCardProjection'))
+        if value is not None:
+            payload = value
+            break
+        # An ordinary truncated sample cannot attest the member population.
+        if candidate.get('responseEvidenceTruncated') is True:
+            continue
+        value = candidate.get("responseEvidence")
+        for _ in range(3):
+            if isinstance(value, dict) and isinstance(value.get("data"), dict):
+                value = value["data"]
+            else:
+                break
+        if isinstance(value, dict) and isinstance(value.get("cards"), list):
+            payload = value
+            break
+    if payload is None:
+        return None
+
+    cards = [card for card in payload["cards"] if isinstance(card, dict)]
+    if not cards:
+        return None
+    names = [str(card.get("userName") or "").strip() for card in cards]
+    requested = _ticket_member_query(question, candidates=names)
+    if not _ticket_team_summary_requested(question) and not requested:
+        return None
+    if requested:
+        cards = [card for card in cards if str(card.get("userName") or "").strip().casefold() == requested.casefold()]
+    if not cards:
+        return None
+
+    # "Tickets" names the whole Customer Happiness workload (enquiries,
+    # appeals and refunds). Only an explicit enquiry/complaint category may
+    # narrow the member cards; otherwise English and Arabic all-task queries
+    # must use the same All metric displayed on each card.
+    ticket_question = bool(re.search(
+        r"\b(?:complaint|enquir(?:y|ies))s?\b|投诉|投訴|استفسار|شكاوى",
+        question, re.I,
+    ))
+    facts: list[str] = []
+    overdue_total = 0
+    overdue_members: list[str] = []
+    count_only = bool(re.search(r"\b(?:how many|count|number|total)\b|数量|总数|كم|عدد|إجمالي", question, re.I))
+    overdue_only = count_only and bool(re.search(r"\boverdue\b|逾期|متأخر|المتأخرة|المتأخر", question, re.I))
+    for card in cards:
+        name = str(card.get("userName") or "").strip()
+        metrics_by_category = card.get("metricsByCategory")
+        if not name or not isinstance(metrics_by_category, dict):
+            return None
+        categories = [
+            (str(key), value) for key, value in metrics_by_category.items()
+            if isinstance(value, dict)
+        ]
+        if ticket_question:
+            matching = [
+                (key, value) for key, value in categories
+                if "enquir" in key.casefold() or "complaint" in key.casefold()
+                or "استفسار" in key or "شكاوى" in key
+            ]
+        else:
+            matching = [
+                (key, value) for key, value in categories
+                if re.sub(r"[^a-z]", "", key.casefold()) in {"all", "total", "overall"}
+            ]
+        if len(matching) != 1:
+            # Never relabel a metric from another category as ticket data.
+            return None
+        category, metric = matching[0]
+        completed = metric.get("completedTasks")
+        assigned = metric.get("totalAssignedTasks")
+        overdue = metric.get("overdueTasks")
+        if not all(type(value) is int and value >= 0 for value in (completed, assigned, overdue)):
+            return None
+        if completed > assigned:
+            return None
+        overdue_total += overdue
+        if overdue:
+            overdue_members.append(name)
+        values = {
+            "Team Member": name,
+            "Category": category,
+            "Pending Tasks": assigned - completed,
+            "Overdue Tasks": overdue,
+            "Completed Tasks": completed,
+            "Total Assigned Tasks": assigned,
+        }
+        if overdue_only:
+            values = {key: values[key] for key in ('Team Member', 'Overdue Tasks')}
+        elif count_only and requested and re.search(r"\bpending\b|معلق|المعلقة|待处理", question, re.I):
+            values = {key: values[key] for key in ('Team Member', 'Pending Tasks')}
+        if not overdue_only or overdue or requested:
+            facts.append(json.dumps(values, ensure_ascii=False, separators=(",", ":")))
+    if not requested and re.search(r"\boverdue\b|逾期|المتأخرة|المتأخر", question, re.I):
+        total_fact = (f"Team Members overdue tasks total: {overdue_total}; responsible members: "
+                      + (", ".join(overdue_members) if overdue_members else "none") + ".")
+        # A total/count request is one aggregate, not an unsolicited per-person
+        # breakdown. An explicit member summary still retains every native card.
+        if overdue_only:
+            facts = [total_fact]
+        else:
+            facts.append(total_fact)
+    date_parts = [str(payload.get(key) or "").strip() for key in ("startDate", "endDate")]
+    if all(date_parts):
+        facts.append(f"Team Members card date range: {date_parts[0]} to {date_parts[1]}.")
+    if not overdue_only:
+        facts.append("Pending is derived from Total Assigned Tasks minus Completed Tasks on the same member/category card; it is not a separate ticket status.")
+    return ReaderResult(
+        status="success", summary="Current Team Members card metrics were read for each visible member.",
+        page=page, section="Team Members", source_section="Team Members",
+        answer_shape="count" if count_only else "overview", completeness="complete", scope=scope,
+        selected_state="Team Members", facts=tuple(facts),
+        workflow_state="team_member_cards_full",
     )
 
 
@@ -3665,6 +4942,16 @@ def question_requires_live_portal(question: str) -> bool:
     if _question_is_assistant_capability_overview(question):
         return False
     if _explicit_record_identity(question):
+        return True
+    # Imperative business-record queries require a live, permission-checked
+    # read even without "my/current". Documentation examples and their old
+    # counters must never be substituted for an authorized portal result.
+    if re.search(
+        r'^(?:please\s+)?(?:list|show|summarize)\b.{0,100}\b'
+        r'(?:tasks?|violations?|transactions?|refunds?|applications?|licenses?|tickets?|cases?)\b'
+        r'|^(?:اعرض|اذكر|اسرد|لخص)\s.{0,100}(?:مهام|مخالفات|معاملات|استرداد|طلبات|تراخيص|تذاكر|قضايا)',
+        normalized, re.I,
+    ):
         return True
     if re.search(r'\b(?:inquire|query|show|find|check)\b.*\b(?:mc-2|ml-[12])-\d+-\d+\b', normalized):
         return True
@@ -4306,7 +5593,7 @@ def _explicit_record_identity(question: str) -> str:
     and therefore return nothing rather than guessing one.
     """
 
-    text = str(question or "")
+    text = re.sub(r"(?<=[A-Za-z0-9])\s*[-–—]\s*(?=[A-Za-z0-9])", "-", str(question or ""))
     hyphenated = re.findall(
         r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"
         r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9])",
@@ -4452,6 +5739,43 @@ def _native_exact_identity_row_result(
         completeness="bounded",
         facts=(json.dumps(fields, ensure_ascii=False, separators=(",", ":")),),
     )
+
+
+def _application_exact_sla_row_result(
+    observation: Any, identity: str, *, page: str, scope: str, question: str,
+) -> ReaderResult | None:
+    """Answer a single SLA question from its exact, fresh rendered row.
+
+    A list SLA cell need not appear again on the application detail. Keep
+    mixed-field/detail questions on their existing detail workflow instead
+    of declaring a present list column unavailable.
+    """
+    if (not re.search(r'\bsla\b|service.level|اتفاقية\s+مستوى\s+الخدمة|逾期', question, re.I)
+            or re.search(r'\b(?:payment|paid|fee|status|type|business|who|history)\b|'
+                         r'دفع|مدفوع|رسوم|حالة|نوع|من\s+قدم|سجل|状态|付款|类型|历史', question, re.I)):
+        return None
+    matched = _native_exact_identity_row_result(observation, page=page,
+        record_identity=identity, scope=scope, question=question)
+    if matched is None:
+        return None
+    fields = json.loads(matched.facts[0])
+    sla_fields = [value for key, value in fields.items()
+                  if _key(key) in {'sla', 'slasortable', 'اتفاقيةمستوىالخدمة'}]
+    if len(sla_fields) != 1:
+        return None
+    value = str(sla_fields[0] or '').strip()
+    arabic = response_language_for(question) == 'ar'
+    if not value or value == '-':
+        return replace(matched, status='not_confirmed', record_identity=identity,
+            facts=((f'لا تعرض الصفحة قيمة SLA للطلب {identity}.' if arabic else
+                    f'The page shows no SLA value for application {identity}.'),),
+            missing=('application_sla_value_blank',))
+    if arabic:
+        value = re.sub(r'^(\d+)d Overdue$', r'متأخر \1 يومًا', value)
+    return replace(matched, record_identity=identity,
+        facts=(json.dumps({'رقم الطلب' if arabic else 'Application No.': identity,
+                           'اتفاقية مستوى الخدمة' if arabic else 'SLA': value}, ensure_ascii=False),),
+        workflow_state='application_exact_sla')
 
 
 def _prior_exact_record_result(
@@ -5218,6 +6542,57 @@ def _native_status_filter_rows(outcome: ReaderOutcome, question: str) -> ReaderO
     result = replace(result, facts=(*result.facts, f'The selected Status filter is {target}. This is a bounded view of matching records.'),
                      intent_context=outcome.result.intent_context, source_hint=outcome.result.source_hint)
     return ReaderOutcome(result, {**evidence, 'verifiedStatusFilter':target,'result':result.public_json()})
+
+
+def _committee_queue_requested(question: str) -> bool:
+    text = str(question or '')
+    return bool(re.search(
+        r'\b(?:cases?|violations?)\b.{0,80}\b(?:waiting|pending)\b.{0,45}\bcommittee\b'
+        r'|\b(?:waiting|pending)\b.{0,45}\bcommittee\b.{0,60}\b(?:cases?|violations?)\b'
+        r'|القضايا.{0,65}(?:قرار\s+اللجنة|اللجنة.{0,20}قرار)', text, re.I,
+    ))
+
+
+def _committee_queue_result(observation: Any, *, scope: Literal['personal', 'team', 'global', 'unknown'],
+                            selected_status: str) -> ReaderResult:
+    """Project only rows whose rendered status equals the applied filter."""
+    nodes = [node for node in _observation_semantic_nodes(observation)
+             if node.get('kind') in {'table', 'grid'}
+             and 'Status' in (node.get('columnHeaders') or ())]
+    if len(nodes) != 1:
+        return ReaderResult(status='not_confirmed', page='/inspection/violations',
+                            answer_shape='list', scope=scope,
+                            summary='The filtered committee queue could not be verified.',
+                            missing=('committee_status_table_unverified',))
+    rows = [row for row in nodes[0].get('rowFields') or () if isinstance(row, dict)]
+    if any(str(row.get('Status') or '').casefold() != selected_status.casefold() for row in rows):
+        return ReaderResult(status='not_confirmed', page='/inspection/violations',
+                            answer_shape='list', scope=scope,
+                            summary='The filtered table included another status; no committee list was asserted.',
+                            missing=('committee_status_rows_mismatch',))
+    page_info = _status_page_info(observation)
+    complete = bool(page_info and page_info[2] == len(rows)
+                    and page_info[0] * page_info[1] >= page_info[2])
+    if not complete:
+        pagination = ' '.join(str(value) for value in nodes[0].get('summaries') or ())
+        total_match = re.search(r'\bTotal\s+(\d+)\b', pagination, re.I)
+        page_match = re.search(r'\b(\d+)\s*/\s*(\d+)\b', pagination)
+        complete = bool(total_match and page_match and int(total_match.group(1)) == len(rows)
+                        and page_match.group(1) == page_match.group(2))
+    if not complete:
+        return ReaderResult(status='not_confirmed', page='/inspection/violations',
+                            answer_shape='list', scope=scope,
+                            summary='The committee filter was applied, but the full filtered result was not verified.',
+                            missing=('committee_status_pagination_incomplete',))
+    facts = tuple(json.dumps({key: value for key, value in row.items()
+                              if key in {'Violation No.', 'Violation Type', 'Violator', 'Fine Amount',
+                                         'Status', 'SLA', 'Source Task', 'Reported By', 'Creation Time'}
+                              and value not in (None, '')}, ensure_ascii=False, separators=(',', ':'))
+                  for row in rows)
+    return ReaderResult(status='success' if facts else 'no_data', page='/inspection/violations',
+                        answer_shape='list', completeness='complete', scope=scope,
+                        summary=f'{len(facts)} case(s) with status {selected_status} in the current account scope.',
+                        facts=facts + (f'The {selected_status} status filter returned {len(facts)} row(s); other statuses were excluded.',))
 
 
 def _native_filter_outcome(outcome: ReaderOutcome, question: str, executions: list[dict[str, Any]],
@@ -6166,10 +7541,10 @@ def _section_observation(section: Any) -> dict[str, Any] | None:
     return normalized
 
 
-# A rendered page holds ten rows.  Keeping only four structured rows made a
-# per-assignee roll-up impossible, because the remaining handlers were dropped
-# before the aggregation ever saw them.
-SEMANTIC_ROW_LIMIT = 10
+# A rendered page normally holds ten rows, and the generic status roll-up may
+# merge up to three observed pages.  Keep enough structured rows for that
+# bounded merge while still enforcing a small, deterministic evidence budget.
+SEMANTIC_ROW_LIMIT = 30
 
 
 def _observation_semantic_nodes(observation: Any) -> tuple[dict[str, Any], ...]:
@@ -8570,7 +9945,110 @@ def _guard_requested_team_scope(outcome: ReaderOutcome, intent_state: dict[str, 
                                   "result": guarded.public_json()})
 
 
+def _named_group_in_question(question: str) -> str:
+    """Find an explicitly named team/department, not a generic 'my team' request."""
+
+    text = re.sub(r"\s+", " ", str(question or "")).strip()
+    # Arabic "the work team" is a generic team noun, not a department
+    # literally named "work". Preserve actual explicitly named groups.
+    text = re.sub(r"(?<!\w)(?P<prefix>[وبلكف]{0,2})فريق\s+العمل(?!\w)",
+                  r"\g<prefix>الفريق", text)
+    patterns = (
+        r"\b(?:for|of|in|from)\s+(?:the\s+)?(?P<name>[\w -]{2,80}?)\s+(?:team|department)\b",
+        r"\b(?:team|department)\s+(?:of|named|called)\s+(?P<name>[\w -]{2,80}?)(?:[?.!,]|$)",
+        # Do not interpret the generic definite noun "الفريق" (the team)
+        # inside "team members" as a specifically named group.
+        # Arabic prepositions/conjunctions attach to the noun (e.g. بفريق,
+        # لقسم). They must not bypass the same named-group scope check.
+        r"(?<!\w)[وبلكف]{0,2}(?:فريق|قسم)\s+(?P<name>[^؟?.،,]{2,80})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            name = match.group("name").strip(" -")
+            # "for each member of my team" names no group. The leading
+            # quantifier/member clause belongs to the requested rollup,
+            # not to a department name. Keep the actual group suffix for
+            # e.g. "each member of the Foreign Media team" so the named
+            # group guard remains in force for explicitly named groups.
+            name = re.sub(
+                r"^(?:(?:each|every|all)\s+)?members?\s+of\s+(?:the\s+)?",
+                "", name, flags=re.I,
+            ).strip(" -")
+            if name.casefold() not in {"my", "our", "your", "this", "current", "فريقي", "قسمنا"}:
+                return name
+    return ""
+
+
+def _observed_named_group_filter(observation: Any, result: ReaderResult, group: str) -> bool:
+    """A named group is proven only by a selected filter or grouped row field."""
+
+    if not isinstance(observation, dict):
+        return False
+    normalize = lambda value: re.sub(r"[^\w]+", " ", str(value or "").casefold()).strip()
+    wanted = normalize(group)
+    if not wanted:
+        return False
+    for control in observation.get("filterControls", []):
+        if not isinstance(control, dict):
+            continue
+        label = normalize(control.get("label") or control.get("name"))
+        if not re.search(r"\b(?:team|department|group|فريق|قسم)\b", label):
+            continue
+        selected = control.get("selected") or control.get("value")
+        choices = selected if isinstance(selected, (list, tuple)) else (selected,)
+        if any(normalize(choice) == wanted for choice in choices):
+            return True
+    source = _observation_evidence_for_result(observation, result)
+    if not isinstance(source, dict):
+        return False
+    rows = source.get("rowFields")
+    if not isinstance(rows, list) or not rows:
+        return False
+    group_columns = [header for header in source.get("columnHeaders", [])
+                     if re.search(r"\b(?:team|department|group|فريق|قسم)\b", str(header), re.I)]
+    return bool(group_columns) and all(
+        isinstance(row, dict) and any(normalize(row.get(header)) == wanted for header in group_columns)
+        for row in rows
+    )
+
+
+def _guard_named_group_scope(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Do not substitute a broad queue for a named team's records."""
+
+    group = _named_group_in_question(question)
+    result, evidence = outcome.result, outcome.audit_evidence
+    # A partial/not-confirmed answer can still contain rows from a broad
+    # queue.  The live L-10 retest exposed people from such a partial result.
+    if (not group or result.status not in {"success", "no_data", "not_confirmed"}
+            or result.workflow_state == "verified_profile"):
+        return outcome
+    observation = evidence.get("observation")
+    if not isinstance(observation, dict):
+        observation = ((evidence.get("portalEvidence") or {}).get("result") or {}).get("observation")
+    if _observed_named_group_filter(observation, result, group):
+        return outcome
+    guarded = replace(
+        result, status="not_confirmed", summary="Named group scope was not verified.",
+        page="", section="", source_section="",
+        answer_shape="detail", completeness="unknown", selected_state="", scope="unknown",
+        facts=(), workflow_state="", source_hint={}, record_identity="", count_source={},
+        missing=("requested_group_scope_unverified",),
+    )
+    return ReaderOutcome(guarded, {
+        **evidence, "namedGroupScopeGuard": {"requested": group, "verified": False},
+        "result": guarded.public_json(),
+    })
+
+
 _SELF_PROFILE_PATTERNS: tuple[str, ...] = (
+    # Capability inventories can name both modules and data before the
+    # access verb. Keep this independent of any account or business module.
+    r"\b(?:which|what)\s+(?:business\s+)?(?:modules?|pages?|data|information)(?:\s+and\s+(?:data|information|modules?|pages?))?\s+can\s+i\s+(?:access|read|see)\b",
+    r"\b(?:what are|list|describe)\s+(?:my|your|this account'?s)\s+(?:read.only\s+)?capabilities\b",
+    r"ما\s+(?:هي\s+)?(?:قدراتك|إمكاناتك|صلاحيات(?:ي|ك))",
+    r"\bwhat (?:data|information|records|pages|modules) can i (?:access|read|see)\b",
+    r"\bwhat can i (?:access|read|see) with my current role\b",
     r"\bwhat can you (?:do|help)\b",
     r"\bwhat are you able to do\b",
     r"\bwhat can i do\b",
@@ -8583,6 +10061,10 @@ _SELF_PROFILE_PATTERNS: tuple[str, ...] = (
     r"数据范围",
     r"(?:查询|读取|访问)[^。]{0,12}(?:范围|限制)",
     r"\bwhich (?:role|department) am i\b",
+    r"\b(?:what|which)\s+(?:department(?:\s+and\s+role)?|role(?:\s+and\s+department)?)\s+am\s+i\s+(?:currently\s+)?(?:signed|logged)\s+in\b",
+    r"\bwhich (?:department and role|role and department) am i\b",
+    r"\bwhich department and role am i currently logged in as\b",
+    r"\bwhich (?:department and role|role and department) i am currently logged in as\b",
     r"你能(?:做|帮|干什么)",
     r"你可以(?:做|帮|提供)",
     r"能帮我(?:做|干)什么",
@@ -8593,14 +10075,36 @@ _SELF_PROFILE_PATTERNS: tuple[str, ...] = (
     r"\bwhat can you help\b",
     r"\bhow can you help\b",
     r"ماذا يمكنك أن تفعل",
+    r"ما (?:البيانات|المعلومات|السجلات|الصفحات) التي (?:يمكنني|أستطيع) (?:الوصول إليها|قراءتها|رؤيتها)",
+    r"(?:ما|أي|اي)\s+[^؟?]{0,60}(?:بيانات|معلومات|صفحات|وحدات|خدمات)"
+    r"[^؟?]{0,100}(?:يمكنني|أستطيع|استطيع)[^؟?]{0,60}(?:الوصول|قراء|رؤي)",
     r"ما الذي يمكنك فعله",
+    r"كيف\s+(?:يمكنك|تستطيع)\s+(?:أن\s+)?تساعدني",
+    r"كيف\s+(?:يمكنك|تستطيع)\s+مساعدتي",
     r"我的(?:部门|角色|权限|数据范围)",
     r"我当前(?:登录的)?(?:部门|角色)",
     r"你(?:是|知道)(?:谁|我的)",
     r"ماذا يمكنك",
     r"ما (?:دوري|صلاحياتي|نطاق)",
+    # An Arabic question about the signed-in account's accessible business
+    # areas is a profile/capability request, even when it uses a relative
+    # clause ("which services I can access") instead of naming permissions.
+    # Require both an area noun and an access verb to avoid catching ordinary
+    # requests for records within a specific module.
+    r"(?:ما|أي|اي)\s+(?:هي\s+)?(?:ال)?(?:وحدات|صفحات|خدمات|صلاحيات|قدرات|إمكانات)"
+    r"[^؟?]{0,100}(?:الوصول|أستطيع|استطيع|يمكنني|يسمح|حسابي)",
+    r"(?:يمكنني|أستطيع|استطيع)\s+الوصول\s+إلى\s+"
+    r"[^؟?]{0,40}(?:وحدات|صفحات|خدمات|صلاحيات|قدرات|إمكانات)",
     r"من أنا",
     r"ما (?:القسم|الدور)",
+    r"ما\s+(?:هو\s+|هي\s+)?(?:قسمي|قسم[يى]|دوري|دور[يى])",
+    # Arabic self-profile questions often use a relative clause rather than
+    # the short ``ما القسم`` form.  Keep this semantic (department/role +
+    # authenticated sign-in) so it applies to every account and not one
+    # person's wording or route.
+    r"(?:هل\s+(?:تعرف|يمكنك\s+معرفة|تستطيع\s+معرفة)|هل\s+لديك\s+معرفة)[^؟?]{0,80}(?:القسم|الدور)[^؟?]{0,80}(?:سجلت\s+الدخول|دخلت|مسجل(?:ة)?\s+الدخول|الدخول)",
+    r"(?:القسم[^؟?]{0,40}الدور|الدور[^؟?]{0,40}القسم)[^؟?]{0,80}(?:سجلت\s+الدخول|دخلت|مسجل(?:ة)?\s+الدخول)",
+    r"(?:هل\s+تعرف|ما|اي|أي)[^؟?]{0,90}(?:قسم|دور)[^؟?]{0,90}(?:اسجل|تسجيل|الدخول|حاليا)",
 )
 
 
@@ -8608,10 +10112,74 @@ def _self_profile_requested(question: str) -> bool:
     """True when the user asks who they are or what the assistant can do."""
 
     text = str(question or "")
-    return any(re.search(pattern, text, re.I) for pattern in _SELF_PROFILE_PATTERNS)
+    normalized = normalized_text(text)
+    return any(re.search(pattern, candidate, re.I)
+               for candidate in (text, normalized)
+               for pattern in _SELF_PROFILE_PATTERNS)
 
 
-def _self_profile_result(question: str, context: UserPermissionContext, page_hint: str = "") -> ReaderResult | None:
+def _profile_scope_requested(question: str) -> bool:
+    """Distinguish a data-scope question from an identity-only question."""
+
+    return bool(re.search(
+        r"\b(?:data\s+(?:scope|range)|my\s+scope|scope\s+of\s+(?:my|this)\s+account)\b"
+        r"|نطاق(?:\s+البيانات)?|数据范围",
+        str(question or ""), re.I,
+    ))
+
+
+def _profile_capability_requested(question: str) -> bool:
+    """Recognize account capability inventories in every supported language."""
+
+    return bool(re.search(
+        r"\b(?:capabilit(?:y|ies)|permissions?|access|modules?|pages?|what can you|how can you)\b"
+        r"|权限|能力|页面|模块|能(?:做|帮)|يمكنك|يمكنني|صلاحيات|صفحات|وحدات|خدمات|قدرات|إمكانات|تستطيع|أستطيع|استطيع|البيانات|المعلومات",
+        question, re.I,
+    ))
+
+
+def _visible_dashboard_scope(observation: Any) -> Literal["personal", "team", "unknown"]:
+    """Classify only the workload scope evidenced by rendered Dashboard labels."""
+
+    headings = {
+        re.sub(r"\s+", " ", str(node.get("heading") or "")).strip().casefold()
+        for node in _observation_semantic_nodes(observation)
+    }
+    if headings.intersection({
+        "team performance", "team tasks", "members needing coaching", "needs manager attention",
+        "members on emergency leave", "أداء الفريق", "مهام الفريق", "الأعضاء الذين يحتاجون إلى توجيه",
+        "يتطلب اهتمام المدير", "تحتاج إلى اهتمام المدير", "الأعضاء في إجازة طارئة",
+    }):
+        return "team"
+    if headings.intersection({"my tasks", "my performance", "مهامي", "أدائي"}):
+        return "personal"
+    return "unknown"
+
+
+def _profile_labels_from_observation(observation: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Extract only the authenticated profile's display labels from one read."""
+
+    payload = _api_object_by_operation(observation, _CURRENT_ADMIN_PROFILE_OPERATION)
+    if not isinstance(payload, dict):
+        return (), ()
+    departments = _display_labels_from_values(
+        _find_values(payload, {"departmentsinfo", "departmentinfo", "departmentnames", "department", "departments"}),
+        ("nameEn", "departmentNameEn", "name", "departmentName", "nameAr", "departmentNameAr"),
+    )
+    roles = _display_labels_from_values(
+        _find_values(payload, {"assignrolesidsinfo", "assignrolesinfo", "assignedroles", "rolesinfo", "roles"}),
+        ("nameEn", "roleNameEn", "name", "roleName", "nameAr", "roleNameAr"),
+    )
+    return departments, roles
+
+
+def _self_profile_result(
+    question: str,
+    context: UserPermissionContext,
+    page_hint: str = "",
+    language: str = "en",
+    observed_dashboard_scope: Literal["personal", "team", "unknown"] = "unknown",
+) -> ReaderResult | None:
     """Answer identity/capability questions from the verified current session.
 
     This is intentionally a projection of display labels and currently
@@ -8622,33 +10190,104 @@ def _self_profile_result(question: str, context: UserPermissionContext, page_hin
 
     if not _self_profile_requested(question):
         return None
-    scope = _permission_result_scope(context)
+    capability_requested = _profile_capability_requested(question)
+    # Capability self-description describes the actual rendered workspace,
+    # not a team/global scope guessed from a manager/admin role name.
+    session_scope = _permission_result_scope(replace(context, current_role='', roles=()))
+    scope = observed_dashboard_scope if observed_dashboard_scope != "unknown" else session_scope
     role = (context.current_role or (context.roles[0] if context.roles else "")).strip()
     departments = ", ".join(_display_permission_label(value) for value in context.departments if _display_permission_label(value))
     departments = departments or "not provided as a display label by the current session"
     pages = _authorized_page_labels(context)
-    page_text = ", ".join(pages[:12]) if pages else "no verified page labels were returned"
+    if language == 'ar':
+        area_labels_ar = {
+            'Dashboard': 'لوحة التحكم', 'Customer Happiness': 'سعادة العملاء',
+            'Licensing': 'الترخيص', 'Content': 'المحتوى',
+            'Inspection': 'التفتيش', 'Finance': 'المالية', 'Communications': 'الاتصالات',
+        }
+        pages = tuple(area_labels_ar.get(label, label) for label in pages)
+    page_text = ", ".join(pages[:12]) if pages else "no business-area labels were returned"
     role_text = _display_permission_label(role) or "not provided as a display label"
-    facts = (
-        f"Signed-in portal account: {context.account or context.user_id}.",
-        f"Business role: {role_text}.",
-        f"Departments: {departments}.",
-        f"Authorized pages observed for this account: {page_text}.",
-        f"Data scope reported by the current session: {scope}.",
-        "Read-only capability: I can read and explain only the authorized pages listed above and the records those "
-        "pages actually return. A role or department name does not grant access to another module or to every record.",
-        "Not supported in chat: approvals, rejections, assignment, refunds or payment changes, closing or deleting "
-        "records, exports and downloads.",
-        "Access is always taken from the signed-in account; a claim inside the question never widens it.",
-    )
+    scope_source = "Dashboard" if observed_dashboard_scope != "unknown" else "current session"
+    scope_labels = {
+        "en": {"personal": "my own work", "team": "the current team view", "global": "the portal-wide view", "unknown": "not confirmed on the current page"},
+        "ar": {"personal": "عرض أعمال حسابي", "team": "عرض الفريق الحالي", "global": "العرض العام للبوابة", "unknown": "غير مؤكد في الصفحة الحالية"},
+        "zh": {"personal": "本人工作视图", "team": "当前团队视图", "global": "全门户视图", "unknown": "当前页面未确认"},
+    }
+    # These are presentation sentences, not business data.  Keep the values
+    # supplied by the authenticated session verbatim, while letting the
+    # natural-language wrapper follow the requested response language.  The
+    # same projection is used for every account; no account-specific wording
+    # or route is embedded here.
+    localized = {
+        "ar": (
+            f"حساب البوابة المسجّل: {context.account or context.user_id}.",
+            f"الدور الوظيفي: {role_text}.",
+            f"الأقسام: {departments}.",
+            f"مجالات العمل المذكورة في صلاحيات هذا الحساب: {page_text}.",
+            f"نطاق العرض الذي تم التحقق منه في {'لوحة التحكم' if scope_source == 'Dashboard' else 'الجلسة الحالية'}: {scope_labels['ar'][scope]}.",
+            "إمكانية القراءة فقط: هذه تسميات مجالات وليست إثباتًا لإمكانية قراءة كل صفحة أو سجل؛ "
+            "يجب التحقق من صلاحية الصفحة وبياناتها عند كل سؤال. اسم الدور أو القسم لا يمنح وصولًا إضافيًا.",
+            "لا تدعم المحادثة الموافقات أو الرفض أو الإسناد أو تغييرات الاسترداد أو المدفوعات أو إغلاق السجلات أو حذفها أو التصدير أو التنزيل.",
+            "تُؤخذ الصلاحية دائمًا من الحساب المسجّل؛ ولا تؤدي أي مطالبة داخل السؤال إلى توسيعها.",
+        ),
+        "zh": (
+            f"当前登录门户账号：{context.account or context.user_id}。",
+            f"业务角色：{role_text}。",
+            f"部门：{departments}。",
+            f"当前账号权限中列出的业务区域：{page_text}。",
+            f"{'Dashboard 可见' if scope_source == 'Dashboard' else '当前会话报告'}的数据范围：{scope_labels['zh'][scope]}。",
+            "只读能力：这些是业务区域标签，不证明其中每个页面或记录均可读取；每次查询仍须核实页面权限和实际数据。角色或部门名称不会扩大权限。",
+            "聊天不支持审批、拒绝、分配、退款或付款变更、关闭或删除记录、导出和下载。",
+            "权限始终取自当前登录账号；问题中的自称不会扩大权限。",
+        ),
+        "en": (
+            f"Signed-in portal account: {context.account or context.user_id}.",
+            f"Business role: {role_text}.",
+            f"Departments: {departments}.",
+            f"Business areas named in this account's permissions: {page_text}.",
+            f"Data scope verified on the {scope_source}: {scope_labels['en'][scope]}.",
+            "Read-only capability: these are area labels, not proof that every page or record there is readable. "
+            "Each request must verify page permission and actual returned data. A role or department name does not widen access.",
+            "Not supported in chat: approvals, rejections, assignment, refunds or payment changes, closing or deleting records, exports and downloads.",
+            "Access is always taken from the signed-in account; a claim inside the question never widens it.",
+        ),
+    }
+    profile_facts = localized.get(language, localized["en"])
+    # An identity question asks for the account's department and role, not a
+    # capability inventory. Keep the longer permission projection only for an
+    # explicit capability question; this applies to every account/language.
+    facts = profile_facts if capability_requested else profile_facts[:3]
+    if _profile_scope_requested(question) and not capability_requested:
+        scope_facts = {
+            "en": {
+                "personal": "The visible Dashboard shows My Tasks / My Performance: this is your own-work view. Other pages and records still require their own permission checks; this is not a team-wide or portal-wide grant.",
+                "team": "The visible Dashboard shows a team view. Other pages and records still require their own permission checks; this is not a portal-wide grant.",
+            },
+            "ar": {
+                "personal": "تُظهر لوحة التحكم مهامي وأدائي، أي عرض أعمال الحساب نفسه. تخضع الصفحات والسجلات الأخرى للتحقق من صلاحياتها؛ ولا يعني ذلك صلاحية عرض الفريق أو البوابة كلها.",
+                "team": "تُظهر لوحة التحكم عرض الفريق. تخضع الصفحات والسجلات الأخرى للتحقق من صلاحياتها؛ ولا يعني ذلك صلاحية عرض البوابة كلها.",
+            },
+            "zh": {
+                "personal": "当前可见 Dashboard 的“我的任务／我的绩效”是个人工作视图。其他页面和记录仍须分别校验权限，不代表拥有团队或全门户访问权。",
+                "team": "当前可见 Dashboard 提供团队视图。其他页面和记录仍须分别校验权限，不代表拥有全门户访问权。",
+            },
+        }
+        verified_scope_fact = scope_facts.get(language, scope_facts["en"]).get(observed_dashboard_scope, "")
+        facts += (verified_scope_fact or profile_facts[4],)
     return ReaderResult(
         status="success",
-        summary="The signed-in account, role and scope were read from GetUserInfo.",
+        summary={
+            "ar": "تمت قراءة الحساب المسجّل والدور والنطاق من بيانات الجلسة الموثقة.",
+            "zh": "已从已验证的会话数据读取当前登录账号、角色和范围。",
+            "en": "The signed-in account, role and scope were read from the verified session.",
+        }.get(language, "The signed-in account, role and scope were read from the verified session."),
         page=page_hint,
         answer_shape="detail",
         completeness="bounded",
         scope=scope,
         facts=facts,
+        workflow_state="verified_profile",
     )
 
 
@@ -8688,6 +10327,11 @@ def _authorized_page_labels(context: UserPermissionContext) -> tuple[str, ...]:
         if not value:
             continue
         normalized = value.casefold()
+        # Menu trees can include technical grouping and dotted capability
+        # nodes. They are not standalone business pages and must not be
+        # advertised as user-accessible modules.
+        if normalized == "common" or ("." in value and "/" not in value):
+            continue
         if normalized.startswith("/") or "/" in normalized:
             label = next((label for token, label in _PERMISSION_ROUTE_LABELS if token in normalized), "")
             if not label:
@@ -8836,7 +10480,7 @@ def _native_queue_priority_advice(outcome: ReaderOutcome, question: str) -> Read
     so instead of inventing a ranking, and it never changes a task.
     """
 
-    if not _PRIORITY_ADVICE_REQUEST.search(str(question or "")):
+    if outcome.audit_evidence.get("nativeStatusPrioritySummary") or not _PRIORITY_ADVICE_REQUEST.search(str(question or "")):
         return outcome
     if outcome.result.status not in {"success", "not_confirmed", "no_data"}:
         return outcome
@@ -8888,6 +10532,54 @@ def _native_queue_priority_advice(outcome: ReaderOutcome, question: str) -> Read
     return ReaderOutcome(result, {**outcome.audit_evidence, "nativePriorityAdvice": True, "result": result.public_json()})
 
 
+def _native_queue_status_priority_summary(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Group only the authorized rows actually observed in a team queue.
+
+    This does not promote a visible page to a complete queue.  Priority is
+    reported only if the rendered table has such a field; SLA is not silently
+    substituted for business priority.
+    """
+
+    normalized_question = re.sub(r"[\u064b-\u065f\u0670]", "", question)
+    if not (re.search(r"(?:status|状态|الحالة).{0,20}(?:priority|优先级|الأولوية|الاولوية)|"
+                      r"(?:priority|优先级|الأولوية|الاولوية).{0,20}(?:status|状态|الحالة)", normalized_question, re.I)
+            and re.search(r"summar|breakdown|group|汇总|分组|تلخيص|ملخص|لخص", normalized_question, re.I)):
+        return outcome
+    if outcome.result.status not in {"success", "not_confirmed", "no_data"}:
+        return outcome
+    if not re.fullmatch(r"/content/team-management", str(outcome.result.page or ""), re.I):
+        return outcome
+    observation = outcome.audit_evidence.get("observation") or (
+        (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
+    ).get("observation")
+    rows = _queue_rows_for_advice(observation)
+    if not rows:
+        return outcome
+    statuses: dict[str, int] = {}
+    for row in rows:
+        status = str(row.get("Status") or "-").strip()
+        statuses[status] = statuses.get(status, 0) + 1
+    facts = [
+        f"Observed Content Team Management To Do rows: {len(rows)}. This is the currently rendered page, not the complete queue.",
+        "Status breakdown of those visible rows: " + "; ".join(
+            f"{status}: {count}" for status, count in sorted(statuses.items())
+        ) + ".",
+    ]
+    priority_present = any("Priority" in node.get("columnHeaders", []) for node in _observation_semantic_nodes(observation)
+                           if node.get("kind") in {"table", "grid"})
+    if priority_present:
+        facts.append("The Priority column is present, but its values were not included in this bounded summary.")
+    else:
+        facts.append("This rendered queue has no Priority column, so a priority breakdown cannot be verified from this page; SLA is a different field.")
+    result = replace(outcome.result, answer_shape="overview", completeness="bounded", facts=tuple(facts),
+                     workflow_state="status_priority_summary",
+                     intent_context={"observedCount": len(rows), "statusCounts": statuses,
+                                     "priorityAvailable": priority_present},
+                     source_hint={"page": outcome.result.page}, missing=())
+    return ReaderOutcome(result, {**outcome.audit_evidence, "nativeStatusPrioritySummary": True,
+                                  "result": result.public_json()})
+
+
 def _queue_rows_for_advice(observation: Any) -> list[dict[str, str]]:
     """Visible task rows with the fields the advice may quote."""
 
@@ -8920,9 +10612,38 @@ _PERSON_ROLLUP_REQUEST = re.compile(
     r"\b(?:per|by|each|every)\s+(?:officer|inspector|staff|member|handler|employee)s?\b"
     r"|\b(?:officer|inspector|staff|member|handler|employee)s?\s+(?:breakdown|roll[- ]?up|summary)\b"
     r"|(?:按|每位|每个|各个)\s*(?:officer|inspector|员工|成员|处理人|人员)"
-    r"|(?:حسب|لكل)\s*(?:الموظف|المفتش|العضو|الفريق)",
+    r"|(?:حسب|لكل)\s*(?:كل\s+)?(?:ال)?(?:موظف|مفتش|عضو|فريق)",
     re.I,
 )
+
+
+def _inspection_person_rollup_requested(question: str) -> bool:
+    """Recognize dated inspector workload summaries, including natural prose.
+
+    A request can say that the inspector *summarizes* today's work without
+    using the literal phrase "by inspector". Require the task, date, and
+    performance concepts together so an ordinary queue listing is unaffected.
+    """
+
+    value = str(question or "")
+    if not (_inspection_today_request(value) or _inspection_requested_date(value)):
+        return False
+    if _PERSON_ROLLUP_REQUEST.search(value):
+        return True
+    return bool(
+        re.search(r"\b(?:tasks?|inspections?)\b|مهام|التفتيش", value, re.I)
+        and re.search(r"\b(?:overdue|completion|completed)\b|متأخر|الإنجاز|المنجزة", value, re.I)
+        and re.search(r"\binspector\b|(?:ال)?مفتش", value, re.I)
+    )
+
+
+def _inspection_today_list_requested(question: str) -> bool:
+    value = str(question or "")
+    return bool(
+        (_inspection_today_request(value) or _inspection_requested_date(value))
+        and re.search(r"\binspection\s+tasks?\b|\binspections?\b|مهام\s+التفتيش", value, re.I)
+        and not _inspection_person_rollup_requested(value)
+    )
 _OVERDUE_RENDERED = re.compile(r"\boverdue\b|逾期|متأخر", re.I)
 _RETURNED_RENDERED = re.compile(r"退回|rejected|returned|sent back", re.I)
 
@@ -8938,13 +10659,385 @@ def _api_candidate_rows(observation: Any, operation_key: str) -> tuple[dict[str,
         if candidate.get("status") != 200:
             continue
         evidence = candidate.get("responseEvidence")
-        payload = evidence.get("data") if isinstance(evidence, dict) and isinstance(evidence.get("data"), dict) else evidence
-        if not isinstance(payload, dict):
+        # Portal builds use both ``{items: [...]}``, ``{data: {items: [...]}}``
+        # and ``{data: [...]}`` envelopes.  Walk only the observed response
+        # envelope instead of assuming that ``data`` is always an object; an
+        # array payload is a valid collection and must not become a false
+        # no-match result for an exact-record question.
+        def find_rows(value: Any, depth: int = 0) -> tuple[dict[str, Any], ...]:
+            if depth > 5:
+                return ()
+            if isinstance(value, list):
+                rows = tuple(item for item in value if isinstance(item, dict))
+                return rows if rows else ()
+            if not isinstance(value, dict):
+                return ()
+            items = value.get("items")
+            if isinstance(items, list):
+                return tuple(item for item in items if isinstance(item, dict))
+            for key in ("data", "page", "result", "payload", "rows", "records"):
+                nested = find_rows(value.get(key), depth + 1)
+                if nested:
+                    return nested
             return ()
-        items = payload.get("items")
-        if isinstance(items, list):
-            return tuple(item for item in items if isinstance(item, dict))
+
+        rows = find_rows(evidence)
+        if rows:
+            return rows
     return ()
+
+
+def _application_numbers(question: str) -> tuple[str, ...]:
+    """Keep every requested ML identity distinct, in the user's order."""
+    # Arabic conjunction و is commonly attached directly to the next Latin
+    # identifier; Python's Unicode \w would wrongly reject that boundary.
+    text = re.sub(r"(?<=[A-Za-z0-9])\s*[-–—]\s*(?=[A-Za-z0-9])", "-", str(question or ""))
+    return tuple(dict.fromkeys(value.upper() for value in re.findall(
+        r"(?<![A-Za-z0-9_-])ML-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9_-])", text, re.I)))
+
+
+def _single_application_status_followup(question: str, context: dict[str, Any]) -> str:
+    """Carry an unambiguous requested identity, never a prior payment/state value."""
+    if _explicit_record_identity(question):
+        return question
+    field_question = re.fullmatch(
+        r"\s*(?:what\s+is\s+(?:the\s+)?(?:licen[cs](?:e|ing)|application|payment|complaint)\s+status"
+        r"|(?:ما\s+(?:هي|هو)\s+)?(?:حالة|وضع)\s+(?:الترخيص|الطلب|الدفع|الشكوى))\s*[?؟.!]*\s*",
+        question, re.I,
+    )
+    previous = context.get('previousIntent') or {}
+    if not field_question or not isinstance(previous, dict):
+        return question
+    if previous.get('resultStatus') not in {'success', 'not_confirmed'}:
+        return question
+    identities = _application_numbers(str(previous.get('recordIdentity') or ''))
+    requested = _application_numbers(str(previous.get('question') or ''))
+    if not identities:
+        identities = requested
+    if len(identities) != 1 or len(requested) > 1:
+        return question
+    # Every new object-specific field still follows the ordinary current
+    # GetUserInfo page policy and exact search. No old facts/grants survive.
+    return question.rstrip() + ' ' + identities[0]
+
+
+def _application_state_type_row_result(observation: Any, identity: str, *, page: str,
+                                       scope: str, question: str) -> ReaderResult | None:
+    """Project state/type only from one exact fresh visible application row.
+
+    This never treats a payment type as a licensing business type, nor emits
+    neighbouring applicants. Questions needing timeline/payment details retain
+    the detail workflow. Missing requested columns are explicitly unconfirmed.
+    """
+    if not re.search(r"status(?:es)?|business\s+types?|application\s+types?|حالة|حالات|الحالات|وضع|نوع|أنشطة", question, re.I):
+        return None
+    if re.search(r"payment|paid|fee|complaint|history|timeline|دفع|رسوم|شكو|سجل|تاريخ", question, re.I):
+        return None
+    matched = _native_exact_identity_row_result(observation, page=page,
+        record_identity=identity, scope=scope, question=question)
+    if matched is None:
+        return None
+    native = json.loads(matched.facts[0])
+    arabic = response_language_for(question) == 'ar'
+    projected = {'رقم الطلب' if arabic else 'Application No.': identity}
+    aliases = (
+        ('Application Status', 'حالة الطلب', {'status', 'الحالة'}),
+        ('Application Type', 'نوع الطلب', {'type', 'النوع'}),
+        ('Service Category', 'فئة الخدمة', {'servicecategory', 'فئةالخدمة'}),
+        ('Service Name', 'اسم الخدمة', {'servicename', 'اسمالخدمة'}),
+    )
+    values_ar = {'completed': 'مكتمل', 'cancelled': 'ملغى', 'canceled': 'ملغى',
+                 'final approval': 'الموافقة النهائية', 'pending review': 'قيد المراجعة',
+                 'pending modification': 'بانتظار التعديل', 'partner management': 'إدارة الشركاء',
+                 'new': 'جديد', 'modify': 'تعديل', 'media licensing': 'ترخيص الوسائط'}
+    present = set()
+    for english, ar, names in aliases:
+        candidates = [value for key, value in native.items()
+                      if re.sub(r"[^\w]", "", str(key).casefold()).replace('_', '') in names
+                      and value not in (None, '', '-')]
+        if len(candidates) == 1:
+            value = candidates[0]
+            projected[ar if arabic else english] = values_ar.get(str(value).casefold(), value) if arabic else value
+            present.add(english)
+    asks_type = bool(re.search(r"\btypes?\b|نوع|أنشطة", question, re.I))
+    missing = tuple(name for name, requested in (
+        ('Application Status', True), ('Application Type', asks_type)) if requested and name not in present)
+    notes = tuple((f'لم تؤكد الصفحة الحقل المطلوب: {name}.' if arabic else
+                   f'The page did not confirm the requested field: {name}.') for name in missing)
+    return replace(matched, status='not_confirmed' if missing else 'success',
+        facts=(json.dumps(projected, ensure_ascii=False), *notes),
+        missing=tuple('application_column_unverified:' + name for name in missing),
+        workflow_state='application_exact_state_type', record_identity=identity)
+
+
+def _finance_application_rows(observation: Any, identity: str) -> tuple[dict[str, Any], ...]:
+    """Exact reference-number matches from the Finance page's observed API."""
+    return tuple(
+        row for row in _api_candidate_rows(observation, "GET /api/admin/finance/transactions")
+        if str(row.get("referenceNumber") or row.get("applicationNumber") or "").casefold() == identity.casefold()
+    )
+
+
+def _finance_application_result(
+    found: dict[str, tuple[dict[str, Any], ...]], *, question: str,
+    scope: Literal["personal", "team", "global", "unknown"], complete: bool,
+    detail_observations: dict[str, Any] | None = None,
+) -> ReaderResult:
+    """Project Finance facts only; a paid transaction is not a licence decision."""
+    language = response_language_for(question)
+    facts: list[str] = []
+    for identity, rows in found.items():
+        if not rows:
+            facts.append(
+                (f"لم يُعثر على معاملة مالية مطابقة للطلب {identity} ضمن البيانات المقروءة."
+                 if language == "ar" else
+                 f"No Finance transaction matched application {identity} in the readable records.")
+            )
+            continue
+        for row in rows:
+            status = row.get("statusObj") or row.get("status") or ""
+            if isinstance(status, dict):
+                status = status.get("nameAr" if language == "ar" else "nameEn") or status.get("name") or ""
+            transaction_type = row.get("transactionTypeObj") or row.get("transactionType") or ""
+            if isinstance(transaction_type, dict):
+                transaction_type = transaction_type.get("nameAr" if language == "ar" else "nameEn") or transaction_type.get("name") or ""
+            labels = ({
+                "application": "رقم الطلب", "payment": "حالة الدفع", "amount": "المبلغ المدفوع (درهم)",
+                "transaction": "رقم المعاملة", "type": "نوع المعاملة", "lifecycle": "حالة الطلب",
+            } if language == "ar" else {
+                "application": "Application No.", "payment": "Payment Status", "amount": "Amount Charged (AED)",
+                "transaction": "Transaction No.", "type": "Transaction Type", "lifecycle": "Application Status",
+            })
+            projected = {
+                labels["application"]: identity,
+                labels["payment"]: status,
+                labels["amount"]: row.get("amount"),
+                labels["transaction"]: row.get("transactionNo"),
+                labels["type"]: transaction_type,
+            }
+            detail = (detail_observations or {}).get(str(row.get("transactionNo") or ""))
+            detail_object = _api_object_by_operation(
+                detail, "GET /api/admin/finance/transactions/{transactionNo}",
+            )
+            if isinstance(detail_object, dict):
+                linked = detail_object.get("applicationDatas") or detail_object.get("applicationItems") or []
+                matches = [item for item in linked if isinstance(item, dict) and
+                           str(item.get("applicationNumber") or "").casefold() == identity.casefold()]
+                if len(matches) == 1:
+                    status_obj = matches[0].get("applicationStatusObj")
+                    if isinstance(status_obj, dict):
+                        # Finance returns a locale-specific `name`; other portal
+                        # projections expose explicit bilingual names instead.
+                        lifecycle = status_obj.get("nameAr" if language == "ar" else "nameEn") or status_obj.get("name")
+                        if lifecycle:
+                            projected[labels["lifecycle"]] = lifecycle
+            projected = {key: value for key, value in projected.items() if value not in (None, "")}
+            if language == "ar":
+                # Translate known labels, never infer a missing status from
+                # payment or numeric IDs. Unknown source values stay verbatim.
+                display_values = {'completed': 'مكتمل', 'cancelled': 'ملغى', 'canceled': 'ملغى',
+                                  'pending': 'قيد الانتظار', 'failed': 'فشل',
+                                  'service application': 'طلب خدمة', 'refund': 'استرداد', 'fine': 'غرامة'}
+                for label in (labels['payment'], labels['lifecycle'], labels['type']):
+                    if label in projected:
+                        projected[label] = display_values.get(str(projected[label]).casefold(), projected[label])
+            facts.append(json.dumps(projected, ensure_ascii=False, separators=(",", ":")))
+    asks_business_type = bool(re.search(r"business\s+types?|نوع(?:ا|ي)?\s+(?:العمل|الأنشطة|الانشطة)|أنشطة\s+تجارية", question, re.I))
+    asks_statuses = bool(re.search(r"\bstatuses\b|حال(?:تا|تي|ات)\b|الحالات", question, re.I))
+    # A multi-application question about "statuses and business types" does
+    # not explicitly say "license status", but its status is still ambiguous.
+    # Label the observed Finance value as payment-only and state the missing
+    # licence status instead of allowing the two to be conflated.
+    asks_license_status = bool(re.search(
+        r"licen[cs](?:e|ing)\s+status|application\s+status|status\s+of\s+ML-|\b(?:cancelled|canceled|completed)\b|"
+        r"(?:حالة|وضع)\s+(?:الترخيص|الطلب)|ملغ|مكتمل", question, re.I,
+    )) or (asks_business_type and asks_statuses)
+    asks_complaint = bool(re.search(r"complaint\s+status|(?:ال)?شكو[ىي]|(?:ال)?شكاوى", question, re.I))
+    has_lifecycle = any(('"حالة الطلب"' if language == 'ar' else '"Application Status"') in fact for fact in facts)
+    if asks_license_status and not has_lifecycle:
+        facts.append("لا تعرض المعاملات المالية حالة الترخيص؛ ولا يمكن اعتبار اكتمال الدفع موافقة على الترخيص."
+                     if language == "ar" else
+                     "Finance Transactions does not show the license status; a completed payment does not prove license approval.")
+    if asks_complaint:
+        facts.append("لا تعرض المعاملات المالية حالة الشكوى، ولا يمكن تأكيدها من صلاحيات هذا الحساب."
+                     if language == "ar" else
+                     "Finance Transactions does not show the complaint status; it cannot be confirmed from this account's access.")
+    if asks_business_type:
+        facts.append("نوع معاملة الدفع ليس نوع عمل الترخيص. نوع عمل الترخيص غير متاح من هذه الصفحة."
+                     if language == "ar" else
+                     "The payment transaction type is not the license business type. The license business type is unavailable from this page.")
+    lifecycle_missing = asks_license_status and not has_lifecycle
+    return ReaderResult(
+        status="success" if complete and not lifecycle_missing else "not_confirmed",
+        summary="Exact application-linked Finance transactions, without inferring other modules' states.",
+        page="/financial-payment/transactions", section="Payments", answer_shape="list",
+        completeness="complete" if complete and not lifecycle_missing else "bounded", scope=scope,
+        facts=tuple(facts),
+        workflow_state='authorized_record_detail',
+        record_identity=next(iter(found)) if len(found) == 1 else '',
+        missing=(() if complete else ("finance_application_search_unverified",))
+                + (("application_lifecycle_not_verified",) if lifecycle_missing else ()),
+    )
+
+
+def _license_exact_application_result(
+    observation: Any, identity: str, *, question: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult | None:
+    """Project only an exact application and its own authorized detail reads."""
+
+    review = _api_object_by_operation(observation, "GET /api/Application/MyReviewDetail/{taskId}")
+    detail = review.get("detail") if isinstance(review, dict) else None
+    if not isinstance(detail, dict) or str(detail.get("applicationNumber") or "").casefold() != identity.casefold():
+        return None
+    language = response_language_for(question)
+    arabic = language == 'ar'
+    facts: list[str] = []
+    status = detail.get("status")
+    if status:
+        if arabic:
+            status = ({'completed': 'مكتمل', 'cancelled': 'ملغى', 'canceled': 'ملغى',
+                       'approved': 'معتمد', 'pending': 'قيد الانتظار'}.get(str(status).casefold(), status))
+        facts.append((f"حالة الطلب {identity}: {status}." if arabic else
+                      f"Application {identity} status: {status}."))
+    if detail.get("slaDescription") and re.search(r'\bSLA\b|service.level|اتفاقية مستوى الخدمة', question, re.I):
+        facts.append((f"اتفاقية مستوى الخدمة للطلب: {detail['slaDescription']}." if arabic else
+                      f"Application SLA: {detail['slaDescription']}."))
+    timeline = review.get("applicationTimeline")
+    paid = isinstance(timeline, list) and any(
+        isinstance(item, dict) and str(item.get("nodeType") or item.get("title") or "").strip().casefold() == "paid"
+        for item in timeline
+    )
+    if paid:
+        facts.append("يسجل الجدول الزمني للطلب حدث «مدفوع»؛ أكمل المتعامل دفع رسوم هذا الطلب." if arabic else
+                     "The application timeline records a Paid event; the customer completed payment.")
+    fee = _api_object_by_operation(observation, "GET /api/admin/application/{applicationId}")
+    fee_confirmed = False
+    if isinstance(fee, dict) and str(fee.get("applicationId") or "") == str(detail.get("id") or ""):
+        amount = fee.get("amount")
+        if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount >= 0:
+            fee_confirmed = True
+            currency = str(fee.get("currencyCode") or "").strip()
+            facts.append((f"رسوم الخدمة المعروضة في تفاصيل هذا الطلب: {amount:.2f}" if arabic else
+                          f"Service fee shown on this application's detail: {amount:.2f}") +
+                         (f" {currency}." if currency else
+                          (" (لم تُعرض العملة)." if arabic else " (currency not supplied).")))
+    if not facts:
+        return None
+    asks_payment = bool(re.search(r"\bpayment\b|\bpaid\b|付款|支付|الدفع|المدفوعات", question, re.I))
+    payment_incomplete = asks_payment and (not paid or not fee_confirmed)
+    if asks_payment and not paid:
+        facts.append("لم تؤكد تفاصيل الطلب اكتمال الدفع؛ لا يُستنتج ذلك من قيمة الرسوم." if arabic else
+                     "The application detail did not confirm a completed payment; no payment result is inferred from the fee quote.")
+    if asks_payment and not fee_confirmed:
+        facts.append("لم تؤكد تفاصيل الطلب مبلغًا لهذا الطلب نفسه؛ لا يُستنتج مبلغ." if arabic else
+                     "The application detail did not confirm an amount for the same application; no amount is inferred.")
+    return ReaderResult(
+        status="not_confirmed" if payment_incomplete else "success",
+        summary="Exact application details from the authorized Licensing page.",
+        page="/licensing/applications", section="Application detail", answer_shape="detail",
+        completeness="bounded", scope=scope, facts=tuple(facts),
+        workflow_state='authorized_record_detail',
+        missing=("application_payment_detail_incomplete",) if payment_incomplete else (),
+    )
+
+
+def _content_exact_application_result(observation: Any, identity: str, *, question: str,
+                                      scope: str) -> ReaderResult | None:
+    review = _api_object_by_operation(observation, 'GET /api/Content/MyReviewDetail/{taskId}')
+    detail = review.get('detail') if isinstance(review, dict) else None
+    if not isinstance(detail, dict) or str(detail.get('applicationNumber') or '').casefold() != identity.casefold():
+        return None
+    arabic = response_language_for(question) == 'ar'
+    localized_labels = {'Final Approval': 'الموافقة النهائية', 'Initial Approval': 'الموافقة الأولية',
+                        'Application Submitted': 'تم تقديم الطلب', 'Paid': 'مدفوع', 'Approve': 'الموافقة',
+                        'Reject': 'رفض', 'Send Back': 'إرجاع', 'Request Modification': 'طلب تعديل',
+                        'Submit Report': 'تقديم التقرير'}
+    fields = {'رقم الطلب' if arabic else 'Application No.': identity}
+    for en, ar, key in (('Status', 'الحالة', 'status'), ('Apply For', 'مقدم الطلب', 'applyForAr' if arabic else 'applyForEn'),
+                        ('Assigned To', 'المسند إليه', 'assignedTo'), ('SLA', 'اتفاقية مستوى الخدمة', 'slaDescription')):
+        if detail.get(key):
+            value = detail[key]
+            if arabic:
+                value = localized_labels.get(str(value), value)
+                if key == 'slaDescription':
+                    value = re.sub(r'^(\d+)d Overdue$', r'متأخر \1 يومًا', str(value))
+            fields[ar if arabic else en] = value
+    facts = [json.dumps(fields, ensure_ascii=False)]
+    timeline = review.get('applicationTimeline')
+    for item in timeline if isinstance(timeline, list) else ():
+        if not isinstance(item, dict) or not item.get('userName'):
+            continue
+        event = item.get('title') or item.get('nodeType')
+        projected = {('حدث السجل الزمني' if arabic else 'Timeline Event'): localized_labels.get(str(event), event) if arabic else event,
+                     ('بواسطة' if arabic else 'By'): item['userName']}
+        if item.get('approvalTime'):
+            projected['الوقت' if arabic else 'Time'] = item['approvalTime']
+        facts.append(json.dumps(projected, ensure_ascii=False))
+    control_labels = [control if isinstance(control, str) else str(control.get('label') or control.get('name') or '')
+                      for control in (observation.get('controls') or ()) if isinstance(control, (str, dict))]
+    next_actions = [label for label in control_labels if re.fullmatch(
+        r'Approve|Reject|Send Back|Request Modification|Submit Report|اعتماد|رفض|إرجاع|الموافقة', label.strip(), re.I)]
+    if next_actions:
+        if arabic:
+            next_actions = [localized_labels.get(label, label) for label in next_actions]
+        facts.append(('الخطوة التالية: مراجعة المرحلة الحالية واختيار أحد إجراءات الصفحة المتاحة: ' if arabic else
+                      'Next step: review the current stage and choose an available page action: ') + ', '.join(dict.fromkeys(next_actions)) +
+                     ('؛ لم يتم تنفيذ أي إجراء.' if arabic else '; no action was executed.'))
+    else:
+        facts.append('لم تؤكد الصفحة إجراءً تاليًا؛ لا يتم اختراع انتقال للحالة.' if arabic else
+                     'No next action was verified on the page; no status transition is invented.')
+    missing = () if isinstance(timeline, list) and next_actions else ('application_history_or_next_action_unverified',)
+    return ReaderResult(status='success' if not missing else 'not_confirmed',
+        page='/content/ContentApplications', section='Application detail', scope=scope,
+        summary='Exact Content application status, applicant and visible processing timeline.',
+        facts=tuple(facts), answer_shape='detail', completeness='bounded',
+        workflow_state='authorized_record_detail', missing=missing)
+
+
+def _happiness_ticket_handoff_result(
+    observation: Any, identity: str, *, question: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult | None:
+    """Report public ticket state and transfer events, never internal notes."""
+
+    info = _api_object_by_operation(observation, "GET /api/Enquiry/Management/{enquiryId}/EnquiryInfo")
+    if not isinstance(info, dict) or str(info.get('enquiryNumber') or '').casefold() != identity.casefold():
+        return None
+    arabic = response_language_for(question) == 'ar'
+    status_obj = info.get('enquiryStatusObj')
+    status = (status_obj.get('nameAr' if arabic else 'nameEn') if isinstance(status_obj, dict) else None) or ''
+    facts = [f"رقم التذكرة: {identity}؛ الحالة الحالية: {status}." if arabic else
+             f"Ticket No.: {identity}; current status: {status}."] if status else [
+             f"رقم التذكرة: {identity}." if arabic else f"Ticket No.: {identity}."]
+    timeline = _api_rows_by_operation(observation, "GET /api/Enquiry/Management/{enquiryId}/Timeline")
+    transfer_events = []
+    for item in timeline:
+        status_data = item.get('changeStatusObj')
+        event_status = (status_data.get('statusName') or status_data.get('nameEn')) if isinstance(status_data, dict) else ''
+        department = str(item.get('departmentName') or '').strip()
+        if str(event_status).casefold() != 'department processing' or not department:
+            continue
+        transfer_events.append((str(item.get('changeOnTime') or '')[:19], department))
+    if transfer_events:
+        dated, department = max(transfer_events, key=lambda value: value[0])
+        facts.append((f"التحويل الرسمي المسجل في الجدول الزمني للتذكرة: {department}" if arabic else
+                      f"Formal transfer recorded in the ticket timeline: {department}") +
+                     ((f" بتاريخ {dated}." if arabic else f" at {dated}.") if dated else "."))
+        facts.append("هذا هو حدث التحويل والحالة الحالية للتذكرة؛ لم تُعرض ملاحظات المراجعة الداخلية للقسم المستلم." if arabic else
+                     "This is the transfer event and current ticket state, not a disclosure of the recipient department's internal review notes.")
+    else:
+        facts.append("لم يُتحقق من حدث تحويل رسمي بين الأقسام في الجدول الزمني المقروء للتذكرة." if arabic else
+                     "No formal department-transfer event was verified in the readable ticket timeline.")
+    return ReaderResult(
+        status='success' if status and transfer_events else 'not_confirmed',
+        page='/happiness/tickets', section='Ticket detail and timeline',
+        answer_shape='detail', completeness='bounded', scope=scope,
+        summary='Current ticket status and formal transfer from the authorized ticket detail.',
+        facts=tuple(facts),
+        workflow_state='authorized_record_detail',
+        missing=() if status and transfer_events else ('ticket_handoff_detail_unverified',),
+    )
 
 
 def _observed_api_rows(outcome: ReaderOutcome) -> tuple[dict[str, Any], ...]:
@@ -8961,23 +11054,56 @@ def _observed_api_rows(outcome: ReaderOutcome) -> tuple[dict[str, Any], ...]:
     if isinstance(portal_observation, dict):
         observations.append(portal_observation)
     rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    by_identity: dict[str, int] = {}
+
+    def add_row(row: dict[str, Any]) -> None:
+        # The same task can be present in the API payload and the rendered
+        # table under different key spellings. Merge complementary fields by
+        # its business number before computing any count or rate.
+        identifiers = { _key(key): str(value).strip() for key, value in row.items()
+                        if value not in (None, "", "-") }
+        identity = next((f"task:{identifiers[key]}" for key in ("taskno", "tasknumber")
+                         if identifiers.get(key)), "")
+        if not identity:
+            identity = next((f"transaction:{identifiers[key]}" for key in ("transactionno", "refundno")
+                             if identifiers.get(key)), "")
+        if not identity:
+            identity = json.dumps(row, sort_keys=True, ensure_ascii=False, default=str)
+        index = by_identity.get(identity)
+        if index is not None:
+            existing = rows[index]
+            for key, value in row.items():
+                if value not in (None, "", "-") and existing.get(key) in (None, "", "-"):
+                    existing[key] = value
+            return
+        by_identity[identity] = len(rows)
+        rows.append(dict(row))
+
     for observation in observations:
         for operation in (
             "GET /api/admin/inspection/tasks",
+            "POST /api/inspection/team-management/tasks/query",
             "GET /api/admin/finance/transactions",
             "GET /api/admin/payments/refunds",
         ):
             for row in _api_candidate_rows(observation, operation):
-                identity = str(
-                    row.get("taskNo") or row.get("transactionNo") or row.get("refundNo") or json.dumps(
-                        row, sort_keys=True, ensure_ascii=False
-                    )
-                )
-                if identity in seen:
+                add_row(row)
+        # Some portal builds expose the task collection only as the rendered
+        # table (the API candidate is intentionally redacted).  The table is
+        # still authoritative for a read-only answer: preserve its stable
+        # column names so date-bounded/person rollups can use every observed
+        # page without inventing a route-specific field map.
+        for node in _observation_semantic_nodes(observation):
+            if node.get("kind") not in {"table", "grid"}:
+                continue
+            headers = [str(header) for header in node.get("columnHeaders") or []]
+            if not any(_key(header) in {"taskno", "tasknumber", "taskid"} for header in headers):
+                continue
+            for raw in node.get("rowFields") or []:
+                if not isinstance(raw, dict):
                     continue
-                seen.add(identity)
-                rows.append(row)
+                row = {str(key): value for key, value in raw.items()}
+                add_row(row)
     return tuple(rows)
 
 
@@ -8987,7 +11113,8 @@ _FINANCE_CURRENCY_REQUEST = re.compile(
 )
 _OTHER_PEOPLE_TASK_REQUEST = re.compile(
     r"\bother\s+(?:inspectors?|officers?|staff|members?|handlers?)\b|\ball\s+(?:inspectors?|officers?|staff|members?)\b"
-    r"|其他\s*(?:inspector|officer|检查员|员工|成员|处理人)|其他部门",
+    r"|其他\s*(?:inspector|officer|检查员|员工|成员|处理人)|其他部门"
+    r"|(?:المفتشين|المفتشون|الموظفين|الموظفون)\s+الآخرين|جميع\s+(?:المفتشين|الموظفين)",
     re.I,
 )
 _PERIOD_COMPARISON_REQUEST = re.compile(
@@ -9046,7 +11173,7 @@ def _deterministic_rule_clauses(question: str, knowledge_context: Any, *, limit:
 
 _FINE_DECISION_REQUEST = re.compile(
     r"\bfines?\b|\bpenalt\w+\b|\bcommittee\s+decision\b|罚款|罚金|处罚|罚款金额|委员会.{0,12}决定|"
-    r"غرامة|مخالفة",
+    r"غرامة|مخالفة|(?:المبلغ|مبلغ).{0,80}(?:اللجنة|الغرامة)|(?:اللجنة).{0,60}(?:المبلغ|مبلغ)",
     re.I,
 )
 
@@ -9054,33 +11181,180 @@ _FINE_DECISION_REQUEST = re.compile(
 _RECORD_DETAIL_REQUEST = re.compile(
     r"\bhandler|\bhandled by|who (?:processed|handled|reviewed)|history|audit trail|"
     r"materials?|documents?|required\s+(?:documents?|items?)|attachments?|"
-    r"next step|details?\b|"
+    r"next step|details?\b|street\s+address|checklist|violations?|evidence|handling\s+status|"
     r"处理人|谁处理|处理过|处理的|历史|处理记录|材料|资料|缺少哪些|需要哪些|必备|附件|下一步|详情|明细|"
-    r"المعالج|سجل|تاريخ|مستندات|مرفقات|الخطوة التالية|تفاصيل",
+    r"المعالج|سجل|تاريخ|مستندات|مرفقات|المواد|مواد|الخطوات|خطوات|المتطلبات|متطلبات|الخطوة التالية|تفاصيل|عنوان|قائمة الفحص|قائمة التفتيش|المخالفات|الأدلة|حالة المعالجة",
     re.I,
 )
 _HISTORY_OPERATION_PREFIX = "GET /api/ContentLibrary/GetHistoryList"
 _REVIEW_DETAIL_OPERATION_PREFIX = "GET /api/Application/MyReviewDetail"
 _INSPECTION_TASK_DETAIL_OPERATION = "GET /api/admin/inspection/tasks/{id}"
 _INSPECTION_CHECKLIST_OPERATION = "GET /api/admin/inspection/tasks/{id}/checklist-template"
+_INSPECTION_TARGET_OVERVIEW_OPERATION = "GET /api/admin/inspection/tasks/{id}/target-overview"
+_INSPECTION_CONTACT_PERSONS_OPERATION = "GET /api/admin/inspection/tasks/{id}/persons"
 _INSPECTION_TASK_TARGET_HISTORY_OPERATION = "GET /api/admin/inspection/tasks/by-target"
 _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION = "GET /api/admin/inspection/violations/by-target"
+_CURRENT_ADMIN_PROFILE_OPERATION = "GET /api/UserManagement/GetAdminUserAsync"
 _INSPECTION_TARGET_OPERATION_PREFIX = "GET /api/admin/inspection/violations/"
 _DOCUMENT_LABEL = re.compile(r"\"(?:label|title|name)\s*\"?\s*:\s*\"([^\"]{3,60})\"")
 
 
 def _inspection_history_request(question: str) -> bool:
+    text = str(question or "")
+    if (_inspection_target_history_name(text) and re.search(
+            r"\b(?:history|historical|past|previous|records?|violations?|contacts?)\b|"
+            r"历史|检查记录|违规|联系方式|سجل|سجلات|تاريخ|سابقة|المخالفات|الاتصال", text, re.I)):
+        return True
     return bool(re.search(
         r"\b(?:past|previous|historical|history|all)\s+(?:inspection|inspections|penalt|violations?|contacts?)\b|"
         r"\b(?:inspection|inspections)\s+(?:history|historical)\b|"
         r"历史(?:检查|巡查|处罚|违规)|过去的?(?:检查|巡查)|机构.*(?:历史|联系人)|"
-        r"سجل\s*(?:التفتيش|المخالفات)|عمليات التفتيش السابقة",
+        r"(?:سجل|تاريخ)\s*(?:التفتيش|الفحص|المخالفات)|سجلات\s+(?:الفحص|التفتيش).{0,50}(?:التاريخية|السابقة)|"
+        r"(?:عمليات\s+)?التفتيشات?\s+السابقة|"
+        r"(?:الفحوصات|الفحوص).{0,100}(?:العقوبات|المؤسسة|الأشخاص)",
         str(question or ""), re.I,
     ))
 
 
+def _inspection_target_history_name(question: str) -> str:
+    """Extract a named target, never an institution identity or a task id."""
+
+    text = str(question or '')
+    # Quotes delimit a target name, not a task identifier or an instruction.
+    quote = r'[\"\'“”‘’«»]'
+    # In an inspection question, "the target X" and "inspection target X"
+    # identify the same subject. Keep a bare English target contextual so
+    # unrelated ticket/marketing history is not routed to Inspection.
+    english_label = (r'\b(?:inspection\s+)?target'
+                     if re.search(r'\binspections?\b', text, re.I)
+                     else r'\binspection\s+target')
+    label = (r'(?:' + english_label
+             + r'|هدف\s+(?:التفتيش|الفحص)|الهدف|للهدف|检查目标|巡检目标)')
+    patterns = (
+        label + r'\s*[:：]?\s*' + quote + r'([^\"\'“”‘’«»]{1,100})' + quote,
+        quote + r'([^\"\'“”‘’«»]{1,100})' + quote + r'\s+(?:inspection\s+)?target\b',
+        label + r'\s*[:：]?\s*([\w][\w -]{0,100}?)(?=[.,;!?،。？!؛：:]|'
+        r'\s+(?:and|with|but|do\s+not|show|display|اعرض|أظهر|اظهر|والمخالفات)\b|$)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1).strip()
+    return ''
+
+
+def _bound_violation_history_answer(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Do not present one exact violation as an institution-wide history."""
+
+    identity = _explicit_record_identity(question)
+    result = outcome.result
+    if (not _inspection_history_request(question) or not identity
+            or not identity.upper().startswith("VN-")
+            or result.page != "/inspection/violations" or result.status != "success"
+            or identity.casefold() not in " ".join(str(fact) for fact in result.facts).casefold()):
+        return outcome
+    note = (
+        "This verified violation record is not a complete institution history. "
+        "The authorized Violations view did not return all past inspections, "
+        "institution-wide penalties or institution contacts. Those details "
+        "cannot be confirmed from this account's current readable view."
+    )
+    if any("not a complete institution history" in str(fact).casefold()
+           for fact in result.facts):
+        return outcome
+    bounded = replace(
+        result,
+        status="not_confirmed",
+        facts=(*result.facts, note)[:24],
+        missing=tuple(dict.fromkeys((*result.missing, "institution_history_not_returned",
+                                     "institution_contacts_not_returned"))),
+    )
+    return ReaderOutcome(bounded, {**outcome.audit_evidence,
+                                   "violationHistoryBounded": True,
+                                   "result": bounded.public_json()})
+
+
+def _guard_inspection_target_history(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """A named target's history must carry a verified exact-target binding.
+
+    A planner-selected generic violation queue is never evidence about that
+    target, even if its rows happen to be readable by this account.
+    """
+    target = _inspection_target_history_name(question) if _inspection_history_request(question) else ''
+    if not target or _explicit_record_identity(question):
+        return outcome
+    binding = outcome.audit_evidence.get('inspectionTargetBinding') or {}
+    if (isinstance(binding, dict)
+            and str(binding.get('targetName') or '').strip().casefold() == target.casefold()
+            and TASK_NUMBER.fullmatch(str(binding.get('taskNo') or ''))
+            and outcome.result.page == '/inspection/tasks'):
+        return outcome
+    if outcome.result.status in {'no_permission', 'load_failed'}:
+        return outcome
+    result = replace(outcome.result, status='not_confirmed', facts=(),
+                     answer_shape='detail', completeness='bounded',
+                     workflow_state='inspection_target_history_guard',
+                     missing=('inspection_target_task_binding_unverified',))
+    return ReaderOutcome(result, {**outcome.audit_evidence,
+                                  'targetHistoryBindingRejected': True,
+                                  'result': result.public_json()})
+
+
 def _inspection_today_request(question: str) -> bool:
     return bool(re.search(r"\b(?:today|today's|current day)\b|今天|今日|اليوم", str(question or ""), re.I))
+
+
+def _inspection_requested_date(question: str) -> date | None:
+    """Extract an explicit calendar date used to bound an inspection rollup."""
+
+    text = str(question or "")
+    month_names = {
+        "january": 1, "jan": 1, "february": 2, "feb": 2,
+        "march": 3, "mar": 3, "april": 4, "apr": 4,
+        "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+        "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
+        "october": 10, "oct": 10, "november": 11, "nov": 11,
+        "december": 12, "dec": 12,
+        "يناير": 1, "فبراير": 2, "مارس": 3, "أبريل": 4, "ابريل": 4,
+        "مايو": 5, "يونيو": 6, "يوليو": 7, "أغسطس": 8, "اغسطس": 8,
+        "سبتمبر": 9, "أكتوبر": 10, "اكتوبر": 10, "نوفمبر": 11, "ديسمبر": 12,
+    }
+    patterns = (
+        re.compile(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b"),
+        re.compile(r"\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b"),
+        re.compile(
+            r"\b(\d{1,2})\s+(January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|July|Jul|"
+            r"August|Aug|September|Sep|Sept|October|Oct|November|Nov|December|Dec)\s+(\d{4})\b",
+            re.I,
+        ),
+        re.compile(
+            r"\b(January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|July|Jul|"
+            r"August|Aug|September|Sep|Sept|October|Oct|November|Nov|December|Dec)\s+(\d{1,2}),?\s+(\d{4})\b",
+            re.I,
+        ),
+        re.compile(r"(\d{1,2})\s+([ء-ي]+)\s+(\d{4})"),
+    )
+    for index, pattern in enumerate(patterns):
+        match = pattern.search(text)
+        if not match:
+            continue
+        try:
+            if index == 0:
+                year, month, day = (int(part) for part in match.groups())
+            elif index == 1:
+                day, month, year = (int(part) for part in match.groups())
+            elif index in {2, 4}:
+                day, month_text, year = match.groups()
+                month = month_names.get(str(month_text).casefold(), month_names.get(str(month_text), 0))
+                day, year = int(day), int(year)
+            else:
+                month_text, day, year = match.groups()
+                month = month_names.get(str(month_text).casefold(), 0)
+                day, year = int(day), int(year)
+            return date(year, month, day)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _row_date(row: dict[str, Any]) -> Any:
@@ -9101,6 +11375,266 @@ def _row_date(row: dict[str, Any]) -> Any:
     return None
 
 
+def _inspection_task_created_date(row: dict[str, Any]) -> date | None:
+    """Prefer the task creation date when a row exposes several dates."""
+
+    if not isinstance(row, dict):
+        return None
+    preferred: list[tuple[int, str]] = []
+    for key, value in row.items():
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+        if any(token in normalized for token in ("created", "creation", "createdon", "creationtime")):
+            preferred.append((0, str(value or "")))
+        elif normalized in {"date", "taskdate"}:
+            preferred.append((1, str(value or "")))
+    for _priority, value in sorted(preferred, key=lambda item: item[0]):
+        for pattern in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
+                        "%d/%m/%Y", "%d/%m/%Y %H:%M:%S", "%m/%d/%Y", "%m/%d/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(value[:26], pattern).date()
+            except (TypeError, ValueError):
+                continue
+    return _row_date(row)
+
+
+def _verified_inspection_task_rollup_result(
+    receipt: Any, question: str, scope: Literal['personal', 'team', 'global', 'unknown'],
+) -> ReaderResult:
+    target_date = _inspection_requested_date(question)
+    if target_date is None:
+        target_date = datetime.now(ZoneInfo('Asia/Dubai')).date()
+    # Queued Tasks display Creation Time; Team Tasks display Assigned Time.
+    # Both are real page fields. Due Date is an SLA deadline, not a task date.
+    date_field = 'observedTime'
+    date_label = 'with a displayed time on'
+    arabic = bool(re.search(r'[\u0600-\u06ff]', question))
+    if not isinstance(receipt, dict) or receipt.get('verified') is not True:
+        return ReaderResult(
+            status='not_confirmed', page='/inspection/tasks', answer_shape='count',
+            completeness='bounded', scope=scope,
+            summary='The date-filtered inspection task collection could not be verified.',
+            facts=('No empty-date claim or per-inspector completion rate was inferred from partial task pages.',),
+            missing=('inspection_task_rollup_unverified',),
+        )
+    people = receipt.get('byInspector')
+    total = receipt.get('total')
+    scopes = receipt.get('scopes')
+    scope_totals = receipt.get('scopeTotals')
+    expected_view = ('team' if re.search(r'\bteam\s+tasks?\b|مهام\s+الفريق', question, re.I)
+                     else 'all')
+    if (
+        receipt.get('date') != target_date.isoformat()
+        or receipt.get('view') != expected_view
+        or (expected_view == 'team' and any(item not in {'TeamTodo', 'TeamCompleted'} for item in scopes or ()))
+        or receipt.get('dateField') != date_field
+        or receipt.get('sourceOperation') != (
+            'POST /api/inspection/team-management/tasks/query'
+            if expected_view == 'team' else 'GET /api/admin/inspection/tasks')
+        or (any(str(item).startswith('Team') for item in scopes or ())
+            and 'POST /api/inspection/team-management/tasks/query'
+            not in (receipt.get('sourceOperations') or ()))
+        or type(total) is not int or total < 0
+        or not isinstance(people, dict) or not isinstance(scopes, list)
+        or not isinstance(scope_totals, dict)
+        or sum(value for value in scope_totals.values() if type(value) is int) != total
+        or receipt.get('stablePasses') != 2
+    ):
+        return ReaderResult(
+            status='not_confirmed', page='/inspection/tasks', answer_shape='count',
+            completeness='bounded', scope=scope,
+            summary='The inspection task rollup receipt was incomplete.',
+            missing=('inspection_task_rollup_receipt_invalid',),
+        )
+    if total == 0:
+        return ReaderResult(
+            status='no_data', page='/inspection/tasks', answer_shape='count',
+            completeness='complete', scope=scope,
+            summary=(f'لا توجد مهام تفتيش بوقت إنشاء أو تعيين في {target_date.isoformat()} ضمن النطاق المصرح به.'
+                     if arabic else
+                     f'No inspection tasks with a Creation or Assigned Time on {target_date.isoformat()} in the permitted views.'),
+            facts=((
+                f'لم تُرجع عروض المهام المصرح بها مهام بوقت إنشاء أو تعيين في {target_date.isoformat()}؛ لم تُحسب مهام تواريخ أخرى.',
+                'عدد المهام المكتملة والمتأخرة لهذا التاريخ صفر؛ نسبة الإنجاز غير قابلة للحساب لعدم وجود مهام.',
+                f'قُرئت جميع صفحات عروض المهام المصرح بها مرتين ({receipt.get("pagesRead")} قراءة).',
+            ) if arabic else (
+                f'No inspection tasks with a Creation or Assigned Time on {target_date.isoformat()} were returned for this account; rows from other dates were not counted.',
+                'For this date, completed tasks: 0; overdue tasks: 0; completion rate: not calculable because no tasks were returned. There is no per-inspector breakdown for an empty date.',
+                f'All permitted task views were read across every page twice ({receipt.get("pagesRead")} page reads).',
+            )),
+        )
+    facts: list[str] = []
+    checked = 0
+    for inspector, counts in sorted(people.items()):
+        if not isinstance(inspector, str) or not isinstance(counts, dict):
+            break
+        tasks = counts.get('tasks')
+        overdue = counts.get('overdue')
+        completed = counts.get('completed')
+        if any(type(value) is not int for value in (tasks, overdue, completed)) or not (0 <= overdue <= tasks and 0 <= completed <= tasks):
+            break
+        checked += tasks
+        facts.append(json.dumps({
+            'Date': target_date.isoformat(), 'Inspector': inspector,
+            'Tasks': tasks, 'Overdue': overdue, 'Completed': completed,
+            'Completion rate': f'{completed / tasks * 100:.1f}%' if tasks else '0.0%',
+        }, ensure_ascii=False, separators=(',', ':')))
+    if checked != total or not facts:
+        return ReaderResult(
+            status='not_confirmed', page='/inspection/tasks', answer_shape='count',
+            completeness='bounded', scope=scope,
+            summary='The per-inspector totals did not reconcile to the verified task total.',
+            missing=('inspection_task_rollup_totals_mismatch',),
+        )
+    if arabic:
+        view_label = ('مهام الفريق (قيد التنفيذ والمكتملة)' if receipt.get('view') == 'team'
+                      else 'العروض المصرح بها')
+        facts.append(
+            f'تمت قراءة جميع المهام البالغ عددها {total} بوقت إنشاء أو تعيين في {target_date.isoformat()} '
+            f'ضمن {view_label}، عبر جميع الصفحات مرتين؛ وحالة التأخر حتى {receipt.get("overdueAsOf")}.'
+        )
+    else:
+        facts.append(
+            f'All {total} tasks {date_label} {target_date.isoformat()} in '
+            f'{"Team Tasks (To Do and Completed)" if receipt.get("view") == "team" else "the permitted views"} '
+            'were read across every page twice; '
+            f'overdue status is as of {receipt.get("overdueAsOf")}.'
+        )
+    return ReaderResult(
+        status='success', page='/inspection/tasks', answer_shape='count',
+        completeness='complete', scope=scope,
+        selected_state=('Team Tasks' if receipt.get('view') == 'team'
+                        else 'All permitted Inspection task views'),
+        summary=('تم التحقق من إحصاء مهام التفتيش حسب المفتش.' if arabic
+                 else f'Verified {date_field} inspection task rollup by inspector.'),
+        facts=tuple(facts),
+    )
+
+
+def _inspection_rollup_with_dashboard_card(
+    rollup: ReaderResult, observation: Any, question: str,
+) -> ReaderResult:
+    """Distinguish the personal Dashboard card from due-date task records.
+
+    Dashboard's selected time window is a different business metric from a
+    due-date filtered Inspection Tasks list.  Neither total may be silently
+    substituted for the other, especially when the two disagree.
+    """
+
+    if rollup.status not in {'success', 'no_data'} or _visible_dashboard_scope(observation) != 'personal':
+        return rollup
+    payload = _api_object_by_operation(observation, 'GET /api/Inspection/Dashboard/Overview')
+    card = ((payload.get('taskHub') or {}).get('inspectionCard')
+            if isinstance(payload, dict) and isinstance(payload.get('taskHub'), dict) else None)
+    if not isinstance(card, dict):
+        return rollup
+    fields = ('todoTotal', 'totalTasks', 'doneToday', 'overdueTasks')
+    if any(type(card.get(field)) is not int or card[field] < 0 for field in fields):
+        return rollup
+    arabic = bool(re.search(r'[\u0600-\u06ff]', question))
+    if arabic:
+        dashboard_fact = (
+            'بطاقة التفتيش في لوحة التحكم ضمن نطاق التاريخ المحدد فيها: '
+            f'قيد الإنجاز {card["todoTotal"]}، إجمالي المهام {card["totalTasks"]}، '
+            f'أنجزت اليوم {card["doneToday"]}، المهام المتأخرة {card["overdueTasks"]}.'
+        )
+        distinction = (
+            'أرقام بطاقة لوحة التحكم وأرقام المهام المنشأة في تاريخ محدد أدناه '
+            'من مقياسين مختلفين؛ لا يُعد أحدهما بديلاً عن الآخر. لا تعرض البطاقة '
+            'نسبة إنجاز قابلة للتحقق، لذا لا تُستنتج منها نسبة.'
+        )
+    else:
+        dashboard_fact = (
+            'Dashboard Inspections card in its selected date range: '
+            f'To Do {card["todoTotal"]}, Total Tasks {card["totalTasks"]}, '
+            f'Done Today {card["doneToday"]}, Overdue Tasks {card["overdueTasks"]}.'
+        )
+        distinction = (
+            'The Dashboard card and the creation-date task rollup below use different metrics; '
+            'neither total replaces the other. The card does not expose a verified '
+            'completion rate, so none is inferred from it.'
+        )
+    return replace(rollup, facts=(dashboard_fact, *rollup.facts, distinction))
+
+
+def _verified_inspection_task_date_list_result(
+    receipt: Any, question: str, scope: Literal['personal', 'team', 'global', 'unknown'],
+) -> ReaderResult:
+    """List only verified date-matching rows with real time and area fields."""
+
+    rollup = _verified_inspection_task_rollup_result(receipt, question, scope)
+    date_field = 'observedTime'
+    date_label = 'with a displayed time on'
+    arabic = bool(re.search(r'[\u0600-\u06ff]', question))
+    if rollup.status == 'no_data':
+        return replace(rollup, answer_shape='list')
+    if rollup.status != 'success':
+        return replace(rollup, answer_shape='list')
+    tasks = receipt.get('tasks') if isinstance(receipt, dict) else None
+    total = receipt.get('total') if isinstance(receipt, dict) else None
+    target_date = _inspection_requested_date(question) or datetime.now(ZoneInfo('Asia/Dubai')).date()
+    valid = (
+        receipt.get('sortFieldsComplete') is True
+        and isinstance(tasks, list) and len(tasks) == total
+        and len({item.get('taskNo') for item in tasks if isinstance(item, dict)}) == total
+        and all(
+            isinstance(item, dict)
+            and isinstance(item.get('taskNo'), str) and item['taskNo'].strip()
+            and isinstance(item.get('area'), str)
+            and isinstance(item.get('observedTime'), str)
+            and item.get('timeField') in {'Creation Time', 'Assigned Time'}
+            and (item.get(date_field) or '')[:10] == target_date.isoformat()
+            and re.fullmatch(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?', item['observedTime'])
+            for item in tasks
+        )
+    )
+    if not valid:
+        field_status = receipt.get('sortFieldStatus') if isinstance(receipt, dict) else None
+        field_note = (
+            f"Sort fields missing in the verified rows: area {field_status.get('missingArea')}, observed time {field_status.get('missingTime')}; within output limit: {field_status.get('withinOutputLimit')}."
+            if isinstance(field_status, dict) else 'The date-filtered source did not provide a verified task-level sort receipt.'
+        )
+        return replace(
+            rollup, status='not_confirmed', answer_shape='list', completeness='bounded',
+            summary='The date-filtered task count was verified, but task-level observed time was not available for the requested sort.',
+            facts=(f'{total} tasks {date_label} {target_date.isoformat()} were found; no other date was substituted.', field_note),
+            missing=('inspection_task_sort_fields_unverified',),
+        )
+    ordered = sorted(tasks, key=lambda item: (item['observedTime'].replace(' ', 'T', 1),
+                                              not bool(item['area']), item['area'].casefold(), item['taskNo']))
+    if arabic:
+        entries = tuple(json.dumps({
+            'رقم المهمة': item['taskNo'], 'الوقت المرصود': item['observedTime'],
+            'نوع الوقت': ('وقت التعيين' if item['timeField'] == 'Assigned Time' else 'وقت الإنشاء'),
+            'تاريخ الاستحقاق': item['dueDate'],
+            'المنطقة': item['area'] or 'غير مسجلة',
+        }, ensure_ascii=False, separators=(',', ':')) for item in ordered)
+        coverage = (
+            f'تمت قراءة جميع المهام البالغ عددها {total} بوقت إنشاء أو تعيين في {target_date.isoformat()} '
+            'عبر جميع الصفحات مرتين. تستخدم المهام في قائمة الانتظار وقت الإنشاء، '
+            'وتستخدم مهام الفريق وقت التعيين عندما لا يعرض المصدر وقت الإنشاء. '
+            'هذان حقلان مختلفان، ولا يمثلان موعد زيارة مؤكّدًا. تُعرض المنطقة الفارغة على أنها غير مسجلة.'
+        )
+    else:
+        entries = tuple(json.dumps({
+            'Task No': item['taskNo'], 'Observed Time': item['observedTime'],
+            'Time Field': item['timeField'], 'Due Date': item['dueDate'],
+            'Area': item['area'] or 'not recorded',
+        }, ensure_ascii=False, separators=(',', ':')) for item in ordered)
+        coverage = (
+            f'All {total} tasks {date_label} {target_date.isoformat()} in the permitted views were read across every page twice. '
+            'Queued Tasks use Creation Time; Team Tasks use Assigned Time where Creation Time is not returned. '
+            'These are distinct page fields, not a verified visit schedule. Blank areas are listed as unavailable and sort after named areas.'
+        )
+    return replace(
+        rollup, answer_shape='list',
+        workflow_state='inspection_date_list_full',
+        summary=(f'مهام التفتيش المستحقة في {target_date.isoformat()} مرتبة حسب الوقت المرصود ثم المنطقة.'
+                 if arabic else
+                 f'Inspection tasks {date_label} the requested date, sorted by the observed page time ascending and then area.'),
+        facts=entries + (coverage,),
+    )
+
+
 def _inspection_today_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcome | None:
     """Build a date-bounded inspector rollup from all observed task rows.
 
@@ -9109,48 +11643,76 @@ def _inspection_today_rollup(outcome: ReaderOutcome, question: str) -> ReaderOut
     rows but none for today, the result is an explicit empty result.
     """
 
-    if not (_inspection_today_request(question) and _PERSON_ROLLUP_REQUEST.search(str(question or ""))):
+    if str(outcome.audit_evidence.get('stage') or '') == 'inspection_person_rollup_native':
+        return None
+    requested_date = _inspection_requested_date(question)
+    if not (((_inspection_today_request(question) or requested_date is not None)
+             and _inspection_person_rollup_requested(question))):
         return None
     rows = list(_observed_api_rows(outcome))
     if not rows:
         return None
-    today = datetime.now(timezone.utc).date()
-    dated = [(row, _row_date(row)) for row in rows]
+    target_date = requested_date or datetime.now(ZoneInfo('Asia/Dubai')).date()
+    dated = [(row, _inspection_task_created_date(row)) for row in rows]
     if not any(parsed is not None for _row, parsed in dated):
         return ReaderOutcome(replace(outcome.result, status="not_confirmed", answer_shape="count",
                                      completeness="bounded", missing=("today_date_not_observed",),
-                                     facts=("The inspection task response did not expose a verifiable task date, so a today-only rollup cannot be confirmed.",)),
+                                     facts=(f"The inspection task response did not expose a verifiable task creation date, so a date-bounded rollup for {target_date.isoformat()} cannot be confirmed.",)),
                              {**outcome.audit_evidence, "nativeTodayPersonRollup": {"verified": False},
                               "result": replace(outcome.result, status="not_confirmed", answer_shape="count",
                                                  completeness="bounded", missing=("today_date_not_observed",),
-                                                 facts=("The inspection task response did not expose a verifiable task date, so a today-only rollup cannot be confirmed.",)).public_json()})
-    today_rows = [row for row, parsed in dated if parsed == today]
-    if not today_rows:
+                                                 facts=(f"The inspection task response did not expose a verifiable task creation date, so a date-bounded rollup for {target_date.isoformat()} cannot be confirmed.",)).public_json()})
+    target_rows = [row for row, parsed in dated if parsed == target_date]
+    if not target_rows:
+        if requested_date is None:
+            empty_fact = (
+                f"No inspection tasks dated {target_date.isoformat()} were returned for this account; "
+                "older task rows were not counted as today."
+            )
+        else:
+            empty_fact = (
+                f"No inspection tasks created on {target_date.isoformat()} were returned for this account; "
+                "rows from other dates were not counted."
+            )
         result = replace(outcome.result, status="no_data", answer_shape="count", completeness="bounded", missing=(),
-                         facts=(f"No inspection tasks dated {today.isoformat()} were returned for this account; older task rows were not counted as today.",))
+                         facts=(empty_fact,
+                                "For this date, completed tasks: 0; overdue tasks: 0; completion rate: not calculable because no tasks were returned. There is no per-inspector breakdown for an empty date."))
         return ReaderOutcome(result, {**outcome.audit_evidence, "nativeTodayPersonRollup": {
-            "verified": True, "date": today.isoformat(), "rows": 0,
+            "verified": True, "date": target_date.isoformat(), "rows": 0,
         }, "result": result.public_json()})
     grouped: dict[str, dict[str, int]] = {}
-    for row in today_rows:
-        person = str(row.get("inspectorName") or row.get("Inspector") or row.get("Assigned To") or row.get("Current Handler") or "").strip() or "unassigned"
+    for row in target_rows:
+        person = str(row.get("inspectorName") or row.get("Inspector") or row.get("Assigned To") or row.get("Current Handler") or "").strip()
+        if person.casefold() in {"", "-", "n/a", "none", "null", "unassigned"}:
+            person = "unassigned"
         bucket = grouped.setdefault(person, {"total": 0, "overdue": 0, "completed": 0})
         bucket["total"] += 1
         status = str(row.get("statusName") or row.get("Status") or row.get("status") or "")
-        if re.search(r"overdue|past due|逾期|متأخر", str(row.get("SLA") or row.get("sla") or ""), re.I):
+        sla = str(row.get("SLA") or row.get("sla") or row.get("slaStatus")
+                  or row.get("serviceLevelAgreement") or "")
+        if re.search(r"overdue|past due|逾期|متأخر", sla, re.I):
             bucket["overdue"] += 1
         if re.search(r"completed|complete|closed|done|已完成|مكتمل", status, re.I):
             bucket["completed"] += 1
-    facts = tuple(json.dumps({"Date": today.isoformat(), "Inspector": person,
+    facts = tuple(json.dumps({"Date": target_date.isoformat(), "Inspector": person,
                               "Tasks": data["total"], "Overdue": data["overdue"],
                               "Completed": data["completed"],
                               "Completion rate": round(data["completed"] / data["total"] * 100, 1)},
                              ensure_ascii=False, separators=(",", ":"))
                   for person, data in sorted(grouped.items()))
-    result = replace(outcome.result, status="success", answer_shape="count", completeness="bounded", missing=(), facts=facts + (
-        "The rollup is limited to task rows dated today in the authorized task response; no older row was included.",))
+    if requested_date is None:
+        rollup_note = (
+            "The rollup is limited to task rows dated today in the authorized task response; "
+            "no older row was included."
+        )
+    else:
+        rollup_note = (
+            f"The rollup is limited to task rows created on {target_date.isoformat()} in the authorized task response; "
+            "no other date was included."
+        )
+    result = replace(outcome.result, status="success", answer_shape="count", completeness="bounded", missing=(), facts=facts + (rollup_note,))
     return ReaderOutcome(result, {**outcome.audit_evidence, "nativeTodayPersonRollup": {
-        "verified": True, "date": today.isoformat(), "rows": len(today_rows), "people": len(grouped),
+        "verified": True, "date": target_date.isoformat(), "rows": len(target_rows), "people": len(grouped),
     }, "result": result.public_json()})
 
 
@@ -9191,6 +11753,23 @@ def _api_candidate_by_operation(observation: Any, operation_key: str) -> dict[st
         if isinstance(candidate, dict) and candidate.get("operationKey") == operation_key:
             return candidate
     return None
+
+
+def _api_object_by_operation(observation: Any, operation_key: str) -> dict[str, Any] | None:
+    """Return one verified object payload without treating an id as a label."""
+
+    candidate = _api_candidate_by_operation(observation, operation_key)
+    if not candidate or candidate.get("status") != 200:
+        return None
+    payload = candidate.get("responseEvidence")
+    if isinstance(payload, dict) and isinstance(payload.get("data"), (dict, list)):
+        payload = payload["data"]
+    # UMC occasionally wraps an ApiResponse inside another ``data`` object.
+    for _ in range(3):
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            break
+        payload = payload["data"]
+    return payload if isinstance(payload, dict) else None
 
 
 def _api_rows_by_operation(observation: Any, operation_key: str) -> tuple[dict[str, Any], ...]:
@@ -9241,6 +11820,59 @@ def _record_detail_facts(question: str, observation: Any, identity: str) -> tupl
     """Project the record's own detail page into bounded answer facts."""
 
     facts: list[str] = []
+    arabic = response_language_for(question) == 'ar'
+    task = _api_object_by_operation(observation, _INSPECTION_TASK_DETAIL_OPERATION)
+    task_bound = isinstance(task, dict) and str(task.get('taskNo') or '').casefold() == identity.casefold()
+    if identity.upper().startswith('IN-') and task and not task_bound:
+        return ()
+    if task_bound and not _inspection_history_request(question):
+        status = task.get('statusName')
+        if arabic:
+            status = {'queued': 'في قائمة الانتظار', 'completed': 'مكتمل', 'pending visit': 'بانتظار الزيارة',
+                      'in progress': 'قيد التنفيذ', 'cancelled': 'ملغى'}.get(str(status or '').casefold(), status)
+        fields = {
+            ('رقم المهمة' if arabic else 'Task No.'): identity,
+            ('هدف التفتيش' if arabic else 'Inspection Target'): task.get('targetName') or task.get('establishmentName') or task.get('fullName'),
+            ('عنوان الشارع' if arabic else 'Street Address'): task.get('areaStreet'),
+            ('الحالة' if arabic else 'Status'): status,
+        }
+        facts.append(json.dumps({key: value for key, value in fields.items() if value not in (None, '')}, ensure_ascii=False))
+        if re.search(r'violations?|evidence|handling\s+status|المخالفات|الأدلة|حالة المعالجة', question, re.I):
+            violations = task.get('violations')
+            related_candidate = _api_candidate_by_operation(observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION)
+            related_receipt = _api_collection_receipt(observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION)
+            if related_candidate and related_receipt.get('complete') is True:
+                related_rows = _api_rows_by_operation(observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION)
+                violations = [row for row in related_rows if
+                              str(row.get('sourceTaskNo') or '').casefold() == identity.casefold()
+                              or str(row.get('sourceTaskId') or '') == str(task.get('id') or '')]
+            if isinstance(violations, list):
+                if not violations:
+                    facts.append('لا توجد مخالفات مسجلة على هذه المهمة.' if arabic else 'No violations are recorded on this task.')
+                for violation in violations:
+                    if not isinstance(violation, dict):
+                        continue
+                    projected = {key: violation.get(source) for key, source in (
+                        (('رقم المخالفة' if arabic else 'Violation No.'), 'violationNo'),
+                        (('الوصف' if arabic else 'Description'), 'violationDescription'),
+                        (('حالة المعالجة' if arabic else 'Handling Status'), 'statusName'),
+                    ) if violation.get(source) not in (None, '')}
+                    if projected:
+                        facts.append(json.dumps(projected, ensure_ascii=False))
+            else:
+                facts.append('لم تُعرض قائمة المخالفات في تفاصيل هذه المهمة؛ لا يمكن تأكيد وجودها أو عدمها.' if arabic else
+                             'The task detail did not expose a violation collection; presence or absence cannot be confirmed.')
+            attachments = task.get('attachments')
+            if isinstance(attachments, list) and not attachments:
+                facts.append('لا توجد مرفقات أدلة على هذه المهمة.' if arabic else 'No evidence attachments are recorded on this task.')
+            elif isinstance(attachments, list):
+                names = [str(item.get('fileName') or item.get('name') or '') for item in attachments if isinstance(item, dict)]
+                names = [name for name in names if name]
+                facts.append(('مرفقات المهمة: ' if arabic else 'Task attachments: ') + '; '.join(names) if names else
+                             ('توجد مرفقات، لكن أسماءها غير معروضة.' if arabic else 'Attachments exist, but their names were not exposed.'))
+            else:
+                facts.append('لم تُعرض مرفقات الأدلة في هذا الرد.' if arabic else 'Evidence attachments were not exposed in this response.')
+            return tuple(facts)
     candidates = (observation.get("apiDiscovery") or {}).get("candidates") if isinstance(observation, dict) else []
     candidate_text = json.dumps(candidates or [], ensure_ascii=False, default=str)
     # Inspection task detail pages issue a checklist-template request after the
@@ -9253,23 +11885,94 @@ def _record_detail_facts(question: str, observation: Any, identity: str) -> tupl
             if not re.search(r"material|document|attachment|requisite|step|item|check", str(key), re.I):
                 continue
             if isinstance(value, list):
-                checklist_values.extend(str(item.get("name") or item.get("label") or item.get("title") or item)
-                                       for item in value[:20])
-            elif value not in (None, ""):
-                checklist_values.append(str(value))
+                checklist_values.extend(
+                    str(item.get("name") or item.get("label") or item.get("title") or "")
+                    for item in value[:20] if isinstance(item, dict)
+                )
+                checklist_values.extend(str(item) for item in value[:20] if isinstance(item, str))
+            elif isinstance(value, str) and value.strip():
+                checklist_values.append(value)
     checklist_values = list(dict.fromkeys(value.strip() for value in checklist_values if value.strip()))
-    if _api_candidate_by_operation(observation, _INSPECTION_CHECKLIST_OPERATION) or "checklist-template" in candidate_text:
+    checklist_candidate = _api_candidate_by_operation(observation, _INSPECTION_CHECKLIST_OPERATION)
+    # The API flattens an item's fields in source order, which can put a type
+    # or other field between its code and description.  Validate the value
+    # itself rather than assuming the description follows the code directly.
+    # A dangling one-letter word is an incomplete requirement, regardless of
+    # whether the enclosing API response declares itself truncated.
+    checklist_values = [
+        "description incomplete in the source"
+        if re.search(r"(?:^|\s)[a-z](?:[.!?])?$", value)
+        else value
+        for value in checklist_values
+    ]
+    if checklist_candidate or "checklist-template" in candidate_text:
         if checklist_values:
-            facts.append("Inspection checklist materials/steps returned for " + identity + ": " + "; ".join(checklist_values[:20]) + ".")
+            # A checklist row commonly contributes both a code and a name.
+            # Twenty scalar values would silently stop after ten rows.
+            facts.append(("نقاط قائمة التفتيش للمهمة " if arabic else "Inspection checklist points for ") + identity + ":")
+            for row in checklist_rows:
+                code = str(row.get('checklistCode') or '').strip()
+                name = str(row.get('checklistName') or '').strip()
+                if name:
+                    facts.append((code + ': ' if code else '') + name)
+            if len(checklist_values) > 80:
+                facts.append("Additional checklist values were returned but exceeded the bounded answer; this is not the full checklist.")
+            if re.search(r'materials?|steps?|procedure|المواد|مواد|خطوات|الخطوات', question, re.I):
+                facts.append("هذه نقاط قائمة التفتيش المعروضة؛ لم يعرض المصدر قائمة مواد أو إجراءات كاملة." if arabic else "These are the checklist points exposed by the task; a complete materials list or procedure was not supplied.")
         else:
-            facts.append("The inspection checklist endpoint returned no materials or steps for " + identity + ".")
-        return tuple(facts[:6])
+            facts.append(("لا توجد نقاط قائمة تفتيش معروضة للمهمة " if arabic else "No inspection checklist points were returned for ") + identity + ".")
+        return tuple(facts)
 
     # Target-scoped history is requested from the verified task detail.  The
     # two collections have different grains; keep them separate and expose
     # the collection receipt so an incomplete page cannot be reported as all
     # history.
     if _inspection_history_request(question):
+        target_overview = _api_object_by_operation(observation, _INSPECTION_TARGET_OVERVIEW_OPERATION)
+        if target_overview:
+            target_fields = {
+                key: value for key, value in target_overview.items()
+                if re.search(r"^(?:establishmentId|establishmentName|establishmentNameEn|establishmentNameAr|individualId|profileId|userProfileId|userId|targetName|targetType|targetTypeName)$", str(key), re.I)
+                and value not in (None, "", [])
+            }
+            if target_fields:
+                facts.append("Verified institution/target from the task target overview: " + json.dumps(
+                    target_fields, ensure_ascii=False, separators=(",", ":"),
+                ))
+            else:
+                facts.append(
+                    "The authorized task target-overview response did not expose an institution identifier or name; "
+                    "the task target was not treated as the institution."
+                )
+        elif _api_candidate_by_operation(observation, _INSPECTION_TARGET_OVERVIEW_OPERATION):
+            facts.append(
+                "The authorized task target-overview response was empty for this account; no institution identifier "
+                "or name was inferred from the task target."
+            )
+        else:
+            facts.append(
+                "The authorized task detail read did not expose the institution target-overview response, so the "
+                "institution associated with this task cannot be confirmed."
+            )
+        contact_rows = _api_rows_by_operation(observation, _INSPECTION_CONTACT_PERSONS_OPERATION)
+        if contact_rows:
+            for row in contact_rows[:12]:
+                contact_fields = {
+                    key: value for key, value in row.items()
+                    if re.search(r"contact|person|name|phone|mobile|email|role|title", str(key), re.I)
+                    and value not in (None, "", [])
+                }
+                if contact_fields:
+                    facts.append("Institution contact: " + json.dumps(
+                        contact_fields, ensure_ascii=False, separators=(",", ":"),
+                    ))
+        elif _api_candidate_by_operation(observation, _INSPECTION_CONTACT_PERSONS_OPERATION):
+            facts.append("No institution contact persons were returned for this verified target.")
+        else:
+            facts.append(
+                "The authorized task detail read did not expose the institution contact-person collection; no "
+                "contact can be confirmed."
+            )
         task_history = _api_rows_by_operation(observation, _INSPECTION_TASK_TARGET_HISTORY_OPERATION)
         violation_history = _api_rows_by_operation(observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION)
         task_receipt = _api_collection_receipt(observation, _INSPECTION_TASK_TARGET_HISTORY_OPERATION)
@@ -9285,7 +11988,8 @@ def _record_detail_facts(question: str, observation: Any, identity: str) -> tupl
                     "Due Date": str(row.get("dueDate") or "")[:19],
                 }, ensure_ascii=False, separators=(",", ":")))
             if task_receipt.get("complete") is True:
-                facts.append("All authorized task-history pages were read with the verified task target scope.")
+                total = task_receipt.get("total", len(task_history))
+                facts.append(f"All {total} authorized task-history records were read with the verified task target scope.")
             else:
                 facts.append("The target-scoped task history read was incomplete; the returned rows are not the full history.")
         elif _api_candidate_by_operation(observation, _INSPECTION_TASK_TARGET_HISTORY_OPERATION):
@@ -9302,14 +12006,22 @@ def _record_detail_facts(question: str, observation: Any, identity: str) -> tupl
                     "Paid Time": str(row.get("paidTime") or "")[:19],
                 }, ensure_ascii=False, separators=(",", ":")))
             if violation_receipt.get("complete") is True:
-                facts.append("All authorized target-scoped violation rows were read for this verified target.")
+                total = violation_receipt.get("total", len(violation_history))
+                facts.append(f"All {total} authorized target-scoped violation records were read for this verified target.")
             else:
                 facts.append("The target-scoped violation read was incomplete; the returned rows are not the full history.")
         elif _api_candidate_by_operation(observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION):
             facts.append("No authorized violation history was returned for this verified target.")
-        if task_history or violation_history or task_receipt or violation_receipt:
-            facts.append("Task history and violation history are target-scoped to the verified task; the ordinary Violations list was not used as a substitute.")
-            return tuple(facts[:18])
+        facts.append(
+            "Task history and violation history are target-scoped to the verified task; the ordinary Violations list "
+            "was not used as a substitute."
+        )
+        if not task_history and not task_receipt and not violation_history and not violation_receipt:
+            facts.append(
+                "Neither a complete task-history collection nor a complete violation-history collection was returned "
+                "for the verified target."
+            )
+        return tuple(facts[:18])
 
     # When an institution target is exposed by the violation detail page,
     # report only that target-scoped overview/timeline.  Do not turn a generic
@@ -9378,7 +12090,7 @@ def _native_fine_decision_result(outcome: ReaderOutcome, question: str) -> Reade
     is stated as empty with the page to open, never as a generic failure.
     """
 
-    if not _FINE_DECISION_REQUEST.search(str(question or "")):
+    if _committee_queue_requested(question) or not _FINE_DECISION_REQUEST.search(str(question or "")):
         return outcome
     # When the same question requested an institution's history, the reader
     # has already followed the exact task into its target-scoped detail reads.
@@ -9439,57 +12151,95 @@ def _native_fine_decision_result(outcome: ReaderOutcome, question: str) -> Reade
         if identities and any(identity.casefold() in json.dumps(row, ensure_ascii=False).casefold() for identity in identities)
     ]
     if matched:
-        facts = tuple(
-            "Fine record: "
-            + json.dumps(
-                {
-                    "Violation No.": row.get("violationNo"),
-                    "Task No.": row.get("taskNo"),
-                    "Violation Type": row.get("violationTypeName"),
-                    "Status": row.get("statusName"),
-                    "Fine Amount": row.get("fineAmount"),
-                    "Reported By": row.get("reportedByName"),
-                    "Created On": str(row.get("createdOn") or "")[:19],
-                    "Last Updated": str(row.get("lastUpdatedOn") or "")[:19],
-                },
-                ensure_ascii=False, separators=(",", ":"),
+        facts_list: list[str] = []
+        for row in matched[:3]:
+            amount = row.get("fineAmount")
+            status = str(row.get("statusName") or row.get("status") or "").strip()
+            amount_missing = amount in (None, "", "-")
+            # The portal serializes an undecided committee amount as 0.0 in
+            # the API but renders it as "-" on the Violations table. Preserve
+            # that UI meaning only for the observed committee-decision state.
+            if not amount_missing and isinstance(amount, (int, float)) and amount == 0:
+                amount_missing = bool(re.search(
+                    r"pending\s+committee\s+decision|committee\s+decision\s+pending|委员会|لجنة|قرار\s+اللجنة",
+                    status, re.I,
+                ))
+            amount_text = "not decided yet" if amount_missing else str(amount)
+            facts_list.append(
+                json.dumps(
+                    {
+                        "Violation No.": row.get("violationNo"),
+                        "Task No.": row.get("taskNo"),
+                        "Violation Type": row.get("violationTypeName"),
+                        "Status": status,
+                        "Fine Amount": amount_text,
+                        "Reported By": row.get("reportedByName"),
+                        "Created On": str(row.get("createdOn") or "")[:19],
+                        "Last Updated": str(row.get("lastUpdatedOn") or "")[:19],
+                    },
+                    ensure_ascii=False, separators=(",", ":"),
+                )
             )
-            for row in matched[:3]
-        )
+            if amount_missing:
+                facts_list.append(
+                    "The committee has not decided a fine amount for the matched record yet; the portal value is empty, "
+                    "not zero."
+                )
+            legal_basis = next(
+                (value for key, value in row.items()
+                 if re.search(r"legal|law|regulation|basis|rule|مادة|قانون|لائحة", str(key), re.I)
+                 and value not in (None, "", "-")),
+                None,
+            )
+            facts_list.append(
+                "Legal basis recorded on the violation: " + str(legal_basis)
+                if legal_basis is not None else
+                "No legal basis is recorded on this violation record; no unrelated regulation was attached."
+            )
+        facts = tuple(facts_list)
         note = (
             "These are the fine records recorded for the requested case in the Violations surface this account reads. "
             "The decision itself and any appeal stay with the responsible committee through the portal workflow."
         )
     else:
-        visible = [
-            " | ".join(str(part) for part in (
-                row.get("violationNo"), row.get("violationTypeName"), row.get("statusName"),
-                f"fine {row.get('fineAmount')}" if row.get("fineAmount") is not None else "",
-                row.get("taskNo"),
-            ) if part)
-            for row in rows[:5]
-        ]
+        # An exact case query must not be answered with unrelated rows from the
+        # current bounded page.  Returning those rows made the no-match answer
+        # look like a fine decision and also invited the rule-evidence pass to
+        # append unrelated regulations.  Keep the result explicitly empty so
+        # the renderer can state that no decision is recorded for this case.
         facts = ()
         note = (
             "No fine decision is recorded for the requested case in this account's readable violation records, so the "
             "amount is not that it is zero - it is that no record exists yet. Open Inspection > Violations and filter by "
             "the case number to confirm."
-            + (" Records currently visible there: " + "; ".join(visible) + "." if visible else "")
         )
     merged = replace(
         outcome.result,
-        status="success",
-        answer_shape="list",
-        facts=(*outcome.result.facts, *facts, note)[:24],
+        status="success" if matched else "no_data",
+        answer_shape=("detail" if matched and identities else "list"),
+        facts=((*facts, note) if matched else (note,)),
         missing=(),
     )
-    return ReaderOutcome(merged, {**outcome.audit_evidence, "nativeFineDecision": bool(facts),
+    return ReaderOutcome(merged, {**outcome.audit_evidence, "nativeFineDecision": "matched" if matched else "unmatched",
                                   "result": merged.public_json()})
 
 def _native_sla_performance_metrics(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Report the rendered SLA figures instead of a ranking the page cannot give."""
 
-    if not _STAFF_PERFORMANCE_REQUEST.search(str(question or "")):
+    # The dialogue resolver can carry a previously verified business object
+    # into an anaphoric follow-up ("that same indicator").  Use that typed
+    # slot only when the current wording explicitly refers back to one metric;
+    # do not inherit a metric for an unrelated new question.
+    slots = (outcome.result.intent_context or {}).get('slots') or {}
+    prior_object = slots.get('businessObject') or {}
+    inherited_metric = (
+        str(prior_object.get('value') or '')
+        if prior_object.get('source') == 'previous'
+        and re.search(r'\b(?:same|that|previous)\s+(?:metric|indicator)\b|نفس\s+المؤشر|ذلك\s+المؤشر', question, re.I)
+        else ''
+    )
+    metric_question = f'{inherited_metric} {question}'.strip()
+    if not _STAFF_PERFORMANCE_REQUEST.search(metric_question):
         return outcome
     page = str(outcome.result.page or "")
     if "reports-analytics" not in page and "/dashboard" not in page:
@@ -9497,7 +12247,53 @@ def _native_sla_performance_metrics(outcome: ReaderOutcome, question: str) -> Re
     observation = outcome.audit_evidence.get("observation") or (
         (outcome.audit_evidence.get("portalEvidence") or {}).get("result") or {}
     ).get("observation")
+    single_current_metric = bool(_CURRENT_SLA_METRIC_REQUEST.search(metric_question) and re.search(
+        r"\b(?:just|only|one|that)\b|فقط|ذلك\s+المؤشر|هذا\s+المؤشر", metric_question, re.I
+    ))
+    if single_current_metric and page.rstrip('/') == '/dashboard':
+        matched_metrics: set[tuple[str, str]] = set()
+        for node in _observation_semantic_nodes(observation):
+            heading = str(node.get('heading') or node.get('sourceSection') or '').casefold()
+            for field in ('cardSummaries', 'summaries'):
+                for item in _bounded_observation_field(node, field, limit=24):
+                    parts = [part.strip() for part in str(item).split('|') if part.strip()]
+                    card_heading = parts[0].casefold() if parts else ''
+                    performance_heading = heading + ' ' + card_heading
+                    if re.search(r'my\s+performance|أدائي', performance_heading, re.I):
+                        performance_section = 'My Performance'
+                    elif re.search(r'team\s+performance|أداء\s+الفريق', performance_heading, re.I):
+                        performance_section = 'Team Performance'
+                    else:
+                        continue
+                    for index, part in enumerate(parts):
+                        if not _CURRENT_SLA_METRIC_REQUEST.search(part):
+                            continue
+                        for neighbour in (index - 1, index + 1):
+                            if 0 <= neighbour < len(parts) and re.fullmatch(r'\d+(?:[.,]\d+)?\s*%', parts[neighbour]):
+                                matched_metrics.add((parts[neighbour].replace(',', '.'), performance_section))
+        if len(matched_metrics) == 1:
+            value, section = next(iter(matched_metrics))
+            result = replace(outcome.result, status='success', answer_shape='count', completeness='bounded',
+                             section=section, source_section=section,
+                             scope='personal' if section == 'My Performance' else 'team',
+                             selected_state='', facts=(f'SLA Compliance: {value}',), missing=())
+            return ReaderOutcome(result, {**outcome.audit_evidence, 'nativeCurrentSlaMetric': True,
+                                          'result': result.public_json()})
+        result = replace(outcome.result, status='not_confirmed', answer_shape='count', facts=(),
+                         missing=('current_sla_metric_not_uniquely_observed',))
+        return ReaderOutcome(result, {**outcome.audit_evidence, 'result': result.public_json()})
     pairs = _observed_metric_pairs(observation)
+    if re.search(r"\bsla\s+compliance\b|(?:الالتزام|الامتثال)\s+باتفاقية\s+مستوى\s+الخدمة", question, re.I) and re.search(
+        r"\b(?:just|only|one|that)\b|فقط|ذلك\s+المؤشر|هذا\s+المؤشر", question, re.I
+    ):
+        exact = [(label, value) for label, value, _source in pairs
+                 if re.search(r"\bsla\s+compliance(?:\s+rate)?\b|(?:الالتزام|الامتثال)\s+باتفاقية\s+مستوى\s+الخدمة", label, re.I)]
+        if len(exact) == 1:
+            label, value = exact[0]
+            result = replace(outcome.result, status="success", answer_shape="count", completeness="bounded",
+                             section="metrics", source_section="metrics", facts=(f"{label}: {value}",), missing=())
+            return ReaderOutcome(result, {**outcome.audit_evidence, "nativeSlaMetric": True,
+                                          "result": result.public_json()})
     chosen = [
         (label, value) for label, value, _source in pairs
         if re.search(r"sla|breach|compliant|completion|overdue|processing", label, re.I)
@@ -9553,8 +12349,9 @@ _UNAVAILABLE_FAMILIES: tuple[tuple[re.Pattern[str], re.Pattern[str], str], ...] 
     (
         re.compile(r"\bsla\b|\boverdue\b|逾期|超时", re.I),
         re.compile(r"\bsla\b|overdue|逾期|超时", re.I),
-        "The list that was read does not render an SLA or overdue field. The Finance refund list has no SLA column; SLA is "
-        "shown on Customer Happiness > Refunds, so use that page for SLA-based questions.",
+        "The list that was read does not render an SLA or overdue field. The portal keeps SLA/overdue details on the "
+        "corresponding record detail or status view, so open the matching business record before treating a row as "
+        "overdue.",
     ),
 )
 
@@ -9562,13 +12359,45 @@ _UNAVAILABLE_FAMILIES: tuple[tuple[re.Pattern[str], re.Pattern[str], str], ...] 
 def _native_unavailable_information_notes(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Explain genuinely unavailable information and point at the portal page."""
 
+    if outcome.audit_evidence.get("stage") == "safety_request_refusal" or not outcome.result.page:
+        # A preflight refusal read no business page. Do not turn it into an
+        # invented claim about a missing record/detail or handling history.
+        return outcome
     if outcome.result.status not in {"success", "no_data", "not_confirmed"}:
+        return outcome
+    # A date-bounded inspector rollup already reports the requested overdue
+    # and completion metrics from the same task rows.  Do not append generic
+    # list-page SLA caveats (or expose them in another language) to that
+    # verified aggregate.
+    if isinstance(outcome.audit_evidence.get("nativeTodayPersonRollup"), dict):
         return outcome
     text = str(question or "")
     covered = " ".join(str(fact) for fact in outcome.result.facts).casefold()
     page = str(outcome.result.page or "").strip()
+    language = response_language_for(text)
     notes: list[str] = []
+    if (page.rstrip('/').casefold() == '/content/contentapplications'
+            and _explicit_record_identity(text)
+            and re.search(r"content\s+standards?|media\s+standards?|内容.*标准|媒体内容标准|معايير\s+المحتوى", text, re.I)
+            and not re.search(r"(?:^|[.;])\s*(?:content[- ]standard assessment|compliance finding|meets media content standards|does not meet media content standards)\s*[:=]", covered, re.I)):
+        notes.append(
+            "لا يعرض صف هذا الطلب في قائمة طلبات المحتوى تقييمًا لمدى توافقه مع معايير المحتوى الإعلامي. "
+            "حالة سير العمل ليست قرارًا بشأن التوافق، والمعايير المذكورة قواعد عامة فقط. "
+            "راجع تقييم الفريق المختص في تفاصيل الطلب ضمن المحتوى > طلبات المحتوى."
+            if language == "ar" else
+            "The observed Content Applications list row does not render a media-content-standard assessment for this "
+            "application. Its workflow status is not a compliance decision, and the cited standards are general rules "
+            "only. Open the application's review/detail in Content > Content Applications to check an actual "
+            "assessment by the responsible team."
+        )
+    identity_question = bool(re.search(
+        r"\b(?:department|role|logged\s+in|who\s+am\s+i)\b|القسم|الدور الوظيفي|مسجّل الدخول",
+        text,
+        re.I,
+    ))
     for ask, have, explanation in _UNAVAILABLE_FAMILIES:
+        if identity_question:
+            continue
         if not ask.search(text) or have.search(covered):
             continue
         notes.append("About the requested item: " + explanation)
@@ -9580,6 +12409,8 @@ def _native_unavailable_information_notes(outcome: ReaderOutcome, question: str)
         return outcome
     if page:
         additions.append(
+            "تستند هذه الإجابة إلى ما تعرضه صفحة " + page + " للحساب المسجّل، وتبقى الصفحة المرجع للتحقق."
+            if language == "ar" else
             "This answer is based on what " + page + " renders for the signed-in account; that page stays the "
             "authoritative place to check."
         )
@@ -9598,13 +12429,24 @@ def _native_observed_api_enrichment(outcome: ReaderOutcome, question: str) -> Re
 
     if outcome.result.status not in {"success", "no_data", "not_confirmed"}:
         return outcome
+    # The rollup has already bound the task rows to the requested date and
+    # computed the inspector metrics.  A second enrichment pass would append
+    # an unscoped "no inspector" note for the same rows and obscure the
+    # aggregate the user asked for.
+    if (isinstance(outcome.audit_evidence.get("nativeTodayPersonRollup"), dict)
+            or str(outcome.audit_evidence.get('stage') or '') == 'inspection_person_rollup_native'):
+        return outcome
     rows = _observed_api_rows(outcome)
     if not rows:
         return outcome
     text = str(question or "")
     facts: list[str] = []
 
-    if _OTHER_PEOPLE_TASK_REQUEST.search(text) or re.search(r"inspector|检查员|تفتيش|المفتش", text, re.I):
+    # ``inspection`` (تفتيش/التفتيش) names the business object; it is not an
+    # inspector roll-up request.  Only the actor terms should activate this
+    # enrichment, otherwise a materials/checklist answer gains an unrelated
+    # empty-inspector warning.
+    if _OTHER_PEOPLE_TASK_REQUEST.search(text) or re.search(r"\binspector\b|检查员|المفتش|مفتش", text, re.I):
         named = [
             (str(row.get("taskNo") or ""), str(row.get("inspectorName") or ""))
             for row in rows
@@ -9620,7 +12462,12 @@ def _native_observed_api_enrichment(outcome: ReaderOutcome, question: str) -> Re
                 "row, or use its Inspector filter, to see whether an inspector has been assigned to that task."
             )
 
-    if _FINANCE_CURRENCY_REQUEST.search(text):
+    # ``today`` is also a normal time qualifier for inspection/task queries;
+    # currency enrichment must only run when the page itself is a finance
+    # view.  Otherwise an inspection roll-up can acquire an unrelated
+    # finance note simply because the question says "today".
+    finance_page = bool(re.search(r"financial|finance|refund|payment|transaction|financial-payment|退款|支付|交易", str(outcome.result.page or ""), re.I))
+    if finance_page and _FINANCE_CURRENCY_REQUEST.search(text):
         currencies = sorted({str(row.get("currency") or "").strip() for row in rows if str(row.get("currency") or "").strip()})
         if currencies:
             facts.append(
@@ -9650,10 +12497,406 @@ def _native_observed_api_enrichment(outcome: ReaderOutcome, question: str) -> Re
                                   "result": merged.public_json()})
 
 
+def _other_inspector_routes_guard(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
+    """Keep observed assignments separate from an unobserved inspection route."""
+
+    text = str(question or '')
+    if outcome.result.workflow_state == 'inspection_team_assignment_full':
+        # The stable all-page Team Tasks receipt already distinguished task
+        # assignments from routes; a bounded-page fallback must not erase it.
+        return outcome
+    if (outcome.result.page != '/inspection/tasks'
+            or not _OTHER_PEOPLE_TASK_REQUEST.search(text)
+            or not re.search(r'\broutes?\b|مسار|مسارات|路线|路径', text, re.I)):
+        return outcome
+    rows = _observed_api_rows(outcome)
+    has_route = any(any(str(value or '').strip() for key, value in row.items()
+                        if re.search(r'route|itinerary|travel.?path|مسار|路线', str(key), re.I))
+                    for row in rows)
+    ar = response_language_for(text) == 'ar'
+    observed_assignments: list[str] = []
+    for row in rows:
+        fields = {_key(key): str(value or '').strip() for key, value in row.items()}
+        actor = next((fields.get(key, '') for key in (
+            'primaryassignedusername', 'assignedtodisplay', 'inspectorname', 'inspector')
+            if fields.get(key)), '')
+        task_no = fields.get('taskno') or fields.get('tasknumber') or fields.get('sourceid') or ''
+        if not (actor and task_no and actor.casefold() in text.casefold()):
+            continue
+        observed_assignments.append(
+            f'المهمة المرصودة {task_no} مسندة إلى {actor} في صفحة محدودة من مهام الفريق.'
+            if ar else
+            f'Observed task {task_no} assigned to {actor} in the bounded Team Tasks read.'
+        )
+        if len(observed_assignments) == 6:
+            break
+    if observed_assignments and has_route:
+        return outcome
+    facts = tuple(observed_assignments) + (
+        ('لم يتم التحقق من مسار تفتيش لهؤلاء المفتشين في صفوف المهام المصرح بها. المنطقة أو منطقة التعيين ليست مسارًا؛ وعينة المهام المرصودة ليست قائمة كاملة لكل مفتش.'
+         if ar else
+         'No route for these inspectors was verified in the permitted task rows. An Area or assigned-area label is not an inspection route; the observed task sample is not the complete per-inspector list.'),
+    )
+    result = replace(
+        outcome.result, status='not_confirmed', answer_shape='detail', facts=facts,
+        missing=('other_inspector_route_unverified',),
+        summary=('لم يمكن التحقق من المسار المطلوب والقائمة الكاملة لمهام كل مفتش من العرض المحدود.'
+                 if ar else 'The requested route and complete per-inspector task list could not be verified from this bounded view.'),
+        completeness='bounded',
+    )
+    return ReaderOutcome(result, {**outcome.audit_evidence, 'result': result.public_json()})
+
+
+def _verified_inspection_team_assignments_result(
+    receipt: Any, question: str, scope: str,
+) -> ReaderResult:
+    """Present only stable, permission-scoped Team Tasks and observed routes."""
+    ar = response_language_for(question) == 'ar'
+    if not isinstance(receipt, dict) or receipt.get('verified') is not True:
+        return ReaderResult(
+            status='not_confirmed', page='/inspection/tasks', answer_shape='detail',
+            completeness='bounded', scope=scope,
+            summary=('تعذر تأكيد مهام المفتشين ومساراتهم من العرض المصرح به.' if ar else
+                     'Inspector tasks and routes could not be verified from the permitted view.'),
+            facts=(('تعذر إكمال قراءة صفحات مهام الفريق؛ لا يمكن اعتبار العينة قائمة كاملة.' if ar else
+                    'The Team Tasks pages could not be read completely; a sample is not a full list.'),),
+            missing=('inspection_team_assignments_unverified',),
+        )
+    tasks = receipt.get('tasks')
+    total = receipt.get('total')
+    scope_totals = receipt.get('scopeTotals')
+    if (not isinstance(tasks, dict) or type(total) is not int or total != len(tasks)
+            or total > 450 or not isinstance(scope_totals, dict)
+            or sum(value for value in scope_totals.values() if type(value) is int) != total
+            or receipt.get('stablePasses') != 2):
+        return ReaderResult(
+            status='not_confirmed', page='/inspection/tasks', answer_shape='detail',
+            completeness='bounded', scope=scope,
+            summary=('لا يمكن تأكيد القائمة الكاملة لمهام المفتشين.' if ar else
+                     'The complete inspector task list cannot be confirmed.'),
+            missing=('inspection_team_assignments_incomplete',),
+        )
+    facts: list[str] = []
+    named = sorted(((str(number), row) for number, row in tasks.items()
+                    if isinstance(row, dict) and str(row.get('inspector') or '').strip()
+                    and str(row.get('inspector')).strip() != 'unassigned'),
+                   key=lambda item: (str(item[1]['inspector']).casefold(), item[0]))
+    for number, row in named:
+        actor = str(row['inspector']).strip()
+        route = str(row.get('route') or '').strip()
+        facts.append((f'المفتش {actor} — المهمة {number}' + (f' — المسار {route}' if route else '') + '.'
+                      if ar else
+                      f'Inspector {actor} — task {number}' + (f' — route {route}' if route else '') + '.'))
+    unassigned = total - len(named)
+    facts.append((f'تمت قراءة {receipt.get("pagesRead")} صفحات في مرورين ثابتين: {total} مهمة في مهام الفريق؛ '
+                  f'{len(named)} مهمة مسندة إلى مفتشين و{unassigned} غير مسندة.'
+                  if ar else
+                  f'Read {receipt.get("pagesRead")} pages in two stable passes: {total} Team Tasks; '
+                  f'{len(named)} assigned to named inspectors and {unassigned} unassigned.'))
+    no_route = any(not str(row.get('route') or '').strip() for _number, row in named)
+    if no_route:
+        facts.append(('لا تعرض صفوف المهام المقروءة مسارًا لهذه المهام؛ المنطقة ليست مسار تفتيش، لذلك لا أختلق مسارًا.'
+                      if ar else
+                      'The read task rows do not contain routes for these tasks. Area is not an inspection route, so no route is inferred.'))
+    return ReaderResult(
+        status='not_confirmed' if no_route else 'success',
+        page='/inspection/tasks', answer_shape='detail',
+        completeness='bounded' if no_route else 'complete', scope=scope,
+        summary=('قائمة المهام المسندة المؤكدة من صفحات مهام الفريق؛ المسارات غير مؤكدة.' if ar else
+                 'Verified assigned task list from Team Tasks pages; routes are unconfirmed.') if no_route else
+                ('قائمة المهام والمسارات المؤكدة من صفحات مهام الفريق.' if ar else
+                 'Verified task and route list from Team Tasks pages.'),
+        facts=tuple(facts), workflow_state='inspection_team_assignment_full',
+        missing=('other_inspector_route_unverified',) if no_route else (),
+    )
+
+
+_INSPECTION_OVERDUE_LIST_REQUEST = re.compile(
+    r"(?:inspection|inspector|检查|巡检|التفتيش|تفتيش).{0,100}"
+    r"(?:overdue|past\s+(?:the\s+)?sla|late|逾期|超时|متأخر|تجاوز(?:ت|وا)?\s+.*?(?:sla|اتفاقية مستوى الخدمة))"
+    r"|(?:overdue|past\s+(?:the\s+)?sla|late|逾期|超时|متأخر|متجاوز).{0,100}"
+    r"(?:inspection|inspector|检查|巡检|التفتيش|تفتيش)",
+    re.I,
+)
+
+
+def _inspection_overdue_list_requested(question: str) -> bool:
+    """Recognize a task-queue request that asks for the complete overdue list."""
+
+    text = re.sub(r"\s+", " ", str(question or "")).strip()
+    # "Overdue count by inspector today" is a date-bounded aggregate, not
+    # a request to walk and list the whole overdue queue. Let the verified
+    # person-rollup branch handle it before the queue-list branch can match
+    # the incidental word "count".
+    if (_inspection_person_rollup_requested(text)
+            and (_inspection_today_request(text) or _inspection_requested_date(text) is not None)):
+        return False
+    if not (_INSPECTION_OVERDUE_LIST_REQUEST.search(text) or (
+        _generic_task_queue_requested(text)
+        and re.search(r"\b(?:overdue|past\s+(?:the\s+)?sla|exceeding\s+(?:the\s+)?sla|late)\b|逾期|超时|متأخر|تجاوز", text, re.I)
+    )):
+        return False
+    return bool(re.search(
+        r"\b(?:list|show|which|how\s+many|count|display|sort|sorted|only)\b"
+        r"|列出|显示|哪些|多少|排序|只|اعرض|أظهر|كم|قائمة|مرتبة|فقط",
+        text, re.I,
+    ))
+
+
+def _inspection_task_rows_from_observation(observation: Any) -> tuple[dict[str, Any], ...]:
+    """Extract task rows from the observed table without a route-specific schema."""
+
+    if not isinstance(observation, dict):
+        return ()
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    by_identity: dict[str, int] = {}
+
+    def add_row(value: dict[str, Any]) -> None:
+        row = {str(key): child for key, child in value.items()}
+        identity = next(
+            (
+                str(child).strip().casefold()
+                for key, child in row.items()
+                if _key(key) in {"taskno", "tasknumber", "taskid"} and child not in (None, "", "-")
+            ),
+            "",
+        )
+        if identity:
+            existing_index = by_identity.get(identity)
+            if existing_index is not None:
+                existing = rows[existing_index]
+                for key, child in row.items():
+                    if child not in (None, "", "-"):
+                        existing[key] = child
+                return
+            by_identity[identity] = len(rows)
+        else:
+            marker = json.dumps(row, sort_keys=True, ensure_ascii=False, default=str)
+            if marker in seen:
+                return
+            seen.add(marker)
+        rows.append(row)
+
+    # The task API exposes the complete page rows, while the rendered table
+    # summary is intentionally bounded. Prefer observed API rows so pagination
+    # is aggregated from the actual payload rather than a visual sample.
+    for candidate in (observation.get("apiDiscovery") or {}).get("candidates") or ():
+        if not isinstance(candidate, dict) or candidate.get("status") != 200:
+            continue
+        operation_key = str(candidate.get("operationKey") or "").casefold()
+        if "/inspection/tasks" not in operation_key or "/inspection/tasks/" in operation_key:
+            continue
+        evidence = candidate.get("responseEvidence")
+        payload = evidence.get("data") if isinstance(evidence, dict) else evidence
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                items = value.get("items")
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, dict):
+                            add_row(item)
+                    return
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(payload)
+
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") not in {"table", "grid"}:
+            continue
+        headers = {_key(header) for header in node.get("columnHeaders") or ()}
+        if not headers.intersection({"taskno", "tasknumber", "taskid"}):
+            continue
+        if not headers.intersection({"sla", "slastatus", "servicelevelagreement"}):
+            continue
+        for raw in node.get("rowFields") or ():
+            if not isinstance(raw, dict):
+                continue
+            row = {str(key): value for key, value in raw.items()}
+            add_row(row)
+    return tuple(rows)
+
+
+def _observed_task_collection_spec(observation: Any) -> dict[str, Any] | None:
+    """Derive a read-only full-collection request from the observed task API.
+
+    The operation, request context, response paths and projected fields all
+    come from this signed-in browser observation. No URL, scope or row value is
+    supplied by the question.
+    """
+    if not isinstance(observation, dict):
+        return None
+    for candidate in (observation.get("apiDiscovery") or {}).get("candidates") or ():
+        if not isinstance(candidate, dict) or candidate.get("status") != 200:
+            continue
+        operation = str(candidate.get("operationKey") or "")
+        if not re.fullmatch(r"(?:GET|POST) /api/admin/inspection/tasks", operation, re.I):
+            continue
+        context = candidate.get("collectionContext") or {}
+        context_ref = str(context.get("contextRef") or "")
+        request_fields = set(context.get("requestFields") or ())
+        page_field = next((name for name in ("pageIndex", "pageNumber", "page") if name in request_fields), "")
+        size_field = next((name for name in ("pageSize", "perPage", "limit") if name in request_fields), "")
+        if not re.fullmatch(r"[a-f0-9]{64}", context_ref) or not page_field or not size_field:
+            continue
+
+        def locate(value: Any, path: str = "") -> tuple[str, str, dict[str, Any], int] | None:
+            if not isinstance(value, dict):
+                return None
+            items = value.get("items")
+            total_key = "total" if type(value.get("total")) is int else "totalCount"
+            if (isinstance(items, list) and items and isinstance(items[0], dict)
+                    and type(value.get(total_key)) is int and type(value.get(page_field)) is int):
+                return path + "/items", path + "/" + total_key, items[0], value[page_field]
+            for key, child in value.items():
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
+                    found = locate(child, path + "/" + str(key))
+                    if found:
+                        return found
+            return None
+
+        found = locate(candidate.get("responseEvidence"))
+        if not found:
+            continue
+        rows_path, total_path, sample, first_page = found
+        if first_page not in (0, 1):
+            continue
+
+        def scalar_paths(value: Any, prefix: str = "", depth: int = 0) -> list[str]:
+            if depth > 2 or not isinstance(value, dict):
+                return []
+            paths: list[str] = []
+            for key, child in value.items():
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
+                    continue
+                field_name = prefix + str(key)
+                if isinstance(child, dict):
+                    paths.extend(scalar_paths(child, field_name + ".", depth + 1))
+                elif child is None or isinstance(child, (str, int, float, bool)):
+                    paths.append(field_name)
+            return paths
+
+        available = scalar_paths(sample)
+        identity = next((field for field in available if _key(field) in {"taskno", "tasknumber", "taskid"}), "")
+        if not identity:
+            continue
+        selected = [identity]
+        for wanted in (
+            {"sladisplaytext", "slastatus", "slastatuscode", "servicelevelagreement"},
+            {"duedate", "deadline", "sladueon"},
+            {"inspectiontarget", "targetname", "target"},
+            {"statusname", "statuscode", "state"},
+        ):
+            selected.extend(field for field in available if _key(field) in wanted and field not in selected)
+        if not any(_key(field) in {"sladisplaytext", "slastatus", "slastatuscode", "servicelevelagreement"}
+                   for field in selected):
+            continue
+        return {
+            "operationKey": operation, "contextRef": context_ref,
+            "rowsPath": rows_path, "totalPath": total_path,
+            "fields": selected[:20], "identityFields": [identity],
+            "pageField": page_field, "sizeField": size_field,
+            "firstPage": first_page, "unknownPolicy": "report",
+        }
+    return None
+
+
+def _inspection_overdue_result(
+    observation: Any,
+    *,
+    page: str,
+    question: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+    complete: bool,
+    page_count: int,
+    total_rows: int | None,
+    rows_override: tuple[dict[str, Any], ...] | None = None,
+) -> ReaderResult | None:
+    """Return only SLA-overdue task rows, ordered by the rendered day value."""
+
+    rows = rows_override if rows_override is not None else _inspection_task_rows_from_observation(observation)
+    if not rows:
+        return None
+    # A successful navigation across page controls is not evidence that every
+    # row was captured. The portal's own queue total is the completeness gate.
+    if total_rows is not None and len(rows) != total_rows:
+        complete = False
+
+    def field(row: dict[str, Any], *names: str) -> Any:
+        # Alias order matters: SLA statusCode may say only "OVERDUE", whereas
+        # displayText carries the actual overdue days shown in the browser.
+        keyed = {_key(key): value for key, value in row.items()}
+        for name in names:
+            value = keyed.get(_key(name))
+            if value not in (None, ""):
+                return value
+        return None
+
+    overdue: list[tuple[int, dict[str, Any]]] = []
+    for row in rows:
+        sla = str(field(row, "SLA", "sla.displayText", "slaStatus", "serviceLevelAgreement", "sla.statusCode") or "").strip()
+        match = re.search(
+            r"\b(\d+)\s*d(?:ays?)?\s+overdue\b|\b(\d+)\s*(?:يوم|أيام|ايام)\s*(?:متأخر|تأخير)|"
+            r"(?:متأخر|تأخير)(?:ة)?(?:\s+لمدة)?\s*(\d+)\s*(?:يوم|أيام|ايام)",
+            sla, re.I,
+        )
+        if not match:
+            continue
+        days = int(next(value for value in match.groups() if value is not None))
+        overdue.append((days, row))
+    overdue.sort(key=lambda item: (
+        -item[0], str(field(item[1], "Task No.", "Task No", "taskNo", "taskNumber", "taskId") or "")
+    ))
+    facts: list[str] = []
+    for days, row in overdue:
+        projected = {
+            "Task No.": field(row, "Task No.", "Task No", "taskNo", "taskNumber", "taskId"),
+            "Inspection Target": field(row, "Inspection Target", "Target", "targetName"),
+            "SLA": field(row, "SLA", "sla.displayText", "slaStatus", "serviceLevelAgreement", "sla.statusCode"),
+            "Status": field(row, "Status", "statusName", "statusCode", "state"),
+            "Due Date": field(row, "Due Date", "dueDate", "deadline", "sla.dueOn"),
+        }
+        projected = {key: value for key, value in projected.items() if value not in (None, "")}
+        facts.append(json.dumps({"Overdue Days": days, **projected}, ensure_ascii=False, separators=(",", ":")))
+    if not facts:
+        summary = "No inspection task row in the authorized task collection has a rendered overdue SLA."
+        if not complete:
+            summary += " The pagination read was incomplete, so this is not a collection-wide zero claim."
+        return ReaderResult(
+            status="success" if complete else "not_confirmed", page=page, answer_shape="list",
+            completeness="complete" if complete else "bounded", scope=scope, summary=summary,
+            facts=(f"Inspection task rows read: {len(rows)} across {page_count} page(s).",),
+            missing=() if complete else ("inspection_task_pagination_incomplete",),
+        )
+    coverage = (
+        f"All observed Inspection > Tasks pages were read ({page_count} page(s)); {len(overdue)} task(s) have an overdue SLA."
+        if complete else
+        f"Only {page_count} bounded page(s) were read; {len(overdue)} overdue task(s) were found, but the full collection is not confirmed."
+    )
+    if total_rows is not None:
+        coverage += f" The page-native queue total was {total_rows} row(s)."
+    return ReaderResult(
+        status="success" if complete else "not_confirmed", page=page, answer_shape="list",
+        completeness="complete" if complete else "bounded", scope=scope,
+        summary=f"{len(overdue)} inspection task(s) past SLA, sorted by overdue days descending.",
+        facts=tuple(facts) + (coverage,),
+        workflow_state="inspection_overdue_full",
+        missing=() if complete else ("inspection_task_pagination_incomplete",),
+    )
+
+
 def _native_scope_and_comparison_notes(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """Explain the scope of other people's rows and the absence of history."""
 
     if outcome.result.status not in {"success", "no_data", "not_confirmed"}:
+        return outcome
+    if any(item in outcome.result.missing for item in (
+            'other_inspector_assignment_and_route_unverified', 'other_inspector_route_unverified')):
         return outcome
     text = str(question or "")
     notes: list[str] = []
@@ -9687,9 +12930,16 @@ def _native_person_rollup(outcome: ReaderOutcome, question: str) -> ReaderOutcom
     screen and states that limit instead of returning a bare page total.
     """
 
+    if str(outcome.audit_evidence.get('stage') or '') == 'inspection_person_rollup_native':
+        return outcome
     if not _PERSON_ROLLUP_REQUEST.search(str(question or "")):
         return outcome
     if outcome.result.status not in {"success", "not_confirmed", "no_data"}:
+        return outcome
+    # A schema-driven workflow roll-up has already selected both status views.
+    # Do not replace its staff/status facts with the older bounded visible-row
+    # fallback merely because the question also contains "each" or "staff".
+    if str(outcome.audit_evidence.get("stage") or "") == "ticket_team_summary":
         return outcome
     if isinstance(outcome.audit_evidence.get("nativeTodayPersonRollup"), dict):
         return outcome
@@ -9823,7 +13073,7 @@ def _native_personal_task_counts(outcome: ReaderOutcome, question: str) -> Reade
     }, "result": result.public_json()})
 
 
-_LICENSE_MODULE = re.compile(r"\blicen[cs]es?\b|\bpermits?\b|许可|许可证|牌照|执照|رخصة|رخص|تصريح", re.I)
+_LICENSE_MODULE = re.compile(r"\blicen[cs](?:es?|ing)\b|\bpermits?\b|许可|许可证|牌照|执照|رخصة|رخص|ترخيص|تراخيص|تصريح|تصاريح", re.I)
 _LICENSE_LIFECYCLE_VERB = re.compile(
     r"restore|renew|reactivat|reinstate|reissue|恢复|续期|重新激活|补办|تجديد|استعادة|إعادة\s*إصدار",
     re.I,
@@ -9835,12 +13085,17 @@ _LICENSE_SOON = re.compile(
 )
 _LICENSE_URGENCY = re.compile(
     r"most\s+urgent|highest\s+priority|most\s+critical|\burgent\b|最紧急|最急|最优先|"
-    r"الأكثر\s+إلحاح\w*|عاجل",
+    r"الأكثر\s+إلحاح\w*|(?:أ|ا)كثر[^\n.!؟]{0,80}إلحاح|عاجل|(?:أ|ا)هم\s+(?:ال)?طلبات",
+    re.I,
+)
+_LICENSE_OVERDUE_LIST = re.compile(
+    r"\b(?:past\s+(?:their\s+)?SLA|overdue|late\s+by\s+days?)\b|"
+    r"超(?:过)?(?:SLA|时限)|逾期|تجاوزت.{0,40}(?:اتفاقية|مستوى)|متأخر(?:ة|ات)?",
     re.I,
 )
 _LIST_CUE = re.compile(
     r"\bwhich\b|\bhow\s+many\b|\blist\b|\bshow\b|\bcount\b|哪些|多少|列出|显示|所有|全部|"
-    r"كم|أي|اعرض|أظهر",
+    r"كم|أي|ما\s+هي|اعرض|أظهر",
     re.I,
 )
 
@@ -9857,9 +13112,160 @@ def _license_module_focus(question: str) -> str:
         return ""
     if _LIST_CUE.search(text) and _LICENSE_SOON.search(text):
         return "expiry"
+    if (_LIST_CUE.search(text) and _LICENSE_OVERDUE_LIST.search(text)
+            and re.search(r"applications?|申请|طلبات?|الطلبات", text, re.I)):
+        return "overdue"
     if _LICENSE_URGENCY.search(text) and re.search(r"application|applications|申请|طلب", text, re.I):
         return "urgency"
     return ""
+
+
+def _license_expiry_window(question: str) -> int | None:
+    """Use an explicit user-supplied day window, not the portal's status tag."""
+    match = re.search(r"\bwithin\s+(\d{1,3})\s+days?\b|خلال\s+(\d{1,3})\s+يوم|(?:未来|接下来|今后)\s*(\d{1,3})\s*天", question, re.I)
+    return int(next(part for part in match.groups() if part is not None)) if match else None
+
+
+def _content_escalation_requested(question: str) -> bool:
+    """Read candidate cases; do not execute or invent an escalation decision."""
+    return bool(not _explicit_record_identity(question)
+                and re.search(r'\bcontent\b|المحتوى|内容', question, re.I)
+                and re.search(r'\b(?:which|what)\b.{0,35}\bcases?\b|ما\s+(?:هي\s+)?الحالات|哪些.*案件', question, re.I)
+                and re.search(r'escalat|تصعيد|升级', question, re.I))
+
+
+def _content_overdue_list(question: str) -> bool:
+    """Bind a content application SLA query to its own native application queue."""
+    return _content_escalation_requested(question) or bool(
+        not _explicit_record_identity(question)
+        and re.search(r"\bcontent\b|المحتوى|内容", question, re.I)
+        and re.search(r"tasks?|applications?|مهام|طلبات|任务|申请", question, re.I)
+        and _LIST_CUE.search(question) and _LICENSE_OVERDUE_LIST.search(question)
+    )
+
+
+def _license_rows_from_observation(observation: Any) -> tuple[dict[str, Any], ...]:
+    """Read the page's licence collection, falling back to its rendered table."""
+    # The rendered Status column is the business authority for expiry
+    # filtering. The list API can carry an internal numeric state and its
+    # display number may differ in padding from the table number, so a join
+    # can silently erase an Expired label on a same-day expiry. Prefer the
+    # actually rendered row whenever it also carries the expiry date.
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") not in {"table", "grid"}:
+            continue
+        headers = {_key(key) for key in node.get("columnHeaders") or ()}
+        if (headers & {"expirydate", "expirationdate"}) and (headers & {"licenseno", "licensenumber"}):
+            rendered = tuple(row for row in node.get("rowFields") or () if isinstance(row, dict))
+            if rendered:
+                return rendered
+    rows = _api_candidate_rows(observation, "POST /api/LicenseManagement/list")
+    if rows:
+        # The API uses numeric status codes, while the page renders business
+        # labels such as Active and Expire Soon. Join the already-observed
+        # table row by business number; never expose the internal enum code.
+        rendered_status: dict[str, str] = {}
+        for node in _observation_semantic_nodes(observation):
+            if node.get("kind") not in {"table", "grid"}:
+                continue
+            for rendered_row in node.get("rowFields") or ():
+                if not isinstance(rendered_row, dict):
+                    continue
+                status = next((str(value) for key, value in rendered_row.items()
+                               if _key(key) == "status" and value not in (None, "")), "")
+                for key, value in rendered_row.items():
+                    if _key(key) in {"licenseno", "licensenumber", "applicationno", "applicationnumber"} and value:
+                        rendered_status[str(value).strip().casefold()] = status
+        enriched = []
+        for row in rows:
+            number = str(row.get("showLicenseNumber") or row.get("licenseNumber") or "").strip().casefold()
+            application = str(row.get("applicationNumber") or "").strip().casefold()
+            label = rendered_status.get(number) or rendered_status.get(application) or ""
+            enriched.append({**row, "status": label})
+        return tuple(enriched)
+    for node in _observation_semantic_nodes(observation):
+        if node.get("kind") in {"table", "grid"} and any(
+            _key(key) in {"expirydate", "expirationdate"}
+            for key in node.get("columnHeaders") or ()
+        ):
+            return tuple(row for row in node.get("rowFields") or () if isinstance(row, dict))
+    return ()
+
+
+def _license_expiry_window_result(
+    observations: Iterable[Any], *, question: str, page_count: int,
+    total_rows: int | None, complete: bool,
+    scope: Literal["personal", "team", "global", "unknown"],
+) -> ReaderResult:
+    window = _license_expiry_window(question)
+    assert window is not None
+    today = datetime.now(ZoneInfo("Asia/Dubai")).date()
+    language = response_language_for(question)
+    selected: dict[str, tuple[date, dict[str, Any]]] = {}
+    rows_read = 0
+
+    def field(row: dict[str, Any], *names: str) -> Any:
+        # Caller order is meaningful: prefer the portal's displayed business
+        # number to an internal API number even if the latter occurs first in JSON.
+        for name in names:
+            value = next((value for key, value in row.items()
+                          if _key(key) == _key(name) and value not in (None, "")), None)
+            if value is not None:
+                return value
+        return None
+
+    for observation in observations:
+        for row in _license_rows_from_observation(observation):
+            rows_read += 1
+            raw_date = field(row, "Expiry Date", "Expiration Date", "expirationTime", "expiryDate")
+            if not raw_date:
+                continue
+            expiry = None
+            for pattern in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    expiry = datetime.strptime(str(raw_date)[:len(datetime.now().strftime(pattern))], pattern).date()
+                    break
+                except ValueError:
+                    pass
+            if expiry is None or not 0 <= (expiry - today).days <= window:
+                continue
+            status = str(field(row, "Status", "statusName") or "").strip()
+            if re.fullmatch(r"\d+", status):
+                status = ""
+            if re.search(r"\b(?:expired|cancelled|canceled|revoked|disabled)\b|منته|ملغ|إلغاء|已过期|取消", status, re.I):
+                continue
+            if language == "ar":
+                status = {"active": "نشط", "expire soon": "ينتهي قريبًا"}.get(status.casefold(), status)
+            identity = str(field(row, "License No.", "License No", "showLicenseNumber", "licenseNumber") or "").strip()
+            application = str(field(row, "Application No.", "applicationNumber") or "").strip()
+            if not identity and not application:
+                continue
+            projected = {
+                "License No.": identity,
+                "Application No.": application,
+                "License": field(row, "License", "licenseType"),
+                "Status": status,
+                "Expiry Date": expiry.strftime("%d/%m/%Y"),
+            }
+            projected = {key: value for key, value in projected.items() if value not in (None, "")}
+            selected[identity or application] = (expiry, projected)
+    ordered = sorted(selected.values(), key=lambda item: (item[0], str(item[1].get("License No.") or "")))
+    coverage = (
+        f"تمت قراءة {page_count} صفحات من أصل {total_rows} ترخيصًا؛ ينتهي {len(ordered)} ترخيصًا خلال {window} يومًا."
+        if language == "ar" else
+        f"Read {page_count} page(s) covering {total_rows} licences; {len(ordered)} expire within {window} days."
+    ) if complete else (
+        "لم تكتمل قراءة جميع الصفحات؛ هذه ليست قائمة نهائية."
+        if language == "ar" else "Not all licence pages were read; this is not a complete list."
+    )
+    return ReaderResult(
+        status="success" if complete and rows_read else "not_confirmed",
+        summary=f"Licences expiring within the requested {window}-day window.",
+        page="/licensing/licenses", section="Licenses list", answer_shape="list",
+        completeness="complete" if complete and rows_read else "bounded", scope=scope,
+        facts=tuple(json.dumps(row, ensure_ascii=False, separators=(",", ":")) for _, row in ordered) + (coverage,),
+        missing=() if complete and rows_read else ("license_pagination_incomplete",),
+    )
 
 
 def _observation_text_rows(observation: Any) -> tuple[str, ...]:
@@ -9904,6 +13310,302 @@ def _observed_status_option_action(observation: Any, wanted: str) -> dict[str, A
             if str(option).strip().casefold() == wanted.casefold():
                 return {"type": "filter", "selector": str(control["selector"]), "value": str(option).strip()}
     return None
+
+
+def _license_overdue_all_pages_result(
+    observations: list[Any], *, question: str,
+    scope: Literal["personal", "team", "global", "unknown"],
+    page: str = '/licensing/applications',
+) -> ReaderResult:
+    """Count and rank native application rows only after every page is verified."""
+
+    language = response_language_for(question)
+    is_content = page == '/content/ContentApplications'
+    module = 'Content' if is_content else 'Licensing'
+    subject = 'Content review tasks' if is_content else 'License applications'
+    arabic_subject = 'مهام مراجعة المحتوى' if is_content else 'طلبات الترخيص'
+    projections: list[dict[str, Any]] = []
+    for observation in observations:
+        candidates = ((observation.get('apiDiscovery') or {}).get('candidates') or ()) if isinstance(observation, dict) else ()
+        projection = next((
+            (candidate.get('responseEvidence') or {}).get('pageSlaProjection')
+            for candidate in candidates if isinstance(candidate, dict) and candidate.get('status') == 200
+            and re.fullmatch(r'POST /api/(?:Application|Content)/MyTodoPage', str(candidate.get('operationKey') or ''))
+            and isinstance(candidate.get('responseEvidence'), dict)
+            and isinstance((candidate.get('responseEvidence') or {}).get('pageSlaProjection'), dict)
+        ), None)
+        if isinstance(projection, dict):
+            projections.append(projection)
+    valid = bool(projections) and len(projections) == len(observations)
+    first = projections[0] if projections else {}
+    page_size, total = first.get('pageSize'), first.get('total')
+    if type(page_size) is not int or type(total) is not int or page_size <= 0 or total < 0:
+        valid = False
+        expected_pages = 0
+    else:
+        expected_pages = max(1, (total + page_size - 1) // page_size)
+        valid = valid and len(projections) == expected_pages
+    parsed: list[tuple[int, str]] = []
+    all_ids: set[str] = set()
+    corroborated = False
+    missing_sla = 0
+    for index, projection in enumerate(projections, start=1):
+        items = projection.get('items')
+        expected_count = min(page_size, max(0, total - (index - 1) * page_size)) if valid else None
+        if (projection.get('pageIndex') != index or projection.get('total') != total
+                or not isinstance(items, list) or len(items) != expected_count):
+            valid = False
+            break
+        rendered = {}
+        for row in _observation_text_rows(observations[index - 1]):
+            identity_match = re.search(r'\b(?:ML|MC)-[\w-]+', row)
+            days_match = re.search(r'\b(\d+)\s*d(?:ays?)?\s+overdue\b', row, re.I)
+            if identity_match and days_match:
+                rendered[identity_match.group(0).casefold()] = int(days_match.group(1))
+        for item in items:
+            if not isinstance(item, dict):
+                valid = False
+                break
+            identity, minutes, overdue = (item.get('applicationNumber'), item.get('slaMinutes'), item.get('isOverdue'))
+            description = str(item.get('slaDescription') or '').strip()
+            if (not isinstance(identity, str) or not identity.strip() or type(overdue) is not bool
+                    or (minutes is not None and (type(minutes) not in (int, float)
+                         or not -1_000_000_000 < minutes < 1_000_000_000
+                         or (overdue and minutes < 0)))):
+                valid = False
+                break
+            normalized = identity.strip().casefold()
+            if normalized in all_ids:
+                valid = False
+                break
+            all_ids.add(normalized)
+            described = re.search(r'\b(\d+)\s*d(?:ays?)?\s+overdue\b', description, re.I)
+            days = int(minutes // 1440) if minutes is not None else (
+                int(described.group(1)) if described else rendered.get(normalized))
+            if overdue and days is not None:
+                parsed.append((days, identity.strip()))
+                if rendered.get(normalized) == days:
+                    corroborated = True
+            elif overdue:
+                # An API flag alone cannot provide overdue *days*.  The page
+                # renders these pending-modification rows as SLA "-"; do not
+                # invent a duration or silently treat them as zero days.
+                missing_sla += 1
+        if not valid:
+            break
+    valid = valid and len(all_ids) == total and (corroborated or not parsed)
+    if not valid:
+        return ReaderResult(
+            status='not_confirmed', page=page, section='To Do applications',
+            answer_shape='list', completeness='bounded', scope=scope,
+            summary=f'The complete {module} application queue could not be verified or ranked.',
+            missing=('application_pagination_unverified',),
+            workflow_state='application_overdue_unverified',
+        )
+    parsed.sort(key=lambda item: (-item[0], item[1]))
+    urgency = _license_module_focus(question) == 'urgency'
+    count_fact = (f"超 SLA 的许可申请：{len(parsed)} 条；已读取全部 {len(projections)} 页、{total} 条待办申请。"
+                  if language == 'zh' else
+                  f"عدد {arabic_subject} المتأخرة: {len(parsed)}؛ تمت قراءة {len(projections)} صفحات و{total} طلبًا."
+                  if language == 'ar' else
+                  f"{subject} past SLA: {len(parsed)}; read all {len(projections)} pages and {total} To Do applications.")
+    missing_note = ((f"另有 {missing_sla} 条记录的 SLA 在页面中未显示天数，未计入可排序结果。" if language == 'zh' else
+                     f"هناك {missing_sla} طلبًا إضافيًا لا تعرض الصفحة عدد أيام اتفاقية مستوى الخدمة لها؛ لم تُدرج ضمن النتائج القابلة للترتيب." if language == 'ar' else
+                     f"Another {missing_sla} applications show no SLA day count on the page and are excluded from the rankable result.")
+                    if missing_sla else '')
+    escalation_note = ()
+    if page == '/content/ContentApplications' and _content_escalation_requested(question):
+        escalation_note = (("هذه الحالات مرشحة لمراجعة التصعيد إلى مدير المحتوى بسبب تجاوز SLA الظاهر. لم يتم تأكيد تصنيف مخاطر لكل حالة أو قرار تصعيد إلزامي؛ ولم تُنفّذ إحالة أو تغييرات حالة."
+                            if language == 'ar' else
+                            "These are candidates for escalation review by the Content Manager because their displayed SLA is overdue. Per-case risk ratings and a mandatory escalation decision were not verified; no referral or status change was executed."),)
+    return ReaderResult(
+        status=('success' if parsed or not urgency else 'not_confirmed' if missing_sla else 'no_data'),
+        page=page, section='To Do applications',
+        answer_shape='list', completeness='complete', scope=scope,
+        workflow_state='license_urgency_full' if urgency else 'license_overdue_full',
+        summary=(f'Largest displayed overdue SLA across all authorized {module} To Do pages.' if urgency else
+                 f'All authorized {module} To Do applications ranked by overdue days.'),
+        facts=(count_fact, *escalation_note, *((missing_note,) if missing_note else ()),
+               *((f"{identity}: متأخر {days} يومًا" if language == 'ar' else
+                              f"{identity}: {days}d Overdue") for days, identity in parsed
+                 if not urgency or days == parsed[0][0])),
+    )
+
+
+def _observed_application_sla_collection(observation: Any) -> dict[str, Any] | None:
+    """Select only the captured native application queue's observed SLA schema."""
+    if not isinstance(observation, dict):
+        return None
+    for candidate in (observation.get('apiDiscovery') or {}).get('candidates') or ():
+        if not isinstance(candidate, dict) or candidate.get('status') != 200:
+            continue
+        operation = str(candidate.get('operationKey') or '')
+        if not re.fullmatch(r'POST /api/(?:Application|Content)/MyTodoPage', operation):
+            continue
+        context = candidate.get('collectionContext') or {}
+        projection = (candidate.get('responseEvidence') or {}).get('pageSlaProjection') or {}
+        context_ref = str(context.get('contextRef') or '')
+        if (not re.fullmatch(r'[a-f0-9]{64}', context_ref)
+                or not {'pageIndex', 'pageSize'}.issubset(context.get('requestFields') or ())
+                or projection.get('pageIndex') != 1):
+            continue
+        for schema in context.get('rowSchemas') or ():
+            fields = set(schema.get('fields') or ())
+            path = str(schema.get('path') or '')
+            # Live SLA minutes advance on every request. Compare the page's
+            # stable displayed day label between scans, not a ticking clock.
+            selected = [field for field in ('applicationNumber', 'slaDescription', 'isOverdue') if field in fields]
+            if (path.endswith('/items') and {'applicationNumber', 'isOverdue'}.issubset(fields)
+                    and 'slaDescription' in fields):
+                return {'operationKey': operation, 'contextRef': context_ref,
+                        'rowsPath': path, 'totalPath': path[:-len('/items')] + '/total',
+                        'fields': selected, 'identityFields': ['applicationNumber'],
+                        'pageField': 'pageIndex', 'sizeField': 'pageSize',
+                        'firstPage': 1, 'unknownPolicy': 'report'}
+    return None
+
+
+def _application_review_list_requested(question: str) -> bool:
+    """A queue-category list, not a literal stored status or team roll-up."""
+    basic = bool(
+        re.search(r'\b(?:list|show|display)\b|اعرض|سرد|أدرج|ادرج|列出', question, re.I)
+        and re.search(r'\bpending\s+review\b|قيد\s+المراجعة|待审核', question, re.I)
+        and re.search(r'\bapplications?\b|طلبات?|申请', question, re.I)
+        # Extra predicates/properties still belong to semantic planning; never
+        # silently discard a date, named actor, scope or requested attribute.
+        and not re.search(r'\d{4}-\d{2}-\d{2}|\b(?:today|yesterday|week|month|team|staff|applicant|names?|overdue|SLA|type)\b'
+                          r'|اليوم|أمس|فريق|موظف|أسماء|أيام|متأخر|类型|姓名|团队', question, re.I)
+    )
+    if not basic:
+        return False
+    # Only this simple category/identifier shape has the deterministic
+    # projection below. Unconsumed wording may be an additional predicate or
+    # property; pass it to semantic planning instead of dropping it.
+    # Equivalent request/list and possessive grammar must not turn an Arabic
+    # identifier-list into a detail query. Consume grammar only: actor/date/
+    # property predicates remain unconsumed and still go to semantic planning.
+    remaining = re.sub(r'لا\s+تزال|قم\s+(?:بسرد|بعرض)|بما\s+في\s+ذلك|الخاصة\s+بها',
+                       ' ', question, flags=re.I)
+    remaining = re.sub(
+        r'\b(?:list|show|display|please|me|all|the|content|licensing|license|applications?|'
+        r'current|currently|pending|review|including|their|numbers?|i|can|see|that|are|in)\b'
+        r'|(?<!\w)(?:اعرض|أدرج|ادرج|أرجو|ارجو|سرد|قائمة|جميع|ب?طلبات?|قسم|المحتوى|الترخيص|التراخيص|و?التي|يمكنني|الاطلاع|'
+        r'عليها|أراها|اراها|قيد|المراجعة|حاليًا|حاليا|مع|ذكر|هذه|أرقام|ارقام|الطلبات)(?!\w)',
+        ' ', remaining, flags=re.I,
+    )
+    return not re.search(r'\w', remaining)
+
+
+def _observed_application_review_collection(observation: Any, page: str) -> dict[str, Any] | None:
+    """Use the captured personal To Do request, never invent/replay a filter."""
+    if not isinstance(observation, dict):
+        return None
+    operation = {'/content/ContentApplications': 'POST /api/Content/MyTodoPage',
+                 '/licensing/applications': 'POST /api/Application/MyTodoPage'}.get(page)
+    null_hash = hashlib.sha256(b'null').hexdigest()
+    for candidate in (observation.get('apiDiscovery') or {}).get('candidates') or ():
+        if candidate.get('operationKey') != operation or candidate.get('status') != 200:
+            continue
+        context = candidate.get('collectionContext') or {}
+        fields = set(context.get('requestFields') or ())
+        # These native nullable defaults and ordering do not constrain the
+        # population. A captured keyword/status/date/service filter does.
+        if fields - {'pageIndex', 'pageSize', 'sortBy', 'sortDirection', 'approvalStatus', 'startTime', 'endTime'}:
+            continue
+        hashes = context.get('parameterHashes') or {}
+        if any(hashes.get(key) != null_hash for key in ('approvalStatus', 'startTime', 'endTime')):
+            continue
+        if not re.fullmatch(r'[a-f0-9]{64}', str(context.get('contextRef') or '')):
+            continue
+        for schema in context.get('rowSchemas') or ():
+            path = str(schema.get('path') or '')
+            if path.endswith('/items') and {'taskId', 'applicationNumber', 'status'}.issubset(schema.get('fields') or ()):
+                return {'operationKey': operation, 'contextRef': context['contextRef'],
+                        'rowsPath': path, 'totalPath': path[:-len('/items')] + '/total',
+                        'fields': ['taskId', 'applicationNumber', 'status'], 'identityFields': ['taskId'],
+                        'pageField': 'pageIndex', 'sizeField': 'pageSize', 'firstPage': 1, 'unknownPolicy': 'report'}
+    return None
+
+
+def _application_review_collection_result(receipt: Any, observation: Any, *, question: str, page: str, scope: str = 'unknown') -> ReaderResult:
+    """Reconcile the documented aggregate with a complete native queue scan.
+
+    GetMyReviewPageAsync defines PendingReview by excluding modification and
+    external approval, not by a dropdown option or an assumed approval-node ID.
+    The runtime additionally reconciles every category with the actual cards.
+    """
+    operation = {'/content/ContentApplications': 'POST /api/Content/MyTodoPage',
+                 '/licensing/applications': 'POST /api/Application/MyTodoPage'}[page]
+    payload = _api_object_by_operation(observation, operation) or {}
+    counts = payload.get('statusCount') or {}
+    failed = ReaderResult(status='not_confirmed', page=page, source_hint={'page': page}, answer_shape='list',
+                          summary='The requested review category could not be reconciled with the complete native queue.',
+                          missing=('review_category_collection_unverified',))
+    if (not isinstance(receipt, dict) or receipt.get('completeness') != 'complete'
+            or receipt.get('operationRef') != operation or type(receipt.get('total')) is not int
+            or receipt.get('stablePasses') != 2 or not isinstance(receipt.get('rows'), list)):
+        return failed
+    rows = receipt['rows']
+    if (len(rows) != receipt['total'] or counts.get('todoCount') != receipt['total']
+            or any(type(counts.get(key)) is not int for key in
+                   ('pendingReviewCount', 'pendingModificationCount', 'externalApproveCount'))
+            or any(not isinstance(row, dict) or not row.get('taskId') or not row.get('applicationNumber')
+                   or not isinstance(row.get('status'), str) or not row['status'].strip() for row in rows)
+            or len({row['taskId'] for row in rows}) != len(rows)):
+        return failed
+    # Display-name aliases, not status IDs or test-record values. Source values
+    # remain authoritative; the reconciliation rejects an unrecognized pause.
+    modification = {'pending modification', 'قيد التعديل'}
+    external = {'external approval', 'موافقة خارجية', 'الموافقة الخارجية'}
+    categories = {'modification': [], 'external': [], 'review': []}
+    for row in rows:
+        label = normalized_text(row['status'])
+        categories['modification' if label in modification else 'external' if label in external else 'review'].append(row)
+    if (len(categories['review']) != counts['pendingReviewCount']
+            or len(categories['modification']) != counts['pendingModificationCount']
+            or len(categories['external']) != counts['externalApproveCount']):
+        return failed
+    selected = categories['review']
+    identities = list(dict.fromkeys(row['applicationNumber'] for row in selected))
+    arabic = response_language_for(question) == 'ar'
+    count_fact = (f"قيد المراجعة: {len(selected)} مهمة طلب، تخص {len(identities)} طلبًا مختلفًا."
+                  if arabic else f"Pending Review: {len(selected)} application tasks for {len(identities)} distinct applications.")
+    scope_fact = ("النطاق: قائمة طلباتي الحالية التي يستطيع هذا الحساب رؤيتها في قسم المحتوى، دون فلتر تاريخ؛ ليس ملخص لوحة التحكم لآخر 7 أيام."
+                  if arabic and page.startswith('/content/') else
+                  "النطاق: قائمة طلباتي الحالية التي يستطيع هذا الحساب رؤيتها في قسم الترخيص، دون فلتر تاريخ؛ ليس ملخص لوحة التحكم لآخر 7 أيام."
+                  if arabic else
+                  f"Scope: this account's current visible {'Content' if page.startswith('/content/') else 'Licensing'} My Application Tasks / To Do queue, no date filter; not the Dashboard's Last 7 Days summary.")
+    # Compact identifiers retain the full result without copying irrelevant
+    # tables/fields, or truncating the list to a first-page sample.
+    lines = tuple('، '.join(identities[start:start + 10]) if arabic else ', '.join(identities[start:start + 10])
+                  for start in range(0, len(identities), 10))
+    return replace(failed, status='success' if selected else 'no_data', completeness='complete', scope=scope,
+                   summary='The Pending Review category reconciles with the current native queue.',
+                   section='My Application Tasks', selected_state='To Do', facts=(count_fact, scope_fact, *lines),
+                   workflow_state='application_review_collection', missing=())
+
+
+def _application_sla_collection_result(receipt: Any, first_observation: Any, *,
+                                       question: str, scope: str, page: str) -> ReaderResult | None:
+    if not isinstance(receipt, dict) or receipt.get('completeness') != 'complete':
+        return None
+    rows, total = receipt.get('rows'), receipt.get('total')
+    info = _status_page_info(first_observation)
+    if not isinstance(rows, list) or type(total) is not int or len(rows) != total or not info or info[2] != total:
+        return None
+    size = info[1]
+    if size <= 0:
+        return None
+    observations = []
+    for start in range(0, max(total, 1), size):
+        items = [{'applicationNumber': row.get('applicationNumber'), 'slaMinutes': row.get('sla'),
+                  'slaDescription': row.get('slaDescription'), 'isOverdue': row.get('isOverdue')}
+                 for row in rows[start:start + size] if isinstance(row, dict)]
+        observations.append({'rowSummaries': _observation_text_rows(first_observation),
+            'apiDiscovery': {'candidates': [{'operationKey': receipt.get('operationRef'), 'status': 200,
+                'responseEvidence': {'pageSlaProjection': {'items': items, 'total': total,
+                    'pageSize': size, 'pageIndex': start // size + 1}}}]}})
+    return _license_overdue_all_pages_result(observations, question=question, scope=scope, page=page)
 
 
 def _license_module_result(
@@ -9953,6 +13655,60 @@ def _license_module_result(
             scope=scope,
             facts=(*rows[:8], note),
         )
+    # Prefer the complete bounded page captured from the browser's own
+    # application-list response.  Rich row payloads can be truncated before
+    # the final DOM rows reach a semantic snapshot, which made a 42-day row
+    # look maximal while a 44-day row was still present on the same page.
+    projections = [
+        (candidate.get('responseEvidence') or {}).get('pageSlaProjection')
+        for candidate in (observation.get('apiDiscovery') or {}).get('candidates') or ()
+        if isinstance(candidate, dict) and candidate.get('status') == 200
+        and 'Application/MyTodoPage' in str(candidate.get('operationKey') or '')
+        and isinstance(candidate.get('responseEvidence'), dict)
+    ]
+    projections = [value for value in projections if isinstance(value, dict)]
+    if projections:
+        projection = projections[0]
+        items = projection.get('items')
+        page_size, total = projection.get('pageSize'), projection.get('total')
+        expected = min(page_size, total) if type(page_size) is int and type(total) is int and page_size > 0 and total >= 0 else None
+        parsed: list[tuple[int, str, bool]] = []
+        if isinstance(items, list) and expected is not None and len(items) == expected:
+            for item in items:
+                if not isinstance(item, dict):
+                    break
+                identity, value, overdue_flag = item.get('applicationNumber'), item.get('slaMinutes'), item.get('isOverdue')
+                if (not isinstance(identity, str) or not identity.strip()
+                        or type(value) not in (int, float) or not 0 <= value < 1_000_000_000
+                        or type(overdue_flag) is not bool):
+                    break
+                parsed.append((int(value // 1440), identity.strip(), overdue_flag))
+        # The minute-to-day interpretation must agree with at least one
+        # independently rendered SLA cell before using it for every page row.
+        rendered = {}
+        for row in rows:
+            identity = re.search(r'\bML-[\w-]+', row)
+            days = re.search(r'\b(\d+)\s*d(?:ays?)?\s+overdue\b', row, re.I)
+            if identity and days:
+                rendered[identity.group(0)] = int(days.group(1))
+        corroborated = sum(rendered.get(identity) == days for days, identity, overdue_flag in parsed if overdue_flag)
+        if len(parsed) == expected and len({identity for _days, identity, _flag in parsed}) == len(parsed) and corroborated:
+            overdue_page = [(days, identity) for days, identity, flag in parsed if flag]
+            if overdue_page:
+                worst = max(days for days, _identity in overdue_page)
+                selected = [identity for days, identity in overdue_page if days == worst]
+                return ReaderResult(
+                    status='success', summary='Highest observed application SLA overdue on this page.',
+                    page=page, section='Application tasks', answer_shape='detail',
+                    completeness='bounded', scope=scope,
+                    facts=tuple(f'Application No.: {identity}; SLA: {worst}d Overdue.' for identity in selected[:10])
+                    + (f'Compared all {len(parsed)} application rows on the current page; the largest overdue duration is {worst} days. Other pages were not ranked.',),
+                )
+        return ReaderResult(
+            status='not_confirmed', summary='The full visible application page could not be ranked safely.',
+            page=page, section='Application tasks', answer_shape='detail', completeness='bounded', scope=scope,
+            missing=('application_sla_page_incomplete',),
+        )
     overdue: list[tuple[int, str]] = []
     countdown: list[tuple[int, str]] = []
     for row in rows:
@@ -9994,6 +13750,9 @@ def _license_module_result(
 def _guard_unfound_record_identity(outcome: ReaderOutcome, question: str) -> ReaderOutcome:
     """A named record number that is not visible must never be answered with aggregates."""
 
+    if str(outcome.audit_evidence.get('stage') or '') == 'safety_request_refusal':
+        # A refusal is not a search result and cannot establish absence.
+        return outcome
     identity = _explicit_record_identity(question)
     if not identity:
         return outcome
@@ -10026,6 +13785,8 @@ def _guard_unfound_record_identity(outcome: ReaderOutcome, question: str) -> Rea
 
 
 _MUTATION_REQUEST_PATTERNS: tuple[str, ...] = (
+    r"\b(?:please\s+)?(?:forward|send)\b.{0,110}\b(?:to\s+(?:the\s+)?[A-Za-z ]{0,40}department)\b",
+    r"(?:يرجى|الرجاء)?\s*(?:إرسال|ارسال|أرسل|ارسل)\s+.{0,110}?(?:إلى|الى)\s+قسم\b",
     r"\b(?:please\s+)?(?:approve|reject|assign|reassign|transfer|delegate|move|refund|close|delete|remove|export|send|pay|waive|"
     r"reset|disable|merge|cancel|change|update|set)\b[^.]{0,30}\b(?:application|licen[cs]e|content|ticket|refund|payment|transaction|task|case|record|account|user|photo|note|fine|penalt(?:y|ies)|fee|profile|complaint|enquir(?:y|ies)|report)\b",
     r"\b(?:approve|reject|assign|reassign|transfer|delegate|move|refund|close|delete|export|send|waive|reset|disable|merge|cancel)\b"
@@ -10034,12 +13795,79 @@ _MUTATION_REQUEST_PATTERNS: tuple[str, ...] = (
     r"(?:批准|驳回|分派|转派|转移|移交|委派|退款|关闭|删除|修改|导出|发送|免除|重置|停用|合并|改为|改成)(?:这|该|此|本)?"
     r"(?:个|项|张|条|笔)?(?:申请|内容|投诉|工单|退款|付款|交易|任务|案件|记录|账号|用户|罚单|报告|备注)",
     r"(?:跳过|绕过|规避)[^。]{0,16}(?:检查|审批|审核|现场|复核|流程|审计)",
-    r"(?:وافق|ارفض|عيّن|حوّل|انقل|فوّض|استرد|أغلق|احذف|عدّل|صدّر|أرسل|تجاوز|ألغِ|صفّر)[^.]{0,24}"
-    r"(?:الطلب|الرخصة|المحتوى|التذكرة|الاسترداد|الدفع|المهمة|السجل|الحساب|المراجعة|التدقيق)",
+    r"(?:skip|bypass|circumvent|evade|avoid)[^.]{0,70}(?:inspection|on[- ]site|site visit|review|report)",
+    r"(?:change|modify|update|set|mark)[^.]{0,70}(?:inspection\s+)?(?:result|outcome|finding|status|report)",
+    r"(?:reset|change|set)[^.]{0,40}password",
+    r"(?:reset|change|set)[^.]{0,40}(?:the\s+)?password",
+    r"(?:disable|deactivate|suspend|merge)[^.]{0,60}(?:account|user)",
+    # Arabic command verbs must be a standalone token.  Without the
+    # whitespace boundary, the cancellation prefix ``الغ`` matched the noun
+    # ``الغرامات`` (fines) in a read-only history question and caused a false
+    # write-operation refusal.
+    r"\b(?:وافق|ارفض|عيّن|حوّل|انقل|فوّض|فوض|استرد|أغلق|احذف|عدّل|عدل|صدّر|أرسل|تجاوز|تخطى|تخط|ألغِ|الغ|صفّر|عطل|عطّل|أوقف|اوقف|ادمج|أدمج|غير|غيّر|أنشئ|انشئ)\s+[^.]{0,70}"
+    r"(?:الطلب|الرخصة|المحتوى|التذكرة|الاسترداد|الدفع|المهمة|السجل|الحساب|المستخدم|كلمة\s+المرور|النتيجة|التقرير|التفتيش|الفحص|المراجعة|التدقيق|القضية)",
+    r"(?:أعد|اعد|إعادة|اعادة|غيّر|غير|صفّر|صفر)[^.]{0,80}(?:كلمة\s+(?:المرور|مرور)|password)",
+    # Arabic polite requests commonly use a verbal noun after "please" or
+    # "help me" rather than an imperative.  Match the action *and* its
+    # business object, so a read-only question mentioning a result/transfer
+    # is not misclassified as a write request.
+    r"(?:يرجى|الرجاء|ساعدني\s+في|اريد|أريد)\s+(?:ان\s+)?(?:تغيير|تعديل|نقل|تحويل|تجاوز|تخطي|انشاء|اصدار)\b.{0,90}"
+    r"(?:نتيجة|نتيجه|مهمة|مهمه|تفتيش|فحص|تقرير|قسم|الترخيص|المعاينة)",
+    r"(?:يرجى|الرجاء|ساعدني\s+في|اريد|أريد)\s+(?:ان\s+)?(?:الموافقة|المصادقة|الرفض)\s+على\s+(?:طلب|الطلب|رخصة|الرخصة|المحتوى|معاملة|المعاملة)\b",
+    # "Do the assignment" is an imperative too, not a request to read an
+    # assignment field. Restrict it to a leading command and business object.
+    r"^(?:(?:يرجى|الرجاء)\s+)?(?:قم\s+ب(?:تعيين|اسناد)|عين|اسند)\b.{0,90}\b(?:الطلب|طلب|المهمة|مهمة|المحتوى|التذكرة|السجل)\b",
 )
 
 
-def _mutation_request_refusal_result(question: str) -> ReaderResult | None:
+def _account_access_request_refusal(
+    question: str, permission: UserPermissionContext, language: str,
+) -> ReaderResult | None:
+    """Keep role changes and unscoped account-history requests out of planning.
+
+    Identity comes from GetUserInfo, not an account name in the prompt. This
+    guard does not prohibit ordinary team queries or the user's own profile.
+    """
+    text = normalized_text(str(question or ""))
+    change_role = bool(re.search(
+        r"\b(?:switch|change|set|promote|upgrade)\b.{0,60}\b(?:my\s+)?role\b"
+        r"|(?:تغيير|تبديل|غير|بدل|ترقية).{0,45}(?:دوري|دور\s+(?:المسؤول|المدير))",
+        text, re.I,
+    ))
+    bulk_account_records = bool(re.search(
+        r"\b(?:all|every)\s+(?:the\s+)?records?\b|(?:جميع|كل)\s+السجلات",
+        text, re.I,
+    ) and re.search(r"\b(?:user\s*id|employee\s+email)\b|معرف\s+المستخدم|(?:بريد|البريد)\s+الالكتروني\s+للموظف", text, re.I))
+    emails = re.findall(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", text, re.I)
+    user_match = re.search(r"(?:\buser\s*id\b|معرف\s+المستخدم)\s*[:#]?\s*([\w-]+)", text, re.I)
+    other_identity = bool(
+        any(email.casefold() != permission.account.casefold() for email in emails)
+        or (user_match and user_match.group(1) != permission.user_id)
+    )
+    if not change_role and not (bulk_account_records and other_identity
+                               and _permission_result_scope(permission) != "global"):
+        return None
+    if change_role:
+        facts = (
+            "لا يمكنني تغيير دورك أو منحك صلاحيات المسؤول أو إظهار قائمة مخفية عبر الدردشة. لم تتغير صلاحيات الحساب.",
+            "يجب أن يراجع مسؤول الصلاحيات أي طلب لتغيير الدور عبر إجراءات البوابة المعتمدة؛ أستخدم فقط الصلاحيات الحالية المؤكدة لهذا الحساب.",
+        ) if language == "ar" else (
+            "I cannot change your role, grant administrator access, or reveal a hidden menu through chat. The account's permissions were not changed.",
+            "An authorized access administrator must review role changes through the portal's approved workflow; I use only this account's currently verified permissions.",
+        )
+    else:
+        facts = (
+            "لا يمكنني استرجاع جميع سجلات حساب أو موظف آخر بمجرد ذكر معرفه أو بريده الإلكتروني. صلاحية الصفحة لا تمنح الوصول غير المقيد إلى سجل حساب آخر؛ لم أعرض أي سجلات لهذا الحساب.",
+            "حدد سؤالًا تجاريًا ضمن نطاق حسابك الحالي؛ لا أوسّع الصلاحيات أو أستبدل السجلات المطلوبة بسجلات من نطاق آخر.",
+        ) if language == "ar" else (
+            "I cannot retrieve all records of another account or employee merely from their ID or email. Page access does not grant unrestricted access to another account's history; no records for that account were disclosed.",
+            "Ask a business question within this account's current scope; I do not widen permissions or substitute records from another scope.",
+        )
+    return ReaderResult(status="success", answer_shape="detail", facts=facts,
+                        summary="The account access request was explicitly refused.")
+
+
+def _mutation_request_refusal_result(question: str, language: str | None = None) -> ReaderResult | None:
     """Refuse an explicit business-change request before any page read.
 
     The planner is not the only entry point for these turns, so the intent is
@@ -10048,23 +13876,182 @@ def _mutation_request_refusal_result(question: str) -> ReaderResult | None:
     """
 
     text = str(question or "")
-    if not any(re.search(pattern, text, re.I) for pattern in _MUTATION_REQUEST_PATTERNS):
+    normalized = normalized_text(text)
+    # Match both the original and normalized form. Arabic tashkeel and hamza
+    # variants otherwise make ordinary imperatives (تخطَّ / أنشئ) invisible
+    # to the preflight guard.
+    if not any(re.search(pattern, candidate, re.I)
+               for candidate in (text, normalized)
+               for pattern in _MUTATION_REQUEST_PATTERNS):
         return None
-    transfer = bool(re.search(r"\b(?:transfer|reassign|delegate|move)\b|转派|转移|移交|委派|انقل|حوّل|فوّض", text, re.I))
-    if transfer:
+    transfer = bool(re.search(
+        r"\b(?:transfer|reassign|delegate|move)\b|"
+        r"\b(?:forward|send)\b.{0,110}\bto\s+(?:the\s+)?[A-Za-z ]{0,40}department\b|"
+        r"转派|转移|移交|委派|انقل|حول|فوض|"
+        r"(?:يرجى|الرجاء|ساعدني\s+في)\s+(?:نقل|تحويل)|"
+        r"(?:إرسال|ارسال|أرسل|ارسل)\s+.{0,110}?(?:إلى|الى)\s+قسم\b",
+        normalized, re.I,
+    ))
+    password_reset = bool(re.search(
+        r"\b(?:reset|change|set)\b[^.]{0,60}\bpassword\b"
+        r"|(?:أعد|اعد|إعادة|اعادة|غيّر|غير|صفّر|صفر)[^.]{0,80}(?:كلمة\s+(?:المرور|مرور))",
+        text,
+        re.I,
+    ))
+    inspection_bypass = bool(re.search(
+        r"\b(?:skip|bypass|circumvent|evade)\b.{0,80}\b(?:inspection|on[- ]site|site visit)\b"
+        r"|\b(?:inspection|on[- ]site|site visit)\b.{0,80}\b(?:skip|bypass|circumvent|evade)\b"
+        r"|(?:跳过|绕过|规避)[^。]{0,24}(?:现场检查|现场|检查|复核)"
+        r"|(?:تخط|تخطى|تجاوز|تجاوز التفتيش|تخطي).{0,80}(?:التفتيش|الفحص|المعاينة)",
+        normalized,
+        re.I,
+    ))
+    passing_report = bool(re.search(
+        r"\b(?:passing|pass|approved|successful)\s+(?:report|inspection report)\b"
+        r"|\b(?:generate|create|issue)\b.{0,50}\b(?:passing|approved|successful)\s+(?:report|inspection report)\b"
+        r"|(?:生成|创建|出具|直接).{0,20}(?:合格|通过).{0,12}(?:报告|报表)"
+        r"|(?:انشاء|انشئ|اصدار).{0,50}(?:تقرير نجاح|تقرير اجتياز)",
+        normalized,
+        re.I,
+    ))
+    inspection_result_change = bool(re.search(
+        r"\b(?:change|modify|update|set|mark)\b.{0,80}\b(?:inspection\s+)?(?:result|outcome|finding)\b"
+        r"|(?:修改|更改|改成|设为|标记).{0,50}(?:检查|检验|核查|结果)"
+        r"|(?:تغيير|تعديل|غير|عدل).{0,70}(?:نتيجة|نتيجه).{0,40}(?:الفحص|التفتيش|المعاينة)",
+        normalized,
+        re.I,
+    ))
+    approval_request = bool(re.search(
+        r"\b(?:approve|reject)\b|批准|驳回|(?:الموافقة|المصادقة|الرفض)\s+على|\b(?:وافق|ارفض)\s+",
+        normalized,
+        re.I,
+    ))
+    language = language if language in {"en", "ar", "zh"} else response_language_for(text)
+    if password_reset:
+        summary = "The assistant cannot reset passwords or send credentials in chat."
+        missing = ("action_not_read_only", "password_reset_workflow_required")
+    elif inspection_bypass or passing_report:
+        summary = "The assistant cannot bypass an on-site inspection or generate a passing report in chat."
+        missing = ("action_not_read_only", "inspection_workflow_required")
+    elif inspection_result_change:
+        summary = "The assistant cannot change an inspection result in chat."
+        missing = ("action_not_read_only", "inspection_result_workflow_required")
+    elif transfer:
         summary = "The assistant cannot transfer or change inspection ownership in chat."
         missing = ("action_not_read_only", "transfer_rule_not_verified")
+    elif approval_request:
+        summary = "The assistant cannot approve or reject a business request in chat."
+        missing = ("action_not_read_only", "approval_workflow_required")
     else:
         summary = "The request asks for a business change, which the read-only reader cannot perform."
         missing = ("action_not_read_only",)
+    if password_reset:
+        target = next(iter(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text)), "the target account")
+        if language == "ar":
+            facts = (
+                "لا يمكنني إعادة تعيين كلمة المرور أو إرسال بيانات الاعتماد عبر الدردشة. لم يتم إنشاء أو كشف أي كلمة مرور أو رمز أو بيانات مؤقتة.",
+                f"استخدم إدارة العملاء > الحسابات، وابحث عن {target}، ثم اختر إعادة تعيين كلمة المرور وأكمل عمليات التحقق والموافقة في البوابة، ودع البوابة ترسل الإشعار عبر القناة المعتمدة.",
+            )
+        elif language == "zh":
+            facts = (
+                "我不能在聊天中重置密码或发送凭据。本次没有生成或泄露密码、Token 或临时凭据。",
+                f"请进入 Customer Management > Accounts，查找 {target}，选择 Reset Password，完成门户要求的身份验证和审批，并由门户通过批准的渠道发送通知。",
+            )
+        else:
+            facts = (
+                "I cannot reset a password or send credentials in chat. No password, token, or temporary credential was generated or disclosed.",
+                f"Use Customer Management > Accounts, find {target}, select Reset Password, complete the portal's identity and approval checks, and let the portal send the notification through its approved channel.",
+            )
+    elif inspection_bypass or passing_report:
+        if language == "ar":
+            facts = (
+                "لا يمكنني تجاوز التفتيش الميداني أو إنشاء تقرير نجاح مباشرة في الدردشة. لم يتم تنفيذ أي تغيير.",
+                "يجب إكمال التفتيش الميداني وتوثيق الأدلة ثم إرسال التقرير إلى مسار المراجعة والموافقة المعتاد في البوابة.",
+            )
+        elif language == "zh":
+            facts = (
+                "我不能在聊天中跳过现场检查或直接生成合格报告，本次没有执行任何变更。",
+                "必须先完成现场检查、提交检查证据，再通过门户正常的复核和审批流程生成报告。",
+            )
+        else:
+            facts = (
+                "I cannot bypass the on-site inspection or generate a passing report directly in chat. No change was performed.",
+                "The inspection must be completed, evidence submitted, and the report sent through the portal's normal review and approval workflow.",
+            )
+    elif inspection_result_change:
+        if language == "ar":
+            facts = (
+                "لا يمكنني تغيير نتيجة الفحص إلى «مقبول» أو تعديل أي نتيجة تفتيش عبر الدردشة. لم يُنفَّذ أي تغيير.",
+                "راجع سجل المهمة وأدلتها في بوابة التفتيش، واستخدم إجراء التعديل والمراجعة المعتمد إذا كانت صلاحيتك تسمح بذلك.",
+            )
+        elif language == "zh":
+            facts = (
+                "我不能通过聊天把检查结果改为“合格”或修改任何检查结论；本次没有执行变更。",
+                "请在检查门户核对任务与证据，并按账号权限使用正式的修改、复核流程。",
+            )
+        else:
+            facts = (
+                "I cannot change an inspection result to passed, or modify any inspection finding in chat. No change was performed.",
+                "Review the task and evidence in the Inspection portal and use its authorized correction and review workflow if your role permits it.",
+            )
+    elif transfer:
+        task_reference = next(iter(re.findall(r"\bIN-\d{4}-\d+\b", text, re.I)), "")
+        violation_reference = next(iter(re.findall(r"\bVN-\d{4}-\d+\b", text, re.I)), "")
+        task_context = f" ({task_reference})" if task_reference else ""
+        if violation_reference and not task_reference:
+            facts = (
+                (
+                    f"لم أرسل السجل رقم {violation_reference} إلى قسم آخر، ولم أُجرِ أي تغيير. المعرّف المذكور هو رقم مخالفة لا رقم مهمة تفتيش.",
+                    "المساعد للقراءة فقط؛ لم أتحقق من وجود مسار تحويل لهذه المخالفة إلى القسم المقصود أو من صلاحية هذا الحساب له. راجع سجل المخالفة وإجراء الإحالة المعتمد في البوابة مع الجهة المالكة.",
+                ) if language == "ar" else (
+                    f"I did not forward record {violation_reference} to another department or change it. The supplied identifier is a violation number, not an inspection task number.",
+                    "This assistant is read-only. I have not verified a transfer route for this violation or this account's authority to use one; check the violation record and the approved referral process with its owner.",
+                )
+            )
+        else:
+            facts = (
+            (
+                f"لم يتم نقل مهمة التفتيش{task_context} أو تغيير إسنادها. مساعد الدردشة للقراءة فقط.",
+                "لا يمكن نقل المهمة إلى قسم التراخيص من الدردشة أو من إجراء «تعيين المفتش» الظاهر في إدارة المهام؛ فهذا الإجراء يغيّر المفتش فقط، لا القسم. لم أتحقق من مسار تحويل آخر بين الأقسام لهذه المهمة. راجع مسؤول التفتيش والقسم المستلم لمعرفة الإجراء المعتمد، ولا تعتبر المهمة منقولة قبل ظهور تأكيد رسمي في البوابة.",
+            ) if language == "ar" else (
+                f"Inspection task{task_context} was not transferred or reassigned. The chat reader is read-only.",
+                "This task cannot be transferred to Licensing through chat or the visible Assign Inspector action in Task Management: that action changes the inspector, not the department. No other cross-department route has been verified for this task. Ask the Inspection owner and receiving department for the authorized procedure, and do not treat it as transferred without a portal confirmation.",
+            )
+            )
+    elif approval_request:
+        reference = next(iter(re.findall(r"\bML-[\w-]+\b", text, re.I)), "")
+        content_application = bool(re.search(
+            r"\bMC-\d+-\d+-\d+\b|\bcontent\b|المحتوى|内容",
+            text, re.I,
+        ))
+        if language == "ar":
+            facts = (
+                f"لا يمكنني الموافقة على الطلب{(' ' + reference) if reference else ''} أو رفضه عبر الدردشة. المساعد للقراءة فقط، ولم يُنفَّذ أي تغيير.",
+                ("تحقق من تفاصيل طلب المحتوى في المحتوى > طلبات المحتوى، واستخدم إجراء المراجعة والقرار المعتمد إذا كانت صلاحية حسابك تسمح بذلك؛ لم أتحقق من حالة الطلب أو صلاحية هذا الحساب لاتخاذ القرار."
+                 if content_application else
+                 "تحقق من تفاصيل الطلب واستخدم إجراء القرار المعتمد في بوابة التراخيص إذا كانت صلاحية حسابك تسمح بذلك؛ لم أتحقق من حالة الطلب أو صلاحية هذا الحساب لاتخاذ القرار."),
+            )
+        elif language == "zh":
+            facts = (
+                f"我不能在聊天中批准或驳回申请{(' ' + reference) if reference else ''}。助手仅供读取，本次没有执行任何变更。",
+                ("请在内容 > 内容申请中核对申请详情，并仅在账号有权限时使用正式的审核与决定流程；我尚未核实申请状态或该账号的审批权限。"
+                 if content_application else
+                 "请在许可门户核对申请详情，并仅在账号有权限时使用正式的审批流程；我尚未核实申请状态或该账号的审批权限。"),
+            )
+        else:
+            facts = (
+                f"I cannot approve or reject application{(' ' + reference) if reference else ''} in chat. The assistant is read-only, and no change was made.",
+                ("Check the application detail under Content > Content Applications and use its authorized review and decision workflow if your account permits it; I have not verified this application's status or this account's approval permission."
+                 if content_application else
+                 "Check the application details and use the portal's authorized decision workflow if your account permits it; I have not verified the application's status or this account's approval permission."),
+            )
+    else:
+        facts = ()
     return ReaderResult(
         status="not_confirmed",
         summary=summary,
         answer_shape="detail",
-        facts=(
-            "No transfer, assignment or other business change was performed.",
-            "To transfer an inspection task, open Inspection > Task Management, select the task, verify the portal's permitted department/assignee workflow, and submit it there. The chat reader is read-only.",
-        ) if transfer else (),
+        facts=facts,
         missing=missing,
     )
 
@@ -10105,6 +14092,27 @@ class AdminPortalReader:
         bounded_context = _bounded_conversation_context(conversation_context)
         intent_state: dict[str, Any] = {}
         api_audit: dict[str, Any] = {}
+        # Enforce the read-only boundary before identity/planner work.  A
+        # business-change command must never depend on page routing or an LLM
+        # intent shape (which may be absent or malformed for mixed languages).
+        # This keeps the refusal deterministic and prevents runtime failures
+        # from being surfaced as a generic "Something went wrong" response.
+        preflight_language = response_language_for(
+            question,
+            str(bounded_context.get("responseLanguage") or "") or None,
+        )
+        preflight_refusal = _mutation_request_refusal_result(question, preflight_language)
+        if preflight_refusal is not None:
+            trace.record(
+                "read_policy",
+                "failed",
+                failure_code="action_not_read_only",
+                output_summary={"decision": "explicit_business_command_rejected_preflight"},
+            )
+            return ReaderOutcome(
+                preflight_refusal,
+                {"stage": "mutation_request_refused_preflight", "result": preflight_refusal.public_json()},
+            )
         trace.record(
             "question_context",
             "passed",
@@ -10126,6 +14134,7 @@ class AdminPortalReader:
                 intent_state=intent_state,
                 api_audit=api_audit,
             )
+            outcome = _guard_inspection_target_history(outcome, question)
         except Exception as exc:
             trace.record(
                 "reader_runtime",
@@ -10134,8 +14143,44 @@ class AdminPortalReader:
                 failure_code="reader_runtime_error",
             )
             raise
+        if outcome.result.workflow_state in {
+            'inspection_team_assignment_full', 'inspection_detail_full', 'authorized_record_detail',
+            'license_overdue_full', 'application_overdue_unverified',
+            'application_review_collection',
+        }:
+            # Exact-record evidence remains authoritative for the case, but
+            # an explicit standards/policy request also asks for independently
+            # grounded rules. Do not let the exact-detail fast path suppress
+            # that second part, or infer compliance from a workflow status.
+            if (outcome.result.workflow_state == 'authorized_record_detail'
+                    and outcome.result.status == 'success'
+                    and re.search(r"\b(?:polic(?:y|ies)|rules?|regulations?|standards?|basis)\b|سياسات|قواعد|معايير|معيار|قانون|لائحة|依据|标准|法规|政策", question, re.I)
+                    and not _record_collection_only_request(question)):
+                rules = await self._rule_evidence_facts(principal, question, outcome, {})
+                if rules:
+                    result = replace(outcome.result, facts=(*outcome.result.facts, *rules))
+                    outcome = ReaderOutcome(result, {**outcome.audit_evidence,
+                        'exactDetailRuleEvidence': {'factCount':len(rules)}, 'result':result.public_json()})
+            # This is already a verified, permission-scoped two-pass list.
+            # Generic UI enrichers must not replace an identity-bound detail
+            # with queue statistics (Arabic fee wording also means "rule").
+            trace.record('result_classification',
+                         'passed' if outcome.result.status == 'success' else 'failed',
+                         output_summary={'factCount': len(outcome.result.facts),
+                                         'answerShape': outcome.result.answer_shape},
+                         failure_code=(outcome.result.missing[0] if outcome.result.missing else ''))
+            return ReaderOutcome(outcome.result, {
+                **outcome.audit_evidence, 'qualityTrace': trace.entries,
+                'rootCause': trace.root_cause(outcome.result),
+            })
         if intent_state:
-            hint = parse_intent_resolution(intent_state, question, bounded_context).planner_context(bounded_context).get("sourceHint", {})
+            resolution = parse_intent_resolution(intent_state, question, bounded_context)
+            planner_context = (
+                resolution.planner_context(bounded_context)
+                if resolution is not None and callable(getattr(resolution, "planner_context", None))
+                else {}
+            )
+            hint = planner_context.get("sourceHint", {}) if isinstance(planner_context, dict) else {}
             result = replace(outcome.result, intent_context=intent_state, source_hint=outcome.result.source_hint or hint)
             expected_shape = reader_answer_shape(question, {"resolvedIntent": intent_state})
             if result.status in {"success", "no_data"} and expected_shape not in {None, "unspecified", result.answer_shape}:
@@ -10161,6 +14206,7 @@ class AdminPortalReader:
         outcome = _native_queue_counts(outcome, question)
         outcome = _native_profile_type_count(outcome, question)
         outcome = _native_personal_task_counts(outcome, question)
+        outcome = _native_queue_status_priority_summary(outcome, question)
         outcome = _native_queue_priority_advice(outcome, question)
         today_rollup = _inspection_today_rollup(outcome, question)
         if today_rollup is not None:
@@ -10192,6 +14238,39 @@ class AdminPortalReader:
             knowledge_context = {}
         outcome = _native_sla_performance_metrics(outcome, question)
         outcome = _native_fine_decision_result(outcome, question)
+        # A VN identifier is a violation, not an inspection task.  Committee
+        # accounts can read the violation and its source-task number without
+        # necessarily having permission to open that task's checklist.  Keep
+        # those two read boundaries explicit rather than answering with
+        # unrelated policy excerpts or pretending the checklist was read.
+        violation_identity = _explicit_record_identity(question)
+        if (violation_identity and violation_identity.upper().startswith("VN-")
+                and _RECORD_DETAIL_REQUEST.search(str(question or ""))
+                and str(outcome.result.page or "") == "/inspection/violations"):
+            permission = getattr(self, "_turn_permission_context", None)
+            task_paths = (*permission.pages, *permission.subpages) if isinstance(permission, UserPermissionContext) else ()
+            task_allowed = any(permission_path_matches("/inspection/tasks", path) for path in task_paths)
+            if not task_allowed:
+                observed = outcome.audit_evidence.get("observation") or {}
+                exact_rows = [
+                    row for row in _api_candidate_rows(observed, "GET /api/admin/inspection/violations")
+                    if str(row.get("violationNo") or "").casefold() == violation_identity.casefold()
+                ]
+                rendered = " ".join(str(fact) for fact in outcome.result.facts)
+                source_task = str(exact_rows[0].get("sourceTaskNo") or exact_rows[0].get("taskNo") or "") if exact_rows else ""
+                if not source_task and violation_identity.casefold() in rendered.casefold():
+                    match = re.search(r"Source Task:\s*(IN-\d{4}-\d+)", rendered, re.I)
+                    source_task = match.group(1) if match else ""
+                if exact_rows or source_task:
+                    facts = (
+                        f"Violation {violation_identity} was verified in the authorized Violations view.",
+                        *((f"Its recorded source task is {source_task}.",) if source_task else ()),
+                        "The Violations view does not expose the source task checklist, and this account cannot read Inspection / Tasks; required materials and steps cannot be confirmed here.",
+                    )
+                    scoped = replace(outcome.result, status="not_confirmed", answer_shape="detail",
+                                     facts=facts, missing=("source_task_checklist_not_authorized",))
+                    outcome = ReaderOutcome(scoped, {**outcome.audit_evidence,
+                        "violationChecklistPermissionDenied": True, "result": scoped.public_json()})
         # A question about one record's own history, requisites or next step
         # needs the record's detail page, which the list surface does not load.
         detail_identity = _explicit_record_identity(question)
@@ -10202,7 +14281,8 @@ class AdminPortalReader:
         # read-only request when the current session exposes Inspection tasks.
         if detail_identity and _inspection_history_request(question):
             detail_page = "/inspection/tasks"
-        if (detail_identity and detail_page and (
+        if (not outcome.audit_evidence.get("violationChecklistPermissionDenied")
+                and detail_identity and detail_page and (
                 _RECORD_DETAIL_REQUEST.search(str(question or ""))
                 or _inspection_history_request(question)
                 )):
@@ -10250,10 +14330,9 @@ class AdminPortalReader:
                         # "not rendered" note.  Once the exact detail/checklist
                         # response is verified, that note is stale and must not
                         # sit beside the authoritative detail facts.
-                        has_checklist_evidence = any(
-                            str(fact).startswith("Inspection checklist materials/steps returned for ")
-                            or str(fact).startswith("The inspection checklist endpoint returned no materials or steps for ")
-                            for fact in detail_facts
+                        has_checklist_evidence = bool(
+                            (checklist_source := _api_candidate_by_operation(detail_observation, _INSPECTION_CHECKLIST_OPERATION))
+                            and checklist_source.get('status') == 200
                         )
                         retained_facts = tuple(
                             fact for fact in outcome.result.facts
@@ -10262,11 +14341,48 @@ class AdminPortalReader:
                                 and "Required materials/attachments are not rendered on the page that was read" in str(fact)
                             )
                         )
+                        # A history request is a detail projection.  Do not
+                        # carry the planner's initial queue/list facts into
+                        # it: those facts describe the current task and make
+                        # the response look duplicated (and can include
+                        # unrelated list-level prose).  The detail projector
+                        # already contains the verified task/violation
+                        # history and its completeness statements.
+                        inspection_task_verified = bool(
+                            detail_page == '/inspection/tasks'
+                            and (task_detail := _api_object_by_operation(detail_observation, _INSPECTION_TASK_DETAIL_OPERATION))
+                            and str(task_detail.get('taskNo') or '').casefold() == detail_identity.casefold()
+                        )
+                        detail_only = _inspection_history_request(question) or has_checklist_evidence or inspection_task_verified
+                        history_facts = tuple(detail_facts) if detail_only else (*retained_facts, *additions)
+                        if _inspection_history_request(question):
+                            # A history request must not retain planner prose
+                            # such as unrelated regulations or "some matching
+                            # records" once the scoped detail read is known.
+                            # Keep only verified target/history/contact facts;
+                            # the detail projector supplies the completeness
+                            # statement and any no-data explanation.
+                            history_facts = tuple(
+                                fact for fact in history_facts
+                                if not re.search(
+                                    r"some matching|not the full list|no retrieved policy|regulation states|"
+                                    r"ordinary violations|contact details are not returned",
+                                    str(fact), re.I,
+                                )
+                            )
                         merged = replace(
                             outcome.result,
                             status="success",
                             page=detail_page,
-                            facts=(*retained_facts, *additions)[:24],
+                            # Institution-history answers are a bounded
+                            # detail projection, not a generic list sample.
+                            # Keeping answer_shape=list makes the shared
+                            # renderer prepend "some matching records" even
+                            # after the target-scoped receipts are verified.
+                            answer_shape=("detail" if detail_only
+                                          else outcome.result.answer_shape),
+                            facts=history_facts if inspection_task_verified else history_facts[:24],
+                            workflow_state='inspection_detail_full' if inspection_task_verified else outcome.result.workflow_state,
                             missing=tuple(
                                 code for code in outcome.result.missing
                                 if code not in {"knowledge_not_grounded"}
@@ -10279,15 +14395,116 @@ class AdminPortalReader:
                                 "identity": detail_identity,
                                 "factCount": len(additions),
                                 "checklistVerified": has_checklist_evidence,
+                                "inspectionTaskVerified": inspection_task_verified,
                             },
                             "result": merged.public_json(),
                         })
+        if (outcome.audit_evidence.get('recordDetail') or {}).get('inspectionTaskVerified'):
+            # The exact task projector already supplies the requested fields.
+            # Queue enrichment and regulation retrieval would duplicate the
+            # task and introduce unrelated material after this verified read.
+            return ReaderOutcome(outcome.result, {
+                **outcome.audit_evidence, 'qualityTrace': trace.entries,
+                'rootCause': trace.root_cause(outcome.result),
+            })
         # These run last: they add fields the page's own read API returned and
         # the scope/history notes, which earlier repairs would otherwise drop.
         outcome = _native_observed_api_enrichment(outcome, question)
+        if (outcome.result.page == '/inspection/tasks'
+                and outcome.result.workflow_state != 'inspection_team_assignment_full'
+                and _OTHER_PEOPLE_TASK_REQUEST.search(str(question or ''))
+                and re.search(r'\broutes?\b|مسار|مسارات|路线|路径', str(question or ''), re.I)):
+            # Planner-led reads can reach Team Tasks without taking the
+            # deterministic named-source branch.  Complete that same
+            # permission-checked read here before the bounded-page guard.
+            try:
+                assignment_tool = await asyncio.wait_for(
+                    self.gateway.invoke(
+                        principal, 'admin.portal.read',
+                        {'startPath': '/inspection/tasks',
+                         'actions': [{'type': 'observe'}],
+                         'inspectionTeamAssignments': True},
+                        allowed_tools=self.allowed_tools,
+                    ),
+                    timeout=min(45.0, self.timeout_budget.portal_read_seconds),
+                )
+            except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError,
+                    ValueError, TypeError, KeyError):
+                assignment_tool = {}
+            assignment_observation = (
+                ((assignment_tool.get('result') or {}).get('observation') or {})
+                if assignment_tool.get('ok') else {}
+            )
+            assignment_receipt = (assignment_observation.get('inspectionTeamAssignments')
+                                  if isinstance(assignment_observation, dict) else None)
+            logging.getLogger('uvicorn.error').info(
+                'inspection_team_assignments_postread ok=%s verified=%s reason=%s total=%s rows=%s',
+                assignment_tool.get('ok'),
+                assignment_receipt.get('verified') if isinstance(assignment_receipt, dict) else None,
+                assignment_receipt.get('reason') if isinstance(assignment_receipt, dict) else None,
+                assignment_receipt.get('total') if isinstance(assignment_receipt, dict) else None,
+                len(assignment_receipt.get('tasks') or {}) if isinstance(assignment_receipt, dict) else None,
+            )
+            if isinstance(assignment_receipt, dict) and assignment_receipt.get('verified') is True:
+                assigned_result = _verified_inspection_team_assignments_result(
+                    assignment_receipt, question, outcome.result.scope,
+                )
+                logging.getLogger('uvicorn.error').info(
+                    'inspection_team_assignments_projected workflow=%s facts=%s status=%s',
+                    assigned_result.workflow_state, len(assigned_result.facts), assigned_result.status,
+                )
+                outcome = ReaderOutcome(assigned_result, {
+                    **outcome.audit_evidence,
+                    'stage': 'inspection_team_assignments_postread',
+                    'inspectionTeamAssignments': assignment_receipt,
+                    'result': assigned_result.public_json(),
+                })
+        outcome = _other_inspector_routes_guard(outcome, question)
         outcome = _native_scope_and_comparison_notes(outcome, question)
-        outcome = _native_unavailable_information_notes(outcome, question)
-        rule_facts = await self._rule_evidence_facts(principal, question, outcome, knowledge_context)
+        if (not outcome.audit_evidence.get("violationChecklistPermissionDenied")
+                and (not (outcome.audit_evidence.get("recordDetail") or {}).get("checklistVerified")
+                     or str(outcome.result.page or "").rstrip("/").casefold() == "/content/contentapplications")):
+            outcome = _native_unavailable_information_notes(outcome, question)
+        outcome = _bound_violation_history_answer(outcome, question)
+        outcome = _inspection_collection_coverage_notes(outcome, question,
+            getattr(self, '_turn_permission_context', None), self.policy)
+        # A history request asks for target-scoped business records.  Do not
+        # append regulation snippets merely because terms such as "penalty"
+        # appear in the question; rules are a separate intent and unrelated
+        # excerpts obscure the verified institution data.
+        # An exact fine-decision miss is also a complete, page-grounded result.
+        # It must not fall through to the knowledge retriever: that retriever
+        # can return generally related regulations, which are not evidence that
+        # the requested case has a committee decision.  Keeping this guard
+        # marker-based avoids hard-coding any case number or business value.
+        skip_rule_evidence = (
+            # A documentation enricher cannot upgrade a denied/failed live
+            # read to success. Terms such as "violations" identify records
+            # too; manual example counters are never their current values.
+            outcome.result.status in {"no_permission", "load_failed"}
+            or _record_collection_only_request(question)
+            or outcome.audit_evidence.get("violationChecklistPermissionDenied") is True
+            # A request to count/list overdue SLA tasks is about the observed
+            # queue, not a request for a legal standard.  Arabic commonly says
+            # "معايير SLA" for the SLA metric; matching "معايير" alone must
+            # not append an unrelated (and English-only) regulation disclaimer.
+            or _inspection_overdue_is_metric_only_request(question, outcome.result)
+            or (_explicit_record_identity(question) and outcome.result.status != "success")
+            or
+            outcome.audit_evidence.get("nativeFineDecision") in {"matched", "unmatched", "empty"}
+            or any(
+                re.search(r"no (?:violation or )?fine record matches|no fine decision is recorded", str(fact), re.I)
+                for fact in outcome.result.facts
+            )
+            or (
+                _FINE_DECISION_REQUEST.search(str(question or ""))
+                and outcome.result.status in {"no_data", "not_confirmed"}
+            )
+        )
+        rule_facts = (() if _inspection_history_request(question)
+                      or (outcome.audit_evidence.get("recordDetail") or {}).get("checklistVerified")
+                      or skip_rule_evidence else
+                      await self._rule_evidence_facts(principal, question, outcome, knowledge_context))
         if rule_facts:
             # The rule text is quoted from the governing document, so it can sit
             # beside the page values instead of replacing them.
@@ -10308,6 +14525,9 @@ class AdminPortalReader:
             })
         elif (
             _RULE_EVIDENCE_REQUEST.search(str(question or ""))
+            and not _inspection_history_request(question)
+            and not (outcome.audit_evidence.get("recordDetail") or {}).get("checklistVerified")
+            and not skip_rule_evidence
             and outcome.result.status == "success"
             and outcome.result.page
             and not _SENSITIVE_GUIDANCE_QUESTION.search(str(question or ""))
@@ -10348,6 +14568,10 @@ class AdminPortalReader:
             if selected:
                 result = replace(outcome.result, selected_state=' / '.join(dict.fromkeys(selected)))
                 outcome = ReaderOutcome(result, {**outcome.audit_evidence, 'result': result.public_json()})
+        # Apply after every enrichment. A later projector must not repopulate a
+        # broad queue once its named team/department filter was unverified.
+        outcome = _guard_named_group_scope(outcome, question)
+        outcome = _guard_inspection_target_history(outcome, question)
         result_status = "passed" if outcome.result.status in {"success", "no_data"} else "failed"
         failure_code = outcome.result.missing[0] if outcome.result.missing else ""
         trace.record(
@@ -10454,6 +14678,80 @@ class AdminPortalReader:
             ]
         return tuple(facts[:5])
 
+    async def _read_current_admin_profile(
+        self,
+        principal: Principal,
+        context: UserPermissionContext,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, Any]]:
+        """Read the signed-in user's own profile when GetUserInfo omits labels.
+
+        The endpoint is a documented authenticated profile read, not a role-to-
+        department lookup.  The request is bound to ``principal.user_id`` and
+        starts from a page already authorized for this session, so a missing
+        label is never filled from a hard-coded account or role mapping.
+        """
+
+        if "admin.portal.read" not in self.allowed_tools or not principal.user_id:
+            return (), (), {}
+        start_path = next(
+            (
+                path for path in (*context.pages, *context.subpages)
+                if isinstance(path, str) and path.startswith("/")
+                and not self.policy.validate(PortalReadRequest(path, ({"type": "observe"},)), context)
+            ),
+            "",
+        )
+        if not start_path:
+            return (), (), {}
+        request = {
+            "startPath": start_path,
+            "actions": [{"type": "observe"}],
+            "pageReads": [{
+                "operationKey": _CURRENT_ADMIN_PROFILE_OPERATION,
+                "parameters": {"userId": principal.user_id},
+            }],
+        }
+        try:
+            tool = await asyncio.wait_for(
+                self.gateway.invoke(principal, "admin.portal.read", request, allowed_tools=self.allowed_tools),
+                timeout=min(45.0, self.timeout_budget.portal_read_seconds),
+            )
+        except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+            return (), (), {}
+        if not isinstance(tool, dict) or not tool.get("ok"):
+            return (), (), {}
+        observation = ((tool.get("result") or {}).get("observation") or {})
+        departments, roles = _profile_labels_from_observation(observation)
+        return departments, roles, observation if isinstance(observation, dict) else {}
+
+    async def _read_visible_dashboard_scope(
+        self,
+        principal: Principal,
+        context: UserPermissionContext,
+    ) -> Literal["personal", "team", "unknown"]:
+        """Use an authorized Dashboard observation, never a role-name guess."""
+
+        page = "/dashboard"
+        if "admin.portal.read" not in self.allowed_tools or self.policy.validate(
+            PortalReadRequest(page, ({"type": "observe"},)), context,
+        ):
+            return "unknown"
+        try:
+            tool = await asyncio.wait_for(
+                self.gateway.invoke(
+                    principal, "admin.portal.read",
+                    {"startPath": page, "actions": [{"type": "observe"}]},
+                    allowed_tools=self.allowed_tools,
+                ),
+                timeout=min(45.0, self.timeout_budget.portal_read_seconds),
+            )
+        except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+            return "unknown"
+        if not isinstance(tool, dict) or not tool.get("ok"):
+            return "unknown"
+        observation = ((tool.get("result") or {}).get("observation") or {})
+        return _visible_dashboard_scope(observation)
+
     async def _open_record_detail(
         self,
         principal: Principal,
@@ -10486,6 +14784,60 @@ class AdminPortalReader:
                 if type(candidate_id) in {str, int} and re.fullmatch(r"[A-Za-z0-9_-]{1,120}", str(candidate_id)):
                     task_id = str(candidate_id)
                 break
+        if (page == "/inspection/tasks" and task_id is None
+                and _inspection_history_request(question) and isinstance(parent_observation, dict)):
+            # An exact task can reside in another *observed* status tab.  The
+            # initial To Do collection is not evidence that a Completed or
+            # Cancelled row is absent.  Search each authorized tab by its own
+            # visible Search control, then bind the opaque id from that exact
+            # page response; never guess an id or use a sibling task row.
+            for tab in (parent_observation.get("tabControls") or [])[:4]:
+                if not isinstance(tab, dict) or tab.get("selected") is True:
+                    continue
+                tab_name = str(tab.get("name") or "").strip()
+                if not tab_name or ReadOnlyPortalPolicy._contains_mutation_command(tab_name):
+                    continue
+                try:
+                    switched = await asyncio.wait_for(
+                        self.gateway.invoke(
+                            principal, "admin.portal.read",
+                            {"startPath": page, "actions": [
+                                {"type": "switch_tab", "role": "tab", "name": tab_name},
+                            ]},
+                            allowed_tools=self.allowed_tools,
+                        ),
+                        timeout=min(45.0, self.timeout_budget.portal_read_seconds),
+                    )
+                    switched_observation = ((switched or {}).get("result") or {}).get("observation") or {}
+                    search = next((control for control in switched_observation.get("filterControls") or []
+                                   if isinstance(control, dict) and control.get("role") == "textbox"
+                                   and control.get("filterSurface") is True
+                                   and control.get("selector")), None)
+                    if search is None:
+                        continue
+                    found = await asyncio.wait_for(
+                        self.gateway.invoke(
+                            principal, "admin.portal.read",
+                            {"startPath": page, "actions": [
+                                {"type": "switch_tab", "role": "tab", "name": tab_name},
+                                {"type": "filter", "selector": search["selector"], "value": identity},
+                            ]},
+                            allowed_tools=self.allowed_tools,
+                        ),
+                        timeout=min(45.0, self.timeout_budget.portal_read_seconds),
+                    )
+                except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+                    continue
+                found_observation = ((found or {}).get("result") or {}).get("observation") or {}
+                for row in _api_rows_by_operation(found_observation, "GET /api/admin/inspection/tasks"):
+                    if str(row.get("taskNo") or "").strip().casefold() != identity.casefold():
+                        continue
+                    candidate_id = row.get("id")
+                    if type(candidate_id) in {str, int} and re.fullmatch(r"[A-Za-z0-9_-]{1,120}", str(candidate_id)):
+                        task_id = str(candidate_id)
+                    break
+                if task_id is not None:
+                    break
         if page == "/inspection/tasks" and _inspection_history_request(question):
             # These are reviewed, read-only request-parameter collections. The
             # gateway resolves taskId from the exact detail response and then
@@ -10513,6 +14865,19 @@ class AdminPortalReader:
                     "collectionPath": "/data/items",
                     "projections": [{"path": "/data/items", "fields": fields}],
                 })
+        elif page == '/inspection/tasks' and re.search(
+                r'violations?|evidence|handling\s+status|المخالفات|الأدلة|حالة المعالجة', question, re.I):
+            related_reads.append({
+                'relationshipRef': 'admin.inspection.violation.target-history',
+                'operationKey': _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION,
+                'parentOperationKey': parent_operation, 'parentPath': '/data',
+                'parentField': 'id', 'parameter': 'taskId',
+                'ownership': 'request_parameter_collection', 'collectionPath': '/data/items',
+                'projections': [{'path': '/data/items', 'fields': [
+                    'violationNo', 'violationTypeName', 'fineAmount', 'statusName',
+                    'sourceTaskId', 'sourceTaskNo', 'createdOn', 'paidTime',
+                ]}],
+            })
         elif page == "/inspection/tasks" and _RECORD_DETAIL_REQUEST.search(str(question or "")):
             related_reads.append({
                 "operationKey": _INSPECTION_CHECKLIST_OPERATION,
@@ -10521,11 +14886,26 @@ class AdminPortalReader:
                 "parentField": "id",
                 "parameter": "id",
                 "responseKeyPath": "/data/taskId",
+                # The raw checklist rows carry nested violation metadata.
+                # Project the visible checklist identity/text fields so the
+                # gateway's evidence budget cannot silently drop later items.
+                "projections": [{
+                    "path": "/data/items",
+                    "fields": ["checklistCode", "checklistName", "displayOrder", "isVisibleInChecklist"],
+                }],
             })
         actions: list[dict[str, Any]]
         page_reads: list[dict[str, Any]] = []
         if task_id is not None:
             page_reads.append({"operationKey": parent_operation, "parameters": {"id": task_id}})
+            if page == "/inspection/tasks" and _inspection_history_request(question):
+                # Target overview carries the stable establishment/individual
+                # identifier and names; persons carries the task-scoped
+                # contact collection. Both use the verified opaque task id.
+                page_reads.extend([
+                    {"operationKey": _INSPECTION_TARGET_OVERVIEW_OPERATION, "parameters": {"id": task_id}},
+                    {"operationKey": _INSPECTION_CONTACT_PERSONS_OPERATION, "parameters": {"id": task_id}},
+                ])
             actions = [{"type": "observe"}]
         else:
             actions = [{"type": "show_detail", "role": "cell", "name": identity, "value": identity}]
@@ -10547,7 +14927,49 @@ class AdminPortalReader:
             return {}
         payload = result.get("result") or {}
         observation = payload.get("observation")
-        return observation if isinstance(observation, dict) else {}
+        if not isinstance(observation, dict):
+            return {}
+        # When the table did not expose an opaque task id, the first detail
+        # read still resolves it through the parent task response used by the
+        # history related-reads.  Use that verified id for a second, bounded
+        # read of the institution overview and contact collection.  This keeps
+        # the gateway's two-related-read contract intact and never derives an
+        # institution id from the display target name.
+        if page == "/inspection/tasks" and _inspection_history_request(question) and task_id is None:
+            detail_object = _api_object_by_operation(observation, parent_operation)
+            resolved_id = detail_object.get("id") if isinstance(detail_object, dict) else None
+            if type(resolved_id) in {str, int} and re.fullmatch(r"[A-Za-z0-9_-]{1,120}", str(resolved_id)):
+                try:
+                    extra = await asyncio.wait_for(
+                        self.gateway.invoke(
+                            principal,
+                            "admin.portal.read",
+                            {
+                                "startPath": page,
+                                "actions": [{"type": "observe"}],
+                                "pageReads": [
+                                    {"operationKey": _INSPECTION_TARGET_OVERVIEW_OPERATION,
+                                     "parameters": {"id": str(resolved_id)}},
+                                    {"operationKey": _INSPECTION_CONTACT_PERSONS_OPERATION,
+                                     "parameters": {"id": str(resolved_id)}},
+                                ],
+                            },
+                            allowed_tools=self.allowed_tools,
+                        ),
+                        timeout=min(45.0, max(30.0, self.timeout_budget.portal_read_seconds)),
+                    )
+                except (asyncio.TimeoutError, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+                    extra = {}
+                extra_observation = ((extra or {}).get("result") or {}).get("observation") if isinstance(extra, dict) else None
+                if isinstance(extra_observation, dict):
+                    base_api = observation.get("apiDiscovery") if isinstance(observation.get("apiDiscovery"), dict) else {}
+                    extra_api = extra_observation.get("apiDiscovery") if isinstance(extra_observation.get("apiDiscovery"), dict) else {}
+                    merged_api = {**base_api, **extra_api}
+                    base_candidates = list(base_api.get("candidates") or []) if isinstance(base_api.get("candidates"), list) else []
+                    extra_candidates = list(extra_api.get("candidates") or []) if isinstance(extra_api.get("candidates"), list) else []
+                    merged_api["candidates"] = base_candidates + [candidate for candidate in extra_candidates if candidate not in base_candidates]
+                    observation = {**observation, **extra_observation, "apiDiscovery": merged_api}
+        return observation
 
     async def _rule_evidence_retrieval(self, principal: Principal, question: str) -> dict[str, Any]:
         """Retrieve the rule documents for a question answered elsewhere."""
@@ -10586,6 +15008,7 @@ class AdminPortalReader:
     ) -> ReaderOutcome:
         budget = self.timeout_budget
         bounded_conversation_context = _bounded_conversation_context(conversation_context)
+        question = _single_application_status_followup(question, bounded_conversation_context)
         list_selection_reviewed = False
         observation_grounding_reviewed = False
         intent_completion_reviewed = False
@@ -11407,6 +15830,9 @@ class AdminPortalReader:
         ) -> dict[str, Any]:
             nonlocal last_portal_page, last_portal_observation, last_portal_changed_tabs
             original_request = request
+            page_hint = bounded_conversation_context.get('currentPage') or {}
+            if isinstance(page_hint, dict) and page_hint.get('browserTimezone'):
+                request = replace(request, browser_timezone=page_hint['browserTimezone'])
             if request.start_path == last_portal_page and last_portal_changed_tabs:
                 request = _replay_observed_tab_path(request, last_portal_observation)
             if request != original_request:
@@ -11775,23 +16201,135 @@ class AdminPortalReader:
                 "buttonCount": len(permission_context.buttons),
             },
         )
-        mutation_refusal = _mutation_request_refusal_result(question)
+        # A request explicitly outside the current team must be rejected
+        # before semantic routing. Arabic and English planners may otherwise
+        # pick different pages and leak a bounded sample from the wrong scope.
+        if (_outside_current_team_requested(question)
+                and re.search(r"\b(?:tasks?|tickets?)\b|任务|工单|مهام|المهام|تذاكر", question, re.I)
+                and _permission_result_scope(permission_context) != "global"):
+            denied = ReaderResult(
+                status="no_permission", answer_shape="list", scope=_permission_result_scope(permission_context),
+                summary="Another manager's team tasks are outside this account's readable scope.",
+                missing=("outside_team_scope_not_authorized",),
+            )
+            return ReaderOutcome(denied, {
+                "stage": "team_task_outside_scope_preflight",
+                "permission": permission_audit, "result": denied.public_json(),
+            })
+        turn_language = response_language_for(
+            question,
+            str(bounded_conversation_context.get("responseLanguage") or "") or None,
+        )
+        access_refusal = _account_access_request_refusal(question, permission_context, turn_language)
+        if access_refusal is not None:
+            return ReaderOutcome(access_refusal, {
+                "stage": "safety_request_refusal", "permission": permission_audit,
+                "result": access_refusal.public_json(),
+            })
+        mutation_refusal = _mutation_request_refusal_result(question, turn_language)
         if mutation_refusal is not None:
             return ReaderOutcome(mutation_refusal, {
                 "stage": "mutation_request_refused",
                 "permission": permission_audit,
                 "result": mutation_refusal.public_json(),
             })
-        # Identity and capability questions need no page read: the verified
-        # GetUserInfo context is exactly the answer the portal can support.
-        profile_result = _self_profile_result(question, permission_context)
+        # GetUserInfo is authoritative for access, but some Admin builds omit
+        # the authenticated department display label from that envelope. Read
+        # the signed-in user's own profile once in that case; never infer the
+        # label from a role or a hard-coded account mapping.
+        profile_observation: dict[str, Any] = {}
+        has_department_label = any(
+            _display_permission_label(value) for value in permission_context.departments
+        )
+        if _self_profile_requested(question) and not has_department_label:
+            profile_departments, profile_roles, profile_observation = await self._read_current_admin_profile(
+                principal, permission_context,
+            )
+            if profile_departments or profile_roles:
+                permission_context = replace(
+                    permission_context,
+                    departments=profile_departments or permission_context.departments,
+                    roles=profile_roles or permission_context.roles,
+                    current_role=(profile_roles[0] if profile_roles else permission_context.current_role),
+                )
+                self._turn_permission_context = permission_context
+                permission_audit = permission_audit_summary(permission_context)
+        # Identity and capability questions should return only verified current
+        # session/profile facts, never business rows from an unrelated page.
+        observed_dashboard_scope: Literal["personal", "team", "unknown"] = "unknown"
+        profile_needs_scope = _profile_scope_requested(question) or _profile_capability_requested(question)
+        if (
+            _self_profile_requested(question)
+            and profile_needs_scope
+        ):
+            observed_dashboard_scope = await self._read_visible_dashboard_scope(
+                principal, permission_context,
+            )
+        profile_result = _self_profile_result(
+            question, permission_context, language=turn_language,
+            observed_dashboard_scope=observed_dashboard_scope,
+        )
         if profile_result is not None:
-            return ReaderOutcome(profile_result, {
+            evidence = {
                 "stage": "self_profile",
+                "presentationMode": "verified_profile",
                 "permission": permission_audit,
                 "identityMatch": True,
                 "result": profile_result.public_json(),
-            })
+            }
+            if observed_dashboard_scope != "unknown":
+                evidence["dashboardScopeRead"] = observed_dashboard_scope
+            if profile_observation:
+                evidence["profileRead"] = {"operation": _CURRENT_ADMIN_PROFILE_OPERATION, "verified": bool(permission_context.departments)}
+            return ReaderOutcome(profile_result, evidence)
+        # A fresh Dashboard conversation has no prior member intent. Resolve
+        # its short workload question only after reading a real team Dashboard
+        # and finding one authorized team workspace; never infer this from a
+        # role name or a caller-supplied "verified" context flag.
+        verified_team_dashboard = False
+        current_page = bounded_conversation_context.get('currentPage') or {}
+        current_route = str(current_page.get('route') or current_page.get('currentPage') or current_page.get('current_page') or '') if isinstance(current_page, dict) else str(current_page)
+        if (_overdue_workload_shorthand(question)
+                and current_route.split('?', 1)[0].rstrip('/') == '/dashboard'):
+            allowed_team_pages = [page for page in (
+                '/happiness/team-management', '/licensing/team-management', '/content/team-management',
+            ) if any(permission_path_matches(page, path)
+                     for path in (*permission_context.pages, *permission_context.subpages))]
+            if len(allowed_team_pages) == 1:
+                scope_tool = await portal_read_stage(
+                    PortalReadRequest('/dashboard', ({'type': 'observe'},)),
+                    timeout_stage='workload_dashboard_scope', attempt='workload_dashboard_scope')
+                scope_observation = (scope_tool.get('result') or {}).get('observation') or {}
+                verified_team_dashboard = bool(scope_tool.get('ok') and _visible_dashboard_scope(scope_observation) == 'team')
+                trace.record('workload_scope_resolution', 'passed' if verified_team_dashboard else 'degraded',
+                    output_summary={'currentPage': current_route, 'authorizedTeamPages': allowed_team_pages,
+                        'dashboardScope': _visible_dashboard_scope(scope_observation),
+                        'observedHeadings': [node.get('heading', '') for node in _observation_semantic_nodes(scope_observation)]},
+                    failure_code='' if verified_team_dashboard else 'team_dashboard_scope_unverified')
+        # Payment delay is a different business measure from task SLA. Sparse
+        # payment wording must not borrow a team queue's total or overdue count.
+        if (re.search(r'كم\s+عدد|\bhow many\b', question, re.I)
+                and re.search(r'سداد|دفع|\bpay(?:ment|ing)?\b', question, re.I)
+                and re.search(r'تأخر|متأخر|\b(?:overdue|late|delay\w*)\b', question, re.I)
+                and not _explicit_record_identity(question)
+                and any(permission_path_matches(page, path)
+                        for page in ('/happiness/team-management', '/licensing/team-management', '/content/team-management')
+                        for path in (*permission_context.pages, *permission_context.subpages))
+                and not any(permission_path_matches('/financial-payment/transactions', path)
+                            for path in (*permission_context.pages, *permission_context.subpages))):
+            clarification = ReaderResult(
+                status='not_confirmed', answer_shape='count',
+                summary='The requested overdue object needs clarification.',
+                facts=((('هل تقصد المهام المتأخرة في فريقك أم حالات تأخر الدفع؟ '
+                         'المهام المتأخرة ليست حالات تأخر الدفع. يرجى تحديد نوع الحالات المطلوبة.')
+                        if turn_language == 'ar' else
+                        ('Do you mean overdue tasks in your team or late payments? '
+                         'Task overdue counts are not late-payment counts. Please specify the requested business object.')),),
+                workflow_state='overdue_object_clarification',
+                missing=('overdue_business_object_ambiguous',),
+            )
+            return ReaderOutcome(clarification, {'stage': 'overdue_object_clarification',
+                'permission': permission_audit, 'result': clarification.public_json()})
         prior_identity_match = ""
         prior_identity_tokens = re.findall(
             r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*[A-Za-z])(?=[A-Za-z0-9-]*\d)"
@@ -11800,22 +16338,10 @@ class AdminPortalReader:
         )
         if len(prior_identity_tokens) == 1:
             prior_identity_match = _detail_identity(prior_identity_tokens[0])
-        prior_result = _prior_exact_record_result(
-            bounded_conversation_context,
-            record_identity=prior_identity_match,
-            page="",
-            scope=_permission_result_scope(permission_context),
-        )
-        if prior_result is not None:
-            return ReaderOutcome(
-                prior_result,
-                {
-                    "stage": "prior_exact_record_reuse",
-                    "permission": permission_audit,
-                    "priorIdentityMatch": prior_identity_match,
-                    "result": prior_result.public_json(),
-                },
-            )
+        # A repeated identifier does not mean a request to repeat the previous
+        # answer. The user may ask for new fields or for the current state.
+        # Re-read the permitted page and exact detail; a previous list row is
+        # neither fresh evidence nor proof of its history/next actions.
         normalized_question = re.sub(r'\s+', ' ', question).strip().casefold()
 
         # A slash date with both day and month in the 1..12 range is
@@ -12466,7 +16992,7 @@ class AdminPortalReader:
                     'result': combined_result.public_json(),
                 })
 
-        safety_result = _safety_request_result(question)
+        safety_result = _safety_request_result(question, permission_context)
         if safety_result is not None:
             return ReaderOutcome(safety_result, {
                 'stage': 'safety_request_refusal',
@@ -12516,14 +17042,84 @@ class AdminPortalReader:
             return ReaderOutcome(result, {'stage': 'prediction_unavailable', 'permission': permission_audit,
                                           'observation': prediction_observation, 'result': result.public_json()})
 
+        ticket_identity = _explicit_record_identity(question)
+        if (ticket_identity and ticket_identity.upper().startswith('HC-01-')
+                and re.search(r"\b(?:transferred|transfer|handoff|escalat)\w*\b|转交|移交|تحويل|إحالة", question, re.I)):
+            # Dashboard is date-bounded; an older exact ticket may instead be
+            # visible in the permitted team's task queue. Both reads use
+            # native controls and the normal account permission policy.
+            for handoff_page in ('/dashboard', '/happiness/team-management'):
+                dashboard_request = PortalReadRequest(start_path=handoff_page, actions=({'type': 'observe'},))
+                if validate_policy(dashboard_request, reason='ticket_handoff_source'):
+                    continue
+                try:
+                    dashboard_tool = await portal_read_stage(
+                        dashboard_request, timeout_stage='ticket_handoff_dashboard',
+                        attempt='ticket_handoff_dashboard',
+                    )
+                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                    dashboard_tool = {}
+                dashboard_observation = ((dashboard_tool.get('result') or {}).get('observation')
+                                         if dashboard_tool.get('ok') else None)
+                if isinstance(dashboard_observation, dict):
+                    detail_action = _observed_cell_detail_action(dashboard_observation, ticket_identity)
+                    if detail_action is None:
+                        searches = [control for control in dashboard_observation.get('filterControls') or ()
+                                    if isinstance(control, dict) and control.get('role') == 'textbox'
+                                    and control.get('filterSurface') is True and control.get('selector')
+                                    and str(control.get('label') or '').casefold() in {'search', 'بحث'}]
+                        if len(searches) == 1:
+                            search_action = {'type': 'filter', 'selector': searches[0]['selector'],
+                                             'value': ticket_identity}
+                            try:
+                                search_tool = await portal_read_stage(
+                                    replace(dashboard_request, actions=(search_action,)),
+                                    timeout_stage='ticket_handoff_search', attempt='ticket_handoff_search',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                search_tool = {}
+                            searched_observation = ((search_tool.get('result') or {}).get('observation')
+                                                    if search_tool.get('ok') else None)
+                            if isinstance(searched_observation, dict):
+                                detail_action = _observed_cell_detail_action(searched_observation, ticket_identity)
+                                if detail_action is not None:
+                                    dashboard_request = replace(dashboard_request, actions=(search_action,))
+                                    dashboard_observation = searched_observation
+                    if detail_action is not None:
+                        try:
+                            detail_tool = await portal_read_stage(
+                                replace(dashboard_request, actions=tuple(
+                                    action for action in dashboard_request.actions if action.get('type') != 'observe'
+                                ) + (detail_action,)),
+                                timeout_stage='ticket_handoff_detail', attempt='ticket_handoff_detail',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            detail_tool = {}
+                        detail_observation = ((detail_tool.get('result') or {}).get('observation')
+                                              if detail_tool.get('ok') else None)
+                        result = _happiness_ticket_handoff_result(
+                            detail_observation, ticket_identity, question=question,
+                            scope=_permission_result_scope(permission_context),
+                        )
+                        if result is not None:
+                            return ReaderOutcome(result, {
+                                'stage': 'ticket_handoff_exact_detail', 'permission': permission_audit,
+                                'observations': [dashboard_observation, detail_observation],
+                                'result': result.public_json(),
+                            })
+
         license_focus = _license_module_focus(question)
+        content_overdue = _content_overdue_list(question)
+        if content_overdue:
+            license_focus = 'overdue'
         if license_focus:
-            license_page = "/licensing/applications" if license_focus == "urgency" else "/licensing/licenses"
+            license_page = ('/content/ContentApplications' if content_overdue else
+                            "/licensing/applications" if license_focus in {"urgency", "overdue"} else "/licensing/licenses")
             license_request = PortalReadRequest(start_path=license_page, actions=({'type': 'observe'},))
             license_denied = validate_policy(license_request, reason='license_module_read')
             if license_denied:
                 result = ReaderResult(status='no_permission', page=license_page,
-                    summary='The licensing page needed for this question is not permitted.',
+                    summary='The application page needed for this question is not permitted.',
                     missing=(license_denied,))
                 return ReaderOutcome(result, {'stage': 'license_module_read', 'permission': permission_audit,
                                               'result': result.public_json()})
@@ -12535,6 +17131,116 @@ class AdminPortalReader:
             if license_tool.get('ok'):
                 license_observation = (license_tool.get('result') or {}).get('observation') or {}
                 license_actions: tuple[dict[str, Any], ...] = ()
+                if license_focus in {'overdue', 'urgency'}:
+                    collection_spec = _observed_application_sla_collection(license_observation)
+                    if collection_spec is not None:
+                        collection_request = replace(license_request, collections=(collection_spec,))
+                        if not validate_policy(collection_request, reason='application_sla_collection'):
+                            try:
+                                collection_tool = await portal_read_stage(collection_request,
+                                    timeout_stage='application_sla_collection', attempt='application_sla_collection')
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                collection_tool = {}
+                            collection_observation = (collection_tool.get('result') or {}).get('observation') or {}
+                            receipt = next((item for item in collection_observation.get('collections') or ()
+                                if isinstance(item, dict) and item.get('operationRef') == collection_spec['operationKey']
+                                and item.get('contextRef') == collection_spec['contextRef']), None)
+                            collection_result = _application_sla_collection_result(receipt, license_observation,
+                                question=question, scope=_permission_result_scope(permission_context), page=license_page)
+                            if collection_result is not None:
+                                return ReaderOutcome(collection_result, {'stage': 'application_sla_verified_collection',
+                                    'permission': permission_audit, 'collection': receipt,
+                                    'result': collection_result.public_json()})
+                    observations = [license_observation]
+                    page_info = _status_page_info(license_observation)
+                    complete = page_info is not None and page_info[0] == 1
+                    page_count = max(1, (page_info[2] + page_info[1] - 1) // page_info[1]) if page_info and page_info[1] > 0 else 1
+                    current_observation = license_observation
+                    current_index = 1
+                    while complete and current_index < page_count and current_index < 100:
+                        target_index = current_index + 1
+                        candidates = _status_page_action_candidates(current_observation, target_index)
+                        forwards = [action for action in candidates if str(action.get('name') or '').casefold() in {'right', 'next', '›', '»'}]
+                        next_observation = None
+                        for action in forwards or candidates:
+                            action_count = target_index - 1 if action in forwards else 1
+                            try:
+                                next_tool = await portal_read_stage(
+                                    replace(license_request, actions=tuple(action for _ in range(action_count))),
+                                    timeout_stage='license_overdue_page', attempt=f'license_overdue_page_{target_index}',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                next_tool = {}
+                            candidate_observation = ((next_tool.get('result') or {}).get('observation')
+                                                     if next_tool.get('ok') else None)
+                            candidate_info = _status_page_info(candidate_observation)
+                            if isinstance(candidate_observation, dict) and candidate_info and candidate_info[0] == target_index:
+                                next_observation = candidate_observation
+                                break
+                        if next_observation is None:
+                            complete = False
+                            break
+                        observations.append(next_observation)
+                        current_observation = next_observation
+                        current_index = target_index
+                    result = _license_overdue_all_pages_result(
+                        observations, question=question, scope=_permission_result_scope(permission_context),
+                        page=license_page,
+                    )
+                    return ReaderOutcome(result, {
+                        'stage': 'license_overdue_all_pages' if complete else 'license_overdue_incomplete',
+                        'permission': permission_audit, 'observations': observations,
+                        'result': result.public_json(),
+                    })
+                expiry_window = _license_expiry_window(question) if license_focus == 'expiry' else None
+                if expiry_window is not None:
+                    observations = [license_observation]
+                    page_info = _status_page_info(license_observation)
+                    complete = page_info is not None
+                    total_rows = page_info[2] if page_info else None
+                    page_count = max(1, (page_info[2] + page_info[1] - 1) // page_info[1]) if page_info and page_info[1] > 0 else 1
+                    current_observation = license_observation
+                    current_index = page_info[0] if page_info else 1
+                    visited = {current_index}
+                    while complete and current_index < page_count and len(visited) < 100:
+                        target_index = current_index + 1
+                        candidates = _status_page_action_candidates(current_observation, target_index)
+                        forwards = [action for action in candidates if str(action.get('name') or '').casefold() in {'right', 'next', '›', '»'}]
+                        next_observation = None
+                        for action in forwards or candidates:
+                            # Every portal read begins from page one. Replay only an observed native control.
+                            action_count = target_index - 1 if action in forwards else 1
+                            try:
+                                next_tool = await portal_read_stage(
+                                    replace(license_request, actions=tuple(action for _ in range(action_count))),
+                                    timeout_stage='license_expiry_page', attempt=f'license_expiry_page_{target_index}',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                next_tool = {}
+                            candidate_observation = ((next_tool.get('result') or {}).get('observation')
+                                                     if next_tool.get('ok') else None)
+                            candidate_info = _status_page_info(candidate_observation)
+                            if isinstance(candidate_observation, dict) and candidate_info and candidate_info[0] == target_index:
+                                next_observation = candidate_observation
+                                break
+                        if next_observation is None:
+                            complete = False
+                            break
+                        observations.append(next_observation)
+                        current_observation = next_observation
+                        current_index = target_index
+                        visited.add(current_index)
+                    if current_index < page_count:
+                        complete = False
+                    license_result = _license_expiry_window_result(
+                        observations, question=question, page_count=len(visited),
+                        total_rows=total_rows, complete=complete,
+                        scope=_permission_result_scope(permission_context),
+                    )
+                    return ReaderOutcome(license_result, {
+                        'stage': 'license_expiry_all_pages', 'permission': permission_audit,
+                        'observations': observations, 'result': license_result.public_json(),
+                    })
                 if license_focus == 'expiry':
                     option = next(
                         (str(candidate).strip() for control in (license_observation.get('filterControls') or ())
@@ -12571,11 +17277,83 @@ class AdminPortalReader:
                         'result': license_result.public_json(),
                     })
 
-        explicit_source = _explicit_reader_source(question, bounded_conversation_context)
+        explicit_source = _explicit_reader_source(
+            _member_metric_followup_question(question, bounded_conversation_context,
+                                             verified_team_dashboard=verified_team_dashboard),
+            bounded_conversation_context, permission_context,
+        )
+        if explicit_source == '/dashboard':
+            request = PortalReadRequest(start_path='/dashboard', actions=({'type': 'observe'},))
+            denied = validate_policy(request, reason='current_single_dashboard_metric')
+            if denied:
+                result = ReaderResult(status='no_permission', page='/dashboard',
+                    summary='The current Dashboard metric is not permitted.', missing=(denied,))
+                return ReaderOutcome(result, {'stage': 'current_single_dashboard_metric',
+                    'permission': permission_audit, 'result': result.public_json()})
+            try:
+                tool = await portal_read_stage(request, timeout_stage='current_single_dashboard_metric',
+                    attempt='current_single_dashboard_metric')
+                if not tool.get('ok'):
+                    raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
+                observation = (tool.get('result') or {}).get('observation') or {}
+                result = ReaderResult(status='not_confirmed', page='/dashboard', answer_shape='count',
+                    summary='The requested current Dashboard metric has not been verified.',
+                    missing=('current_sla_metric_not_uniquely_observed',))
+                outcome = ReaderOutcome(result, {'stage': 'current_single_dashboard_metric',
+                    'permission': permission_audit, 'observation': observation})
+                # Source resolution verified the KPI identity of an anaphoric
+                # turn; canonical wording names the measure, never its value.
+                metric_question = question if _CURRENT_SLA_METRIC_REQUEST.search(question) else 'SLA Compliance only: ' + question
+                return _native_sla_performance_metrics(outcome, metric_question)
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                result = ReaderResult(status='load_failed', page='/dashboard', answer_shape='count',
+                    summary='The current Dashboard metric could not be read.', missing=(type(exc).__name__,))
+                return ReaderOutcome(result, {'stage': 'current_single_dashboard_metric',
+                    'permission': permission_audit, 'result': result.public_json()})
+        if (explicit_source in {'/content/ContentApplications', '/licensing/applications'}
+                and _application_review_list_requested(question)):
+            review_request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
+            denied = validate_policy(review_request, reason='application_review_category')
+            if denied:
+                result = ReaderResult(status='no_permission', page=explicit_source,
+                    summary='The requested application queue is not permitted.', missing=(denied,))
+                return ReaderOutcome(result, {'stage': 'application_review_category', 'permission': permission_audit})
+            observation = {}
+            receipt = None
+            try:
+                tool = await portal_read_stage(review_request, timeout_stage='application_review_category', attempt='application_review_category')
+                observation = (tool.get('result') or {}).get('observation') or {}
+                spec = _observed_application_review_collection(observation, explicit_source) if tool.get('ok') else None
+                if spec is not None:
+                    collection_request = replace(review_request, collections=(spec,))
+                    if not validate_policy(collection_request, reason='application_review_collection'):
+                        collection_tool = await portal_read_stage(collection_request,
+                            timeout_stage='application_review_collection', attempt='application_review_collection')
+                        collected = (collection_tool.get('result') or {}).get('observation') or {}
+                        receipt = next((item for item in collected.get('collections') or () if
+                            item.get('operationRef') == spec['operationKey'] and item.get('contextRef') == spec['contextRef']), None)
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                # Incomplete evidence produces no record list, never a guessed
+                # category count or a generic application exception.
+                receipt = None
+            result = _application_review_collection_result(receipt, observation, question=question, page=explicit_source,
+                scope=_permission_result_scope(permission_context))
+            return ReaderOutcome(result, {'stage': 'application_review_collection', 'permission': permission_audit,
+                'collection': receipt, 'result': result.public_json()})
         if explicit_source in {
-            '/happiness/tickets', '/happiness/refunds', '/financial-payment/refunds',
+            '/happiness/tickets', '/happiness/team-management', '/licensing/team-management',
+            '/content/team-management', '/happiness/refunds', '/financial-payment/refunds',
             '/financial-payment/transactions', '/content/ContentLibrary', '/licensing/licenses',
-        }:
+            '/licensing/applications', '/content/ContentApplications', '/inspection/tasks',
+            '/inspection/violations',
+        } and not (
+            explicit_source in {'/content/ContentApplications', '/licensing/applications'}
+            and not _application_numbers(question)
+        ):
+            # Exact records have dedicated, identity-bound projections below.
+            # An application collection must use the normal semantic read plan
+            # and verified filters/coverage, not render an unfiltered first page
+            # merely because the department is explicit in the current turn.
             request = PortalReadRequest(start_path=explicit_source, actions=({'type': 'observe'},))
             denied = validate_policy(request, reason='explicit_named_source_list')
             if denied:
@@ -12584,10 +17362,17 @@ class AdminPortalReader:
                 # sibling refund surface instead of refusing a record the
                 # current role can still see.
                 alternate = _sibling_refund_source(explicit_source)
+                # Sibling refund surfaces may only be consulted for an
+                # explicitly identified record.  A broad Finance list query
+                # must never downgrade to Customer Happiness just because the
+                # two tables happen to share a record shape; doing so leaks a
+                # different module's rows and makes the permission boundary
+                # non-deterministic.
+                allow_sibling = bool(_explicit_record_identity(question))
                 alternate_request = (
                     PortalReadRequest(start_path=alternate, actions=({'type': 'observe'},)) if alternate else None
                 )
-                if alternate_request is not None and not validate_policy(
+                if allow_sibling and alternate_request is not None and not validate_policy(
                     alternate_request, reason='explicit_named_source_alternate'
                 ):
                     explicit_source = alternate
@@ -12605,6 +17390,889 @@ class AdminPortalReader:
                     raise RuntimeError(str(tool.get('code') or 'portal_read_failed'))
                 observation = (tool.get('result') or {}).get('observation') or {}
                 actions: tuple[dict[str, Any], ...] = ()
+                named_applications = _application_numbers(question)
+                if (explicit_source == '/licensing/applications' and len(named_applications) > 1):
+                    scope = _permission_result_scope(permission_context)
+                    matched_results: list[ReaderResult] = []
+                    searched: list[dict[str, Any]] = []
+                    unverified: list[str] = []
+                    # Each ID owns its own native search, including Completed.
+                    # Multiple identifiers must never fall into an unfiltered
+                    # list answer, even if a stage fails or the bound is exceeded.
+                    if len(named_applications) <= 5:
+                        tab_options = [None, *(item for item in observation.get('tabControls') or ()
+                            if isinstance(item, dict) and not item.get('selected'))]
+                        for identity in named_applications:
+                            matched_result = _application_state_type_row_result(observation, identity,
+                                page=explicit_source, scope=scope, question=question)
+                            if matched_result is None:
+                                for tab_option in tab_options:
+                                    prefix: tuple[dict[str, Any], ...] = ()
+                                    tab_observation = observation
+                                    if tab_option is not None:
+                                        switch = _observed_switch_tab_action(tab_option, observation)
+                                        if switch is None:
+                                            continue
+                                        prefix = (switch,)
+                                        switched = await portal_read_stage(replace(request, actions=prefix),
+                                            timeout_stage='application_ids_tab', attempt='application_ids_tab')
+                                        tab_observation = ((switched.get('result') or {}).get('observation')
+                                            if switched.get('ok') else None)
+                                    if not isinstance(tab_observation, dict):
+                                        continue
+                                    controls = [control for control in tab_observation.get('filterControls') or ()
+                                        if isinstance(control, dict) and control.get('role') == 'textbox'
+                                        and control.get('filterSurface') is True and control.get('selector')
+                                        and str(control.get('label') or '').strip().casefold() in {'search', 'بحث'}]
+                                    if len(controls) != 1:
+                                        continue
+                                    filtered_tool = await portal_read_stage(replace(request, actions=(*prefix,
+                                        {'type': 'filter', 'selector': str(controls[0]['selector']), 'value': identity})),
+                                        timeout_stage='application_ids_search', attempt='application_ids_search')
+                                    filtered = ((filtered_tool.get('result') or {}).get('observation')
+                                        if filtered_tool.get('ok') else None)
+                                    if not isinstance(filtered, dict):
+                                        continue
+                                    searched.append(filtered)
+                                    matched_result = _application_state_type_row_result(filtered, identity,
+                                        page=explicit_source, scope=scope, question=question)
+                                    if matched_result is not None:
+                                        break
+                            if matched_result is None:
+                                unverified.append(identity)
+                            else:
+                                matched_results.append(matched_result)
+                    else:
+                        unverified.extend(named_applications)
+                    arabic = response_language_for(question) == 'ar'
+                    facts = tuple(fact for result in matched_results for fact in result.facts) + tuple(
+                        (f'لم يتم تأكيد سجل الطلب {identity} في الصفحات المصرح بها؛ لم يُستبدل بسجل آخر.' if arabic else
+                         f'Application {identity} was not verified on the authorized pages; no other record was substituted.')
+                        for identity in unverified)
+                    incomplete = bool(unverified) or any(result.status != 'success' for result in matched_results)
+                    if not incomplete:
+                        facts += ((f'تم التحقق من جميع أرقام الطلبات المطلوبة ({len(named_applications)})؛ هذا ليس تعدادًا لجميع طلبات القسم.'
+                            if arabic else f'All {len(named_applications)} requested application numbers were verified; this is not an inventory of the department\'s applications.'),)
+                    result = ReaderResult(status='not_confirmed' if incomplete else 'success',
+                        page=explicit_source, scope=scope, answer_shape='list', completeness='bounded' if incomplete else 'complete',
+                        facts=facts, summary='Independently matched requested application identities.',
+                        workflow_state='application_exact_id_set',
+                        missing=tuple('application_identity_unverified:' + value for value in unverified) +
+                            tuple(value for result in matched_results for value in result.missing))
+                    return ReaderOutcome(result, {'stage': 'application_exact_id_set',
+                        'permission': permission_audit, 'observations': searched, 'result': result.public_json()})
+                exact_application = _explicit_record_identity(question)
+                if (explicit_source in {'/licensing/applications', '/content/ContentApplications'}
+                        and exact_application and re.match(r'^(?:ML|MC)-', exact_application, re.I)):
+                    identity = exact_application
+                    row_sla = _application_exact_sla_row_result(observation, identity,
+                        page=explicit_source, scope=_permission_result_scope(permission_context), question=question)
+                    if row_sla is not None:
+                        return ReaderOutcome(row_sla, {'stage': 'application_exact_sla_row',
+                            'permission': permission_audit, 'observation': observation, 'result': row_sla.public_json()})
+                    tab_options = [None, *(
+                        tab for tab in (observation.get('tabControls') or ())
+                        if isinstance(tab, dict) and not tab.get('selected')
+                    )]
+                    searched: list[dict[str, Any]] = []
+                    for tab_option in tab_options:
+                        prefix: tuple[dict[str, Any], ...] = ()
+                        tab_observation = observation
+                        if tab_option is not None:
+                            switch = _observed_switch_tab_action(tab_option, observation)
+                            if switch is None:
+                                continue
+                            prefix = (switch,)
+                            try:
+                                switched = await portal_read_stage(
+                                    replace(request, actions=prefix),
+                                    timeout_stage='license_exact_tab', attempt='license_exact_tab',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                continue
+                            tab_observation = ((switched.get('result') or {}).get('observation') if switched.get('ok') else None)
+                            if not isinstance(tab_observation, dict):
+                                continue
+                        search_controls = [control for control in tab_observation.get('filterControls') or ()
+                                           if isinstance(control, dict) and control.get('role') == 'textbox'
+                                           and control.get('filterSurface') is True and control.get('selector')
+                                           and re.search(r'^Search$|^بحث$', str(control.get('label') or ''), re.I)]
+                        if len(search_controls) != 1:
+                            continue
+                        search_actions = (*prefix, {'type': 'filter',
+                            'selector': str(search_controls[0]['selector']), 'value': identity})
+                        try:
+                            filtered_tool = await portal_read_stage(
+                                replace(request, actions=search_actions),
+                                timeout_stage='license_exact_search', attempt='license_exact_search',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            continue
+                        filtered = ((filtered_tool.get('result') or {}).get('observation') if filtered_tool.get('ok') else None)
+                        if not isinstance(filtered, dict):
+                            continue
+                        searched.append(filtered)
+                        row_sla = _application_exact_sla_row_result(filtered, identity,
+                            page=explicit_source, scope=_permission_result_scope(permission_context), question=question)
+                        if row_sla is not None:
+                            return ReaderOutcome(row_sla, {'stage': 'application_exact_sla_search',
+                                'permission': permission_audit, 'observations': searched, 'result': row_sla.public_json()})
+                        row_state = _application_state_type_row_result(filtered, identity,
+                            page=explicit_source, scope=_permission_result_scope(permission_context), question=question)
+                        if row_state is not None:
+                            return ReaderOutcome(row_state, {'stage': 'application_exact_state_type',
+                                'permission': permission_audit, 'observations': searched, 'result': row_state.public_json()})
+                        detail_action = _observed_cell_detail_action(filtered, identity)
+                        if detail_action is None:
+                            continue
+                        try:
+                            detail_tool = await portal_read_stage(
+                                replace(request, actions=(*search_actions, detail_action)),
+                                timeout_stage='license_exact_detail', attempt='license_exact_detail',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            continue
+                        detail_observation = ((detail_tool.get('result') or {}).get('observation') if detail_tool.get('ok') else None)
+                        projector = (_content_exact_application_result if explicit_source == '/content/ContentApplications'
+                                     else _license_exact_application_result)
+                        result = projector(
+                            detail_observation, identity, question=question,
+                            scope=_permission_result_scope(permission_context),
+                        )
+                        if result is not None:
+                            return ReaderOutcome(result, {
+                                'stage': 'license_exact_application_detail', 'permission': permission_audit,
+                                'observations': [*searched, detail_observation], 'result': result.public_json(),
+                            })
+                    result = ReaderResult(
+                        status='not_confirmed', page=explicit_source, answer_shape='detail',
+                        scope=_permission_result_scope(permission_context),
+                        summary='The exact application detail could not be verified on the authorized application page.',
+                        missing=('license_application_detail_unverified',),
+                    )
+                    return ReaderOutcome(result, {
+                        'stage': 'license_exact_application_unverified', 'permission': permission_audit,
+                        'observations': searched, 'result': result.public_json(),
+                    })
+                if explicit_source == '/inspection/violations' and _committee_queue_requested(question):
+                    # On wide screens the portal renders Status in the list
+                    # toolbar and hides the duplicate field in the Filter
+                    # modal. Bind the visible, observed toolbar control first.
+                    inline_status = [control for control in observation.get('filterControls') or ()
+                                     if isinstance(control, dict)
+                                     and control.get('role') == 'combobox'
+                                     and control.get('inDialog') is False
+                                     and control.get('filterSurface') is True
+                                     and control.get('selector')
+                                     and re.search(r'\b(?:all statuses|status)\b|جميع الحالات|الحالة',
+                                                   str(control.get('label') or ''), re.I)]
+                    if len(inline_status) == 1:
+                        selected_status = 'Pending Committee Decision'
+                        try:
+                            filtered_tool = await portal_read_stage(
+                                replace(request, actions=(
+                                    {'type': 'filter', 'selector': str(inline_status[0]['selector']),
+                                     'value': selected_status},
+                                )),
+                                timeout_stage='inspection_committee_inline_filter',
+                                attempt='inspection_committee_inline_filter',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            filtered_tool = {}
+                        filtered = ((filtered_tool.get('result') or {}).get('observation')
+                                    if filtered_tool.get('ok') else None)
+                        if isinstance(filtered, dict):
+                            selected_controls = [control for control in filtered.get('filterControls') or ()
+                                                 if isinstance(control, dict)
+                                                 and control.get('inDialog') is False
+                                                 and selected_status in (control.get('selected') or ())]
+                            if len(selected_controls) == 1:
+                                committee_result = _committee_queue_result(
+                                    filtered, scope=_permission_result_scope(permission_context),
+                                    selected_status=selected_status,
+                                )
+                                return ReaderOutcome(committee_result, {
+                                    'stage': 'inspection_committee_inline_filtered',
+                                    'permission': permission_audit, 'observation': filtered,
+                                    'result': committee_result.public_json(),
+                                })
+                    filter_buttons = [str(value).strip() for value in observation.get('controls') or ()
+                                      if re.fullmatch(r'Filter|تصفية|فلتر', str(value).strip(), re.I)]
+                    if len(filter_buttons) == 1:
+                        show_action = {'type': 'show_filter', 'role': 'button', 'name': filter_buttons[0]}
+                        try:
+                            opened_tool = await portal_read_stage(
+                                replace(request, actions=(show_action,)),
+                                timeout_stage='inspection_committee_filter_open',
+                                attempt='inspection_committee_filter_open',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            opened_tool = {}
+                        opened = ((opened_tool.get('result') or {}).get('observation')
+                                  if opened_tool.get('ok') else None)
+                        if isinstance(opened, dict):
+                            # The portal's virtualized Ant dropdown sometimes
+                            # reports no enumerated options in the read receipt.
+                            # Bind the unique Status combobox by its displayed
+                            # caption; the gateway verifies the requested option
+                            # is really present before it selects anything.
+                            status_controls = [control for control in opened.get('filterControls') or ()
+                                               if isinstance(control, dict)
+                                               and control.get('role') == 'combobox'
+                                               and control.get('inDialog') is True
+                                               and control.get('selector')
+                                               and re.search(r'\b(?:all statuses|status)\b|جميع الحالات|الحالة',
+                                                             str(control.get('label') or ''), re.I)]
+                            if len(status_controls) == 1:
+                                control = status_controls[0]
+                                choices = [str(option).strip() for option in control.get('options') or ()
+                                           if re.search(r'pending.*committee.*decision|بانتظار.*قرار.*اللجنة', str(option), re.I)]
+                                selected_status = choices[0] if len(choices) == 1 else 'Pending Committee Decision'
+                                if control.get('selector'):
+                                    apply_buttons = [str(value).strip() for value in opened.get('controls') or ()
+                                                     if re.fullmatch(r'Apply|تطبيق', str(value).strip(), re.I)]
+                                    if len(apply_buttons) == 1:
+                                        filter_actions = (
+                                            show_action,
+                                            {'type': 'filter', 'selector': str(control['selector']),
+                                             'value': selected_status},
+                                            {'type': 'apply_filter', 'role': 'button', 'name': apply_buttons[0]},
+                                        )
+                                        try:
+                                            filtered_tool = await portal_read_stage(
+                                                replace(request, actions=filter_actions),
+                                                timeout_stage='inspection_committee_filtered',
+                                                attempt='inspection_committee_filtered',
+                                            )
+                                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                            filtered_tool = {}
+                                        filtered = ((filtered_tool.get('result') or {}).get('observation')
+                                                    if filtered_tool.get('ok') else None)
+                                        if isinstance(filtered, dict):
+                                            committee_result = _committee_queue_result(
+                                                filtered, scope=_permission_result_scope(permission_context),
+                                                selected_status=selected_status,
+                                            )
+                                            return ReaderOutcome(committee_result, {
+                                                'stage': 'inspection_committee_filtered',
+                                                'permission': permission_audit, 'observation': filtered,
+                                                'result': committee_result.public_json(),
+                                            })
+                    failure = ReaderResult(
+                        status='not_confirmed', page='/inspection/violations', answer_shape='list',
+                        scope=_permission_result_scope(permission_context),
+                        summary='The committee-decision status filter could not be verified; unfiltered violations were not returned as the committee queue.',
+                        missing=('committee_status_filter_unverified',),
+                    )
+                    return ReaderOutcome(failure, {'stage': 'inspection_committee_filter_unverified',
+                                                   'permission': permission_audit,
+                                                   'result': failure.public_json()})
+                application_ids = _application_numbers(question) if explicit_source == '/financial-payment/transactions' else ()
+                if application_ids and len(application_ids) <= 5:
+                    search_controls = [
+                        control for control in observation.get('filterControls') or ()
+                        if isinstance(control, dict) and control.get('role') == 'textbox'
+                        and control.get('filterSurface') is True and control.get('selector')
+                        and str(control.get('label') or '').strip().casefold() in {'search', 'بحث'}
+                    ]
+                    found: dict[str, tuple[dict[str, Any], ...]] = {}
+                    search_observations: list[Any] = []
+                    detail_observations: dict[str, Any] = {}
+                    complete_search = len(search_controls) == 1
+                    if complete_search:
+                        search_control = search_controls[0]
+                        commands = [str(command).strip() for command in search_control.get('commands') or ()
+                                    if str(command).strip().casefold() in {'filter', 'apply', 'apply filters'}]
+                        for identity in application_ids:
+                            search_actions: list[dict[str, Any]] = [{
+                                'type': 'filter', 'selector': str(search_control['selector']), 'value': identity,
+                            }]
+                            if commands:
+                                search_actions.append({'type': 'apply_filter', 'role': 'button', 'name': commands[0]})
+                            try:
+                                search_tool = await portal_read_stage(
+                                    replace(request, actions=tuple(search_actions)),
+                                    timeout_stage='finance_application_search',
+                                    attempt='finance_application_search',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                search_tool = {}
+                            filtered = ((search_tool.get('result') or {}).get('observation')
+                                        if search_tool.get('ok') else None)
+                            if not isinstance(filtered, dict):
+                                complete_search = False
+                                found[identity] = ()
+                                continue
+                            search_observations.append(filtered)
+                            rows = _finance_application_rows(filtered, identity)
+                            found[identity] = rows
+                            asks_lifecycle = bool(re.search(
+                                r"\b(?:application|licen[cs]e|business)\s+status\b|"
+                                r"\b(?:cancelled|canceled|completed)\b|"
+                                r"(?:申请|许可).{0,8}状态|(?:取消|完成)|حالة\s+الطلب|ملغ|مكتمل",
+                                question, re.I,
+                            ))
+                            if asks_lifecycle:
+                                for row in rows[:3]:
+                                    transaction_no = str(row.get('transactionNo') or '').strip()
+                                    if not transaction_no:
+                                        continue
+                                    detail_action = _observed_cell_detail_action(filtered, transaction_no)
+                                    if detail_action is None:
+                                        continue
+                                    try:
+                                        detail_tool = await portal_read_stage(
+                                            replace(request, actions=(*search_actions, detail_action)),
+                                            timeout_stage='finance_transaction_detail',
+                                            attempt='finance_transaction_detail',
+                                        )
+                                    except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                        detail_tool = {}
+                                    detail_observation = ((detail_tool.get('result') or {}).get('observation')
+                                                          if detail_tool.get('ok') else None)
+                                    if isinstance(detail_observation, dict):
+                                        detail_observations[transaction_no] = detail_observation
+                            page_info = _status_page_info(filtered)
+                            if page_info is None or page_info[2] > page_info[1] * page_info[0]:
+                                # A partial filtered collection cannot establish all matches.
+                                complete_search = False
+                    finance_result = _finance_application_result(
+                        found, question=question,
+                        scope=_permission_result_scope(permission_context), complete=complete_search,
+                        detail_observations=detail_observations,
+                    )
+                    return ReaderOutcome(finance_result, {
+                        'stage': 'finance_application_exact_search', 'permission': permission_audit,
+                        'observations': search_observations,
+                        'detailObservations': detail_observations,
+                        'result': finance_result.public_json(),
+                    })
+                if explicit_source == '/inspection/tasks':
+                    if _inspection_overdue_list_requested(question):
+                        collection_spec = _observed_task_collection_spec(observation)
+                        if collection_spec is not None:
+                            collection_request = replace(request, collections=(collection_spec,))
+                            collection_denied = validate_policy(collection_request, reason='inspection_overdue_collection')
+                            if not collection_denied:
+                                try:
+                                    collection_tool = await portal_read_stage(
+                                        collection_request,
+                                        timeout_stage='inspection_overdue_collection',
+                                        attempt='inspection_overdue_collection',
+                                    )
+                                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                    collection_tool = {}
+                                collection_observation = ((collection_tool.get('result') or {}).get('observation')
+                                                          if collection_tool.get('ok') else None)
+                                receipts = ((collection_observation or {}).get('collections') or ()
+                                            if isinstance(collection_observation, dict) else ())
+                                receipt = next((item for item in receipts if isinstance(item, dict)
+                                                and item.get('operationRef') == collection_spec['operationKey']
+                                                and item.get('contextRef') == collection_spec['contextRef']
+                                                and item.get('completeness') == 'complete'), None)
+                                if receipt is not None and isinstance(receipt.get('rows'), list):
+                                    collected_rows = tuple(item for item in receipt['rows'] if isinstance(item, dict))
+                                    collected_total = receipt.get('total')
+                                    if type(collected_total) is int and len(collected_rows) == collected_total:
+                                        collection_result = _inspection_overdue_result(
+                                            collection_observation, page='/inspection/tasks', question=question,
+                                            scope=_permission_result_scope(permission_context), complete=True,
+                                            page_count=max(1, int(receipt.get('pagesRead') or 2) // 2),
+                                            total_rows=collected_total, rows_override=collected_rows,
+                                        )
+                                        if collection_result is not None:
+                                            return ReaderOutcome(collection_result, {
+                                                'stage': 'inspection_overdue_verified_collection',
+                                                'permission': permission_audit,
+                                                'collection': receipt,
+                                                'result': collection_result.public_json(),
+                                            })
+                        # The queue's rendered total and native pagination
+                        # controls are the source of truth. Walk pages in
+                        # order, using only controls observed on the current
+                        # page; never assume a fixed page size or fabricate a
+                        # page number from the question.
+                        merged_observation = observation
+                        page_info = _status_page_info(observation)
+                        page_count = 1
+                        total_rows: int | None = None
+                        complete = True
+                        if page_info is not None:
+                            current_index, page_size, total_rows = page_info
+                            page_count = max(1, (total_rows + max(page_size, 1) - 1) // max(page_size, 1))
+                            current_observation = observation
+                            visited_pages = {current_index}
+                            max_pages = 100
+                            while current_index < page_count and len(visited_pages) < max_pages:
+                                target_index = current_index + 1
+                                page_observation = None
+                                next_index = None
+                                page_actions = _status_page_action_candidates(current_observation, target_index)
+                                # Each portal-read call starts from a fresh
+                                # page. Reapply the observed forward control
+                                # enough times to reach the requested page;
+                                # never assume an unobserved page locator.
+                                forward_actions = [
+                                    action for action in page_actions
+                                    if action.get("name") in {"right", "Next", "next", "›", "»"}
+                                ]
+                                ordered_actions = forward_actions or list(page_actions)
+                                for page_action in ordered_actions:
+                                    action_count = max(1, target_index - 1) if page_action in forward_actions else 1
+                                    action_sequence = tuple(page_action for _ in range(action_count))
+                                    try:
+                                        page_tool = await portal_read_stage(
+                                            replace(request, actions=action_sequence),
+                                            timeout_stage=f'inspection_overdue_page_{target_index}',
+                                            attempt=f'inspection_overdue_page_{target_index}',
+                                        )
+                                    except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                        page_tool = {}
+                                    candidate_observation = ((page_tool.get('result') or {}).get('observation')
+                                                             if page_tool.get('ok') else None)
+                                    candidate_info = _status_page_info(candidate_observation)
+                                    if isinstance(candidate_observation, dict) and (
+                                        candidate_info is None or candidate_info[0] > current_index
+                                    ):
+                                        page_observation = candidate_observation
+                                        next_index = candidate_info[0] if candidate_info is not None else target_index
+                                        break
+                                if page_observation is None or next_index in visited_pages:
+                                    complete = False
+                                    break
+                                merged_observation = _merge_status_observations(merged_observation, page_observation)
+                                current_observation = page_observation
+                                current_index = int(next_index)
+                                visited_pages.add(current_index)
+                            if current_index < page_count:
+                                complete = False
+                            if page_count > max_pages:
+                                complete = False
+                        else:
+                            # A bounded observation without the page-native
+                            # total cannot prove that the first rendered page
+                            # is the complete queue.  Keep the result
+                            # explicitly unconfirmed instead of silently
+                            # presenting one page as the full overdue list.
+                            complete = False
+                        overdue_result = _inspection_overdue_result(
+                            merged_observation,
+                            page='/inspection/tasks', question=question,
+                            scope=_permission_result_scope(permission_context),
+                            complete=complete, page_count=page_count, total_rows=total_rows,
+                        )
+                        if overdue_result is not None:
+                            return ReaderOutcome(overdue_result, {
+                                'stage': 'inspection_overdue_all_pages',
+                                'permission': permission_audit,
+                                'observation': merged_observation,
+                                'result': overdue_result.public_json(),
+                            })
+                        incomplete = ReaderResult(
+                            status='not_confirmed', page='/inspection/tasks', answer_shape='list',
+                            completeness='bounded', scope=_permission_result_scope(permission_context),
+                            summary='The overdue inspection-task list could not be projected from the observed task table.',
+                            facts=('The task queue was read, but its rendered task/SLA columns were not available together; no partial page was presented as a complete result.',),
+                            missing=('inspection_task_overdue_fields_not_observed',),
+                        )
+                        return ReaderOutcome(incomplete, {
+                            'stage': 'inspection_overdue_all_pages',
+                            'permission': permission_audit,
+                            'observation': merged_observation,
+                            'result': incomplete.public_json(),
+                        })
+                    inspection_identity = _explicit_record_identity(question)
+                    named_target = _inspection_target_history_name(question) if _inspection_history_request(question) else ''
+                    if named_target and not inspection_identity:
+                        target_observation = observation
+                        def matching_task_numbers(source: Any) -> list[str]:
+                            matches = []
+                            for row in _api_rows_by_operation(source, 'GET /api/admin/inspection/tasks'):
+                                if str(row.get('targetName') or '').strip().casefold() == named_target.casefold():
+                                    task_no = str(row.get('taskNo') or '').strip()
+                                    if TASK_NUMBER.fullmatch(task_no):
+                                        matches.append(task_no)
+                            # The authorized table may render rows even when
+                            # its API capture is unavailable to the reader.
+                            # Bind only an exact target cell following a task
+                            # number; never use a fuzzy substring match.
+                            for rendered_row in _observation_text_rows(source):
+                                match = re.match(
+                                    r'^(IN-\d{4}-\d+)\s+([^\s]+)(?:\s|$)',
+                                    rendered_row,
+                                    re.I,
+                                )
+                                if (match and match.group(2).casefold() == named_target.casefold()
+                                        and TASK_NUMBER.fullmatch(match.group(1))):
+                                    matches.append(match.group(1))
+                            return list(dict.fromkeys(matches))
+                        target_tasks = matching_task_numbers(target_observation)
+                        if not target_tasks:
+                            searches = [control for control in observation.get('filterControls') or ()
+                                        if isinstance(control, dict) and control.get('role') == 'textbox'
+                                        and control.get('filterSurface') is True and control.get('selector')]
+                            if len(searches) == 1:
+                                try:
+                                    target_tool = await portal_read_stage(
+                                        replace(request, actions=({'type': 'filter',
+                                            'selector': searches[0]['selector'], 'value': named_target},)),
+                                        timeout_stage='inspection_named_target_search',
+                                        attempt='inspection_named_target_search',
+                                    )
+                                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                    target_tool = {}
+                                candidate = ((target_tool.get('result') or {}).get('observation')
+                                             if target_tool.get('ok') else None)
+                                if isinstance(candidate, dict):
+                                    target_observation = candidate
+                                    target_tasks = matching_task_numbers(candidate)
+                        if len(target_tasks) == 1:
+                            inspection_identity = target_tasks[0]
+                            observation = target_observation
+                        else:
+                            result = ReaderResult(
+                                status='not_confirmed', page='/inspection/tasks',
+                                answer_shape='detail', completeness='bounded',
+                                scope=_permission_result_scope(permission_context),
+                                summary='The named inspection target was not uniquely bound to an authorized task.',
+                                facts=(f'Target requested: {named_target}.',
+                                       'No unrelated inspection, violation or contact records were substituted.'),
+                                missing=('inspection_target_task_binding_unverified',),
+                            )
+                            return ReaderOutcome(result, {
+                                'stage': 'inspection_named_target_binding', 'permission': permission_audit,
+                                'observation': target_observation, 'result': result.public_json(),
+                            })
+                    # A task number is a stable business identifier. Read its
+                    # own detail/checklist or target-scoped history before the
+                    # planner is allowed to fall back to a generic list
+                    # answer. This is the same observed-click/related-read
+                    # contract used by every other record surface.
+                    if inspection_identity and (
+                        _RECORD_DETAIL_REQUEST.search(str(question or ""))
+                        or _inspection_history_request(question)
+                    ):
+                        detail_observation = await self._open_record_detail(
+                            principal, '/inspection/tasks', inspection_identity, question,
+                            observation if isinstance(observation, dict) else None,
+                        )
+                        detail_facts = _record_detail_facts(question, detail_observation, inspection_identity) if detail_observation else ()
+                        if detail_facts:
+                            history_receipts = (
+                                _api_collection_receipt(detail_observation, _INSPECTION_TASK_TARGET_HISTORY_OPERATION),
+                                _api_collection_receipt(detail_observation, _INSPECTION_VIOLATION_TARGET_HISTORY_OPERATION),
+                            ) if named_target else ()
+                            history_complete = bool(history_receipts and all(
+                                isinstance(item, dict) and item.get('complete') is True
+                                for item in history_receipts
+                            ))
+                            detail_result = ReaderResult(
+                                status=('success' if not named_target or history_complete else 'not_confirmed'),
+                                page='/inspection/tasks',
+                                answer_shape='detail', completeness='bounded',
+                                scope=_permission_result_scope(permission_context),
+                                summary='The requested inspection task detail was read from the authorized task workflow.',
+                                facts=detail_facts,
+                                workflow_state='inspection_detail_full',
+                                missing=(() if not named_target or history_complete else
+                                         ('inspection_target_history_incomplete',)),
+                            )
+                            return ReaderOutcome(detail_result, {
+                                'stage': 'inspection_task_detail',
+                                'inspectionTargetBinding': ({'targetName': named_target, 'taskNo': inspection_identity}
+                                                            if named_target else {}),
+                                'permission': permission_audit,
+                                'observation': detail_observation or observation,
+                                'result': detail_result.public_json(),
+                            })
+                        guidance = ReaderResult(
+                            status='not_confirmed', page='/inspection/tasks',
+                            answer_shape='detail', completeness='bounded',
+                            scope=_permission_result_scope(permission_context),
+                            summary='The task is visible, but its checklist/history fields were not returned by the authorized detail read.',
+                            facts=(
+                                f'Task {inspection_identity} was identified on Inspection > Task Management.',
+                                'The current authorized response did not expose the requested checklist/history collection; no materials, penalties, contacts, or unrelated task were inferred.',
+                                'Open the task detail or the institution/inspection history panel in the portal to view fields that are not rendered in the queue.',
+                            ),
+                            missing=('inspection_detail_fields_not_observed',),
+                        )
+                        return ReaderOutcome(guidance, {
+                            'stage': 'inspection_task_detail', 'permission': permission_audit,
+                            'observation': detail_observation or observation,
+                            'result': guidance.public_json(),
+                        })
+
+                    if (_OTHER_PEOPLE_TASK_REQUEST.search(str(question or ''))
+                            and re.search(r'\broutes?\b|مسار|مسارات|路线|路径', str(question or ''), re.I)):
+                        assignment_request = replace(
+                            request, actions=({'type': 'observe'},),
+                            inspection_team_assignments=True,
+                        )
+                        try:
+                            assignment_tool = await portal_read_stage(
+                                assignment_request,
+                                timeout_stage='inspection_team_assignments_native',
+                                attempt='inspection_team_assignments_native',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError,
+                                ValueError, TypeError, KeyError):
+                            assignment_tool = {}
+                        assignment_observation = (
+                            ((assignment_tool.get('result') or {}).get('observation') or {})
+                            if assignment_tool.get('ok') else {}
+                        )
+                        assignment_receipt = (
+                            assignment_observation.get('inspectionTeamAssignments')
+                            if isinstance(assignment_observation, dict) else None
+                        )
+                        assignment_result = _verified_inspection_team_assignments_result(
+                            assignment_receipt, question, _permission_result_scope(permission_context),
+                        )
+                        return ReaderOutcome(assignment_result, {
+                            'stage': 'inspection_team_assignments_native',
+                            'permission': permission_audit,
+                            'observation': assignment_observation,
+                            'inspectionTeamAssignments': assignment_receipt if isinstance(assignment_receipt, dict) else {},
+                            'result': assignment_result.public_json(),
+                        })
+                    if _inspection_person_rollup_requested(question) or _inspection_today_list_requested(question):
+                        target_date = _inspection_requested_date(question)
+                        if target_date is None:
+                            target_date = datetime.now(ZoneInfo('Asia/Dubai')).date()
+                        rollup_request = replace(
+                            request, actions=({'type': 'observe'},),
+                            inspection_task_rollup_date=target_date.isoformat(),
+                            inspection_task_rollup_date_field='observedTime',
+                            inspection_task_rollup_view=(
+                                'team' if re.search(r'\bteam\s+tasks?\b|مهام\s+الفريق', question, re.I)
+                                else 'all'
+                            ),
+                            inspection_task_rollup_list=_inspection_today_list_requested(question),
+                        )
+                        try:
+                            rollup_tool = await portal_read_stage(
+                                rollup_request,
+                                timeout_stage='inspection_person_rollup_native',
+                                attempt='inspection_person_rollup_native',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError,
+                                ValueError, TypeError, KeyError):
+                            rollup_tool = {}
+                        rollup_observation = (
+                            ((rollup_tool.get('result') or {}).get('observation') or {})
+                            if rollup_tool.get('ok') else {}
+                        )
+                        receipt = (rollup_observation.get('inspectionTaskRollup')
+                                   if isinstance(rollup_observation, dict) else None)
+                        rollup = _verified_inspection_task_rollup_result(
+                            receipt, question, _permission_result_scope(permission_context),
+                        )
+                        if _inspection_today_list_requested(question):
+                            rollup = _verified_inspection_task_date_list_result(
+                                receipt, question, _permission_result_scope(permission_context),
+                            )
+                        dashboard_observation: dict[str, Any] = {}
+                        if (_inspection_person_rollup_requested(question)
+                                and _inspection_today_request(question)
+                                and _permission_result_scope(permission_context) not in {'team', 'global'}):
+                            dashboard_request = PortalReadRequest(
+                                start_path='/dashboard', actions=({'type': 'observe'},),
+                            )
+                            if not validate_policy(dashboard_request, reason='inspection_personal_dashboard_card'):
+                                try:
+                                    dashboard_tool = await portal_read_stage(
+                                        dashboard_request,
+                                        timeout_stage='inspection_personal_dashboard_card',
+                                        attempt='inspection_personal_dashboard_card',
+                                    )
+                                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError,
+                                        ValueError, TypeError, KeyError):
+                                    dashboard_tool = {}
+                                candidate = ((dashboard_tool.get('result') or {}).get('observation')
+                                             if dashboard_tool.get('ok') else None)
+                                if isinstance(candidate, dict):
+                                    dashboard_observation = candidate
+                                    rollup = _inspection_rollup_with_dashboard_card(
+                                        rollup, dashboard_observation, question,
+                                    )
+                        return ReaderOutcome(rollup, {
+                            'stage': 'inspection_person_rollup_native',
+                            'permission': permission_audit,
+                            'observation': rollup_observation,
+                            'dashboardObservation': dashboard_observation,
+                            'inspectionTaskRollup': receipt if isinstance(receipt, dict) else {},
+                            'result': rollup.public_json(),
+                        })
+                if explicit_source == '/inspection/violations':
+                    violation_identity = _explicit_record_identity(question)
+                    if violation_identity and _inspection_history_request(question):
+                        # A violation can be in either rendered status tab. A
+                        # missing row in the default To Do tab is not evidence
+                        # that the named record does not exist. Inspect only
+                        # tabs and search controls actually observed on this
+                        # account's page; do not infer a hidden collection.
+                        views: list[tuple[dict[str, Any], tuple[dict[str, Any], ...]]] = [(observation, ())]
+                        for tab_control in (observation.get('tabControls') or ()):
+                            if not isinstance(tab_control, dict) or tab_control.get('selected') is True:
+                                continue
+                            tab_name = str(tab_control.get('name') or '').strip()
+                            if not tab_name:
+                                continue
+                            switch = _observed_switch_tab_action({'name': tab_name}, observation)
+                            if switch is None:
+                                continue
+                            try:
+                                switched = await portal_read_stage(
+                                    replace(request, actions=(switch,)),
+                                    timeout_stage='inspection_violation_history_tab',
+                                    attempt='inspection_violation_history_tab',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                switched = {}
+                            switched_observation = ((switched.get('result') or {}).get('observation')
+                                                    if switched.get('ok') else None)
+                            if isinstance(switched_observation, dict):
+                                views.append((switched_observation, (switch,)))
+                        for view_observation, prefix_actions in views:
+                            exact = _native_exact_identity_row_result(
+                                view_observation, page='/inspection/violations',
+                                record_identity=violation_identity,
+                                scope=_permission_result_scope(permission_context), question=question,
+                            )
+                            if exact is None:
+                                controls = [control for control in (view_observation.get('filterControls') or ())
+                                            if isinstance(control, dict) and control.get('role') == 'textbox'
+                                            and control.get('filterSurface') is True and control.get('selector')
+                                            and str(control.get('label') or '').strip().casefold() in {'search', 'بحث'}]
+                                if len(controls) == 1:
+                                    filter_actions: list[dict[str, Any]] = [
+                                        {'type': 'filter', 'selector': str(controls[0]['selector']),
+                                         'value': violation_identity},
+                                    ]
+                                    commands = [str(command).strip() for command in controls[0].get('commands') or ()
+                                                if str(command).strip().casefold() in {'filter', 'apply', 'apply filters'}]
+                                    if commands:
+                                        filter_actions.append({'type': 'apply_filter', 'role': 'button', 'name': commands[0]})
+                                    try:
+                                        searched = await portal_read_stage(
+                                            replace(request, actions=(*prefix_actions, *filter_actions)),
+                                            timeout_stage='inspection_violation_history_search',
+                                            attempt='inspection_violation_history_search',
+                                        )
+                                    except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                        searched = {}
+                                    searched_observation = ((searched.get('result') or {}).get('observation')
+                                                            if searched.get('ok') else None)
+                                    if isinstance(searched_observation, dict):
+                                        exact = _native_exact_identity_row_result(
+                                            searched_observation, page='/inspection/violations',
+                                            record_identity=violation_identity,
+                                            scope=_permission_result_scope(permission_context), question=question,
+                                        )
+                                        if exact is not None:
+                                            view_observation = searched_observation
+                            if exact is not None:
+                                bounded = replace(
+                                    exact, status='not_confirmed',
+                                    summary='The named violation was found, but its institution-wide history was not returned by this view.',
+                                    facts=(*exact.facts,
+                                           'This violation row is not a complete institution history. Past inspections, all penalties and contacts were not returned by this authorized view; open its source task with an account allowed to read Inspection / Tasks.'),
+                                    missing=('institution_history_not_returned', 'institution_contacts_not_returned'),
+                                )
+                                return ReaderOutcome(bounded, {
+                                    'stage': 'inspection_violation_history_exact_tab',
+                                    'permission': permission_audit,
+                                    'observation': view_observation,
+                                    'result': bounded.public_json(),
+                                })
+                    if violation_identity and _FINE_DECISION_REQUEST.search(str(question or '')):
+                        # The page's first API read may already contain the
+                        # requested row even when the bounded DOM sample does
+                        # not render it.  Project that observed exact row
+                        # before issuing a second UI filter; this keeps the
+                        # answer grounded in the live page read and avoids
+                        # losing API evidence in a filtered response wrapper.
+                        initial_seed = ReaderOutcome(
+                            ReaderResult(
+                                status='not_confirmed', page='/inspection/violations',
+                                answer_shape='list', completeness='bounded',
+                                scope=_permission_result_scope(permission_context),
+                                summary='The requested violation record is being matched against the current readable list.',
+                            ),
+                            {'observation': observation},
+                        )
+                        initial_exact = _native_fine_decision_result(initial_seed, question)
+                        if initial_exact.result.status == 'success':
+                            return ReaderOutcome(initial_exact.result, {
+                                'stage': 'inspection_violation_exact_api_match',
+                                'permission': permission_audit,
+                                'observation': observation,
+                                'result': initial_exact.result.public_json(),
+                            })
+                        search_controls = [
+                            control for control in (observation.get('filterControls') or [])
+                            if isinstance(control, dict)
+                            and control.get('role') == 'textbox'
+                            and control.get('filterSurface') is True
+                            and control.get('selector')
+                            and str(control.get('label') or '').strip().casefold() in {'search', 'بحث'}
+                        ]
+                        if len(search_controls) == 1:
+                            search_control = search_controls[0]
+                            search_actions: list[dict[str, Any]] = [{
+                                'type': 'filter',
+                                'selector': str(search_control['selector']),
+                                'value': violation_identity,
+                            }]
+                            commands = [
+                                str(command).strip() for command in (search_control.get('commands') or [])
+                                if str(command).strip().casefold() in {'filter', 'apply', 'apply filters'}
+                            ]
+                            if commands:
+                                search_actions.append({'type': 'apply_filter', 'role': 'button', 'name': commands[0]})
+                            filtered_tool = await portal_read_stage(
+                                replace(request, actions=tuple(search_actions)),
+                                timeout_stage='inspection_violation_exact_search',
+                                attempt='inspection_violation_exact_search',
+                            )
+                            filtered_observation = (
+                                (filtered_tool.get('result') or {}).get('observation')
+                                or filtered_tool.get('observation')
+                                or {}
+                            ) if isinstance(filtered_tool, dict) else {}
+                            # A gateway response can acknowledge the filter
+                            # while omitting the API discovery envelope from
+                            # its nested result.  Keep the exact-record read
+                            # grounded in the same request's initial observed
+                            # violation collection as a safe fallback; never
+                            # use an unrelated page or a hard-coded case.
+                            filtered_rows = _api_candidate_rows(
+                                filtered_observation, 'GET /api/admin/inspection/violations'
+                            )
+                            if not filtered_rows:
+                                initial_rows = _api_candidate_rows(
+                                    observation, 'GET /api/admin/inspection/violations'
+                                )
+                                if initial_rows:
+                                    filtered_observation = observation
+                            exact_seed = ReaderOutcome(
+                                ReaderResult(
+                                    status='not_confirmed', page='/inspection/violations',
+                                    answer_shape='list', completeness='bounded',
+                                    scope=_permission_result_scope(permission_context),
+                                    summary='The filtered violation record is being matched against the current readable list.',
+                                ),
+                                {'observation': filtered_observation},
+                            )
+                            exact_result = _native_fine_decision_result(exact_seed, question)
+                            if exact_result.result.status in {'success', 'no_data'}:
+                                return ReaderOutcome(exact_result.result, {
+                                    'stage': 'inspection_violation_exact_search',
+                                    'permission': permission_audit,
+                                    'observation': filtered_observation,
+                                    'result': exact_result.result.public_json(),
+                                })
                 # Exact Customer Happiness/Finance identifiers must stay on
                 # the one visible matching row.  Without this early binding,
                 # the named-source list branch could return the first four
@@ -12620,6 +18288,32 @@ class AdminPortalReader:
                             question=question,
                         )
                         if exact is not None:
+                            if (explicit_source == '/happiness/tickets'
+                                    and re.search(r'\b(?:transfer|transferred|handoff|escalat)\w*\b|تحويل|إحالة|转交|移交', question, re.I)):
+                                detail_action = _observed_cell_detail_action(observation, record_identity)
+                                detail_observation = None
+                                if detail_action is not None:
+                                    try:
+                                        detail_tool = await portal_read_stage(
+                                            replace(request, actions=(*actions, detail_action)),
+                                            timeout_stage='ticket_exact_handoff_detail', attempt='ticket_exact_handoff_detail',
+                                        )
+                                    except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                        detail_tool = {}
+                                    detail_observation = ((detail_tool.get('result') or {}).get('observation')
+                                                          if detail_tool.get('ok') else None)
+                                handoff = _happiness_ticket_handoff_result(
+                                    detail_observation, record_identity, question=question,
+                                    scope=_permission_result_scope(permission_context),
+                                )
+                                if handoff is None:
+                                    handoff = replace(exact, status='not_confirmed',
+                                        missing=('ticket_handoff_detail_unverified',))
+                                return ReaderOutcome(handoff, {
+                                    'stage': 'ticket_exact_handoff_detail', 'permission': permission_audit,
+                                    'observation': detail_observation or observation,
+                                    'result': handoff.public_json(),
+                                })
                             return ReaderOutcome(exact, {
                                 'stage': 'explicit_named_source_exact_record',
                                 'permission': permission_audit,
@@ -12711,44 +18405,257 @@ class AdminPortalReader:
                             'observation': observation,
                             'result': sla_result.public_json(),
                         })
-                if explicit_source == '/happiness/tickets' and _ticket_team_summary_requested(question):
-                    # The team roll-up requires both visible queue states.  A
-                    # single fresh To Do read is insufficient evidence for
-                    # closed-ticket counts, so switch only after the observed
-                    # Completed control has been uniquely identified.
-                    completed_action = _observed_switch_tab_action({'name': 'Completed'}, observation)
-                    if completed_action is None:
+                if (explicit_source in {'/licensing/team-management', '/content/team-management', '/happiness/team-management'}
+                        and _outside_current_team_requested(question)):
+                    denied = ReaderResult(
+                        status='no_permission', page=explicit_source,
+                        answer_shape='list', completeness='bounded',
+                        scope=_permission_result_scope(permission_context),
+                        summary="Another manager's team tasks are outside this account's readable scope.",
+                        missing=('outside_team_scope_not_authorized',),
+                    )
+                    return ReaderOutcome(denied, {
+                        'stage': 'team_task_outside_scope_refusal',
+                        'permission': permission_audit,
+                        'observation': observation, 'result': denied.public_json(),
+                    })
+                if (explicit_source in {'/licensing/team-management', '/content/team-management', '/happiness/team-management'}
+                        and _team_task_assignment_list_requested(question)):
+                    task_observation = observation
+                    switches = [control for control in observation.get('filterControls') or ()
+                                if isinstance(control, dict) and control.get('role') == 'switch'
+                                and control.get('filterSurface') is True and control.get('selector')
+                                and 'application' in str(control.get('label') or '').casefold()
+                                and 'task' in str(control.get('label') or '').casefold()
+                                and control.get('selected') == ['true']]
+                    if len(switches) == 1:
+                        try:
+                            expanded_tool = await portal_read_stage(
+                                replace(request, actions=({'type': 'filter',
+                                    'selector': switches[0]['selector'], 'value': 'false'},)),
+                                timeout_stage='team_task_assignment_full_categories',
+                                attempt='team_task_assignment_full_categories',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            expanded_tool = {}
+                        expanded = ((expanded_tool.get('result') or {}).get('observation')
+                                    if expanded_tool.get('ok') else None)
+                        if isinstance(expanded, dict) and any(
+                            isinstance(control, dict) and control.get('role') == 'switch'
+                            and control.get('selector') == switches[0]['selector']
+                            and control.get('selected') == ['false']
+                            for control in expanded.get('filterControls') or ()
+                        ):
+                            task_observation = expanded
+                    assignment_rows = _team_task_assignment_rows_result(
+                        task_observation, page=explicit_source,
+                        scope=_permission_result_scope(permission_context),
+                    )
+                    if assignment_rows is not None:
+                        return ReaderOutcome(assignment_rows, {
+                            'stage': 'team_task_assignment_rows', 'permission': permission_audit,
+                            'observation': task_observation, 'result': assignment_rows.public_json(),
+                        })
+                member_metric_question = _member_metric_followup_question(
+                    question, bounded_conversation_context, verified_team_dashboard=verified_team_dashboard)
+                if explicit_source in {'/licensing/team-management', '/content/team-management', '/happiness/team-management', '/inspection/tasks'} and (
+                    _ticket_team_summary_requested(member_metric_question)
+                    or re.search(r'\b(?:overdue|pending)\s+(?:tasks?|tickets?)\b|逾期|متأخر', question, re.I)
+                ):
+                    member_observation = observation
+                    member_action = _observed_switch_tab_action({"name": "Team Members"}, observation)
+                    if member_action is not None:
+                        try:
+                            member_tool = await portal_read_stage(
+                                replace(request, actions=(member_action,)),
+                                timeout_stage='explicit_named_source_team_member_metrics',
+                                attempt='explicit_named_source_team_member_metrics',
+                            )
+                        except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                            member_tool = {}
+                        if member_tool.get('ok'):
+                            member_observation = (member_tool.get('result') or {}).get('observation') or {}
+                    card_result = _team_member_card_result(
+                        member_observation, question=member_metric_question,
+                        scope=_permission_result_scope(permission_context), page=explicit_source,
+                    )
+                    if card_result is not None:
+                        return ReaderOutcome(card_result, {
+                            'stage': 'team_member_card_metrics', 'permission': permission_audit,
+                            'observation': member_observation, 'result': card_result.public_json(),
+                        })
+                    if _ticket_team_summary_requested(question):
+                        unconfirmed = ReaderResult(
+                            status='not_confirmed', page=explicit_source, section='Team Members',
+                            answer_shape='overview', scope=_permission_result_scope(permission_context),
+                            summary='The member/category card metrics were not verified; task rows cannot substitute for those counts.',
+                            missing=('team_member_card_metrics_unverified',),
+                        )
+                        return ReaderOutcome(unconfirmed, {
+                            'stage': 'team_member_card_metrics_unverified', 'permission': permission_audit,
+                            'observation': member_observation, 'result': unconfirmed.public_json(),
+                        })
+                queue_count = _native_task_queue_count_result(
+                    observation,
+                    page=explicit_source,
+                    question=question,
+                    scope=_permission_result_scope(permission_context),
+                ) if _generic_task_queue_requested(question) else None
+                if queue_count is not None:
+                    return ReaderOutcome(queue_count, {
+                        'stage': 'explicit_named_task_queue_count',
+                        'permission': permission_audit,
+                        'observation': observation,
+                        'result': queue_count.public_json(),
+                    })
+                if _ticket_team_summary_requested(question) and _status_grouping_capable(observation):
+                    # A status roll-up is enabled by the observed table
+                    # schema and workflow tabs, not by a route-name allowlist.
+                    # Read both states, regardless of which one the planner
+                    # selected first, so the current page remains optional.
+                    selected_tabs = {
+                        str(tab.get('name') or '').casefold()
+                        for tab in (observation.get('tabControls') or [])
+                        if isinstance(tab, dict) and tab.get('selected') is True
+                    }
+                    completed_selected = any(label in selected_tabs for label in {'completed', 'closed', 'resolved', 'done'})
+                    first_label = 'To Do' if completed_selected else 'Completed'
+                    first_action = _observed_switch_tab_action({'name': first_label}, observation)
+                    if first_action is None:
                         result = ReaderResult(
                             status='not_confirmed', page=explicit_source,
                             section='Enquiries & Complaints', answer_shape='overview',
                             scope=_permission_result_scope(permission_context),
-                            summary='The Completed ticket view was not visible in the current layout.',
-                            missing=('completed_ticket_view_not_visible',),
+                            summary='A second workflow-state view was not visible in the current layout.',
+                            missing=('status_grouping_view_not_visible',),
                         )
                         return ReaderOutcome(result, {
                             'stage': 'ticket_team_summary', 'permission': permission_audit,
                             'observation': observation, 'result': result.public_json(),
                         })
-                    completed_tool = await portal_read_stage(
-                        replace(request, actions=(completed_action,)),
-                        timeout_stage='explicit_named_source_completed_tickets',
-                        attempt='explicit_named_source_completed_tickets',
+                    state_tool = await portal_read_stage(
+                        replace(request, actions=(first_action,)),
+                        timeout_stage='explicit_named_source_status_grouping_view',
+                        attempt='explicit_named_source_status_grouping_view',
                     )
-                    if not completed_tool.get('ok'):
-                        raise RuntimeError(str(completed_tool.get('code') or 'completed_ticket_read_failed'))
-                    completed_observation = (completed_tool.get('result') or {}).get('observation') or {}
+                    if not state_tool.get('ok'):
+                        raise RuntimeError(str(state_tool.get('code') or 'status_grouping_view_read_failed'))
+                    second_observation = (state_tool.get('result') or {}).get('observation') or {}
+                    todo_observation = second_observation if completed_selected else observation
+                    completed_observation = observation if completed_selected else second_observation
+
+                    async def collect_status_pages(
+                        current: Any,
+                        view_actions: tuple[dict[str, Any], ...],
+                        label: str,
+                    ) -> tuple[Any, bool, int]:
+                        """Read observed pagination pages without a route-specific selector."""
+
+                        page_info = _status_page_info(current)
+                        if page_info is None:
+                            return current, True, 1
+                        page_index, page_size, total = page_info
+                        page_count = max(1, (total + max(page_size, 1) - 1) // max(page_size, 1))
+                        merged = current
+                        complete = True
+                        # Each page is a fresh read-only request, so the
+                        # gateway's per-request page cap does not limit this
+                        # loop.  Keep a generic safety ceiling and report a
+                        # bounded result only when the observed collection is
+                        # larger than that ceiling.
+                        max_status_pages = 20
+                        target_pages = list(range(page_index + 1, min(page_count, max_status_pages) + 1))
+
+                        async def read_status_page(target_page: int) -> tuple[int, Any | None]:
+                            # Each portal read starts from the documented page and
+                            # reproduces the observed view action, so sibling page
+                            # reads are independent.  A small bounded fan-out
+                            # avoids serially spending the whole chat response
+                            # budget on a paginated team queue.
+                            action_candidates = _status_page_action_candidates(current, target_page)
+                            for action in action_candidates:
+                                try:
+                                    page_tool = await portal_read_stage(
+                                        replace(request, actions=(*view_actions, action)),
+                                        timeout_stage=f'explicit_named_source_status_grouping_{label}_page_{target_page}',
+                                        attempt=f'explicit_named_source_status_grouping_{label}_page_{target_page}',
+                                    )
+                                except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                    page_tool = {}
+                                if page_tool.get('ok') and (page_tool.get('result') or {}).get('observation'):
+                                    return target_page, (page_tool.get('result') or {}).get('observation') or {}
+                            return target_page, None
+
+                        semaphore = asyncio.Semaphore(3)
+
+                        async def bounded_read(target_page: int) -> tuple[int, Any | None]:
+                            async with semaphore:
+                                return await read_status_page(target_page)
+
+                        page_results = await asyncio.gather(*(bounded_read(target) for target in target_pages))
+                        for _target_page, page_observation in sorted(page_results, key=lambda item: item[0]):
+                            if page_observation is None:
+                                complete = False
+                                continue
+                            merged = _merge_status_observations(merged, page_observation)
+                        if page_count > max_status_pages:
+                            complete = False
+                        return merged, complete, page_count
+
+                    todo_view_actions = (first_action,) if completed_selected else ()
+                    completed_view_actions = () if completed_selected else (first_action,)
+                    todo_observation, todo_complete, todo_pages = await collect_status_pages(
+                        todo_observation, todo_view_actions, 'todo',
+                    )
+                    completed_observation, completed_complete, completed_pages = await collect_status_pages(
+                        completed_observation, completed_view_actions, 'completed',
+                    )
+                    team_page_context = bounded_conversation_context.get("currentPage")
+                    if not isinstance(team_page_context, dict):
+                        team_page_context = {}
+                    if not team_page_context.get("visibleRecords"):
+                        member_action = _observed_switch_tab_action({"name": "Team Members"}, observation)
+                        if member_action is not None:
+                            try:
+                                member_tool = await portal_read_stage(
+                                    replace(request, actions=(member_action,)),
+                                    timeout_stage='explicit_named_source_team_members_roster',
+                                    attempt='explicit_named_source_team_members_roster',
+                                )
+                            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, KeyError):
+                                member_tool = {}
+                            if member_tool.get('ok'):
+                                member_observation = (member_tool.get('result') or {}).get('observation') or {}
+                                roster = _team_member_visible_records(member_observation)
+                                if roster:
+                                    team_page_context = {**team_page_context, "visibleRecords": list(roster)}
                     team_result = _ticket_team_summary_result(
-                        observation,
+                        todo_observation,
                         completed_observation,
                         question=question,
                         scope=_permission_result_scope(permission_context),
+                        page=explicit_source,
+                        page_context=team_page_context,
                     )
                     if team_result is not None:
+                        completeness = 'complete' if todo_complete and completed_complete else 'bounded'
+                        coverage_note = (
+                            f"All observed pages were read for both workflow states ({todo_pages} To Do, "
+                            f"{completed_pages} Completed)."
+                            if completeness == 'complete' else
+                            f"Only the bounded pages available to the read-only portal reader were read "
+                            f"({todo_pages} To Do, {completed_pages} Completed); no collection-wide total is claimed."
+                        )
+                        team_result = replace(
+                            team_result,
+                            completeness=completeness,
+                            facts=(*team_result.facts, coverage_note),
+                        )
                         return ReaderOutcome(team_result, {
                             'stage': 'ticket_team_summary', 'permission': permission_audit,
-                            'observation': observation,
+                            'observation': todo_observation,
                             'completedObservation': completed_observation,
-                            'actions': (completed_action,),
+                            'actions': (first_action,),
                             'result': team_result.public_json(),
                         })
                 if explicit_source == '/content/ContentLibrary':
@@ -13113,6 +19020,13 @@ class AdminPortalReader:
                     stage="intent_resolution", cap_seconds=min(20.0, budget.planner_seconds), deadline=deadline,
                 )
                 resolution = parse_intent_resolution(candidate, question, bounded_conversation_context)
+                # An LLM/planner may legitimately return no structured intent for
+                # a write request (for example, a department transfer). Treat
+                # that as an intent-resolution miss and continue through the
+                # generic read-only/write-boundary policy instead of dereferencing
+                # None and turning the whole turn into a 500/runtime failure.
+                if resolution is None:
+                    raise ValueError("intent_resolution_invalid")
                 intent_state.update(resolution.public_json())
                 intent_resolved = True
             except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError) as exc:
@@ -13120,9 +19034,19 @@ class AdminPortalReader:
                 if model_failure is not None:
                     trace.record("intent_resolution", "failed", started_at=intent_started_at,
                                  failure_code=model_failure.missing[0])
-                    return ReaderOutcome(
-                        model_failure,
-                        {"stage": "intent_resolution", "permission": permission_audit},
+                    # Intent resolution is an optional enhancement for
+                    # conversational follow-ups.  A model billing/auth/rate
+                    # failure must not block the deterministic, read-only
+                    # portal path: continue with the literal user question so
+                    # Arabic and English receive the same business result.
+                    bounded_conversation_context = {
+                        key: value for key, value in bounded_conversation_context.items()
+                        if key != "resolvedIntent"
+                    }
+                    trace.record(
+                        "intent_resolution", "degraded", started_at=intent_started_at,
+                        output_summary={"strategy": "literal_question_after_model_failure"},
+                        failure_code=model_failure.missing[0],
                     )
                 if isinstance(exc, ReaderStageTimeout):
                     trace.record("intent_resolution", "failed", started_at=intent_started_at,
@@ -13250,7 +19174,18 @@ class AdminPortalReader:
             object_source = '/content/ContentApplications' if application_ids[0].upper().startswith('MC-2-') else '/licensing/applications'
             knowledge_context_hint = {'page': object_source}
             bounded_conversation_context['sourceHint'] = knowledge_context_hint
-        explicit_source = _explicit_reader_source(question, bounded_conversation_context)
+        explicit_source = _explicit_reader_source(question, bounded_conversation_context, permission_context)
+        previous_metric_question = str((bounded_conversation_context.get('previousIntent') or {}).get('question') or '')
+        same_metric_followup = bool(re.search(r"نفس\s+(?:المؤشر|المقياس)|\b(?:same|that)\s+metric\b", question, re.I))
+        current_sla_metric = bool(_CURRENT_SLA_METRIC_REQUEST.search(question) or
+                                  (same_metric_followup and _CURRENT_SLA_METRIC_REQUEST.search(previous_metric_question)))
+        if (not explicit_source and current_sla_metric
+                and any(permission_path_matches('/dashboard', path)
+                        for path in (*permission_context.pages, *permission_context.subpages))):
+            # "Right now / that one metric" is the Dashboard's current KPI,
+            # not a 30-day analytics series.  The two surfaces can genuinely
+            # differ, so both languages must read the same authorized card.
+            explicit_source = '/dashboard'
         if not explicit_source and _STAFF_PERFORMANCE_REQUEST.search(str(question or "")):
             # A question about staff performance or SLA compliance belongs to an
             # analytics surface.  Bind it to the analytics page this account can
@@ -13289,8 +19224,6 @@ class AdminPortalReader:
             if self.policy.validate(probe, permission_context) == 'page_not_permitted':
                 result = ReaderResult(status='no_permission', summary='The documented primary-record page is not permitted.',
                     page=object_source, source_hint={'page': object_source},
-                    facts=(f'Current role: {permission_context.current_role}. The requested records belong to {object_source}, '
-                           'which the current account permissions do not authorize reading. No requested records were verified.',),
                     missing=('page_not_permitted',))
                 return ReaderOutcome(result, {'stage': 'primary_source_permission', 'permission': permission_audit,
                     'sourceSelection': {'page': object_source, 'basis': 'retrieved_primary_identity'}, 'result': result.public_json()})
@@ -13393,7 +19326,34 @@ class AdminPortalReader:
                     or resolved_values.get("answerShape") in {"overview", "count", "list", "attention", "due", "detail"}
                 )
             )
-        if (_question_is_capability_catalogue(question) and not needs_live_read and isinstance(plan, dict)
+        if (conceptual_request and _RULE_EVIDENCE_REQUEST.search(question)
+                and not explicit_identity and isinstance(plan, dict)
+                and plan.get('mode') != 'knowledge_only'
+                and _knowledge_evidence_strings(knowledge_context)):
+            # A general rule is established by the retrieved regulation, not
+            # by a live permit/task row. A resolved-intent hint may otherwise
+            # steer Arabic wording toward an unrelated page observation.
+            try:
+                policy_plan = await plan_stage(
+                    {**knowledge_context, 'planningDirective': {
+                        'knowledgeExplanationOnly': True,
+                        'reason': 'general_policy_question_without_record_identity',
+                        'allowedFallback': 'knowledge_only:not_confirmed',
+                    }}, timeout_stage='planning_policy_explanation',
+                    reason='policy_explanation',
+                )
+            except (ReaderStageTimeout, httpx.HTTPError, RuntimeError, ValueError, TypeError, IndexError):
+                policy_plan = None
+            policy_result = knowledge_result_from_plan(policy_plan)
+            if (policy_result is not None and policy_result.status == 'success'
+                    and knowledge_supports_result(policy_result, knowledge_context)):
+                return ReaderOutcome(policy_result, {
+                    'stage': 'knowledge_only_policy', 'permission': permission_audit,
+                    'knowledge': knowledge_context, 'result': policy_result.public_json(),
+                })
+        if ((_question_is_capability_catalogue(question)
+             or (conceptual_request and _RULE_EVIDENCE_REQUEST.search(question)))
+                and not needs_live_read and isinstance(plan, dict)
                 and plan.get('mode') == 'portal_read' and _knowledge_evidence_strings(knowledge_context)):
             # Permission to browse is not required to explain already retrieved documentation.
             # One bounded replan precedes policy validation; no forbidden page is visited.
@@ -13573,6 +19533,11 @@ class AdminPortalReader:
             # Validate the original plan before discarding observe metadata.
             # This prevents normalization from concealing unsafe fields.
             raw_policy_error = self.policy.validate(request, permission_context)
+            # Do not spend a browser read on numeric presentation-only page
+            # links.  The gateway will resolve the actual native forward
+            # control from the fresh page observation when collection-wide
+            # reading is required.
+            request = _normalize_planner_pagination_actions(request)
             cell_detail_actions = [
                 action for action in request.actions
                 if str(action.get("type") or "").casefold().replace("-", "_") == "show_detail"
@@ -13793,7 +19758,7 @@ class AdminPortalReader:
             question=question,
         )
         if exact_row_result is not None and raw_tool_payload.get('result') not in {'load_failed', 'no_permission'}:
-            return ReaderOutcome(
+            exact_outcome = ReaderOutcome(
                 exact_row_result,
                 {
                     'stage': 'observed_exact_identity_row',
@@ -13803,6 +19768,14 @@ class AdminPortalReader:
                     'result': exact_row_result.public_json(),
                 },
             )
+            # Exact table matches return before the common postprocessors.
+            # Preserve the distinction between a workflow status and an
+            # actual content-standard assessment for record-specific questions.
+            if (request.start_path.rstrip('/').casefold() == '/content/contentapplications'
+                    and re.search(r'content\s+standards?|media\s+standards?|内容.*标准|媒体内容标准|معايير\s+المحتوى',
+                                  question, re.I)):
+                exact_outcome = _native_unavailable_information_notes(exact_outcome, question)
+            return exact_outcome
         if observation is not None and (
             any(str(action.get("type") or "").casefold() == "observe" for action in request.actions)
             or not raw_tool_payload.get("facts")

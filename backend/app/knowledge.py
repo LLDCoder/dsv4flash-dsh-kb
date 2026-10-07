@@ -63,7 +63,12 @@ class KnowledgeGatewayClient:
                 from .reader_retrieval import retrieve_evidence
                 return await retrieve_evidence(self, query, folder_id, top_k, retrieval, umc_token)
             return await hydrate_packages(self, result, folder_id, top_k, umc_token, query=query)
-        except (httpx.HTTPError, ValueError, TypeError, KeyError, ExceptionGroup, KnowledgeBudgetExpired) as exc:
+        # The production image currently runs Python 3.10, where the 3.11
+        # ``ExceptionGroup`` builtin is unavailable.  Keep this compatibility
+        # list limited to the concrete retrieval/normalisation failures that
+        # the gateway can recover from instead of failing while evaluating the
+        # exception handler itself.
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, KnowledgeBudgetExpired) as exc:
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {401, 403}:
                 raise
             failure = retrieval_failure(exc)
@@ -92,7 +97,11 @@ class KnowledgeGatewayClient:
         return await self._get("/files/page", params, umc_token=umc_token)
 
     async def manifest(self, folder_id: str, recursive: bool = True, *, umc_token: str | None = None) -> dict[str, Any]:
-        return await self._get("/files/manifest", {"folder_id": folder_id}, umc_token=umc_token)
+        # The deployed knowledge-gateway exposes ``/files`` and
+        # ``/files/page`` but not the older ``/files/manifest`` route.  Keep
+        # this client method as the stable manifest abstraction and use the
+        # supported recursive listing endpoint underneath.
+        return await self.files(folder_id, recursive=recursive, umc_token=umc_token)
 
     async def document(self, file_id: str, folder_id: str, *, umc_token: str | None = None) -> dict[str, Any]:
         if not file_id.isalnum() or len(file_id) > 128:

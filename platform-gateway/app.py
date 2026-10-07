@@ -8,7 +8,7 @@ import os
 import re
 from contextvars import ContextVar
 from collections import Counter
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qsl, unquote, urljoin, urlsplit, urlencode, urlunsplit
@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 try:
     from playwright.async_api import Browser, Page, Route, async_playwright
 except ModuleNotFoundError:  # The production image installs Playwright and Chromium.
@@ -343,8 +343,65 @@ class AdminPortalReadRequest(BaseModel):
     native_record_lookup: str | None = Field(default=None, alias='nativeRecordLookup', min_length=1, max_length=200,
         description='Record identifier for a reviewed native lookup when menu permission metadata is insufficient. Returns only the native outcome, never business rows or an authorization grant.')
     dashboard_context: DashboardReadContext | None = Field(default=None, alias='dashboardContext')
+    browser_timezone: str | None = Field(
+        default=None, alias='browserTimezone', max_length=80,
+        description='Validated IANA timezone of the initiating portal browser. Applied to the isolated read-only browser before page scripts run so date-defaulted Team Members cards use the same calendar day as the user. This is not an authorization or record filter.')
     completion_period: Literal['this week', 'last week', 'this month', 'last month', 'this year', 'last year'] | None = Field(
         default=None, alias='completionPeriod', description='Optional personal Completed-view count by taskApprovalAt. Requires a verified native Completed view and its observed, allowlisted personal list operation. Reads at most 3000 distinct applications twice, rejecting missing dates, foreign assignees, incomplete/changing pagination. Returns only bounded aggregate evidence, never full rows. Calendar periods use Asia/Dubai, Monday-start weeks; explicit dates are returned.')
+    inspection_task_rollup_date: date | None = Field(
+        default=None, alias='inspectionTaskRollupDate',
+        description='Optional date-filtered rollup of the signed-in account\'s permitted Inspection Tasks views. Reads the portal-native filtered lists across all pages twice; returns counts by inspector only.')
+    inspection_task_rollup_date_field: Literal['createdOn', 'dueDate', 'observedTime'] | None = Field(
+        default=None, alias='inspectionTaskRollupDateField',
+        description='Portal-native date filter. observedTime means Creation Time on Queued Tasks and Assigned Time on Team Tasks; dueDate is an SLA deadline, not a visit date. Reads every permitted page twice and verifies each returned row against the displayed time field.')
+    inspection_task_rollup_view: Literal['all', 'team'] | None = Field(
+        default=None, alias='inspectionTaskRollupView',
+        description='With inspectionTaskRollupDate, restrict to the verified Team Tasks To Do and Completed views when the user explicitly requests Team Tasks; otherwise read all permitted Inspection task views.')
+    inspection_task_rollup_list: bool = Field(
+        default=False, alias='inspectionTaskRollupList',
+        description='With inspectionTaskRollupDate, include task number, creation time and area from the same verified permitted rows for a date-bounded list. Missing sort fields remain unverified.')
+    inspection_team_assignments: bool = Field(
+        default=False, alias='inspectionTeamAssignments',
+        description='Read every permitted Team Tasks page twice for a stable task-to-inspector list. Return a route only when an actual route field is present; never infer one from Area.')
+
+    @field_validator('browser_timezone')
+    @classmethod
+    def valid_reader_timezone(cls, value):
+        if value is not None:
+            try:
+                ZoneInfo(value)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ValueError('reader_timezone_invalid') from exc
+        return value
+
+
+def _is_presentation_numeric_pagination_request(request: AdminPortalReadRequest) -> bool:
+    """Identify a request that contains only a non-native numeric page link."""
+    if len(request.actions) != 1:
+        return False
+    action = request.actions[0]
+    return (
+        action.type.strip().casefold().replace('-', '_') == 'paginate'
+        and str(action.role or '').strip().casefold() == 'link'
+        and bool(re.fullmatch(r'\d+', str(action.name or action.label or '').strip()))
+        and not any(str(getattr(action, key, '') or '').strip() for key in ('direction', 'rel', 'aria_controls'))
+    )
+
+
+def _drop_presentation_numeric_pagination_actions(request: AdminPortalReadRequest) -> AdminPortalReadRequest:
+    """Remove numeric presentation links even when mixed with real actions."""
+    retained = [
+        action for action in request.actions
+        if not (
+            action.type.strip().casefold().replace('-', '_') == 'paginate'
+            and str(action.role or '').strip().casefold() == 'link'
+            and bool(re.fullmatch(r'\d+', str(action.name or action.label or '').strip()))
+            and not any(str(getattr(action, key, '') or '').strip() for key in ('direction', 'rel', 'aria_controls'))
+        )
+    ]
+    if len(retained) == len(request.actions):
+        return request
+    return request.model_copy(update={"actions": retained or [PortalReadAction(type="observe")]})
 
 
 def _token_ref(authorization: str | None) -> str | None:
@@ -1175,6 +1232,42 @@ def _reader_api_discovery_response_seen(reader_health: dict[str, Any], request_o
     return str(operation_key or "")
 
 
+def _reader_member_card_projection(payload: Any) -> dict[str, Any] | None:
+    """Preserve the complete observed card population, never private member fields.
+
+    This is a projection of an already received page response, not a new read
+    permission. Wide member objects may exceed the generic evidence budget.
+    """
+    data = payload.get('data') if isinstance(payload, dict) else None
+    cards = data.get('cards') if isinstance(data, dict) else None
+    if not isinstance(cards, list) or not 0 < len(cards) <= 100:
+        return None
+    projected, names = [], set()
+    for card in cards:
+        if not isinstance(card, dict):
+            return None
+        name = card.get('userName')
+        metrics = card.get('metricsByCategory')
+        if (not isinstance(name, str) or not name.strip() or len(name) > 300
+                or name.strip().casefold() in names or not isinstance(metrics, dict)
+                or not 0 < len(metrics) <= 12):
+            return None
+        names.add(name.strip().casefold())
+        safe_metrics = {}
+        for category, metric in metrics.items():
+            if not isinstance(category, str) or len(category) > 80 or not isinstance(metric, dict):
+                return None
+            # A missing/null metric stays missing: never manufacture a zero.
+            safe_metrics[category] = {
+                key: metric[key] for key in ('completedTasks', 'totalAssignedTasks', 'overdueTasks')
+                if type(metric.get(key)) is int and metric[key] >= 0
+            }
+        projected.append({'userName': name.strip(), 'metricsByCategory': safe_metrics})
+    return {'cards': projected, 'sourceCardCount': len(cards), 'complete': True,
+            'startDate': _sanitize_reader_text(data.get('startDate'), max_chars=80),
+            'endDate': _sanitize_reader_text(data.get('endDate'), max_chars=80)}
+
+
 async def _reader_capture_api_response_evidence(
     reader_health: dict[str, Any], response: Any, operation_key: str,
 ) -> None:
@@ -1193,6 +1286,32 @@ async def _reader_capture_api_response_evidence(
             return
         payload = json.loads(body)
         evidence, truncated = _reader_bounded_api_evidence(payload)
+        # A wide application row can exhaust the generic node budget before
+        # the final items on a page are copied.  Preserve only the page's
+        # small, non-sensitive SLA projection so ranking does not silently
+        # treat an incomplete DOM/sample as the whole visible page.
+        data = payload.get('data') if isinstance(payload, dict) else None
+        page_data = data.get('page') if isinstance(data, dict) else None
+        page_items = page_data.get('items') if isinstance(page_data, dict) else None
+        if isinstance(evidence, dict) and isinstance(page_items, list) and page_items and all(
+            isinstance(item, dict) and isinstance(item.get('applicationNumber'), str)
+            for item in page_items[:100]
+        ):
+            projected = []
+            for item in page_items[:100]:
+                projected.append({
+                    'applicationNumber': _sanitize_reader_text(item.get('applicationNumber'), max_chars=80),
+                    'slaMinutes': item.get('sla') if type(item.get('sla')) in (int, float) else None,
+                    'isOverdue': item.get('isOverdue') if type(item.get('isOverdue')) is bool else None,
+                    'slaDescription': _sanitize_reader_text(item.get('slaDescription'), max_chars=80)
+                    if isinstance(item.get('slaDescription'), str) else None,
+                })
+            evidence['pageSlaProjection'] = {
+                'items': projected,
+                'pageSize': page_data.get('pageSize'),
+                'pageIndex': page_data.get('pageIndex'),
+                'total': page_data.get('total'),
+            }
     except Exception:
         return
     state = _reader_api_discovery_state(reader_health)
@@ -1202,6 +1321,12 @@ async def _reader_capture_api_response_evidence(
     candidate["responseEvidence"] = evidence
     candidate["responseEvidenceTruncated"] = truncated
     candidate["fieldEvidence"] = _reader_field_evidence(payload, evidence)
+    if '/team-management/members' in operation_key and 'optimized' not in operation_key:
+        member_projection = _reader_member_card_projection(payload)
+        if member_projection is not None:
+            candidate['memberCardProjection'] = member_projection
+        else:
+            candidate.pop('memberCardProjection', None)
     # The generic bounded response projection may truncate nested list rows at
     # the observation boundary.  For the inspection task list we still need a
     # verifiable binding between the rendered task number and the opaque
@@ -1475,7 +1600,10 @@ async def _collect_projected_rows(spec: ProjectedCollectionRequest, captured: di
         if spec.rowsPath.rsplit("/", 1)[0] != spec.totalPath.rsplit("/", 1)[0]:
             raise ValueError("collection_total_context_mismatch")
         bytes_read, field_status = 0, {}
-        fallback_size = max(observed_size, 100)
+        # If the service clamps the 500-row probe, fall back to the size that
+        # this signed-in browser request actually used. A guessed intermediate
+        # size could still be clamped and make a valid queue look incomplete.
+        fallback_size = observed_size
 
         async def scan_population(batch_size, *, allow_fallback=False, expected_total=None):
             nonlocal bytes_read
@@ -1569,7 +1697,23 @@ def _page_read_target(spec, portal_origin):
         for key, value in spec.parameters.items() if key not in placeholders
     }
     url = portal_origin + path + ('?' + urlencode(query_params) if query_params and method == 'GET' else '')
-    if not _reader_api_configured_policy_allows(SimpleNamespace(url=url, method=method), portal_origin):
+    # Validate both the concrete URL and its registered template.  The
+    # concrete-path matcher intentionally requires a numeric value for a
+    # dynamic segment; a reviewed supplemental read must not be rejected just
+    # because the operation catalog uses ``{id}`` while the network policy
+    # uses ``:id``.  The template fallback remains bounded by the same origin,
+    # GET-only policy and operation-catalog registration.
+    policy_allowed = _reader_api_configured_policy_allows(
+        SimpleNamespace(url=url, method=method), portal_origin,
+    )
+    if not policy_allowed and method == 'GET':
+        policy_template = re.sub(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', r':\1', template)
+        policy_allowed = (
+            origin == portal_origin
+            and policy_template in READER_READ_ONLY_GET_PATHS
+            and not _reader_is_mutation_route(template)
+        )
+    if not policy_allowed:
         raise ValueError('page_read_not_allowed')
     return url
 
@@ -2142,6 +2286,18 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
         raise HTTPException(status_code=422, detail={"code": "invalid_reader_path"})
     if request.dashboard_context is not None and request.start_path != request.dashboard_context.route:
         raise HTTPException(status_code=422, detail='dashboard_context_route_mismatch')
+    if request.inspection_task_rollup_date is not None and (
+        urlsplit(request.start_path).path != '/inspection/tasks'
+        or len(request.actions) != 1
+        or request.actions[0].type.strip().casefold() != 'observe'
+        or request.page_reads or request.related_reads or request.collections
+        or request.completion_period or request.native_record_lookup
+    ):
+        raise HTTPException(status_code=422, detail='inspection_rollup_requires_tasks_observe')
+    if request.inspection_task_rollup_view is not None and request.inspection_task_rollup_date is None:
+        raise HTTPException(status_code=422, detail='inspection_rollup_view_requires_date')
+    if request.inspection_task_rollup_date_field is not None and request.inspection_task_rollup_date is None:
+        raise HTTPException(status_code=422, detail='inspection_rollup_date_field_requires_date')
     pages = {request.start_path}
     if any(action.type.strip().casefold().replace("-", "_") == "observe" for action in request.actions) and len(request.actions) != 1:
         raise HTTPException(status_code=422, detail={"code": "invalid_observation_plan"})
@@ -2419,8 +2575,56 @@ async def _reader_selected_tab_texts(root: Any) -> list[str]:
     return selected
 
 
+async def _reader_pagination_context(locator: Any) -> dict[str, Any]:
+    """Read the native pagination context for a resolved click target."""
+    state = await locator.evaluate("""element => {
+        const visible = node => !!(node && node.getClientRects().length) &&
+            getComputedStyle(node).visibility !== 'hidden';
+        const parts = [];
+        let pagination = false;
+        let next = false;
+        let previous = false;
+        for (let node = element, depth = 0; node && depth < 5; node = node.parentElement, depth += 1) {
+            const classes = typeof node.className === 'string' ? node.className : '';
+            const marker = [node.getAttribute && node.getAttribute('aria-label'),
+                node.getAttribute && node.getAttribute('title'), classes,
+                node.innerText || node.textContent || ''].filter(Boolean).join(' ');
+            parts.push(marker.slice(0, 200));
+            if (node.matches && node.matches('.ant-pagination,[class*="pagination" i],nav,[role="navigation"]')) pagination = true;
+            if (node.matches && node.matches('.ant-pagination-next,[class*="pagination-next" i]')) next = true;
+            if (node.matches && node.matches('.ant-pagination-prev,[class*="pagination-prev" i]')) previous = true;
+        }
+        const context = parts.join(' ').slice(0, 800);
+        if (/\\bnext\\s*page\\b/i.test(context)) next = true;
+        if (/\\bprevious\\s*page\\b/i.test(context)) previous = true;
+        if (/(?:\\bpagination\\b|\\bnext\\s*page\\b|\\bprevious\\s*page\\b)/i.test(context)) pagination = true;
+        return {context, pagination, next, previous, visible: visible(element)};
+    }""")
+    return state if isinstance(state, dict) else {}
+
+
+def _reader_pagination_context_is_forward(context: dict[str, Any], descriptor: str) -> bool:
+    """Accept only an observed forward paginator, never an arbitrary button."""
+    combined = f"{descriptor} {context.get('context', '')}".casefold()
+    if context.get("previous") or re.search(r"\b(?:previous|prev|back|left|arrowleft|chevronleft)\b|[‹«]", combined):
+        return False
+    if context.get("next"):
+        return True
+    return bool(
+        context.get("pagination") and
+        re.search(r"\b(?:next|right|arrowright|chevronright|forward)\b|[›»]", combined)
+    )
+
+
 async def _safe_click(page: Page, action: PortalReadAction) -> None:
     action_type = action.type.strip().casefold().replace("-", "_")
+    logger.info(
+        "reader_action_start type=%s role=%s name=%s section=%s",
+        action_type,
+        action.role or "",
+        _sanitize_reader_text(action.name or action.label or "", max_chars=80),
+        _sanitize_reader_text(action.section or "", max_chars=80),
+    )
     target = _semantic_locator(page, action, prefer_overlay=(
         action_type in {"apply_filter", "reset_filter"} and await _visible_overlay_count(page) > 0
     ))
@@ -2441,6 +2645,13 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
             raise RuntimeError("reader_switch_tab_ambiguous")
         locator = visible_targets[0]
     if await locator.count() == 0:
+        logger.info(
+            "reader_action_selector_missing type=%s role=%s name=%s section=%s",
+            action_type,
+            action.role or "",
+            _sanitize_reader_text(action.name or action.label or "", max_chars=80),
+            _sanitize_reader_text(action.section or "", max_chars=80),
+        )
         raise RuntimeError("reader_selector_not_found")
     tag_name = str(await locator.evaluate("element => element.tagName.toLowerCase()") or "").casefold()
     if _reader_is_cell_detail_without_button(action):
@@ -2456,6 +2667,10 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
             raise RuntimeError("reader_detail_row_not_visible")
         if not _reader_detail_identity(await row.inner_text()):
             raise RuntimeError("reader_detail_row_unverifiable")
+    nested_descriptor = await locator.evaluate("""element => Array.from(
+        element.querySelectorAll('[aria-label],[title],img[alt]')
+    ).map(node => node.getAttribute('alt') || node.getAttribute('aria-label') || node.getAttribute('title') || '')
+      .filter(Boolean).join(' ')""")
     descriptor = " ".join(
         filter(
             None,
@@ -2463,6 +2678,7 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
                 await locator.get_attribute("aria-label"),
                 await locator.get_attribute("title"),
                 (await locator.inner_text())[:200],
+                nested_descriptor,
             ],
         )
     )
@@ -2482,8 +2698,14 @@ async def _safe_click(page: Page, action: PortalReadAction) -> None:
     aria_expanded = await locator.get_attribute("aria-expanded")
     if action_type == "switch_tab" and role != "tab":
         raise RuntimeError("reader_click_target_not_tab")
-    if action_type == "paginate" and rel != "next" and not await locator.get_attribute("aria-controls"):
-        raise RuntimeError("reader_click_target_not_pagination")
+    if action_type == "paginate":
+        pagination_context = await _reader_pagination_context(locator)
+        if (
+            rel != "next"
+            and not await locator.get_attribute("aria-controls")
+            and not _reader_pagination_context_is_forward(pagination_context, descriptor)
+        ):
+            raise RuntimeError("reader_click_target_not_pagination")
     if action_type == "expand_details" and aria_expanded not in {"true", "false"}:
         raise RuntimeError("reader_click_target_not_expandable")
     before_tab = await _reader_tab_selection(locator) if action_type == "switch_tab" else {}
@@ -2748,15 +2970,48 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
         return [candidate.nth(index) for index in range(await candidate.count())
                 if await candidate.nth(index).is_visible()]
     root = _visible_overlay(page) if overlay_open else page
+    if overlay_open:
+        # Option discovery can leave a combobox popup above the Filter dialog.
+        # Scope the next filter field to the unique visible dialog instead of
+        # accidentally searching only the topmost dropdown popup.
+        dialogs = page.get_by_role("dialog")
+        visible_dialogs = await visible_targets(dialogs)
+        if len(visible_dialogs) == 1:
+            root = visible_dialogs[0]
     if action.field and action.section and not action.selector:
         regions = await visible_targets(root.get_by_role("region", name=action.section, exact=True))
         if len(regions) != 1:
             raise RuntimeError("reader_filter_scope_not_unique")
         root = regions[0]
         target = root.get_by_label(action.field, exact=True)
+    elif action.selector:
+        target = root.locator(action.selector)
+    elif action.field:
+        target = root.get_by_label(action.field, exact=True)
+    elif action.role:
+        target = root.get_by_role(action.role, name=action.name or action.label, exact=True)
     else:
         target = _semantic_locator(page, action, prefer_overlay=overlay_open)
     matches = await visible_targets(target)
+    if not matches and action.selector and await target.count() == 1:
+        hidden_input = target.nth(0)
+        ant_parent = hidden_input.locator(
+            "xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' ant-select ')][1]"
+        )
+        if (await hidden_input.get_attribute("role") == "combobox"
+                and await ant_parent.count() == 1 and await ant_parent.is_visible()):
+            # Ant's read-only search input can have opacity:0 while the
+            # combobox shell it controls is visible and interactive.
+            matches = [hidden_input]
+    if not matches and action.selector and overlay_open:
+        # A nested listbox may temporarily be mistaken for the modal overlay.
+        # Fall back only to a single visible copy of the previously observed
+        # field selector, and only when it belongs to a dialog.
+        global_matches = await visible_targets(page.locator(action.selector))
+        if len(global_matches) == 1 and await global_matches[0].evaluate(
+            "element => !!element.closest('[role=dialog]')"
+        ):
+            matches = global_matches
     if not matches and action.field and not action.selector:
         matches = await visible_targets(root.get_by_role("textbox", name=action.field, exact=True))
         if not matches:
@@ -2807,7 +3062,7 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
         ant_root = locator.locator("xpath=ancestor::*[contains(concat(' ',normalize-space(@class),' '),' ant-select ')][1]")
         is_ant = await ant_root.count() == 1
         for item in values:
-            await handle.click(timeout=READER_ACTION_TIMEOUT_MS)
+            await (ant_root if is_ant else locator).click(timeout=READER_ACTION_TIMEOUT_MS)
             # Ant's virtualized accessibility list may omit the desired option.
             # Restrict its rendered fallback to this control's own popup.
             root = page.locator(f'[id={json.dumps(popup_id)}]') if popup_id else page
@@ -2838,6 +3093,13 @@ async def _set_filter_value(page: Page, action: PortalReadAction) -> None:
     if tag_name not in {"input", "textarea"}:
         raise RuntimeError("reader_filter_control_unsupported")
     await locator.fill(value, timeout=READER_ACTION_TIMEOUT_MS)
+    # The Admin Portal's inline Search field submits on Enter. Filling a
+    # controlled input alone leaves the previous list visible, which can make
+    # an exact record look absent. Only submit the observed Search textbox;
+    # other filters still use their own page-visible Apply control.
+    placeholder = str(await locator.get_attribute("placeholder") or "").strip()
+    if not overlay_open and placeholder.casefold() in {"search", "بحث"} and value:
+        await locator.press("Enter", timeout=READER_ACTION_TIMEOUT_MS)
 
 
 async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
@@ -2855,19 +3117,23 @@ async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
                 .filter(name => /^(?:filter|apply|apply filters|reset|reset filters|clear|clear filters)$/i.test(name))
                 .slice(0, 6) : [];
             const placeholder = el.getAttribute('placeholder') || text(ant?.querySelector('.ant-select-selection-placeholder'));
-            const label = el.getAttribute('aria-label') || text(el.labels?.[0]) || placeholder || text(ant?.querySelector('.ant-select-selection-item'));
+            const formLabel = text(el.closest('.ant-form-item')?.querySelector('label'));
+            const label = el.getAttribute('aria-label') || text(el.labels?.[0]) || formLabel || placeholder || text(ant?.querySelector('.ant-select-selection-item'));
             if (!label || /page size/i.test(label)) continue;
             const selected = ant ? Array.from(ant.querySelectorAll('.ant-select-selection-item')).map(text)
                 : el.tagName === 'SELECT' ? Array.from(el.selectedOptions).map(text)
                 : el.getAttribute('data-reader-select-filter') === 'true' ? [el.getAttribute('data-reader-filter-selected')].filter(Boolean)
                 : [el.value].filter(Boolean);
-            const selector = el.id && el.getAttribute('role') && document.querySelectorAll('[id=' + JSON.stringify(el.id) + ']').length === 1
+            const dialog = el.closest('[role="dialog"]');
+            const idScope = dialog || document;
+            const selector = el.id && el.getAttribute('role') && idScope.querySelectorAll('[id=' + JSON.stringify(el.id) + ']').length === 1
                 ? '[id=' + JSON.stringify(el.id) + '][role=' + JSON.stringify(el.getAttribute('role')) + ']'
                 : ant && placeholder ? '.ant-select:has(.ant-select-selection-placeholder:text-is(' + JSON.stringify(placeholder) + ')) [role="combobox"]'
                 : el.getAttribute('placeholder') ? 'input[placeholder=' + JSON.stringify(placeholder) + ']'
                 : '';
             controls.push({label, role:el.getAttribute('role') || (el.tagName === 'SELECT' ? 'combobox' : 'textbox'),
-                selector, selected, filterSurface, commands, options:el.tagName === 'SELECT' ? Array.from(el.options).slice(0,20).map(text) : []});
+                selector, selected, filterSurface, inDialog:!!dialog, commands,
+                options:el.tagName === 'SELECT' ? Array.from(el.options).slice(0,20).map(text) : []});
             if (controls.length >= limit) break;
         }
         // Boolean list filters can live in the table-card header, outside the
@@ -2914,9 +3180,9 @@ async def _observe_filter_surface(page: Page, limit: int) -> dict[str, Any]:
     for item in raw.get("filterControls", [])[:12]:
         if not isinstance(item, dict) or _reader_contains_sensitive_locator(str(item.get("label") or "")):
             continue
-        controls.append({key: value if key == "filterSurface" and isinstance(value, bool) else [_sanitize_reader_text(str(v), max_chars=120) for v in value[:20]]
+        controls.append({key: value if key in {"filterSurface", "inDialog"} and isinstance(value, bool) else [_sanitize_reader_text(str(v), max_chars=120) for v in value[:20]]
                          if isinstance(value, list) else _sanitize_reader_text(str(value), max_chars=300)
-                         for key, value in item.items() if key in {"label", "role", "selector", "selected", "options", "filterSurface", "commands"}})
+                         for key, value in item.items() if key in {"label", "role", "selector", "selected", "options", "filterSurface", "inDialog", "commands"}})
     metrics = [{"label": _sanitize_reader_text(str(item.get("label") or ""), max_chars=120),
                 "value": _sanitize_reader_text(str(item.get("value") or ""), max_chars=40)}
                for item in raw.get("metrics", [])[:12] if isinstance(item, dict)
@@ -3237,6 +3503,75 @@ READER_TABLE_PAGINATION_SCRIPT = """element => {
     if (totals.length !== 1) return [];
     return totals[0].innerText.split(/\\r?\\n/).map(text => text.trim())
         .filter(text => text && !/^[\\d\\s/.,-]+$/.test(text)).slice(0, 4);
+}"""
+
+
+# Keep the native pagination role/name and a bounded parent context in the
+# observation.  Many UI libraries expose a next control as a button named
+# ``right`` (with ``Next Page`` only on its parent), so a flattened text list
+# cannot safely reconstruct the action later.
+READER_PAGINATION_CONTROLS_SCRIPT = """() => {
+    const visible = node => !!(node && node.getClientRects().length) &&
+        getComputedStyle(node).visibility !== 'hidden' &&
+        !node.closest('[hidden],[aria-hidden="true"]');
+    const compact = value => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 200);
+    // Do not rely on a framework-specific pagination root.  The same portal
+    // has rendered both Ant and wrapped/unstyled paginators.  Start with a
+    // bounded interactive set, then retain only controls whose own or parent
+    // semantics prove that they belong to paging.
+    const controls = Array.from(document.querySelectorAll('button,a,[role="button"],[role="link"]'))
+        .filter(visible).slice(0, 160);
+    return controls.map(element => {
+        const tag = element.tagName.toLowerCase();
+        const explicitRole = element.getAttribute('role');
+        const role = explicitRole || (tag === 'a' ? 'link' : tag === 'button' ? 'button' : '');
+        const paginationAncestor = element.closest('.ant-pagination,[class*="pagination" i],nav,[role="navigation"]');
+        const directionAncestor = element.closest('.ant-pagination-next,.ant-pagination-prev,[class*="pagination-next" i],[class*="pagination-prev" i]');
+        const contextParts = [];
+        for (let node = element, depth = 0; node && depth < 5; node = node.parentElement, depth += 1) {
+            for (const attr of ['aria-label', 'title', 'data-testid']) {
+                const value = node.getAttribute && node.getAttribute(attr);
+                if (value) contextParts.push(value);
+            }
+            if (node.className && typeof node.className === 'string') contextParts.push(node.className);
+            // The whole pagination container contains every page number and
+            // the words "Next Page".  Including its aggregate innerText would
+            // falsely mark each numeric anchor as a forward control.  Only a
+            // directional parent is allowed to contribute text semantics.
+            if (node === directionAncestor) {
+                contextParts.push(node.innerText || node.textContent || '');
+            }
+        }
+        // Icon libraries commonly put the accessible name on a wrapper span
+        // (for example span[aria-label="right"]) rather than on the svg/img.
+        // Read the first named descendant generically, while keeping the
+        // control's own name as the primary source.
+        const nestedName = element.querySelector('[aria-label],[title],img[alt]');
+        const name = compact(
+            element.getAttribute('aria-label') || element.getAttribute('title') ||
+            element.innerText || element.textContent ||
+            (nestedName && (nestedName.getAttribute('alt') || nestedName.getAttribute('aria-label') || nestedName.getAttribute('title'))) || ''
+        );
+        const parent = directionAncestor || paginationAncestor;
+        const disabled = element.disabled === true || element.getAttribute('aria-disabled') === 'true' ||
+            !!(parent && /(?:disabled|ant-pagination-disabled)/i.test(parent.className || ''));
+        const context = compact(contextParts.join(' '));
+        const semanticPagination = !!paginationAncestor || !!directionAncestor ||
+            /(?:\\bpagination\\b|\\bnext\\s*page\\b|\\bprevious\\s*page\\b)/i.test(context);
+        if (!semanticPagination) return null;
+        return {
+            role,
+            name,
+            context,
+            rel: element.getAttribute('rel') || (parent && parent.getAttribute('rel')) || '',
+            ariaControls: element.getAttribute('aria-controls') || '',
+            disabled,
+            pagination: semanticPagination,
+            direction: directionAncestor ? (/pagination-next/i.test(directionAncestor.className || '') ? 'next' :
+                /pagination-prev/i.test(directionAncestor.className || '') ? 'previous' : '') :
+                (/\\bnext\\s*page\\b/i.test(context) ? 'next' : /\\bprevious\\s*page\\b/i.test(context) ? 'previous' : '')
+        };
+    }).filter(item => item && item.role && item.name).slice(0, 40);
 }"""
 
 
@@ -3794,6 +4129,18 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
             filter_dialog_fields = await visible_texts(
                 overlay.locator('label,.filter-modal-item-label'), max_each=min(limit, 20), max_chars=120)
             filter_dialog_commands = await visible_texts(overlay.locator('button'), max_each=8, max_chars=120)
+    pagination_controls = await page.evaluate(READER_PAGINATION_CONTROLS_SCRIPT)
+    if not isinstance(pagination_controls, list):
+        pagination_controls = []
+    pagination_controls = [
+        {
+            key: value
+            for key, value in item.items()
+            if key in {"role", "name", "context", "rel", "ariaControls", "disabled", "pagination", "direction"}
+        }
+        for item in pagination_controls[:40]
+        if isinstance(item, dict) and item.get("role") in {"button", "link"} and item.get("name")
+    ]
     return {
         **(await _observe_filter_surface(page, limit)),
         "filterDialogFields": filter_dialog_fields,
@@ -3803,6 +4150,7 @@ async def _observe_semantics_once(page: Page, limit: int) -> dict[str, Any]:
         "columnHeaders": await texts("th,[role='columnheader']", max_each=min(limit, 20), max_chars=120),
         "regions": await texts("[role='region'][aria-label],section[aria-label]", max_each=min(limit, 8)),
         "controls": await texts("[role='tab'],.ant-pagination button,.ant-pagination a,button,a[aria-label]", max_each=min(limit, 20)),
+        "paginationControls": pagination_controls,
         "summaries": await visible_texts(
             page.locator(".stat-card:not([class*='skeleton']):not(:has([class*='skeleton']))"),
             max_each=min(limit, 12),
@@ -3979,6 +4327,19 @@ async def _execute_reader_actions(
             overlays_after = await _visible_overlay_count(page)
             if action_type == "show_filter" and overlays_after <= overlays_before:
                 raise RuntimeError("reader_filter_overlay_not_opened")
+            if action_type == "show_filter":
+                # Ant's modal animation and controlled select fields settle
+                # after the dialog itself first becomes visible. Capture only
+                # after the visible form labels have stopped changing.
+                previous_labels: tuple[str, ...] = ()
+                stable_polls = 0
+                for _ in range(12):
+                    labels = tuple(await _visible_overlay(page).locator('label:visible').all_inner_texts())
+                    stable_polls = stable_polls + 1 if labels == previous_labels else 0
+                    if labels and stable_polls >= 2:
+                        break
+                    previous_labels = labels
+                    await asyncio.sleep(0.12)
             if _reader_is_cell_detail_without_button(action):
                 await _validate_cell_detail_navigation(page, action, before_url)
             elif action_type == "show_detail" and page.url == before_url and overlays_after <= overlays_before:
@@ -4122,6 +4483,297 @@ async def _completed_period_aggregate(request: AdminPortalReadRequest, observati
             'measure': 'Distinct applications in your current Completed view, by your task approval date; not licenses issued or final application completion.'}
 
 
+def _inspection_rollup_scopes(buttons: tuple[str, ...], view: str = 'all') -> tuple[str, ...]:
+    allowed = {_reader_compact(button) for button in buttons}
+    def has(code: str) -> bool:
+        return _reader_compact(code) in allowed
+    team = has("Inspection.TaskManagement.TeamTasks")
+    scopes: list[str] = []
+    if view != 'team' and has("Inspection.TaskManagement.Queued"):
+        scopes.append("Queued")
+    if team:
+        # The manager's Team Tasks tab is backed by a different, broader
+        # collection than the inspector's personal /admin/inspection/tasks.
+        scopes.extend(("TeamTodo", "TeamCompleted"))
+    else:
+        if has("Inspection.TaskManagement.ToDo"):
+            scopes.append("Todo")
+        if has("Inspection.TaskManagement.Completed"):
+            scopes.append("Completed")
+    return tuple(scopes)
+
+
+def _inspection_rollup_page(payload: Any) -> tuple[list[dict[str, Any]], int, int, int]:
+    current = payload
+    for _ in range(4):
+        if isinstance(current, dict) and isinstance(current.get("data"), dict):
+            current = current["data"]
+        else:
+            break
+    if not isinstance(current, dict):
+        raise ValueError("inspection_rollup_response_invalid")
+    rows = current.get("items")
+    total = current.get("totalCount", current.get("total"))
+    index = current.get("pageIndex")
+    size = current.get("pageSize")
+    if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+            or any(type(value) is not int for value in (total, index, size))
+            or total < 0 or index < 1 or not 1 <= size <= 100 or len(rows) > size):
+        raise ValueError("inspection_rollup_response_invalid")
+    return rows, total, index, size
+
+
+def _inspection_team_rollup_page(payload: Any) -> tuple[list[dict[str, Any]], int, int, int]:
+    current = payload
+    for _ in range(4):
+        if isinstance(current, dict) and isinstance(current.get('data'), dict):
+            current = current['data']
+        else:
+            break
+    if not isinstance(current, dict) or not isinstance(current.get('page'), dict):
+        raise ValueError('inspection_rollup_response_invalid')
+    page = current['page']
+    rows = page.get('data', page.get('items'))
+    total, index, size = page.get('total'), page.get('pageIndex'), page.get('pageSize')
+    if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+            or any(type(value) is not int for value in (total, index, size))
+            or total < 0 or index < 1 or not 1 <= size <= 100 or len(rows) > size):
+        raise ValueError('inspection_rollup_response_invalid')
+    return rows, total, index, size
+
+
+async def _inspection_task_rollup(
+    page: Any, target_date: date, buttons: tuple[str, ...], portal_origin: str,
+    view: str = 'all', include_list: bool = False, date_field: str = 'createdOn',
+) -> dict[str, Any]:
+    """Two stable reads of the portal's own date-filtered task list.
+
+    Return only per-inspector aggregates; never export task rows, other
+    departments, or an incomplete result as a confirmed empty date.
+    """
+    scopes = _inspection_rollup_scopes(buttons, view)
+    if not scopes:
+        raise ValueError("inspection_rollup_view_not_permitted")
+    if date_field not in {'createdOn', 'dueDate', 'observedTime'}:
+        raise ValueError('inspection_rollup_date_field_invalid')
+    today = datetime.now(ZoneInfo("Asia/Dubai")).date()
+    scans: list[dict[str, dict[str, Any]]] = []
+    pages_read = 0
+    totals: list[dict[str, int]] = []
+    for _pass in range(2):
+        records: dict[str, dict[str, Any]] = {}
+        scope_totals: dict[str, int] = {}
+        for scope in scopes:
+            is_team = scope.startswith('Team')
+            expected_total: int | None = None
+            page_index = 1
+            while page_index <= 100:
+                team_date_field = ('assignedTime' if date_field == 'observedTime'
+                                   else date_field)
+                params = ({
+                    'view': 'completed' if scope == 'TeamCompleted' else 'todo',
+                    'taskMode': 'inspectionTasks', 'pageIndex': page_index, 'pageSize': 25,
+                    team_date_field + 'From': target_date.isoformat() + 'T00:00:00',
+                    team_date_field + 'To': target_date.isoformat() + 'T23:59:59',
+                } if is_team else {
+                    'scope': scope, 'pageIndex': page_index, 'pageSize': 25,
+                    ('dueDateFrom' if date_field == 'dueDate' else 'createAtFrom'): target_date.isoformat() + 'T00:00:00',
+                    ('dueDateTo' if date_field == 'dueDate' else 'createAtTo'): target_date.isoformat() + 'T23:59:59',
+                })
+                url = _page_read_target(
+                    SimpleNamespace(operationKey=('POST /api/inspection/team-management/tasks/query'
+                        if is_team else 'GET /api/admin/inspection/tasks'), parameters=params),
+                    portal_origin,
+                )
+                payload, _status = await _reader_get_document(
+                    page, url, method='POST', parameters=params) if is_team else await _reader_get_document(page, url)
+                pages_read += 1
+                rows, total, returned_index, size = (
+                    _inspection_team_rollup_page(payload) if is_team else _inspection_rollup_page(payload))
+                if returned_index != page_index or (expected_total is not None and total != expected_total):
+                    raise ValueError("inspection_rollup_pagination_changed")
+                expected_total = total
+                if len(records) + total > 5000:
+                    raise ValueError("inspection_rollup_row_limit")
+                for row in rows:
+                    task_no = str(row.get('taskNo') or (row.get('sourceId') if is_team else '') or '').strip()
+                    created = str(row.get("createdOn") or "").strip()
+                    assigned_time = str(row.get('assignedTime') or '').strip() if is_team else ''
+                    observed_time = (assigned_time if is_team and date_field == 'observedTime'
+                                     else created or assigned_time)
+                    time_field = ('Assigned Time' if is_team and date_field == 'observedTime'
+                                  else 'Creation Time' if created else 'Assigned Time')
+                    if not task_no or (not is_team and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", created[:10])):
+                        raise ValueError("inspection_rollup_required_field_missing")
+                    source_sla = row.get('sla') if isinstance(row.get('sla'), dict) else {}
+                    row_date = (str(row.get('dueDate') or source_sla.get('dueOn') or '').strip()
+                                if date_field == 'dueDate' else
+                                observed_time if date_field == 'observedTime' else created)
+                    if not row_date or row_date[:10] != target_date.isoformat():
+                        raise ValueError(
+                            f'inspection_rollup_filter_not_applied:{scope}:'
+                            f'{date_field}:{row_date[:10]}')
+                    if task_no in records:
+                        raise ValueError("inspection_rollup_duplicate_task")
+                    inspector = str(row.get('primaryAssignedUserName') or row.get('assignedToDisplay')
+                                    or row.get('inspectorName') or '').strip()
+                    if not inspector and isinstance(row.get("inspectors"), list):
+                        inspector = next(
+                            (str(item.get("inspectorName") or "").strip()
+                             for item in row["inspectors"] if isinstance(item, dict)
+                             and str(item.get("inspectorName") or "").strip()), "",
+                        )
+                    status = str(row.get('statusCode') or row.get('statusName')
+                                 or row.get('status') or '').strip()
+                    if not status:
+                        raise ValueError("inspection_rollup_required_field_missing")
+                    # The page's Completed tab also contains Cancelled and
+                    # Access Failed tasks.  A tab name is not a completion
+                    # status and must never inflate the completion rate.
+                    completed = bool(re.fullmatch(r'completed|complete|done', status, re.I))
+                    terminal = completed or bool(re.fullmatch(r'cancelled|canceled|access.?failed', status, re.I))
+                    sla = row.get("sla") if isinstance(row.get("sla"), dict) else {}
+                    sla_text = str(sla.get("statusCode") or "") + " " + str(sla.get("displayText") or "")
+                    overdue = (sla.get('isOverdue') is True or
+                               bool(re.search(r"overdue|past.?due|متأخر", sla_text, re.I)))
+                    due = str(sla.get("dueOn") or row.get("dueDate") or "").strip()
+                    if not overdue and not terminal and re.fullmatch(r"\d{4}-\d{2}-\d{2}", due[:10]):
+                        overdue = due[:10] < today.isoformat()
+                    records[task_no] = {
+                        "inspector": inspector or "unassigned",
+                        "completed": completed,
+                        "overdue": overdue,
+                        "created": created,
+                        "observedTime": observed_time,
+                        "timeField": time_field,
+                        "dueDate": row_date if date_field == 'dueDate' else due,
+                        "status": status,
+                        **({"area": str(row.get('areaDisplay') or row.get('area')
+                                        or row.get("areaName") or row.get("communityName") or "").strip()}
+                           if include_list else {}),
+                    }
+                if page_index * size >= total:
+                    scope_totals[scope] = total
+                    break
+                if not rows:
+                    raise ValueError("inspection_rollup_pagination_incomplete")
+                page_index += 1
+            else:
+                raise ValueError("inspection_rollup_pagination_incomplete")
+        if len(records) != sum(scope_totals.values()):
+            raise ValueError("inspection_rollup_pagination_incomplete")
+        scans.append(records)
+        totals.append(scope_totals)
+    if scans[0] != scans[1] or totals[0] != totals[1]:
+        raise ValueError("inspection_rollup_snapshot_changed")
+    grouped: dict[str, dict[str, int]] = {}
+    for row in scans[0].values():
+        person = row["inspector"]
+        bucket = grouped.setdefault(person, {"tasks": 0, "overdue": 0, "completed": 0})
+        bucket["tasks"] += 1
+        bucket["overdue"] += int(row["overdue"])
+        bucket["completed"] += int(row["completed"])
+    result = {
+        "verified": True, "date": target_date.isoformat(),
+        "view": view,
+        "dateField": date_field, "sourceOperation": (
+            'POST /api/inspection/team-management/tasks/query'
+            if view == 'team' else 'GET /api/admin/inspection/tasks'),
+        "sourceOperations": sorted({('POST /api/inspection/team-management/tasks/query'
+            if scope.startswith('Team') else 'GET /api/admin/inspection/tasks') for scope in scopes}),
+        "scopes": list(scopes), "scopeTotals": totals[0],
+        "total": len(scans[0]), "byInspector": grouped,
+        "pagesRead": pages_read, "stablePasses": 2,
+        "overdueAsOf": today.isoformat(),
+    }
+    if include_list:
+        # Keep the aggregate available, but never call a truncated or
+        # field-incomplete task list a verified sort.
+        missing_area = sum(not row.get("area") for row in scans[0].values())
+        missing_time = sum(not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?",
+            row["observedTime"],
+        ) for row in scans[0].values())
+        result["sortFieldStatus"] = {
+            "missingArea": missing_area, "missingTime": missing_time,
+            "withinOutputLimit": len(scans[0]) <= 40,
+        }
+        complete = len(scans[0]) <= 40 and not missing_time
+        result["sortFieldsComplete"] = bool(complete)
+        if complete:
+            result["tasks"] = [
+                {"taskNo": task_no, "createdOn": row["created"],
+                 "observedTime": row["observedTime"], "timeField": row["timeField"],
+                 "dueDate": row["dueDate"], "area": row["area"]}
+                for task_no, row in sorted(scans[0].items(), key=lambda item: (
+                    item[1]["observedTime"].replace(" ", "T", 1), not bool(item[1]["area"]),
+                    item[1]["area"].casefold(), item[0]))
+            ]
+    return result
+
+
+async def _inspection_team_assignments(
+    page: Any, buttons: tuple[str, ...], portal_origin: str,
+) -> dict[str, Any]:
+    """Read the signed-in manager's actual Team Tasks, without a date guess."""
+    scopes = _inspection_rollup_scopes(buttons, 'team')
+    if scopes != ('TeamTodo', 'TeamCompleted'):
+        raise ValueError('inspection_team_view_not_permitted')
+    scans: list[dict[str, dict[str, str]]] = []
+    totals: list[dict[str, int]] = []
+    pages_read = 0
+    for _pass in range(2):
+        records: dict[str, dict[str, str]] = {}
+        scope_totals: dict[str, int] = {}
+        for scope in scopes:
+            expected_total: int | None = None
+            for page_index in range(1, 101):
+                params = {'view': 'completed' if scope == 'TeamCompleted' else 'todo',
+                          'taskMode': 'inspectionTasks', 'pageIndex': page_index, 'pageSize': 100}
+                url = _page_read_target(SimpleNamespace(
+                    operationKey='POST /api/inspection/team-management/tasks/query',
+                    parameters=params), portal_origin)
+                payload, _status = await _reader_get_document(page, url, method='POST', parameters=params)
+                pages_read += 1
+                rows, total, returned_index, size = _inspection_team_rollup_page(payload)
+                if returned_index != page_index or (expected_total is not None and total != expected_total):
+                    raise ValueError('inspection_team_pagination_changed')
+                expected_total = total
+                if total > 5000:
+                    raise ValueError('inspection_team_row_limit')
+                for row in rows:
+                    task_no = str(row.get('taskNo') or row.get('sourceId') or '').strip()
+                    if not task_no or task_no in records:
+                        raise ValueError('inspection_team_task_identity_invalid')
+                    inspector = str(row.get('primaryAssignedUserName') or row.get('assignedToDisplay')
+                                    or row.get('inspectorName') or '').strip()
+                    if not inspector and isinstance(row.get('inspectors'), list):
+                        inspector = next((str(item.get('inspectorName') or '').strip()
+                                          for item in row['inspectors'] if isinstance(item, dict)
+                                          and str(item.get('inspectorName') or '').strip()), '')
+                    route = next((str(value).strip() for key, value in row.items()
+                                  if re.search(r'^(?:route|itinerary)(?:Name|Display)?$', str(key), re.I)
+                                  and value not in (None, '', '-')), '')
+                    records[task_no] = {'inspector': inspector or 'unassigned',
+                                        'route': route, 'scope': scope}
+                if page_index * size >= total:
+                    scope_totals[scope] = total
+                    break
+                if not rows:
+                    raise ValueError('inspection_team_pagination_incomplete')
+            else:
+                raise ValueError('inspection_team_pagination_incomplete')
+        if len(records) != sum(scope_totals.values()):
+            raise ValueError('inspection_team_pagination_incomplete')
+        scans.append(records)
+        totals.append(scope_totals)
+    if scans[0] != scans[1] or totals[0] != totals[1]:
+        raise ValueError('inspection_team_snapshot_changed')
+    return {'verified': True, 'tasks': scans[0], 'scopeTotals': totals[0],
+            'total': len(scans[0]), 'pagesRead': pages_read, 'stablePasses': 2,
+            'sourceOperation': 'POST /api/inspection/team-management/tasks/query'}
+
+
 @app.post("/admin/portal/read")
 async def admin_portal_read(
     request: AdminPortalReadRequest,
@@ -4129,7 +4781,30 @@ async def admin_portal_read(
     x_request_id: str | None = Header(default=None),
     x_user_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Bound identity, queueing and browser work within one request budget."""
+    """Bound identity, queueing and browser work within one request budget.
+
+    Already observed Team Members responses expose a public-only projection
+    of names, category counts and date range with source-card coverage. The
+    projection preserves zero-valued members without disclosing leave notes
+    or contact details, and does not expand the signed-in role's permissions.
+    """
+    request = _drop_presentation_numeric_pagination_actions(request)
+    if _is_presentation_numeric_pagination_request(request):
+        # Numeric anchors are often exposed as ordinary text by the browser,
+        # not as actionable links.  Short-circuit this unambiguous shape so a
+        # planner cannot spend a full browser budget retrying an impossible
+        # click.  The caller can continue with the observed native forward
+        # control; no route or page name is special-cased here.
+        logger.info(
+            "reader_pagination_numeric_ignored role=%s name=%s",
+            request.actions[0].role or "",
+            _sanitize_reader_text(request.actions[0].name or request.actions[0].label or "", max_chars=40),
+        )
+        return _sanitize_reader_output({
+            "status": "not_confirmed",
+            "summary": "The requested numeric page anchor is presentation-only and was not treated as a clickable control.",
+            "limitations": ["presentation_page_link_ignored"],
+        })
     progress = {'stage': 'identity'}
     progress_token = READER_PROGRESS.set(progress)
     try:
@@ -4212,6 +4887,8 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     extra_http_headers={"Authorization": forwarded},
                     service_workers="block",
                     **_dashboard_browser_context_options(request.dashboard_context),
+                    **({'timezone_id': request.browser_timezone}
+                       if request.dashboard_context is None and request.browser_timezone else {}),
                 )
                 await context.add_init_script(_auth_init_script(raw_token))
                 reader_health.update({
@@ -4236,7 +4913,7 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                 await context.route("**/*", route_handler)
                 page = await context.new_page()
                 setattr(page, "_reader_health", reader_health)
-                if request.related_reads or request.page_reads:
+                if request.related_reads or request.page_reads or request.inspection_task_rollup_date:
                     # Use the same verified bearer principal in an isolated API
                     # transport. Browser cookies/navigation state must not affect
                     # supplementary GETs; operation policy is checked separately.
@@ -4346,6 +5023,42 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     except (ValueError, HTTPException, httpx.HTTPError) as exc:
                         observation['completionAggregate'] = {'verified': False,
                             'reason': str(exc)[:120] if isinstance(exc, ValueError) else 'completion_source_unavailable'}
+                if request.inspection_task_rollup_date is not None:
+                    stage = 'inspection_task_rollup'
+                    progress['stage'] = stage
+                    observation = result[4] or {}
+                    try:
+                        observation['inspectionTaskRollup'] = await _inspection_task_rollup(
+                            page, request.inspection_task_rollup_date,
+                            permission_context['buttons'], portal_origin,
+                            request.inspection_task_rollup_view or 'all',
+                            request.inspection_task_rollup_list,
+                            request.inspection_task_rollup_date_field or 'createdOn',
+                        )
+                    except (ValueError, HTTPException, httpx.HTTPError) as exc:
+                        logger.warning('inspection_task_rollup_unverified reason=%s',
+                                       str(exc)[:120] if isinstance(exc, ValueError)
+                                       else 'inspection_rollup_source_unavailable')
+                        observation['inspectionTaskRollup'] = {
+                            'verified': False,
+                            'reason': str(exc)[:120] if isinstance(exc, ValueError)
+                                else 'inspection_rollup_source_unavailable',
+                        }
+                    result = (*result[:4], observation)
+                if request.inspection_team_assignments:
+                    stage = 'inspection_team_assignments'
+                    progress['stage'] = stage
+                    observation = result[4] or {}
+                    try:
+                        observation['inspectionTeamAssignments'] = await _inspection_team_assignments(
+                            page, permission_context['buttons'], portal_origin)
+                    except (ValueError, HTTPException, httpx.HTTPError) as exc:
+                        observation['inspectionTeamAssignments'] = {
+                            'verified': False,
+                            'reason': str(exc)[:120] if isinstance(exc, ValueError)
+                                else 'inspection_team_source_unavailable',
+                        }
+                    result = (*result[:4], observation)
                 return result
             finally:
                 if auxiliary_context is not None:

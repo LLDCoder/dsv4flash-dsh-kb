@@ -44,6 +44,17 @@ def test_openapi_documents_query_filter_value_boundary():
     assert "not permitted on query" in properties["values"]["description"]
 
 
+def test_pagination_context_accepts_native_right_control_with_next_parent():
+    assert gateway._reader_pagination_context_is_forward(
+        {"pagination": True, "next": True, "previous": False, "context": "Next Page"},
+        "right",
+    ) is True
+    assert gateway._reader_pagination_context_is_forward(
+        {"pagination": True, "next": False, "previous": True, "context": "Previous Page"},
+        "left",
+    ) is False
+
+
 def test_settle_waits_for_pending_read_response_without_clearing_its_health():
     class Page:
         _reader_health = {'pending': {1:'/api/example/list'}, 'failed': {}}

@@ -1907,6 +1907,9 @@ const InspectionTaskManagementPage: React.FC = () => {
         showSorterTooltip={false}
         onChange={handleTaskTableChange}
         onRow={(record) => ({
+          "data-reader-record-collection": "inspection-tasks",
+          "data-reader-record-key": String(record.taskNo || record.taskId || ""),
+          "data-reader-record-label": String(record.taskNo || record.taskId || ""),
           onClick: (event: React.MouseEvent<HTMLElement>) => {
             if (shouldIgnoreTaskRowClick(event)) return;
             navigateToTaskDetail(record);

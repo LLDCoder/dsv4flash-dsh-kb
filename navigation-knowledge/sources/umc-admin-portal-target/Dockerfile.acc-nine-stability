@@ -1,0 +1,6 @@
+FROM umc-admin-portal:codex-context4-20261001
+
+# Preserve the currently deployed nginx routing while replacing the built
+# portal assets with the verified nma-production bundle.
+COPY dist/ /usr/share/nginx/html/
+RUN chmod -R a+rX /usr/share/nginx/html

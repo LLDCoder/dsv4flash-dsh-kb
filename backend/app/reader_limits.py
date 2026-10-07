@@ -21,10 +21,12 @@ def requested_record_limit(question: str) -> int | None:
 # Page capture plus at most two policy-checked auxiliary reads share this cap.
 PORTAL_EXECUTION_TIMEOUT_SECONDS = 65.0
 PLATFORM_CLIENT_GRACE_SECONDS = 5.0
-READER_TOTAL_TIMEOUT_SECONDS = 90.0
+READER_TOTAL_TIMEOUT_SECONDS = 240.0
 MIN_READER_TOTAL_TIMEOUT_SECONDS = 10.0
 # Multi-stage retrieval and complete read-only pagination need independent
-# dependency budgets. Keep a finite configurable ceiling; the default is 90s.
+# dependency budgets. Keep a finite configurable ceiling; the default leaves
+# enough room for a generic, evidence-checked multi-stage read without making
+# any page or business intent special.
 MAX_READER_TOTAL_TIMEOUT_SECONDS = 300.0
 MIN_PLATFORM_TIMEOUT_SECONDS = 1.0
 MAX_PLATFORM_TIMEOUT_SECONDS = 180.0

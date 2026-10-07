@@ -73,6 +73,12 @@ class ToolGateway:
                 if isinstance(arguments.get("expectedFields"), list)
                 else (),
                 completion_period=arguments.get('completionPeriod'),
+                inspection_task_rollup_date=arguments.get('inspectionTaskRollupDate'),
+                inspection_task_rollup_date_field=arguments.get('inspectionTaskRollupDateField'),
+                inspection_task_rollup_view=arguments.get('inspectionTaskRollupView'),
+                inspection_task_rollup_list=arguments.get('inspectionTaskRollupList') is True,
+                inspection_team_assignments=arguments.get('inspectionTeamAssignments') is True,
+                browser_timezone=arguments.get('browserTimezone'),
             )
             policy = ReadOnlyPortalPolicy(self.platform.portal_base_url)
             policy_error = policy.validate(request, UserPermissionContext(), require_permission_context=False)

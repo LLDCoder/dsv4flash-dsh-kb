@@ -169,6 +169,19 @@ def response_language_for(text: str, preferred_language: str | None = None) -> s
     if explicit:
         return preferred_language if preferred_language in {"en", "ar"} else "en"
 
+    # A symbol-heavy message with Arabic question punctuation and no Arabic
+    # prose may contain one opaque Latin token and a short secondary-language
+    # fragment. Neither establishes English/Chinese prose. Repeated Arabic
+    # punctuation is the primary signal for this low-information input even
+    # on an English portal; a single mark still uses the Arabic UI fallback.
+    prose = _language_prose(text)
+    if ((preferred_language == "ar" and "؟" in prose
+            or len(re.findall(r"[؟٪]", prose)) >= 2)
+            and _message_language_counts(prose)["ar"] == 0
+            and len(re.findall(r"[A-Za-z]{2,}", prose)) <= 1
+            and len(re.findall(r"[^\w\s]", prose, re.UNICODE)) >= 4):
+        return "ar"
+
     # A question written in an unsupported language is still answered, but only
     # in English or Arabic: keep the portal's supported language when it is one
     # of those, otherwise use English.

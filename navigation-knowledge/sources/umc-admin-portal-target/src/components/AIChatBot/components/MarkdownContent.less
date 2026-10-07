@@ -4,6 +4,14 @@
   white-space: normal;
 }
 
+// Keep API values (emails, IDs, route names and other Latin/numeric runs) in
+// their logical order when they are embedded in Arabic assistant prose.
+.ai-chatbot__bidi-ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+  overflow-wrap: anywhere;
+}
+
 .ai-chatbot__markdown-content > :first-child {
   margin-top: 0;
 }

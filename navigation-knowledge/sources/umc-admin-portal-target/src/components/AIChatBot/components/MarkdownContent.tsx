@@ -7,7 +7,7 @@ import { history } from "@/utils/history";
 import { getAppConfig } from "@/config/appConfig";
 import "./MarkdownContent.less";
 import { normalizeMarkdownHref } from "../model/urlPolicy";
-import { renderBidiText } from "./BidiText";
+import { containsArabic, renderBidiText } from "./BidiText";
 
 interface MarkdownContentProps {
   content: string;
@@ -477,13 +477,13 @@ function alignmentClass(alignment: TextAlignment) {
   return "ai-chatbot__markdown-align-start";
 }
 
-function renderHeading(level: number, children: ReactNode, key: string) {
-  if (level === 1) return <h1 key={key}>{children}</h1>;
-  if (level === 2) return <h2 key={key}>{children}</h2>;
-  if (level === 3) return <h3 key={key}>{children}</h3>;
-  if (level === 4) return <h4 key={key}>{children}</h4>;
-  if (level === 5) return <h5 key={key}>{children}</h5>;
-  return <h6 key={key}>{children}</h6>;
+function renderHeading(level: number, children: ReactNode, key: string, dir: "rtl" | "ltr") {
+  if (level === 1) return <h1 dir={dir} key={key}>{children}</h1>;
+  if (level === 2) return <h2 dir={dir} key={key}>{children}</h2>;
+  if (level === 3) return <h3 dir={dir} key={key}>{children}</h3>;
+  if (level === 4) return <h4 dir={dir} key={key}>{children}</h4>;
+  if (level === 5) return <h5 dir={dir} key={key}>{children}</h5>;
+  return <h6 dir={dir} key={key}>{children}</h6>;
 }
 
 function renderBlock(
@@ -497,7 +497,8 @@ function renderBlock(
   const blockTrailing = isLast ? trailing : undefined;
 
   if (block.kind === "paragraph") {
-    return <p key={key}>{renderLines(block.lines, key, allowedHosts, blockTrailing)}</p>;
+    const text = block.lines.join("\n");
+    return <p dir={containsArabic(text) ? "rtl" : "ltr"} key={key}>{renderLines(block.lines, key, allowedHosts, blockTrailing)}</p>;
   }
 
   if (block.kind === "heading") {
@@ -508,13 +509,14 @@ function renderBlock(
         {blockTrailing}
       </>,
       key,
+      containsArabic(block.text) ? "rtl" : "ltr",
     );
   }
 
   if (block.kind === "quote") {
     return (
       <blockquote key={key}>
-        <p>{renderLines(block.lines, key, allowedHosts, blockTrailing)}</p>
+        <p dir={containsArabic(block.lines.join("\n")) ? "rtl" : "ltr"}>{renderLines(block.lines, key, allowedHosts, blockTrailing)}</p>
       </blockquote>
     );
   }
@@ -524,7 +526,11 @@ function renderBlock(
     return (
       <List key={key} start={block.ordered ? block.start : undefined}>
         {block.items.map((item, itemIndex) => (
-          <li className={item.checked !== undefined ? "ai-chatbot__markdown-task-item" : undefined} key={`${key}-${itemIndex}`}>
+          <li
+            className={item.checked !== undefined ? "ai-chatbot__markdown-task-item" : undefined}
+            dir={containsArabic(item.text) ? "rtl" : "ltr"}
+            key={`${key}-${itemIndex}`}
+          >
             {item.checked !== undefined ? (
               <input aria-hidden="true" checked={item.checked} readOnly tabIndex={-1} type="checkbox" />
             ) : null}
@@ -556,7 +562,7 @@ function renderBlock(
             <thead>
               <tr>
                 {block.header.map((cell, cellIndex) => (
-                  <th className={alignmentClass(block.alignments[cellIndex] ?? "start")} key={`${key}-header-${cellIndex}`}>
+                  <th className={alignmentClass(block.alignments[cellIndex] ?? "start")} dir={containsArabic(cell) ? "rtl" : "ltr"} key={`${key}-header-${cellIndex}`}>
                     {renderInline(cell, `${key}-header-text-${cellIndex}`, allowedHosts)}
                   </th>
                 ))}
@@ -566,7 +572,7 @@ function renderBlock(
               {block.rows.map((row, rowIndex) => (
                 <tr key={`${key}-row-${rowIndex}`}>
                   {row.map((cell, cellIndex) => (
-                    <td className={alignmentClass(block.alignments[cellIndex] ?? "start")} key={`${key}-cell-${rowIndex}-${cellIndex}`}>
+                    <td className={alignmentClass(block.alignments[cellIndex] ?? "start")} dir={containsArabic(cell) ? "rtl" : "ltr"} key={`${key}-cell-${rowIndex}-${cellIndex}`}>
                       {renderInline(cell, `${key}-cell-text-${rowIndex}-${cellIndex}`, allowedHosts)}
                     </td>
                   ))}
@@ -638,7 +644,7 @@ export function MarkdownContent({ content, trailing }: MarkdownContentProps) {
   const blocks = parseBlocks(content);
   const allowedHosts = getAppConfig().ffAi.cardAllowedExternalHosts;
   return (
-    <div className="ai-chatbot__markdown-content">
+    <div className="ai-chatbot__markdown-content" dir={containsArabic(content) ? "rtl" : "ltr"}>
       {renderBlocks(blocks, allowedHosts, trailing)}
     </div>
   );

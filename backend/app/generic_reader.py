@@ -20,7 +20,7 @@ import httpx
 from pydantic import ValidationError
 
 from .generic_reader_contracts import (
-    AnalysisPlan, Citation, ExtractCitation, CollectionPlan, KnowledgeResolution, MeasureSelection, RoutingDecision, SourceSelection, TaskSpec,
+    AnalysisPlan, Citation, ExtractCitation, CollectionPlan, KnowledgeResolution, MeasureSelection, RoutingDecision, SourceSelection, SlotUpdate, TaskSpec,
 )
 from .portal_reader import (
     PortalReadRequest, ReadOnlyPortalPolicy, ReaderTimeoutBudget,
@@ -57,6 +57,66 @@ SENSITIVE_FIELD = re.compile(
     r"bank.?account|iban|card.?number|card.?information|card.?security|card.?verification|"
     r"primary.?account.?number|(?:^|[._])(?:cvv|cvc)(?:$|[._])", re.I)
 TRUNCATION = {"[max-depth]", "[truncated]", "[redacted]"}
+
+
+def _normalize_current_queue_task(task: TaskSpec, question: str) -> tuple[TaskSpec, dict[str, Any] | None]:
+    """Keep an unqualified live queue question on the task-queue route family.
+
+    The planner sometimes interprets ``How many tasks are in To Do?`` as a
+    knowledge-only question or silently turns the generic task noun into an
+    application.  That is an intent error: a current queue population is live
+    data, and the noun supplied by the user is ``task``.  Normalize only when
+    the question contains a queue state plus a task noun and does not name a
+    more specific business object.  The page catalog still chooses the module;
+    this helper never selects a route or grants access.
+    """
+    text = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
+    queue_state = re.search(r"\b(?:to\s*do|todo|queued|pending|overdue|completed|closed|done)\b", text)
+    task_noun = re.search(r"\b(?:task|tasks|work\s*item|work\s*items|queue|queues)\b", text)
+    if not queue_state or not task_noun:
+        return task, None
+    specific_object = re.search(
+        r"\b(?:application|applications|license|licensing|content|publication|inspection|inspector|ticket|tickets|refund|refunds|transaction|transactions)\b",
+        text,
+    )
+    if specific_object:
+        return task, None
+    aggregate = bool(re.search(r"\b(?:how\s+many|count|number\s+of|total)\b", text))
+    updates = list(task.slotUpdates)
+    changed: list[str] = []
+    object_terms = set(re.findall(r"[a-z]+", task.businessObject.casefold()))
+    # A generic queue noun must not be replaced with an inferred application
+    # entity merely because one page happens to be named Applications.
+    if object_terms & {"application", "applications", "record", "records", "item", "items"}:
+        updates = [u for u in updates if u.field not in {"businessObject", "requestedGrain"}]
+        updates.extend([
+            SlotUpdate(field="businessObject", source="current", value="task", evidence="task queue noun"),
+            SlotUpdate(field="requestedGrain", source="current", value="task", evidence="task queue noun"),
+        ])
+        update_values = {"businessObject": "task", "requestedGrain": "task"}
+        changed.extend(["businessObject", "requestedGrain"])
+    else:
+        update_values = {}
+    if not task.needsLiveData:
+        update_values["needsLiveData"] = True
+        changed.append("needsLiveData")
+    if aggregate and not task.requestedMeasures:
+        update_values["requestedMeasures"] = ["count"]
+        changed.append("requestedMeasures")
+    if aggregate and task.outputShape != "count":
+        update_values["outputShape"] = "count"
+        changed.append("outputShape")
+    if queue_state and not task.view:
+        state = queue_state.group(0).replace("todo", "To Do").title()
+        if state.casefold() == "To Do".casefold():
+            state = "To Do"
+        update_values["view"] = state
+        changed.append("view")
+    if not changed:
+        return task, None
+    normalized = task.model_copy(update={**update_values, "slotUpdates": updates})
+    return normalized, {"code": "live_task_queue_intent_normalized", "fields": changed,
+                        "reason": "A current queue question is live task data; page selection remains catalog-driven."}
 
 
 def safe_text(value: Any, secrets=()) -> str:
@@ -1507,6 +1567,11 @@ class GenericKnowledgeReader:
                     obj, normalization = normalize_measure_grain(obj)
                     if normalization:
                         self.audit.setdefault('intentNormalizations', []).append(normalization)
+                    obj, queue_normalization = _normalize_current_queue_task(
+                        obj, str(data.get('question') or original or self.current_question)
+                    )
+                    if queue_normalization:
+                        self.audit.setdefault('intentNormalizations', []).append(queue_normalization)
                     if original:
                         validate_record_identity(obj, original, data.get('history') or self.turn_context.get('history', {}),
                             data.get('clarificationAnswer'))

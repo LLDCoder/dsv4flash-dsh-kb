@@ -253,10 +253,12 @@ async def hydrate_packages(client, result, folder_id, top_k, umc_token=None, *, 
                 gap['httpStatus'] = exc.response.status_code
             gaps.append(gap)
     # One document failure does not cancel independently verified documents.
-    # Cancellation of the enclosing deadline still cancels all child requests.
-    async with asyncio.TaskGroup() as group:
-        for doc_id in ids:
-            group.create_task(hydrate_safely(doc_id))
+    # ``asyncio.TaskGroup`` is only available in Python 3.11, while the
+    # production image still runs Python 3.10.  ``gather`` gives us the same
+    # sibling-task completion semantics here because each worker catches its
+    # own expected fetch errors; cancellation from the enclosing deadline is
+    # still propagated to every child task.
+    await asyncio.gather(*(hydrate_safely(doc_id) for doc_id in ids))
     after = {x["id"]: x for x in (await bounded_knowledge("directory_after", (client.manifest if callable(getattr(client, "manifest", None)) else client.files)(folder_id, recursive=True, umc_token=umc_token))).get("items", [])}
     after_version = hashlib.sha256(json.dumps(sorted((manifest_version(x) for x in after.values()), key=str), default=str).encode()).hexdigest()
     consumed = set(pinned) | {c['document_id'] for c in chunks} | set(complete)

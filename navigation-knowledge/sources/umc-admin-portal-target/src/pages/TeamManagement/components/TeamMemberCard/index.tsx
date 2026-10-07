@@ -288,7 +288,12 @@ export const TeamMemberCard: FC<TeamMemberCardProps> = ({
   }
 
   return (
-    <div className={`team-member-card ${loading ? "is-loading" : ""}`}>
+    <div
+      className={`team-member-card ${loading ? "is-loading" : ""}`}
+      data-reader-record-collection="team-members"
+      data-reader-record-key={currentRecord.memberId}
+      data-reader-record-label={currentRecord.memberName}
+    >
       <div className="team-member-card__header">
         <div className="team-member-card__identity">
           <SafeImage

@@ -6,7 +6,7 @@ business statuses, endpoint mappings or permission grants.
 import re
 
 
-PROMPT_POLICY_VERSION = 'reader-language/39-session-capabilities-checklist-today-rollup-transfer-history-7'
+PROMPT_POLICY_VERSION = 'reader-language/40-bilingual-parity-write-boundary'
 
 COMMON = """Language and evidence contract:
 Use originalQuestion as the authority for requested meaning; canonicalQuestion is a translation aid.
@@ -25,6 +25,12 @@ may lower the evidence, coverage, permission, pagination or task-completion stan
 Before submitting, check every requested clause, scope, condition, output and unresolved item against
 the input and this stage's evidence. Correct supported mistakes; represent remaining uncertainty using
 the contract instead of filling gaps. Do not output a chain of thought or additional schema fields.
+For equivalent English, Arabic and mixed-language questions, resolve the same canonical business
+object, filters, measures, scope and route before presentation. Locale is never a reason to choose a
+neighboring module, a different record set, or a weaker permission boundary. If an Arabic/English
+equivalent cannot be mapped with evidence, preserve the unresolved requirement and report it; never
+substitute a nearby page or invent a zero/count. A refusal or safe alternative must state the same
+no-write decision and next-step boundary in both supported languages.
 """
 
 ARABIC = """Arabic support / دعم العربية:
@@ -396,14 +402,18 @@ def presentation_language_policy(language: str) -> str:
     common = ("Response language changes presentation only: preserve the same verified facts, scope, "
               "conditions, numbers, unknowns and completion status. Follow the supplied response language "
               "for this turn, including after a language switch. Translate only unambiguous display text; "
-              "keep quoted labels, literal source values, identifiers and links exact. Do not add business "
+              "keep quoted labels, literal source values, identifiers and links exact. An unquoted checklist "
+              "item description is display prose: it may be faithfully translated into the response language "
+              "while its item code, identity, status, quantities, negation and any truncation remain exact. "
+              "Do not complete a truncated source item or add requirements. Do not add business "
               "synonyms or conclusions during translation.")
     if language != 'ar':
         return common
     return common + (" اكتب بالعربية الفصحى الواضحة. ابدأ بما تجيب عنه الأدلة فعلاً، ثم بيّن الحدود المؤثرة "
                      "والمعلومات التي لم تتأكد. حافظ على النفي والاستثناءات والفروق بين الحالات والمقاييس. "
                      "لا تجعل الصفر بديلاً عن قيمة مجهولة، ولا تصف نتيجة جزئية بأنها مكتملة. "
-                     "استخدم عناوين عربية مفهومة؛ احتفظ بالقيم والمعرّفات والاقتباسات الأصلية دون تغيير. "
+                     "استخدم عناوين عربية مفهومة؛ احتفظ بالقيم والمعرّفات والاقتباسات الأصلية دون تغيير، "
+                     "مع ترجمة وصف بند قائمة التحقق غير المقتبس ترجمة أمينة دون استكمال أي نص مبتور. "
                      "Keep references in logical order without invisible bidi control characters.")
 
 # Ranking is an output constraint. Its field and business meaning are supplied

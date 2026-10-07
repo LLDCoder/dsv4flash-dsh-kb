@@ -26,6 +26,19 @@ class ReaderFilterHint(BaseModel):
     value: str = Field(max_length=500)
 
 
+class ReaderVisibleRecord(BaseModel):
+    """A structured record identity explicitly published by the page.
+
+    This is intentionally generic: the reader can use the visible population
+    as a boundary for an aggregate without scraping arbitrary page text or
+    adding a route/person allowlist.
+    """
+    model_config = ConfigDict(extra="forbid")
+    collection: str = Field(min_length=1, max_length=100)
+    key: str = Field(min_length=1, max_length=300)
+    label: str = Field(min_length=1, max_length=300)
+
+
 class ReaderPageContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
     route: str = Field(min_length=1, max_length=500)
@@ -34,6 +47,7 @@ class ReaderPageContext(BaseModel):
     selectedRecordKeys: list[str] = Field(default_factory=list, max_length=20)
     browserTimezone: str = Field(default="UTC", max_length=80)
     filters: list[ReaderFilterHint] = Field(default_factory=list, max_length=20)
+    visibleRecords: list[ReaderVisibleRecord] = Field(default_factory=list, max_length=50)
     capturedAt: str = Field(default="", max_length=64)
 
     @field_validator("filters")
@@ -68,6 +82,11 @@ class ReaderPageContext(BaseModel):
         if any(len(v) > 300 for v in value):
             raise ValueError("record key too long")
         return value
+
+    @field_validator("visibleRecords")
+    @classmethod
+    def bounded_visible_records(cls, value):
+        return [item for item in value if not PRIVATE_KEY.search(item.label)]
 
     @field_validator("browserTimezone")
     @classmethod

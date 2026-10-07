@@ -115,6 +115,49 @@ def test_structured_answers_use_llm_organization_with_grounded_fallback(shape):
     assert 'Confirmed details' not in answer
 
 
+@pytest.mark.parametrize('language,expected', [
+    ('en', 'All 1 authorized task-history records'),
+    ('ar', 'تمت قراءة جميع سجلات تاريخ المهام المصرح بها'),
+])
+def test_complete_target_history_detail_bypasses_model_rewording(language, expected):
+    import asyncio
+    from app.service import DSHService
+
+    class FailingLLM:
+        async def stream(self, messages):
+            raise AssertionError('complete target-history details must use the deterministic evidence renderer')
+            yield ''
+
+    service = object.__new__(DSHService)
+    service.settings = type('Settings', (), {
+        'llm_base_url': 'https://llm.example.test',
+        'llm_api_key': 'test',
+        'system_prompt': '',
+    })()
+    service.llm = FailingLLM()
+    answer, failed, strategy = asyncio.run(service._natural_reader_response(
+        'Show all past inspections, penalties, and contacts for the institution behind IN-1.',
+        {
+            'result': 'success',
+            'answerShape': 'detail',
+            'presentationMode': 'llm_localized',
+            'facts': [
+                'Verified institution/target from the task target overview: {"establishmentName":"North"}',
+                'Institution contact: {"name":"Aisha"}',
+                '{"Task No.":"IN-1","Status":"Completed"}',
+                'All 1 authorized task-history records were read with the verified task target scope.',
+                'No authorized violation history was returned for this verified target.',
+            ],
+            'missing': [],
+        },
+        language,
+    ))
+    assert not failed
+    assert strategy == 'deterministic_complete_target_history'
+    assert expected in answer
+    assert 'limited' not in answer.casefold()
+
+
 def test_cleared_search_returns_requested_rows_not_just_a_restoration_message():
     from app.portal_reader import _native_cleared_search_result
     obs = native('To Do')

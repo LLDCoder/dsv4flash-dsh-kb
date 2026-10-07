@@ -14,7 +14,7 @@ import {
 } from "@/services/dshChat";
 import { useUserStore } from "@/store/user";
 import { useAdminAuthToken } from "./adminIdentity";
-import { captureReaderPageContext } from "./readerPageContext";
+import { captureReaderPageContext, filterExplicitTaskList } from "./readerPageContext";
 import { createDshTurnCorrelation } from "./dshTurnCorrelation";
 import { getDshChatErrorPresentation, getDshRuntimeError, getDshSocketError } from "./dshErrors";
 import i18n from "@/localization/config";
@@ -27,10 +27,22 @@ import type {
   WorkflowInteraction,
 } from "./types";
 
-const STREAM_INACTIVITY_TIMEOUT_MS = 90_000;
+// A Reader turn may legitimately spend time on several independently
+// authorized reads. Keep the transport window aligned with the backend's
+// generic 240s turn budget; this is not a route- or bug-specific allowance.
+const STREAM_INACTIVITY_TIMEOUT_MS = 240_000;
 // Reader work is bounded to at most 300s by the service; allow transport grace
 // while ensuring heartbeats cannot keep an unfinished request alive forever.
-const STREAM_TOTAL_TIMEOUT_MS = 360_000;
+const STREAM_TOTAL_TIMEOUT_MS = 420_000;
+// The stream is only the fast delivery path. Terminal events are persisted by
+// the service first, but a gateway can still close before the browser receives
+// those last frames. Probe history without interrupting a healthy in-flight
+// stream; only a closed or timed-out transport enters bounded recovery.
+const STREAM_RECONCILIATION_START_MS = 25_000;
+const STREAM_RECOVERY_DELAYS_MS = [0, 500, 1_000, 2_000, 4_000, 8_000, 12_000, 20_000, 30_000];
+// A failed connection before subscription has not submitted the user's turn.
+// Reconnect only in that phase; retrying after submission could duplicate work.
+const STREAM_HANDSHAKE_RETRY_DELAYS_MS = [0, 350, 1_000];
 
 export interface DshChatController {
   activeConversationId?: string;
@@ -76,6 +88,23 @@ export interface DshChatController {
 function createClientMessageId() {
   if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
   return `dsh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function delay(milliseconds: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function completedTurnEvents(events: DshEvent[], clientMessageId: string) {
+  const userIndex = events.reduce((index, event, currentIndex) => (
+    event.eventType === "user.message" && event.data?.clientMessageId === clientMessageId
+      ? currentIndex
+      : index
+  ), -1);
+  if (userIndex < 0) return null;
+  const turnEvents = events.slice(userIndex + 1);
+  const assistant = turnEvents.find((event) => event.eventType === "assistant.message");
+  const completed = turnEvents.some((event) => event.eventType === "turn.completed");
+  return assistant && completed ? events : null;
 }
 
 function dshIdentity(
@@ -181,20 +210,6 @@ function eventMessage(event: DshEvent, conversationId: string): ScenarioMessage 
   return null;
 }
 
-function pageScopeKey(context: ReturnType<typeof captureReaderPageContext>) {
-  return JSON.stringify({
-    route: context.route,
-    query: Object.entries(context.query).sort(([a], [b]) => a.localeCompare(b)),
-    view: context.view,
-    selectedRecordKeys: [...context.selectedRecordKeys].sort(),
-    filters: context.filters.map(({ name, value }) => [name, value]).sort(),
-  });
-}
-
-function currentPageScopeKey() {
-  return pageScopeKey(captureReaderPageContext(window.location, document, "UTC"));
-}
-
 function getErrorMessage(error: unknown, language: ChatLanguage) {
   return String(i18n.t(getDshChatErrorPresentation(error).messageKey, { lng: language }));
 }
@@ -237,7 +252,6 @@ export function useDshChat(language: ChatLanguage): DshChatController {
   const requestRevisionRef = useRef(0);
   const pendingSendRef = useRef(false);
   const historyRevisionRef = useRef(0);
-  const requestPageScopeRef = useRef<string>();
   const activeConversationRef = useRef<string>();
   const activeIdentityKeyRef = useRef(identityKey);
   activeConversationRef.current = activeConversationId;
@@ -361,11 +375,18 @@ export function useDshChat(language: ChatLanguage): DshChatController {
       window.location,
       document,
       Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      prompt,
     );
-    const requestPageScope = pageScopeKey(pageContext);
-    requestPageScopeRef.current = requestPageScope;
+    // Page context is captured once for the backend reader, but the response
+    // lifecycle must remain valid if the user navigates while it is running.
     const isCurrent = () => mountedRef.current && activeIdentityKeyRef.current === requestIdentityKey
-      && requestRevisionRef.current === requestRevision && currentPageScopeKey() === requestPageScope;
+      && requestRevisionRef.current === requestRevision;
+    // Transport reconciliation belongs to the submitted conversation, not to
+    // the page that happened to be open when the user clicked Send. A route or
+    // tab change must not discard a response that the service has persisted.
+    const isTransportCurrent = () => mountedRef.current
+      && activeIdentityKeyRef.current === requestIdentityKey
+      && requestRevisionRef.current === requestRevision;
     const displayPrompt = displayValue === undefined ? prompt : displayValue.trim();
     const clientMessageId = createClientMessageId();
     const assistantId = `assistant-${clientMessageId}`;
@@ -391,16 +412,22 @@ export function useDshChat(language: ChatLanguage): DshChatController {
         setActiveConversationId(conversationId);
       }
       if (!isCurrent()) return false;
-      const socket = new WebSocket(makeDshSocketUrl(identity));
-      const activeSocket = socket;
-      const turnCorrelation = createDshTurnCorrelation(clientMessageId, conversationId);
-      const streamStartedAt = Date.now();
-      socketRef.current = activeSocket;
-      await new Promise<void>((resolve, reject) => {
+      for (let attempt = 0; attempt < STREAM_HANDSHAKE_RETRY_DELAYS_MS.length; attempt += 1) {
+        if (STREAM_HANDSHAKE_RETRY_DELAYS_MS[attempt]) {
+          await delay(STREAM_HANDSHAKE_RETRY_DELAYS_MS[attempt]);
+        }
+        if (!isCurrent()) return false;
+        const activeSocket = new WebSocket(makeDshSocketUrl(identity));
+        const turnCorrelation = createDshTurnCorrelation(clientMessageId, conversationId);
+        const streamStartedAt = Date.now();
+        socketRef.current = activeSocket;
+        try {
+          await new Promise<void>((resolve, reject) => {
         let subscribed = false;
         let turnCompleted = false;
         let handshakeSettled = false;
         let receivedAssistantContent = false;
+        let recoveryStarted = false;
         const rejectHandshake = (error: DshApiError) => {
           if (handshakeSettled) return;
           handshakeSettled = true;
@@ -419,6 +446,92 @@ export function useDshChat(language: ChatLanguage): DshChatController {
             message.id === assistantId ? { ...message, status: "failed" } : message
           )));
         };
+        const markRecoveryFailed = () => {
+          if (!isTransportCurrent() || turnCompleted) return;
+          pendingSendRef.current = false;
+          closeSocket(activeSocket);
+          setStreaming(false);
+          setMessageError(new DshApiError(
+            "network",
+            "The AI service connection was interrupted.",
+            undefined,
+            "incomplete",
+          ));
+          setLastFailedPrompt(prompt);
+          setLastFailedDisplayPrompt(displayPrompt);
+          setLastFailedAttachment(attachment);
+          setMessages((current) => current.map((message) => (
+            message.id === assistantId
+              ? { ...message, status: "failed", statusMessage: undefined }
+              : message
+          )));
+        };
+        const applyPersistedTurn = (events: DshEvent[]) => {
+          if (!isTransportCurrent() || turnCompleted || !conversationId) return;
+          turnCompleted = true;
+          pendingSendRef.current = false;
+          closeSocket(activeSocket);
+          setStreaming(false);
+          setMessageError(null);
+          setLastFailedPrompt("");
+          setLastFailedDisplayPrompt("");
+          setLastFailedAttachment(undefined);
+          setMessages(events.flatMap((event) => {
+            const message = eventMessage(event, conversationId as string);
+            return message ? [message] : [];
+          }));
+          setCompletionRevision((revision) => revision + 1);
+          void refreshConversations();
+        };
+        const restorePersistedTurn = async () => {
+          if (!conversationId) return false;
+          for (const waitMilliseconds of STREAM_RECOVERY_DELAYS_MS) {
+            if (!isTransportCurrent() || turnCompleted) return true;
+            if (waitMilliseconds) await delay(waitMilliseconds);
+            if (!isTransportCurrent() || turnCompleted) return true;
+            try {
+              const events = await getDshConversationHistory(identity, conversationId);
+              const recoveredEvents = completedTurnEvents(events, clientMessageId);
+              if (!recoveredEvents) continue;
+              applyPersistedTurn(recoveredEvents);
+              return true;
+            } catch {
+              // A transient history read failure is recoverable; continue the
+              // bounded reconciliation window before surfacing an error.
+            }
+          }
+          return false;
+        };
+        const recoverOrFail = () => {
+          if (!isTransportCurrent() || turnCompleted || recoveryStarted || !conversationId) return;
+          recoveryStarted = true;
+          setMessages((current) => current.map((message) => (
+            message.id === assistantId
+              ? { ...message, status: "streaming", statusMessage: "Recovering the completed response…" }
+              : message
+          )));
+          closeSocket(activeSocket);
+          void restorePersistedTurn().then((recovered) => {
+            if (!recovered) markRecoveryFailed();
+          });
+        };
+        const probePersistedTurn = async () => {
+          if (!isTransportCurrent() || turnCompleted || recoveryStarted || !conversationId) return;
+          try {
+            const events = await getDshConversationHistory(identity, conversationId);
+            const completed = completedTurnEvents(events, clientMessageId);
+            if (completed) {
+              applyPersistedTurn(completed);
+              return;
+            }
+          } catch {
+            // A failed read must not interrupt a healthy live stream.
+          }
+          if (isTransportCurrent() && !turnCompleted && !recoveryStarted
+              && Date.now() - streamStartedAt < STREAM_TOTAL_TIMEOUT_MS - STREAM_RECONCILIATION_START_MS) {
+            window.setTimeout(() => { void probePersistedTurn(); }, STREAM_RECONCILIATION_START_MS);
+          }
+        };
         const resetInactivityTimer = () => {
           if (socketRef.current !== activeSocket) return;
           if (socketInactivityTimerRef.current) {
@@ -429,7 +542,7 @@ export function useDshChat(language: ChatLanguage): DshChatController {
             socket: activeSocket,
             timer: window.setTimeout(() => {
               if (subscribed) {
-                failActiveStream(new DshApiError("network", "The AI service stopped responding.", undefined, "incomplete"));
+                recoverOrFail();
               } else {
                 rejectHandshake(new DshApiError("network", "Unable to connect to the AI service."));
               }
@@ -443,12 +556,12 @@ export function useDshChat(language: ChatLanguage): DshChatController {
         };
         activeSocket.onerror = () => {
           const error = new DshApiError("network", "Unable to connect to the AI service.");
-          if (subscribed) failActiveStream(new DshApiError("network", error.message, undefined, "incomplete"));
+          if (subscribed) recoverOrFail();
           else rejectHandshake(error);
         };
         activeSocket.onclose = () => {
           if (subscribed) {
-            failActiveStream(new DshApiError("network", "The AI service connection was interrupted.", undefined, "incomplete"));
+            recoverOrFail();
           } else {
             rejectHandshake(new DshApiError("network", "Unable to connect to the AI service."));
           }
@@ -493,6 +606,12 @@ export function useDshChat(language: ChatLanguage): DshChatController {
                 },
               } : {}),
             }));
+            // Some gateways leave the socket open after committing terminal
+            // events. Check persisted history, but never close a healthy
+            // in-flight turn just because it exceeded this probe interval.
+            window.setTimeout(() => {
+              if (subscribed && !turnCompleted) void probePersistedTurn();
+            }, STREAM_RECONCILIATION_START_MS);
             resolve();
             return;
           }
@@ -537,7 +656,8 @@ export function useDshChat(language: ChatLanguage): DshChatController {
             )));
           }
           if (event.eventType === "assistant.message") {
-            const content = typeof event.data?.content === "string" ? event.data.content : "";
+            const rawContent = typeof event.data?.content === "string" ? event.data.content : "";
+            const content = filterExplicitTaskList(rawContent, prompt);
             receivedAssistantContent = Boolean(content);
             setMessages((current) => current.map((message) => (
               message.id === assistantId
@@ -576,8 +696,20 @@ export function useDshChat(language: ChatLanguage): DshChatController {
             }
           }
         };
-      });
-      return true;
+          });
+          return true;
+        } catch (error) {
+          closeSocket(activeSocket);
+          if (!isCurrent()) return false;
+          const safeToReconnect = error instanceof DshApiError && (
+            error.kind === "network" || (error.kind === "http" && error.status === 503)
+          );
+          if (!safeToReconnect || attempt === STREAM_HANDSHAKE_RETRY_DELAYS_MS.length - 1) {
+            throw error;
+          }
+        }
+      }
+      return false;
     } catch (error) {
       if (!isCurrent()) return false;
       pendingSendRef.current = false;
@@ -634,23 +766,6 @@ export function useDshChat(language: ChatLanguage): DshChatController {
     setDeletePendingId(undefined);
     if (identity) void refreshConversations();
   }, [identity, identityKey, refreshConversations, startNewConversation]);
-
-  useEffect(() => {
-    if (!streaming) return;
-    const timer = window.setInterval(() => {
-      if (requestPageScopeRef.current === currentPageScopeKey()) return;
-      requestRevisionRef.current += 1;
-      pendingSendRef.current = false;
-      closeSocket();
-      setStreaming(false);
-      setMessages((current) => current.filter((message) => message.status !== "streaming"));
-      setLastFailedPrompt("");
-      setLastFailedDisplayPrompt("");
-      setLastFailedAttachment(undefined);
-      setMessageError(new DshApiError("protocol", "Page context changed.", undefined, "context_changed"));
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [closeSocket, streaming]);
 
   useEffect(() => {
     mountedRef.current = true;

@@ -944,7 +944,7 @@ def make_router(service: DSHService) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"deleted": True, "conversationId": conversation_id}
 
-    @router.post("/conversations/{conversation_id}/messages", summary="Submit an owner-scoped assistant request",
+    @router.post("/conversations/{conversation_id}/messages", summary="Submit an owner-scoped assistant request with KB-backed page routing",
                  responses={401: {"description": "Authentication required"},
                             404: {"description": "Conversation not owned by the current principal"}})
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(conversation_principal)):
@@ -959,6 +959,24 @@ def make_router(service: DSHService) -> APIRouter:
         Named application identifiers and queue follow-ups retain their business
         module while each read is re-authorized. Pending-review counts are verified
         against their dedicated queue counter, never substituted by a page total.
+        Explicit Content application collections resolve to Content Applications,
+        not staff task roll-ups. Collection queries use the semantic read plan
+        with verified status filters and coverage; a default unfiltered page is
+        not evidence for a requested pending-review list. Every module change
+        is re-authorized against the current GetUserInfo permissions.
+        Pending Review is a queue aggregate, not an invented dropdown option.
+        Equivalent English and Arabic list/request/possessive wording uses
+        the same verified collection; extra actor/date/property predicates
+        remain subject to semantic planning rather than being discarded.
+        Simple current review-category identifier lists use the captured native
+        To Do request with two stable projected scans and reconcile every category
+        against its current counter before disclosing the matching applications.
+        No dates, status IDs, accounts, record numbers or counts are fabricated;
+        incomplete scans, conflicting counters or missing statuses are not_confirmed.
+        Admin page questions first resolve against the active knowledge binding
+        (page, entity, operation, and field semantics) and stable identifiers;
+        observed page context and the existing route/observation flow remain a
+        fallback when no executable binding or permitted operation is available.
         Completion-period counts require evidence for both personal completion
         scope and the requested period. Unfiltered totals, effective dates and
         submission dates are not substitutes; unavailable evidence returns
@@ -1061,8 +1079,21 @@ def make_router(service: DSHService) -> APIRouter:
         criteria. Approval, modification, export and download are not reader operations.
         Follow-ups may explain a prior verified empty list within its original view
         and criteria; they do not establish a global total or a fresh query result.
-        Team-scoped requests require a bound team view or verified permission scope;
-        personal lists cannot be relabeled as team results. Catalogue captions may
+        Team-scoped requests require a bound team view or verified permission scope.
+        Authenticated self-profile answers and permission refusals are rendered
+        deterministically in the requested language. Restricted-page refusals
+        contain no route links or unsolicited role inventory. Named inspection
+        target histories require an exact target/task binding; readable unrelated
+        violations cannot substitute for that target. Team-member overdue counts
+        use the current dated native member metrics, not a queue total. Short
+        overdue follow-ups retain verified team scope, never previous counts.
+        A fresh Dashboard shorthand requires an observed team-only section and
+        a unique authorized team workspace; caller hints alone cannot grant scope.
+        Payment-delay wording is clarified rather than relabeled as task SLA.
+        Named teams/departments, including attached Arabic prepositions, require
+        a selected group filter or matching group fields. An unbound broader
+        queue or documentation destination cannot substitute for group records.
+        Personal lists cannot be relabeled as team results. Catalogue captions may
         supply a bounded overview, but never establish record counts.
         A temporary Admin Portal gateway HTTP failure or dependency timeout is
         persisted as a normal load_failed reader result and completed turn, so
@@ -1083,12 +1114,64 @@ def make_router(service: DSHService) -> APIRouter:
         Current-session capability answers are projected from authorized display
         pages and never enumerate fixed modules or internal permission API names.
         Inspection task detail reads may include the allowlisted checklist-template
-        response. Today-by-inspector summaries filter by an observed task date and
-        never count stale rows as today. Transfer/reassignment requests are read-only
+        response. A due-date task collection is an SLA-deadline population, not
+        proof of today's scheduled visits; when the visit schedule is not exposed,
+        today's itinerary and per-inspector completion rate remain unconfirmed.
+        Team-member dated card reads use the validated initiating browser timezone
+        so the source page's calendar range matches the visible portal range.
+        Transfer/reassignment requests are read-only
         refusals with the portal workflow. Inspection institution-history reads use
         the verified task detail as the parent, then the allowlisted task/violation
         by-target GET collections with stable target parameters and complete-page
         receipts; an ordinary violations list is never substituted for that scope.
+        English and Arabic institution-history requests bind the same explicit
+        target. Permit-urgency questions rank the complete, verified authorized
+        To Do collection, not a fresh first page mislabeled as the user's current
+        page. Every maximum tie and missing displayed SLA count is retained;
+        unverified pagination cannot establish the maximum. Exact SLA questions
+        match the requested application in a fresh rendered row/search, never
+        a neighbouring record or a stored day count. Multiple application IDs
+        are normalized across spaces/dashes and searched independently in the
+        authorized native tabs, including Completed; unrelated rows never fill
+        an unmatched identity. Finance payment status/type cannot substitute
+        for licensing state/business type in either language. Source navigation is rendered as an explicit
+        Markdown link with a current-permission check in the client; denied
+        sources have no route link. Role-change requests and unscoped bulk
+        reads of another account are refused after current identity validation,
+        before page planning, without changing roles or disclosing other records.
+        Mixed-language requests and fragments seeking prompts, API keys or
+        internal policy configurations receive explicit itemized refusals;
+        public business policy questions are not treated as internal configuration.
+        Team Members workloads use a public-only member-card projection with
+        an exact source-card count. A truncated sample cannot establish a
+        complete member population, and absent metrics are never zero-filled.
+        Current single SLA Compliance questions and their same-metric follow-ups
+        resolve to the permission-checked native Dashboard card in both languages,
+        not a documentation excerpt or an unrelated analytics-period indicator.
+        Current-account capability inventories return verified session/profile
+        labels. Rule/document enrichers cannot upgrade a denied or failed live
+        page read into success or substitute manual example counters.
+        Named inspection targets, including quoted multilingual names and
+        bare "the target" labels in inspection-history questions, require
+        an exact observed target-to-task binding before any history is returned.
+        Task SLA lists use only the authorized native task collection, preserve
+        its complete overdue-day ordering, and are not rewritten by a prose model.
+        Symbol-heavy input with repeated Arabic punctuation follows its primary
+        Arabic signal rather than an opaque Latin token or short Chinese fragment;
+        explicit supported-language requests retain precedence.
+        Leading Arabic assignment imperatives, including verbal-noun commands,
+        are refused before a record read; assignment-history and field questions
+        remain read-only queries. No assignment is executed through chat.
+        Live collection lists do not use manual example counters as rule evidence.
+        A combined collection request names any independently unread or denied
+        collection rather than treating one permitted list as both collections.
+        An explicit standards/policy question about an authorized record keeps
+        native case details and separately retrieved rule evidence; a workflow
+        status alone never establishes a content-compliance decision.
+        Elliptical payment/licensing/complaint status follow-ups retain only an
+        unambiguous single requested application identity, rechecking current
+        permissions and live data for each new object. They never inherit a
+        previous payment value, permission grant, or the first row of a list.
         """
         try:
             return await service.submit_message(
