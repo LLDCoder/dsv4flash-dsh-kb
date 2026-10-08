@@ -263,6 +263,8 @@ class PageReadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     operationKey: str = Field(max_length=300)
     parameters: dict[str, str | int | bool] = Field(default_factory=dict, max_length=12)
+    displayLanguage: Literal['en', 'ar'] | None = Field(default=None,
+        description='Optional display-label language for the authenticated own-profile read only; never changes principal, permissions or query scope.')
 
 
 class RelatedArrayProjection(BaseModel):
@@ -362,7 +364,7 @@ class AdminPortalReadRequest(BaseModel):
         description='With inspectionTaskRollupDate, include task number, creation time and area from the same verified permitted rows for a date-bounded list. Missing sort fields remain unverified.')
     inspection_team_assignments: bool = Field(
         default=False, alias='inspectionTeamAssignments',
-        description='Read every permitted Team Tasks page twice for a stable task-to-inspector list. Return a route only when an actual route field is present; never infer one from Area.')
+        description='Read every permitted Team Tasks page twice for a stable task-to-inspector list, retaining observed assignment IDs for current-user exclusion. Display names cannot prove ownership. Return a route only when an actual route field is present; never infer one from Area.')
 
     @field_validator('browser_timezone')
     @classmethod
@@ -1718,14 +1720,15 @@ def _page_read_target(spec, portal_origin):
     return url
 
 
-async def _reader_get_document(page, url, *, method="GET", parameters=None):
+async def _reader_get_document(page, url, *, method="GET", parameters=None, display_language=None):
     """Retry only the already policy-checked read transport; never browser actions."""
     for attempt in range(3):
         try:
             transport = getattr(page, '_reader_request_context', None) or page.context.request
-            response = (await transport.get(url, max_redirects=0, timeout=10000) if method == "GET"
+            options = {'headers': {'Accept-Language': display_language}} if display_language else {}
+            response = (await transport.get(url, max_redirects=0, timeout=10000, **options) if method == "GET"
                         else await transport.fetch(url, method=method, data=parameters,
-                                                   max_redirects=0, timeout=10000))
+                                                   max_redirects=0, timeout=10000, **options))
             try:
                 if not 200 <= response.status < 300:
                     raise CollectionDependencyError('related_source_denied' if response.status in {401,403} else 'related_source_failed',
@@ -1752,14 +1755,18 @@ async def _reader_page_reads(page, specs, portal_origin):
     outcomes = []
     for spec in specs:
         try:
+            if spec.displayLanguage and spec.operationKey != 'GET /api/UserManagement/GetAdminUserAsync':
+                raise ValueError('page_read_display_language_not_allowed')
             url = _page_read_target(spec, portal_origin)
             method, path = spec.operationKey.split(" ", 1)
-            payload, status = await _reader_get_document(page, url, method=method, parameters=spec.parameters)
+            payload, status = await _reader_get_document(page, url, method=method, parameters=spec.parameters,
+                **({'display_language': spec.displayLanguage} if spec.displayLanguage else {}))
             evidence, truncated = _reader_bounded_api_evidence(payload)
             captured = _collection_request(SimpleNamespace(method=method, url=url, post_data=json.dumps(spec.parameters)))
             key = spec.operationKey + '#' + captured['contextRef']
             health.setdefault('collectionRequests', {})[key] = captured
             candidates[key] = {'operationKey':spec.operationKey, 'method':method, 'path':path,
+                'displayLanguage': spec.displayLanguage or 'en',
                 'pathTemplate':path, 'status':status, 'policyState':'allowed',
                 'candidateKind':'business', 'trigger':'authorized_page_read', 'triggers':['authorized_page_read'],
                 'responseEvidence':evidence, 'responseEvidenceTruncated':truncated,
@@ -3338,7 +3345,11 @@ READER_TABLE_SNAPSHOT_SCRIPT = """element => {
     return {format: 'reader_table_v1', tag,
         headers: Array.from(element.querySelectorAll("thead th,[role='columnheader']")).slice(0, 51).map(cell),
         headerRows: Array.from(element.tHead?.rows || []).slice(0, 7).map(row => Array.from(row.cells).slice(0, 51).map(cell)),
-        rows: Array.from(element.querySelectorAll(selector)).filter(visible).slice(0, 8).map(row => ({
+        // Overscan within a fixed DOM budget; the parser separately enforces
+        // its ten-business-row output limit. Blank layout measurement rows
+        // must not consume a business row or truncate a native ten-row page.
+        rows: Array.from(element.querySelectorAll(selector))
+            .filter(row => visible(row) && (row.innerText || '').trim()).slice(0, 20).map(row => ({
             text: (row.innerText || '').slice(0, 4000),
             cells: Array.from(row.querySelectorAll(":scope > td,:scope > [role='cell'],:scope > [role='gridcell']")).slice(0, 51).map(cell)
         })),
@@ -4719,11 +4730,11 @@ async def _inspection_team_assignments(
     scopes = _inspection_rollup_scopes(buttons, 'team')
     if scopes != ('TeamTodo', 'TeamCompleted'):
         raise ValueError('inspection_team_view_not_permitted')
-    scans: list[dict[str, dict[str, str]]] = []
+    scans: list[dict[str, dict[str, Any]]] = []
     totals: list[dict[str, int]] = []
     pages_read = 0
     for _pass in range(2):
-        records: dict[str, dict[str, str]] = {}
+        records: dict[str, dict[str, Any]] = {}
         scope_totals: dict[str, int] = {}
         for scope in scopes:
             expected_total: int | None = None
@@ -4754,7 +4765,27 @@ async def _inspection_team_assignments(
                     route = next((str(value).strip() for key, value in row.items()
                                   if re.search(r'^(?:route|itinerary)(?:Name|Display)?$', str(key), re.I)
                                   and value not in (None, '', '-')), '')
+                    # The Team Tasks DTO uses assignedUsers/userId; the native
+                    # inspection queue uses inspectors/inspectorId. Never use
+                    # userId (the applicant) as a responsibility fallback.
+                    assignment_ids = sorted({str(item['inspectorId']).strip()
+                        for item in (row.get('inspectors') or [])
+                        if isinstance(item, dict) and isinstance(item.get('inspectorId'), str)
+                        and 0 < len(item['inspectorId'].strip()) <= 120
+                        and item['inspectorId'] != '00000000-0000-0000-0000-000000000000'}) if isinstance(row.get('inspectors'), list) else []
+                    if isinstance(row.get('assignedUsers'), list):
+                        assignment_ids = sorted(set(assignment_ids) | {
+                            item['userId'].strip() for item in row['assignedUsers']
+                            if isinstance(item, dict) and isinstance(item.get('userId'), str)
+                            and 0 < len(item['userId'].strip()) <= 120
+                            and item['userId'] != '00000000-0000-0000-0000-000000000000'})
+                    if not assignment_ids:
+                        responsible_id = row.get('primaryAssignedUserId') or row.get('assignedToUserId')
+                        if (isinstance(responsible_id, str) and 0 < len(responsible_id.strip()) <= 120
+                                and responsible_id != '00000000-0000-0000-0000-000000000000'):
+                            assignment_ids = [responsible_id.strip()]
                     records[task_no] = {'inspector': inspector or 'unassigned',
+                                        'inspectorIds': assignment_ids,
                                         'route': route, 'scope': scope}
                 if page_index * size >= total:
                     scope_totals[scope] = total

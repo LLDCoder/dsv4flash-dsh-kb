@@ -2714,6 +2714,8 @@ class GenericKnowledgeReader:
                 "never translate overdue/urgency/priority into an invented status filter. "
                 "requestedGrain is the counted ENTITY, never the groupBy field. For 'How many open specimens by color?' "
                 "requestedGrain is specimen or unknown, groupBy=['color']. Current/now does not request a calendar period. "
+                "Naming the owners of counted tasks is an owner attribute, not a request for dated employee performance cards. "
+                "Set owner grouping only when a per-owner breakdown is requested; its counted grain remains task. "
                 "Do not invent ambiguity when knowledge can resolve ordinary business wording. "
                 "readOnly=false for mutations. searchQuery: 5-20 English BUSINESS keywords, preserving identifiers "
                 "and conditional/hypothetical rule wording even when it is not a live-data filter. Exclude guessed "

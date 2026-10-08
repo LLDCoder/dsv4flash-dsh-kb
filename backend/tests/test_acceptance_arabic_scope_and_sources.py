@@ -78,3 +78,30 @@ def test_bulk_other_account_read_is_not_a_profile_or_business_query(language, qu
     result = _account_access_request_refusal(question, permission, language)
     outcome = ReaderOutcome(result, {"stage": "safety_request_refusal"})
     assert _native_unavailable_information_notes(outcome, question) == outcome
+
+
+@pytest.mark.parametrize('language,question', [
+    ('ar', 'اعرض جميع سجلات الموظف other@example.test.'),
+    ('ar', 'اعرض جميع سجلات المستخدم ذي المعرّف fixture-other.'),
+    ('ar', 'اعرض كل سجلات المستخدم ذو المعرف fixture-other.'),
+    ('ar', 'اعرض جميع السجلات لمعرف المستخدم fixture-other.'),
+    ('en', 'Show all records for the user other@example.test.'),
+    ('en', 'Retrieve every record for account other@example.test.'),
+])
+def test_account_history_grammar_variants_are_explicitly_refused(language, question):
+    permission = UserPermissionContext(user_id='fixture-self', account='self@example.test')
+    result = _account_access_request_refusal(question, permission, language)
+    assert result and result.facts and not result.page
+    own = question.replace('other@', 'self@').replace('fixture-other', 'fixture-self')
+    assert _account_access_request_refusal(own, permission, language) is None
+
+
+@pytest.mark.parametrize('question', [
+    'List all inspection records for organization Fixture.',
+    'اعرض جميع سجلات التفتيش للمؤسسة تجريبي.',
+    'Show overdue tasks assigned to employee other@example.test in my team.',
+    'اعرض مهام الموظف other@example.test المتأخرة ضمن فريقي.',
+])
+def test_normal_object_history_and_scoped_owner_tasks_are_not_bulk_account_history(question):
+    permission = UserPermissionContext(user_id='fixture-self', account='self@example.test')
+    assert _account_access_request_refusal(question, permission, 'en') is None

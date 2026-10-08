@@ -278,7 +278,13 @@ def _reader_source_sentence(reader_result: dict[str, Any], language: str) -> str
     section = str(reader_result.get("section") or reader_result.get("sourceSection") or "").strip()
     if language == "ar":
         section = {"Team Performance": "أداء الفريق", "My Performance": "أدائي",
-                   "Team Members": "أعضاء الفريق", "Team Tasks": "مهام الفريق"}.get(section, section)
+                   "Team Members": "أعضاء الفريق", "Team Tasks": "مهام الفريق",
+                   "My Application Tasks": "مهام طلباتي",
+                   "Application detail": "تفاصيل الطلب",
+                   "Ticket detail and timeline": "تفاصيل التذكرة وسجلها الزمني",
+                   "To Do applications": "الطلبات قيد الإنجاز",
+                   "Licenses list": "قائمة التراخيص",
+                   "Payments": "المدفوعات"}.get(section, section)
     # ``observation-*`` identifiers are internal DOM/audit node ids.  They are
     # useful for binding facts internally, but exposing them to the user makes
     # a normal portal answer look like a debug trace (for example
@@ -299,7 +305,9 @@ def _reader_source_sentence(reader_result: dict[str, Any], language: str) -> str
             captions = {'Dashboard': 'لوحة التحكم', 'Inspection': 'التفتيش', 'Tasks': 'المهام',
                         'Violations': 'المخالفات', 'Happiness': 'سعادة العملاء',
                         'Team Management': 'إدارة الفريق', 'Licensing': 'التراخيص',
-                        'Applications': 'الطلبات', 'Content': 'المحتوى', 'Tickets': 'التذاكر',
+                        'Licenses': 'التراخيص',
+                        'Applications': 'الطلبات', 'Contentapplications': 'طلبات المحتوى',
+                        'Content': 'المحتوى', 'Tickets': 'التذاكر',
                         'Financial Payment': 'المالية', 'Transactions': 'المعاملات'}
             label = ' / '.join(captions.get(part, part) for part in label.split(' / '))
         page = f"[{label}]({page})"
@@ -425,6 +433,13 @@ def _reader_next_step_sentence(reader_result: dict[str, Any], language: str) -> 
 
     status = str(reader_result.get("result") or "")
     page = str(reader_result.get("page") or "").strip()
+    if (status == "not_confirmed"
+            and reader_result.get("workflowState") == "authorized_record_detail"
+            and reader_result.get("facts")):
+        # The exact authorized detail has already been read. Missing fields
+        # do not justify asking for the same number or opening it again.
+        # Facts and the missing-detail sentence retain the evidence boundary.
+        return ""
     if status == "no_data" and reader_result.get("completeness") == "complete":
         # A verified, exhaustive empty date-filtered collection is a final
         # answer. Advising users to change tabs or filters would contradict
@@ -436,6 +451,20 @@ def _reader_next_step_sentence(reader_result: dict[str, Any], language: str) -> 
         # already explains what this account cannot confirm.
         return ""
     if "outside_team_scope_not_authorized" in (reader_result.get("missing") or ()):
+        return ""
+    if "returned_member_metric_unavailable" in (reader_result.get("missing") or ()):
+        # A missing aggregate field cannot be recovered by supplying a record
+        # number. The verified member-card fact already explains this limit.
+        return ""
+    if "license_application_detail_unverified" in (reader_result.get("missing") or ()):
+        # The exact identity is already supplied; asking for it again cannot
+        # establish a missing authorized record or a completed detail read.
+        return ""
+    if any(field in (reader_result.get('missing') or ()) for field in
+           ('application_lifecycle_not_verified', 'licence_details_not_read')):
+        # The exact Finance references were already read and the boundary is
+        # explicit in the facts. Asking for those IDs again cannot recover an
+        # unread licensing field and misleadingly suggests Finance holds it.
         return ""
     if "source_task_checklist_not_authorized" in (reader_result.get("missing") or ()):
         return {
@@ -741,6 +770,10 @@ def reader_evidence_only_response(
             visible, total = team_page_coverage.groups()
             return (f'تعرض صفحة مهام الفريق الحالية {visible} من أصل {total} مهمة؛ '
                     'وهذه ليست قائمة مهام الفريق الكاملة.')
+        if language == 'ar' and fact == 'Application Tasks Only is off: the current queue includes all task categories, not only service applications.':
+            return 'فلتر «مهام الطلبات فقط» معطّل؛ تشمل القائمة الحالية جميع فئات المهام، وليس طلبات الخدمة وحدها.'
+        if language == 'ar' and fact == 'Application Tasks Only is on: this queue total covers service-application tasks only.':
+            return 'فلتر «مهام الطلبات فقط» مفعّل؛ يغطي إجمالي هذه القائمة مهام طلبات الخدمة فقط.'
         coverage = re.fullmatch(
             r'All (\d+) tasks created on (\d{4}-\d{2}-\d{2}) in '
             r'(Team Tasks \(To Do and Completed\)|the permitted views) '
@@ -1495,6 +1528,8 @@ def reader_evidence_only_response(
         "reference no": "الرقم المرجعي",
         "reference number": "الرقم المرجعي",
         "apply for": "الغرض من الطلب",
+        "applicant": "مقدم الطلب",
+        "license holder": "حامل الترخيص",
         "sla": "اتفاقية مستوى الخدمة",
         "last update": "آخر تحديث",
         "last updated": "آخر تحديث",
@@ -1521,6 +1556,7 @@ def reader_evidence_only_response(
         "overdue tasks": "المهام المتأخرة",
         "completed tasks": "المهام المكتملة",
         "total assigned tasks": "إجمالي المهام المكلّفة",
+        "returned tasks": "المهام المعادة",
         "pending tickets": "التذاكر قيد الانتظار",
         "overdue tickets": "التذاكر المتأخرة",
         "closed tickets": "التذاكر المغلقة",
@@ -1593,6 +1629,12 @@ def reader_evidence_only_response(
                 "department processed": "تمت المعالجة من القسم",
                 "pending committee decision": "بانتظار قرار اللجنة",
                 "pending payment": "بانتظار الدفع",
+                "pending modification": "بانتظار التعديل",
+                "initial approval": "الموافقة الأولية",
+                "final approval": "الموافقة النهائية",
+                "external approval": "الموافقة الخارجية",
+                "pending disposition": "بانتظار التصرف",
+                "disposition verification": "التحقق من التصرف",
             },
             "violation type": {"content violation": "مخالفة محتوى"},
             "fine amount": {"not decided yet": "لم يُقرر بعد"},
@@ -1962,7 +2004,7 @@ def reader_evidence_only_response(
         # fall through to the generic confirmation error, especially for Arabic
         # queries where intent resolution can be less complete.
         refund_query = bool(re.search(
-            r"\brefund(?:s|ed)?\b|استرداد|الاسترداد|مبالغ|المبلغ|عملة|عملات",
+            r"\brefund(?:s|ed)?\b|استرداد|الاسترداد",
             str(question or ""),
             re.I,
         ))
@@ -1971,18 +2013,18 @@ def reader_evidence_only_response(
                 f"لم أتمكن من العثور على سجل الاسترداد {record_identity} أو تأكيده في الصفحة الحالية. "
                 "لم أستخدم سجل استرداد آخر بدلًا منه."
                 if refund_query else
-                f"وجدت الطلب {record_identity}، لكن لم تكتمل قراءة تفاصيله الحالية. لم أستبدل تفاصيله بسجل آخر."
+                f"تعذر تأكيد تفاصيل السجل {record_identity} من العروض المصرح بها لهذا الحساب. لم أستبدله بسجل آخر."
             ),
             "zh": (
                 f"未能在当前页面找到或确认退款记录 {record_identity}，没有用其他退款记录替代它。"
                 if refund_query else
-                f"我已定位到申请 {record_identity}，但本次详情读取没有完整返回。我没有用其他申请的信息替代它。"
+                f"未能从该账号有权读取的视图核实记录 {record_identity} 的详情，没有用其他记录替代它。"
             ),
             "en": (
                 f"I could not find or confirm refund record {record_identity} in the current page. "
                 "I have not substituted another refund record."
                 if refund_query else
-                f"I located application {record_identity}, but its current detail read did not finish. I have not substituted another application’s details."
+                f"I could not verify record {record_identity}'s details in this account's authorized views. I have not substituted another record."
             ),
         }
         next_step = _reader_next_step_sentence(reader_result, language)
@@ -2036,6 +2078,11 @@ def ensure_partial_list_note(answer: str, language: str) -> str:
         return answer
     note = _PARTIAL_LIST_NOTES.get(language, _PARTIAL_LIST_NOTES["en"])
     return answer.rstrip() + "\n\n" + note
+
+
+def _needs_partial_record_note(evidence: dict[str, Any]) -> bool:
+    """A bounded knowledge answer is not a partially read business queue."""
+    return bool(evidence.get('page')) and str(evidence.get('completeness') or '') != 'complete' and evidence.get('answerShape') in {'list', 'overview', 'attention', 'due'}
 
 
 def reader_natural_answer_is_grounded(answer: str, verified_text: str, question: str, *, completeness: str = "") -> bool:
@@ -3386,7 +3433,7 @@ class DSHService:
                         break
                 else:
                     draft = _dedupe_reader_notes(_sanitize_reader_internal_ids("".join(chunks).strip()))
-                    if str(evidence.get('completeness') or '') != 'complete' and evidence.get('answerShape') in {'list', 'overview', 'attention', 'due'}:
+                    if _needs_partial_record_note(evidence):
                         draft = ensure_partial_list_note(draft, language)
                     if not _answer_language_conflicts(draft, language) and reader_natural_answer_is_grounded(
                         draft, fallback, question, completeness=str(evidence.get('completeness') or '')

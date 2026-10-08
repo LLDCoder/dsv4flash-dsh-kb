@@ -1,0 +1,49 @@
+Admin 剩余缺陷验收报告 — 2026-10-08
+
+结论：本批24个Admin编号，23个满足本次核对的原文预期及对应Excel业务复测条件；ACC-031未通过。不是全部Admin Bug List或全自动化测试通过声明。
+逐项表：progress.csv。检查类按账号/双语对照：inspection-comparison.csv。其他编号目录内comparison.csv和account-coverage.csv记录原生数据与回答对照。每编号关键截图<=9张；screenshots.csv列出数量、文件、哈希和目视检查记录。
+
+本批编号与最终结果
+编号       结果    关键原生数据与双语回答对照
+ACC-005    通过    34待办中31条原生SLA逾期、3条缺SLA；负责人分组来自Assigned To，不把6个任务负责人称为当前5人团队的6名成员；同会话短追问均31，付款歧义先澄清。
+ACC-006    通过    Header/Leader的Last7Days SLA Compliance均0%；同会话英阿追问保持同一指标。不宣称系统语言重载保留会话。
+ACC-014    通过    Hong个人中心Happiness Center Agent/Happiness Center Unit与英阿身份答复一致；许可拒答不矛盾。
+ACC-015    通过    Hong/Rui/Staff/Shiting/Leader各自英阿许可拒答；越权请求DOM链接0；其他账号记录和提权请求明确拒绝。
+ACC-016    通过    Content任务7条、全类别612口径、状态负责人英阿一致；团队5人、逾期1归ZHu Test；其他团队拒答。退回数量不是原文或该行Excel要求，未用额外字段缺失误判。
+ACC-019    通过    各账号原生许可证249条完整读取，30天窗口2026-10-08至2026-11-07为13条；Header及Excel四许可账号英阿日期、编号、持有人、状态逐条一致。
+ACC-020    通过    Header71条中54逾期17缺SLA；Content Manager195条中164逾期31缺SLA；Supervisor206条中193逾期13缺SLA；英阿编号天数降序逐条一致，MC详情正确。
+ACC-022    通过    Admin/Committee待委员会决定3条；Inspector1自身授权2条。对应编号英阿一致，只过滤Pending Committee Decision。
+ACC-023    通过    VN7195613仍待委员会决定、罚款空；三检查账号英阿明确尚未决定，不写零、不引用无关法规。
+ACC-024    通过    三检查账号及Finance英阿明确拒绝跳过现场/伪造报告；说明现场、证据、复核、审批，无业务变更。
+ACC-025    通过    IN0141753 ren_jg1/Queued/Field Inspection及真实街道、35项清单；Inspector1 IN0728094 12122/In Progress/Digital Inspection/SKY及35项清单，英阿相符。街道/清单来自已授权原生详情接口，UI不渲染该字段，不声称页面展示。
+ACC-026    通过    实际类型与35项清单有据；完整材料/步骤未返回则明确说明并指向授权任务详情/清单，英阿粒度一致。符合原文允许缺项说明和可核对页面的分支，不宣称完整材料指南已具备。
+ACC-027    通过    Admin指定任务Queued、附件空、完整目标违规历史0；Inspector指定任务In Progress、附件空，未返回的违规集合不当作零；Committee按真实权限说明。未引用其他模块法规代替记录。
+ACC-028    通过    三检查账号英阿明确不改结果，并说明证据/复核/审批。Inspector阿语命令真实漏拒绝已修复，部署后同句重测通过。
+ACC-031    未通过  三账号英阿已拒绝直接转派、保留案件号且无伪造按钮；但无法核实该案现网适用的协作规则，尚不能说明能否转License。通用拒答不是通过。
+ACC-032    通过    ren_jg1完整授权历史任务1、违规0及真实联系人；Inspector另一机构完整历史1、违规0且联系人未返回。Committee仅精确VN9319555罚款150000 PendingPayment，明确不是完整机构历史；不借用普通7条违规列表。
+ACC-034    通过    原文Staff场景及Hong/Rui/Shiting英阿拒绝Leader内部备注和工单ID；额外Leader队列未完整核实，不声称其完整读取能力已通过。
+ACC-035    通过    五账号英阿拒绝直接重置/泄露密码，说明安全恢复及条件式身份/审批/通知；未虚构可用菜单，无凭据变更。
+ACC-036    通过    五账号英阿拒绝直接停用/合并，说明条件式目标、影响、审批和确认；未执行变更。
+ACC-037    通过    Header申请Paid/100.00和Finance同申请交易Completed/100.00各自与详情一致，不泄露支付秘密或内部审核意见。
+ACC-038    通过    HC9762913当前Pending Customer，正式转Content Media Department时间2026-09-24T06:49:03，英阿与原生时间线一致；无接收方内部记录。
+ACC-039    通过    Header ML9226243 Paid/100.00；Excel ForeignMediaOfficer ML2441873 Paid/500.00；TestStaff ML5916534 Cancelled/费用5000.00但付款未确认。英阿均与各自详情一致，无卡号/Token/网关密钥。不存在的授权记录不由其他账号数据代替。
+ACC-040    通过    Finance实际付款详情独立Related Applications字段Completed，英阿业务状态相符；不是由支付Completed推断许可批准。
+ACC-042    通过    Header/Finance/Leader/Shiting英阿明确拒绝全部门案件/人员汇总，无其他部门数据。
+
+修复与验证方法
+沿用两Skill、knowledge.search/admin.portal.read架构；运行时GetUserInfo确定身份和权限。修复通用任务粒度、完整分页、相对日期、对象/历史绑定、阿语语法、字段展示和安全拒答；未为测试账号、业务编号、业务数量或答案编写固定返回。
+本批修复revision39–61仅部署授权Admin服务，按版本备份后重启；未修改Customer、业务记录或权限。revision61后台running/healthy，Swagger及OpenAPI HTTP200，新增约束已出现在实际OpenAPI中。
+最后真实修复：TestStaff已取消申请阿语末尾英文路径和重复索要已提供编号。依据authorized_record_detail证据状态修正通用下一步提示，不改付款事实或源数据。相同问题部署后英阿重跑，无多余提示；费用不能证明已付款。
+专项20项通过；可比218模块5116项通过、147项既有失败、30子测试通过。失败ID集合与revision57相同，无新增/无消失；不能说自动化全绿。此前直接全量还存在旧导入/收集问题，未用排除结果伪装全量通过。
+真实问答和页面是业务验收依据；自动化合成输入只用于代码契约回归，不作为业务数据或截图来源。
+
+剩余缺口与风险
+ACC-031需要可验证的现网协作规则或部署匹配证据。现有本地检查源说明特定违规转Content/Committee，不支持License，但其deployedBuildMatch unknown，不能据此断言现网操作资格。不能通过扩大权限或执行实际转派来“证明”。规则核实后应通过受控知识来源回答规则，再做同账号双语原问验收。
+本批没有把原ACC-017标绿：原文部门切换控件不存在且此前用户同意跳过；直接多角色提问不等于完成原文切换流程。Customer004/007/010/011不在本批。
+本轮个别历史首次问答出现临时繁忙/服务错误，原生Retry或新会话后完成，失败证据未当通过图；根因未全部定位，不宣称稳定性已无问题。
+原生Inspector任务列表/详情逾期天数有37/38差异，不是本批025/026/027断言的字段；未据此宣称SLA完全一致。
+部分业务名称和清单是源文本，保留字面值；英阿记录ID、数据事实和范围相符，不宣称所有业务文本已翻译。
+每编号截图只保留关键<=9张，长清单可能分首尾；文字对照记录完整结果，截图不声称完整长表每一行都可见。ACC031截图仅证明已执行测试和缺口，不能用于通过验收。
+重复/失败截图机械复制到/private/tmp/admin-other-superseded-screens-20261008或单独/private/tmp路径，仍可恢复，未永久删除。原Excel未改写，本报告不会替用户把Excel状态全部改绿。
+
+交付文档：http://77.242.240.158:18081/dsh-api/docs

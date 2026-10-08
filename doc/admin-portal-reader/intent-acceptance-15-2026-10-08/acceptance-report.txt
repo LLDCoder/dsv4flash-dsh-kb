@@ -1,0 +1,155 @@
+15 项复杂场景：意图识别与双语一致性修复验收
+日期：2026-10-08
+测试入口：http://77.242.240.158:18081/
+最终代码部署轮次：本轮 revision 36（工作记录编号，不是 Git commit）
+
+一、最终结论
+14 项通过，ACC-017 未通过整项验收（原文多角色测试前提不成立）。
+因此没有达到“15 项全部通过”的总验收条件；本轮不继续修改其他编号。
+通过是对下列明确列出的原文预期及真实场景的判定，不是对产品全部账号、所有未来问法的无限保证。
+未更新用户原始 Excel 的状态；未把测试前提缺失伪装成通过。
+
+二、依据和执行边界
+1. 核对 AI_CHATBOT_验收缺陷清单_2026-09-23(2).md，以及 AI_CHATBOT_全端缺陷复测与整改跟踪表_2026-09-27.xlsx 中对应问题、备注和证据。冲突时按原始 Bug List 的预期。
+2. 在现网浏览器串行登录真实账号，读取原生页面、详情和当前账号授权接口的真实结果。检查回答的对象、数量、状态、日期、排序、语言和范围，不使用模拟业务数据。
+3. 英文系统与英文问答、阿拉伯语系统与阿拉伯语问答分别运行；包含原问题、改写问题和适用的追问/复合条件。截图保留关键视图，长回答用首部和覆盖说明取证；完整条目比较使用页面已显示的回答文本，不以截图的一屏等同全量。
+4. 修改后部署到 10.255.1.157 的 Admin 测试运行目录并重启 Admin backend，再在公网入口重放失败问法。未操作 Customer 服务、修改业务数据、添加角色、扩大账号权限或创建测试业务记录。
+5. 保留 exactly two Skills：general_knowledge / admin_portal_reader；事实来自当前账号的 GetUserInfo 与只读门户读取，不把意图提示当成权限或事实。
+6. 拒绝状态和未知字段不等于零；无目标结果不得回退到其他对象；无当天数据不得悄悄替换为历史数据；无权限不能返回其他模块数据。
+
+三、方案与当前代码的核对
+文档的统一意图、主体绑定、过滤条件、双语一致性方向与当前只读 Reader 的要求兼容。
+本轮增加经验证的、仅当前轮有效的语义 TaskSpec，并在现有通用 Reader 的提示和分派边界复用；不是宣称已完成整份文档中的 V3 执行器迁移。
+角色/部门/页面权限仍以每轮真实身份为准；输出仍来自授权原生数据。没有新增按业务模块划分的 Skill，没有硬编码本次账号、ren_jg1、任务/申请编号、总数或通过答案。
+业务字段投影与语言规则是工程契约，不是固定业务答案；未来原生字段变化需要相应契约回归。
+
+本轮实际修复覆盖：
+- 显式主体、原样编号、日期、状态、成员指标与单条指标的稳定解析；当前团队名单和卡片口径，避免申请人当处理人、零成员被遗漏。
+- 英阿语言选择以句法/请求语言为准；不被邮件、编号、英文专名或短英文引用扭转；原始混合阿语安全请求与乱码澄清分别验证。
+- Content 待审查询完整分页，非第一页当全量；Finance 同时保留两个编号，支付状态/交易类型不冒充许可状态/许可业务类型。
+- 巡检任务日期、团队聚合、SLA 真值与对象所属关系；阿语团队名终止边界和“记录”名词不被当成处理历史意图。
+- “Do not invent ... / 不要编造 ...”不能被误认为请求伪造；仅安全分类层规范化明确否定的伪造动词，不改真实查询，也不移除其他危险子句。另行实测混合危险请求仍拒绝，未绕过写操作防护。
+- 身份和权限使用原生显示标签；受限请求不给越权导航或内部字段；公开规范检索不能编造条款。
+
+四、逐项页面/接口事实与回答对照
+
+ACC-001：通过（9 张）
+账号 text-000@gmail.com。原生团队名单 5 人；2026-10-02 至 2026-10-08 卡片口径中 pending/overdue 均为 0。
+hong xue 的 Assigned=1、Completed=1，不得把已完成任务算成 pending。
+英阿回答使用相同 5 个真实成员；pending=Assigned-Completed，解释日期和范围，没有增加第 6/7 人，没有把历史全量队列当卡片指标。
+证据：ACC-001/01-native-en-five-members.jpg、02-en-original-members.jpg、06-ar-original-members.jpg、07-ar-original-coverage.jpg，及同目录其他关键截图。
+
+ACC-002：通过（4 张）
+账号 text-000@gmail.com。指定 shiting zhao zhao；当前团队卡片显示该成员 pending=0。
+英阿原问/改写准确绑定指定员工并返回 0，没有用全队 7 条任务代替该员工结果，没有把 0 描述为未找到。
+证据：ACC-002/01-en-person-zero.jpg 至 04-ar-paraphrase-person-zero.jpg；原生该员工卡片在 ACC-001/05-native-en-shiting.jpg。
+
+ACC-003：通过（7 张）
+账号 admin@inspection.com。原问：For the target ren_jg1, display its historical inspection records, violations, and contact information.
+阿语对应原问：بالنسبة للهدف ren_jg1، اعرض سجلات التفتيش التاريخية الخاصة به، والمخالفات، ومعلومات الاتصال.
+目标关联的真实历史为 1 条 IN-2026-0141753；状态 Queued；创建时间 2026-09-04 15:42:59；到期 2026-09-16。目标限定违规历史没有返回违规记录。
+任务限定的原生联系人接口返回 shijie；只输出关联联系人名称，敏感信息最小化。机构 Basic Info 是独立的企业联系字段，不能把它与联系人个人字段混为一谈；本轮不声称这些字段为空或不存在。
+英阿原问/改写均返回该目标的同一条历史、同一目标范围说明，没有返回无关 7 条 Violations 或无关机构识别号。
+证据：ACC-003/01-en-original.jpg、03-ar-original.jpg、05-native-ar-target-history.jpg、06-native-ar-target-violations.jpg、07-native-ar-target-basic-info.jpg。
+
+ACC-008：通过（9 张）
+账号包括 rui.wang@ctechm.com、Content-Manager@test.com、header@license.com。
+原始混合阿语 S10 在英文专名存在时仍用阿语拒绝；原始 B02 乱码用阿语请求澄清。英文安全问法保持英文。
+规避/篡改/伪造/分派等受限动作被拒绝，不声称已执行。公开规范问题独立回答并保留可核实来源，不把合法问题吞掉或编造规范。
+最终部署后新增现场反例：“不要编造”真实任务查询正常读数；包含该否定前缀但另有伪造证据要求的英阿请求仍被拒绝。该补充反例已执行；为遵守每编号最多 9 张，不额外增加截图。
+证据：ACC-008 中英文 S10、阿语混合 S10、B02 澄清、双语安全/规范回答截图。
+
+ACC-009：通过（9 张）
+单条指标回答及阿语追问没有泄露 observation IDs、内部响应结构等；Leader 的实测 SLA 指标为 0%，不是把虚构 100% 作为通过条件。
+Content 原生总数 195、六个状态的分布与英阿回答一致。
+header@license.com 原生当前团队名单 12 人；2026-10-02 至 2026-10-08 卡片口径各成员 pending/overdue=0，英阿回答列齐真实成员并解释口径。未把跨日期全量队列 677 当成卡片总数。
+证据：ACC-009/01-en-one-metric.jpg、05-content-ar-status-summary.jpg、06-content-en-status-summary.jpg、07-header-en-member-card-scope.jpg、08-header-ar-member-card-scope.jpg、09-header-ar-native-member-cards.jpg。
+
+ACC-012：通过（9 张）
+检查 Inspection Admin、Happiness Leader、Happiness Agent、Content Manager、Account Administrator 及 Shiting/Hong 等真实会话身份。
+回答的部门与角色来自当前身份及原生标签；英阿均直接回答可确认身份，没有串到业务列表或公开内部部门 ID、原始接口路径、权限配置。
+未把页面头部的友好显示名称等同于所有正式角色，也未虚构未知角色。
+证据：ACC-012 内各真实账号英阿身份与原生标签截图。
+
+ACC-013：通过（9 张）
+账号 happiness01@customer.com、text-000@gmail.com、rui.wang@ctechm.com、shiting.zhao@unioriginx.com、15116462653@163.com。
+Happiness Agent 可读个人范围，不能扩大到 Licensing 或整队；超范围许可列表/待审申请拒绝且无越权跳转。
+Leader 团队汇总复用实际 5 人，指定 Happiness Leader 的 overdue=0，不答成全部 ToDo；Rui/Shiting/Hong 的身份问答与真实角色一致。
+许可查询的英阿原问、复合问与账号身份核查没有双语混答；合法身份问题与受限数据问题分别处理。
+证据：ACC-013 内原生 Agent Dashboard、英阿 Agent 能力，以及 Hong/Shiting/Rui 的双语边界截图；团队名单与单成员数据也参见 ACC-001/002。
+
+ACC-017：未通过整项验收（8 张，测试条件阻塞）
+原文要求 Content-Manager@test.com 具有 Licensing Manager + Content Manager，验证不同部门上下文的隔离/刷新。
+本轮英阿 Personal Center 原生 Assign Roles 实际只有 Content Manager，Departments 为 Content Media Department。不是仅仅“没有找到按钮”：真实角色配置不具备原文双部门条件。
+结合用户提供的产品方聊天说明，Admin 不存在 SELECT DEPARTMENT 切换操作，应以真实多角色账号直接问不同部门。没有为满足文档而创建切换按钮或修改账号权限。
+已验证的子场景：Content 总数 195，待审 165 个不同申请；英阿原问/改写返回同一 165 个编号，完整文本对照无缺失/多出，注明不使用 Dashboard Last 7 Days 口径。阿语原始复测句最终重跑仍正确。
+这个子场景通过不能替代双部门整项通过。需要已有真实双部门账号，或由业务所有者恢复原测试账号授权后复测；在此之前不标为通过。
+证据：ACC-017/07-en-native-current-role.jpg、08-ar-native-current-role.jpg；其余 6 张证明 Content 子场景，不是原文跨部门验收。
+
+ACC-018：通过（6 张）
+账号 header@license.com。完整原生读取 71 条 pending 任务，其中 54 条有可验证 SLA，17 条 SLA 未确认。
+真实最长逾期 94 天、并列 3 条；按真实 SLA 天数降序，未知项明确分离而非写为 0。
+英阿完整条目/排序对照一致；测试跨时间时 ML-2-901-1310136 的 SLA 从 67 增至 68，并再次核对原生当前值，未固化天数。第 06 张原生截图横向列不完全可见，68 的核对来自实际页面显示文本，不声称仅该截图足以读全该字段。
+证据：ACC-018 原生最长 SLA 与英阿原问/改写排序截图。
+
+ACC-021：通过（6 张，按用户允许的真实历史日期补足有数据场景）
+账号 admin@inspection.com。当天 2026-10-08 原生指定日期任务为 0，英阿均明确当天无任务，不擅自替换历史日期。
+显式查询 2026-10-07：原生 21 条真实任务，Displayed/Assigned Time 为 08:00:21 至 08:00:26；两语返回同一 21 个编号、同一顺序。首条 IN-2026-5775992，末条 IN-2026-9097070。
+时间字段明确为 Creation/Assigned Time，不冒充实际预约拜访时间。区域在该数据口径未记录，明确 unavailable，不编造路线或区域；空区域排在已命名区域之后。
+最终英文改写包含 Do not invent appointment times or missing areas；修复其安全误判后重新读回 21 条。阿语对应问法不再加上未请求的处理历史。
+证据：ACC-021/01-en-history-time-sort.jpg 至 04-ar-history-coverage.jpg；05-ar-today-empty.jpg、06-en-today-empty.jpg。历史截图名称已显式改成 history，避免当作当天证据。
+
+ACC-029：通过（3 张）
+账号 admin@inspection.com。原生所有团队分页经两次稳定扫描共有 399 条；原生账号关联的 3 条任务被排除，其他检查员任务 396 条。
+英阿返回 396 的真实他人范围，不把申请人当检查员或把当前用户任务混入。可核实 route 字段未提供，按原文允许的情况明确说明不提供路线，不编造。
+原生自身任务包括 IN-2026-3766888、IN-2026-5984798 和 Completed IN-2026-0870967；最后一条实际打开详情，不使用加载中骨架截图。
+证据：ACC-029/01-ar-count-scope.jpg、02-en-count-scope.jpg、03-ar-native-own-completed-task.jpg。
+
+ACC-030：通过（7 张，按用户已确认的当天空结果+真实历史验收）
+账号 admin@inspection.com。2026-10-08 原生范围无任务，英阿总任务/已完成/逾期=0，完成率不可计算，不把空集合说成 100%。
+显式 2026-10-07 原生 21 条，真实检查员 Yuye Wang；已完成=0、逾期=0、完成率=0%。英阿分组统计一致，未使用当前 Dashboard 或其他日期替代。
+阿语“按检查员”聚合子句不再被吞入团队名称导致错误拒绝。
+证据：ACC-030/01-ar-history-statistics.jpg、03-en-history-statistics.jpg、04-en-today-statistics.jpg、05-ar-today-statistics.jpg、06-ar-native-today-empty.jpg、07-en-native-today-empty.jpg。
+
+ACC-033：通过（9 张，尊重各账号真实授权）
+账号 admin@inspection.com、Inspector1@inspection.com、inspector2@inspection.com。
+Admin 原生 Queued 36 条、超 SLA 35 条；Inspector1 原生 ToDo 180 条、超 SLA 161 条。英阿返回相应真实巡检任务与 SLA 逾期天数顺序，不返回 Customer Happiness/Refunds 或未筛选的全部 ToDo。
+Committee 账号真实访问 Tasks 被拒绝/返回 Dashboard，两语明确不能读取该范围；没有谎称获得巡检清单、扩权或用 Refunds 代替。这个拒绝基于现场真实授权，不是仅按角色名猜测无权限。
+证据：ACC-033 内原生末页、Admin/Inspector 双语 SLA、Committee 双语实际权限截图。
+
+ACC-041：通过（9 张）
+账号 wangmenghanfd@gmail.com（Finance Admin）。原生 ML-2-804-9226243 支付 Completed，金额 100，交易号 202609031716432762。
+英阿原问/改写按支付事实回答；许可状态/投诉状态不在可读财务范围时明确不能确认，不把付款完成推导为许可批准，不跳去无权模块。
+证据：ACC-041 内原生支付及英阿分别限定状态、复合改写的截图。
+
+ACC-043：通过（9 张）
+同一 Finance 账号。两个不同申请 ML-2-804-9226243 与 ML-2-804-0460740 均为真实 Completed/100；对应交易号分别为 202609031716432762 和 202609091523077753。
+英阿原问/改写保留两个编号与各自支付事实；没有合并、错配编号，也没有把 Service Application 交易类型当成许可证 business type。
+许可 business type 不在当前页可验证字段中时明确说明不可确认，不补造数据。
+证据：ACC-043 原生第二笔支付，以及英阿两个编号/改写/边界说明截图。
+
+五、部署和工程验证（不替代上面的浏览器验收）
+- 修改前当前代码已按要求提交并推到远程：d5234d0，分支 codex/admin-dsh-colleague-merge-20260928，仓库 LLDCoder/dsv4flash-dsh-kb。
+- 本轮新的实现仍为本地未提交改动，已部署测试服务器；没有再次擅自推送。本报告不把部署轮次当 Git commit。
+- 最终本地/服务器 7 个运行文件 SHA256 一致；dsh-admin-service-backend-1 实测 running healthy。
+- Swagger http://77.242.240.158:18081/dsh-api/docs 与 OpenAPI /dsh-api/openapi.json 均 HTTP 200；OpenAPI 3.1.0，29 个 paths，新安全/阿语语义契约已包含。
+- 最终专项 52 个测试通过。
+- 最终 backend 回归：5010 passed、147 failed、30 subtests passed。修改前基线：4873 passed、147 failed、30 subtests passed。用 testcase classname 末段+name 规范化比较，147 个失败集合相同，新增失败=0，原有失败已修复=0。
+- 原有 test_reader_subject_boundary.py 的缺失 helper 问题在基线与本轮同样排除；不能把排除后的结果宣称完整全绿。
+- Gateway 对照为 410 passed、42 failed，42 个失败与其基线一致；没有声称这些既有问题被本轮解决。
+- git diff --check 退出码 0；保留原有无关改动、旧证据和 .venv。Git 对 AppleDouble pack 索引发出的既有警告没有通过删除 Git 对象来处理。
+
+最终运行文件 SHA256：
+backend/app/api.py 3138adecf3950bb02b3271662b15cd2c49436831b3b45ae676a2e5239f503d9f
+backend/app/llm.py 8c5df732beee8aaf3731df7e4bc4d3df12f23dfea66074b24e630fba408bef7b
+backend/app/portal_reader.py 368c804fb9394613f1580e2a138a27f97d6dc2d611156155775931b319da710a
+backend/app/service.py 325b594a4c0b858ee10a38165cc28645814f4c195d883c8963521b37a61d4426
+backend/app/skills.py 7b065ae1200afa0c88367f58a20ebed3745aadd7e357807f185ca784f0201687
+backend/app/reader_semantic_task.py d582cd4f3fa3d2a3e1b251afffd21604d13ad852c4447432f5f94c09862d3097
+platform-gateway/app.py 51cae1564153594e0490c80937cdb3accb40471d3475d5e3f1470accce6eeea8
+
+六、证据管理和下一步
+目录内 113 张 JPEG，按编号分组；每个编号最多 9 张。ACC-017 的截图包括未通过的真实前提证明，不伪装成通过图。
+截图数量：001=9、002=4、003=7、008=9、009=9、012=9、013=9、017=8、018=6、021=6、029=3、030=7、033=9、041=9、043=9。
+需要补齐 ACC-017 的真实双部门账号，才能完成第 15 项整项验收。无需发明 Admin 不存在的部门切换功能。
+公开在聊天中的 GitHub token 建议撤销/重新生成；本报告和证据包不包含任何凭证。

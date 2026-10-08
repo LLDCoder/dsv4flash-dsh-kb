@@ -898,7 +898,8 @@ def test_transfer_request_is_explicitly_refused_with_portal_next_step():
     )
     assert result is not None and result.status == "not_confirmed"
     assert "was not transferred" in " ".join(result.facts)
-    assert "Assign Inspector action" in " ".join(result.facts)
+    assert "approved referral process" in " ".join(result.facts)
+    assert "Assign Inspector action" not in " ".join(result.facts)
     assert "IN-2026-0141753" in " ".join(result.facts)
     assert "transfer_rule_not_verified" in result.missing
 
@@ -1494,7 +1495,7 @@ def test_inspection_transfer_refusal_preserves_task_and_does_not_invent_departme
     )
     assert result is not None and result.status == "not_confirmed"
     assert "IN-2026-0141753" in " ".join(result.facts)
-    assert "تعيين المفتش" in " ".join(result.facts)
+    assert "تغيير المفتش لا يثبت تحويل القسم" in " ".join(result.facts)
     assert "transfer_rule_not_verified" in result.missing
 
 

@@ -9,6 +9,42 @@ actors:
   selection: one representative per distinct permission fingerprint
 
 cases:
+  - id: reader-verified-detail-missing-fields
+    scope: exact detail already read with payment or other missing fields
+    expected: No repeated identifier request or redundant unlocalized navigation hint after a verified authorized detail read; missing fields remain unconfirmed. Unverified or empty reads keep an appropriate next step; fees never prove payment.
+    tests: backend/tests/test_unverified_record_display.py
+  - id: reader-inspection-history-queue-boundary
+    scope: bilingual exact-record target history versus whole-team overdue queue
+    expected: Preserve exact target scope; Arabic prior-inspection morphology and English related wording never select an unrelated overdue queue. Genuine overdue lists remain supported.
+    tests: backend/tests/test_inspection_history_queue_boundary.py
+  - id: reader-inspection-mutation-safe-guidance
+    scope: inspection-result correction and cross-department transfer
+    expected: No mutation; evidence, review and required approval for correction; Arabic imperative plus attached verbal noun is recognized without treating correction-requirement questions as writes. Explicitly unverified transfer route and authority, approved referral and official portal confirmation, no invented visible controls. Full guidance survives bounded public serialization in English and Arabic.
+    tests: backend/tests/test_inspection_mutation_safe_guidance.py
+  - id: reader-account-mutation-safe-guidance
+    scope: password recovery and account disable/merge requests
+    expected: Explicit bilingual no-mutation refusal plus secure recovery or conditional target/impact/approval/confirmation requirements; no claim that an unverified menu/control is available to the current role. Independent short facts preserve the complete guidance through the bounded public serializer.
+    tests: backend/tests/test_account_mutation_safe_guidance.py
+  - id: reader-other-account-history-grammar
+    scope: unrestricted other-account history versus legitimate organization and owner-task queries
+    expected: Refuse other identities before page planning without emitting records, credentials or unverified documentation; support Arabic record-noun and identifier-order variants without hardcoded identities.
+    tests: backend/tests/test_acceptance_arabic_scope_and_sources.py
+  - id: reader-no-read-refusal-preserves-explicit-boundary
+    scope: cross-department question with a named excluded department
+    expected: Preserve the trusted explicit security refusal when no business page was read; a named-group data guard must not erase it. Any actual business-page result still requires verified group scope.
+    tests: backend/tests/test_named_current_team_boundary.py
+  - id: reader-team-overdue-task-grain
+    scope: native task SLA aggregation versus dated per-member card aggregation
+    expected: Task-grain overdue counts use observed SLA markers and actual owners; optional owner grouping does not change the source to dated member cards. Verified forward pagination and complete native business-row capture are required for a whole-queue count; missing fields and extra requirements are not fabricated or dropped.
+    tests: backend/tests/test_team_task_overdue_count.py
+  - id: reader-unverified-exact-detail-display
+    observed: [requested_identity, no_verified_exact_record_facts, authorized_application_view]
+    expect:
+      record_location_claim_without_evidence: false
+      amount_or_currency_changes_object_to_refund: false
+      request_already_supplied_identity_as_remedy: false
+      explicit_refund_object_preserved: true
+
   - id: reader-native-filter-before-record-api
     observed: [filter_button, list_api_response]
     expect:

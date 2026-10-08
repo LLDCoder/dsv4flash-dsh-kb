@@ -955,12 +955,66 @@ def make_router(service: DSHService) -> APIRouter:
         not_confirmed. A bounded row sample is not a collection total or proof of
         personal assignment. Knowledge answers require retrieved supporting text.
         Planner schema repair is bounded and does not relax access or evidence checks.
+        A turn-local TaskSpec interprets the complete original English/Arabic
+        request before legacy semantic dispatch. It is a hint, never authority
+        or live evidence. Literal identifiers and quoted antecedents are checked;
+        invalid hints fall back to the original request, never an invented zero.
+        Qualified payment and complaint status questions keep their business
+        object instead of inheriting a licence lifecycle from the shared phrase
+        'status of'. Finance payment completion never proves licence approval;
+        unavailable licence and complaint states are identified separately.
+        Multiple explicit identifiers are bound independently. Requested
+        licence details unavailable in Finance are not silently omitted or
+        replaced by transaction type; their unread source is stated explicitly.
+        Concurrent accounts cannot share a TaskSpec. Verified live reads and
+        current permissions remain required; extra requested fields and filters
+        must not be dropped to fit a simpler collection or aggregate shape.
+        Team task lists disclose the verified Application Tasks Only filter
+        state when changing categories; totals retain the observed queue scope.
+        Displayed workflow enum labels are localized without changing task
+        identifiers, owners, source values or access boundaries.
+        Per-person metric questions retain their requested grouping even when
+        intent interpretation degrades. Missing returned-task card metrics are
+        explicitly unconfirmed, never omitted or silently treated as zero.
+        Direct unsafe acts reuse the closed runtime request-boundary policy;
+        business-change requests are explicitly refused before page execution.
+        Intent hints can restrict actions but cannot authorize a mutation.
+        Explicit negative constraints such as "do not change status" remain
+        read-only requirements, not commands to execute a change. Any separate
+        affirmative command is still refused; no write capability is enabled.
+        Explicit upcoming expiry durations use the licence Expiry Date across
+        verified pages, not the Expire Soon status category. Results state the
+        inclusive Dubai-date window and preserve displayed holder information.
+        Full expiry lists may use a captured native collection request only
+        after two stable complete passes, retaining its permitted department
+        and matching its observed total. Internal status values are joined to
+        rendered native labels by exact application identity, never guessed.
+        Different applications sharing a displayed licence number remain
+        separate records; certificate paths are not part of this projection.
+        Arabic licence types use the captured native Arabic display value
+        when available, without exposing its internal API field name. Holder
+        names and application identities retain their original source values.
+        An unverified exact-record detail never claims that the record was
+        located. A requested amount or currency alone does not classify an
+        object as a refund; missing exact details never ask for an already
+        supplied identifier as though that would establish access or facts.
+        Named staff workload counts are bound to the freshly read member
+        population and its displayed date range. An absent member or unsupported
+        extra condition is not replaced by another person's rows or a zero.
+        Requests for team or other-staff workloads require a freshly permitted
+        team surface; personal-only access yields no_permission, not a guessed
+        zero, unrelated personal records, or an ambiguous not_confirmed answer.
         Same-topic explanations retain their source module for knowledge retrieval.
         Named application identifiers and queue follow-ups retain their business
         module while each read is re-authorized. Pending-review counts are verified
         against their dedicated queue counter, never substituted by a page total.
         Explicit Content application collections resolve to Content Applications,
-        not staff task roll-ups. Collection queries use the semantic read plan
+        not staff task roll-ups. Explicit MC identifiers enter the same identity-bound native detail
+        workflow as Licensing ML identifiers. Requests for applicant, next action
+        or processing history cannot be satisfied by a status-only list row.
+        Detail projections expose verified timeline actors/times and visible
+        next-action labels without executing those actions or disclosing notes.
+        Collection queries use the semantic read plan
         with verified status filters and coverage; a default unfiltered page is
         not evidence for a requested pending-review list. Every module change
         is re-authorized against the current GetUserInfo permissions.
@@ -971,6 +1025,10 @@ def make_router(service: DSHService) -> APIRouter:
         Simple current review-category identifier lists use the captured native
         To Do request with two stable projected scans and reconcile every category
         against its current counter before disclosing the matching applications.
+        Personal application status/priority summaries use the same complete
+        native queue scans and reconcile their total with the live counter.
+        Missing Priority columns are reported explicitly; SLA is not substituted
+        for priority. Knowledge-only answers are not labelled as partial queues.
         No dates, status IDs, accounts, record numbers or counts are fabricated;
         incomplete scans, conflicting counters or missing statuses are not_confirmed.
         Admin page questions first resolve against the active knowledge binding
@@ -1145,6 +1203,45 @@ def make_router(service: DSHService) -> APIRouter:
         Team Members workloads use a public-only member-card projection with
         an exact source-card count. A truncated sample cannot establish a
         complete member population, and absent metrics are never zero-filled.
+        Credential and account-mutation refusals do not claim unverified
+        role-specific controls exist. Recovery remains in the portal's secure
+        workflow; conditional administrative changes require target identity,
+        impact, approval and confirmation. No credential or mutation is issued.
+        Short independent guidance facts survive bounded public serialization
+        without truncating the authority or approval disclaimer.
+        Inspection-result changes require evidence, review and required approval
+        in an authorized correction workflow. Cross-department transfer guidance
+        does not invent available controls or assert a successful reassignment;
+        it requires an approved referral and an official portal confirmation.
+        Arabic leading commands with attached verbal-noun prepositions share
+        the same no-mutation boundary; correction-requirement questions remain reads.
+        Exact inspection-target history keeps its record/target binding in both
+        languages. Related-record wording cannot match an overdue-queue token;
+        historical target reads do not become a team-wide late-task list.
+        An already-read authorized exact detail with missing fields does not
+        ask for the same identifier again or emit a redundant navigation hint.
+        Missing fields remain unconfirmed and fees never establish payment.
+
+        Unrestricted other-account history requests are refused before page
+        planning from the current authenticated identity; English and Arabic
+        account/employee grammar variants share that boundary. Scoped task
+        owners and organization history remain ordinary authorized reads.
+
+        Named-group data checks do not replace an explicit no-read security
+        refusal with an unverified-list answer. This exception applies only
+        to trusted refusal results without a business page; business-row
+        results still require verified group scope.
+
+        A team-wide overdue task count with owner names is a task-grain SLA
+        aggregate, not a dated per-member card summary. Only observed native
+        SLA markers and Assigned To fields are counted. Verified pagination
+        replays only verified native forward controls from fresh first-page
+        reads and validates returned page indexes and stable totals. It
+        must cover the unique queue identities before a complete count is
+        claimed; otherwise the visible-row boundary is explicitly returned.
+        Native ten-row table snapshots skip blank layout rows before their
+        bounded capture; layout rows cannot silently consume business coverage.
+        Missing SLA fields are not zero-filled or classified as on time.
         Current single SLA Compliance questions and their same-metric follow-ups
         resolve to the permission-checked native Dashboard card in both languages,
         not a documentation excerpt or an unrelated analytics-period indicator.
@@ -1159,6 +1256,13 @@ def make_router(service: DSHService) -> APIRouter:
         Symbol-heavy input with repeated Arabic punctuation follows its primary
         Arabic signal rather than an opaque Latin token or short Chinese fragment;
         explicit supported-language requests retain precedence.
+        Arabic sentence framing is not outvoted by borrowed English technical
+        nouns; actual English clauses and explicit language requests retain
+        precedence. This presentation choice never changes permissions or facts.
+        Explicit non-fabrication constraints such as "do not invent dates"
+        remain factual read requests; affirmative harmful clauses in the same
+        message still reach the safety refusal boundary. A generic Arabic
+        record noun is not a request for handling history.
         Leading Arabic assignment imperatives, including verbal-noun commands,
         are refused before a record read; assignment-history and field questions
         remain read-only queries. No assignment is executed through chat.

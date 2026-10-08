@@ -89,7 +89,7 @@ def test_empty_reader_results_are_answered_without_final_llm_inference() -> None
         {"result": "not_confirmed", "facts": [], "missing": ["additional_portal_read_required"]},
         "en",
         question="Show me details of application ML-1-7-6577159",
-    ) == "I located application ML-1-7-6577159, but its current detail read did not finish. I have not substituted another application’s details."
+    ) == "I could not verify record ML-1-7-6577159's details in this account's authorized views. I have not substituted another record."
     assert "No completed" not in response
     assert reader_evidence_only_response({"result": "load_failed", "facts": []}, "en") == "I could not load the requested information."
     assert reader_evidence_only_response({"result": "no_permission", "facts": []}, "en") == "You do not have permission to read the requested information."

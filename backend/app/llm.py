@@ -1023,6 +1023,16 @@ class LLMAdapter:
                 for node in observation.get("sectionSummaries", [])[:12]
                 if isinstance(node, dict) and node.get("nodeId") and _native_sample_value_facts(node)
             ]
+        from .reader_semantic_task import semantic_task
+        task = semantic_task(question)
+        if task is not None:
+            planner_input["semanticTask"] = task.model_dump()
+            system += (" semanticTask is this turn's validated TaskSpec interpretation of the ORIGINAL user question. "
+                       "Use its entity, measures, attributes, grouping, filters, time and ordering together, "
+                       "including every explicit qualifier in originalQuestion. It supplies no facts, pages or "
+                       "permissions. Do not replace it with a competing interpretation from prior conversation. "
+                       "Unknown or missing live properties remain unconfirmed, not guessed or zero.")
+            planner_input["originalQuestion"] = question[:10_000]
         if conversation_context:
             planner_input["conversationContext"] = conversation_context
             resolved = conversation_context.get("resolvedIntent")

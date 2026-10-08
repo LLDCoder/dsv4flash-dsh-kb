@@ -188,6 +188,25 @@ def response_language_for(text: str, preferred_language: str | None = None) -> s
     if detect_unsupported_message_language(text):
         return preferred_language if preferred_language in {"en", "ar"} else "en"
 
+    # Borrowed product/technical nouns can be longer than the Arabic sentence
+    # framing them. Count grammatical evidence before counting script letters.
+    # Quoted names are not framing; an actual English clause still wins over
+    # incidental Arabic nouns. This changes presentation only, never intent or
+    # the request supplied to the reader/security checks.
+    framing = re.sub(r'"[^"\n]*"|“[^”\n]*”|\'[^\'\n]*\'', " ", prose)
+    arabic_words = re.findall(r"[\u0621-\u064a]{2,}", framing)
+    arabic_framing = re.search(
+        r"(?:^|\s)[وف]?(?:هل|كيف|كم|ما|ماذا|لماذا|أرجو|يرجى|اعرض|أعرض|أدرج|اذكر|أخبرني|أريد|ابحث)(?:\s|$)",
+        framing,
+    )
+    english_framing = re.findall(
+        r"\b(?:the|a|an|is|are|was|were|does|do|did|can|could|would|should|"
+        r"what|which|how|why|please|show|list|find|give|for|from|with|my|me)\b",
+        framing, re.I,
+    )
+    if len(arabic_words) >= 3 and arabic_framing and len(english_framing) <= 1:
+        return "ar"
+
     detected = detect_message_language(text)
     if detected:
         return detected
