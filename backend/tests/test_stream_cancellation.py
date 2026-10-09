@@ -12,7 +12,8 @@ from app.service import DSHService
 
 @pytest.mark.asyncio
 async def test_cancel_preserves_prefix_and_orders_terminal_events(monkeypatch):
-    db = SimpleNamespace(commit=AsyncMock())
+    db = SimpleNamespace(commit=AsyncMock(), scalar=AsyncMock(return_value=SimpleNamespace(
+        event_json={"requestId": "original-turn-request"})))
 
     class Session:
         async def __aenter__(self): return db
@@ -48,9 +49,11 @@ async def test_cancel_preserves_prefix_and_orders_terminal_events(monkeypatch):
     assert terminal[0][0] > packets[-1][0]
     assert terminal[0][1] == 'assistant.message'
     assert terminal[0][2]['streamStatus'] == 'cancelled'
+    assert terminal[0][2]['requestId'] == 'original-turn-request'
     assert terminal[0][2]['content'].startswith('Verified prefix.\n\n')
     assert terminal[0][2]['content'] == ''.join(p['content'] for _, p in packets)
     assert terminal[1][1] == 'turn.cancelled'
+    assert terminal[1][2]['requestId'] == 'original-turn-request'
     assert fresh.status == 'READY'
     assert not service._answer_streams
 

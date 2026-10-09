@@ -1,0 +1,58 @@
+2026-10-09 — Admin / Customer 原句流式输出补验
+
+本轮问题：用户在 Admin 18081 输入 What can you do for me?，没有看到流式正文。
+结论：该问题已修复并部署。英阿语均在回答结束前显示经过校验的完整段落；不是固定延时模拟打字，也不是逐字符输出。Customer 同一句英文和阿语同义问题也已在真实浏览器验证。
+通过范围仅限本轮流式输出、Admin 原生停止和历史恢复，不代表此前所有业务缺陷或所有双语意图通过。
+
+原因与修复
+1. Admin 普通读取回答和能力说明原先使用确定性卡片，所有块几乎同时发出，用户看不到模型生成过程。现在 live streaming 路径使用有证据约束的自然表述；非流式调用、身份查询、权限拒答及关键业务卡片保持原策略。
+2. 模型段落必须先通过累计语言和事实校验。能力说明从首段即保留当前登录账号、只读及每次请求权限检查边界。部分队列在生成正文前先说明读取范围。账号、角色、范围由真实会话取得，没有写死测试账号、提问答案或数量。
+3. Admin 原生停止以前只关闭客户端连接，后台仍完成生成。现在先向服务器发送取消，等待权威部分回答和 turn.cancelled。服务器终止事件使用原提交轮次 requestId，避免被客户端轮次关联丢弃；历史恢复也识别取消终态。
+
+真实浏览器流程
+Admin：18081，先在 header@license.com 会话观察原句英阿流式，再在最终部署后用用户提供的 Content-Manager@test.com 完成停止和英阿完整回答复验。页面角色 Content Admin / Content Manager，回答识别相同账号及 Content Media Department；业务范围明确是权限标签，不等于所有记录可读。
+Customer：18085，真实已登录账号的 Test Commercial - Daisy Profile。系统英文发送 What can you do for me?；系统阿语发送 ماذا يمكنك أن تفعل من أجلي؟。首段可见时停止按钮仍可用，完成后保留完整回答和当前 Profile 边界。
+Admin 阿语首段出现后点击原生停止：只保留已发布首段，并显示「تم إيقاف الرد؛ النص المعروض جزئي.」。后台状态 cancelled，终止事件 turn.cancelled；重新选择同一历史会话后，首段及提示仍在。随后新会话的阿语、英文问题均正常完成。
+未创建或模拟业务数据，未执行审批、支付、分配、删除等业务操作，未修改账号权限或业务数据库。
+
+公开块审计（elapsedMs 从模型公开流开始计时，不是浏览器发送到首字的总等待时间）
+Admin 英文 conv_c053f9e449d7493a9d40：4 个 guarded_generation 块，首块 5224.9 ms，末块 6140.6 ms，complete / turn.completed。
+Admin 阿语 conv_0572b42e7a55405c84ca：4 个 guarded_generation 块，首块 4065.0 ms，末块 6063.2 ms，complete / turn.completed。
+Admin 停止 conv_6958fbbc20074cc7823f：首个生成段落 4584.5 ms；5123.9 ms 追加服务器取消提示，cancelled / turn.cancelled。其余三个 verified_projection 块是提示的结构化块，不是取消后继续生成业务答案。
+Customer 英文 conv_817311224c124d9c9fd5：6 个 guarded_generation 块，3011.2—4729.6 ms，complete。
+Customer 阿语 conv_9003fd9991984bd4bbcd：7 个 guarded_generation 块，4940.7—7312.3 ms，complete。
+assistant.chunk 为瞬时传输事件，不落 session_event；DB chunkCount=0 不能视作未流式。上述结论同时依赖原生浏览器生成中截图和公开块审计，不仅依赖代码或计数。
+
+测试结果
+后端相关回归：76 passed（包括普通 live presenter、能力首段权限边界、部分队列范围、身份确定性、语言和事实拒绝、取消事件顺序及跨账号取消拒绝）。
+前端取消及轮次关联：node --test scripts/dshStreamControl.test.mjs scripts/dshTurnCorrelation.test.mjs，14 passed。
+改动文件 ESLint：通过。
+最终前端构建：VITE_AI_CHATBOT_ENABLED=true npm run build:daypop，通过；该环境变量保持服务器原有助手开启状态。构建有现有体积及第三方注释警告。
+完整 npm run typecheck：未通过，869 条错误，分布在其他前端文件；没有涉及本次 dshWorkflow.ts / dshStreamControl.ts 的报错。未以构建通过代替全仓 TypeScript 通过。
+git diff --check：通过。
+本地夹具测试只验证逻辑和边界，不作为现网业务数据；通过判定由上述真实浏览器流程给出。
+
+部署、回滚与接口
+Admin 后端 service.py SHA256：f8ad34d11b01e0d7c2983a068aa1d9d6cdc33d42f827846ef2b36b17345dcf0d。
+Admin api.py 部署 SHA256：8465214c33dded5feb2c717f4d90d4a7a663ac5ae86491df7e52769af1bd30d0；包含用户已有未提交的业务文档 hunk，本次提交仅包括新增流式文档 hunk。
+后端容器：dsh-admin-service-backend-1；前端：umc-admin-portal。
+前端添加新哈希 assets，替换已备份 index.html，保留旧 assets 与服务器 config.json，不改变网关或业务 API 配置；静态文件设为 nginx 可读权限。
+完整备份：/data/project/admin-cancel-backup-20261009.LzXnDh（frontend、service.py、api.py）。初始修复前备份：/data/project/admin-visible-stream-backup-20261009.cJCaHQ。
+最终静态构建包：/data/project/admin-visible-stream-backup-20261009.cJCaHQ/admin-assets-enabled.tar.gz。
+Swagger：http://77.242.240.158:18081/dsh-api/docs
+OpenAPI：http://77.242.240.158:18081/dsh-api/openapi.json
+部署后 portal / Swagger / OpenAPI 均 HTTP 200。接口文档已补充 live presenter、首段权限边界、范围提示和取消 requestId 规则。
+Customer 本轮无需修改部署，沿用先前共享流式功能，未用旧分支覆盖现网 Profile 权限修复。
+保持旧验收报告原样：旧报告的「Admin 尚未验证到 guarded_generation」是当时结果，本记录为本轮修复后的新证据。
+
+截图共九张，均为真实原生页面截图，未裁剪重组或模拟内容。
+screenshots/admin-en-live.jpg：英文首段与可用停止按钮。
+screenshots/admin-en-complete.jpg：英文完整回答。
+screenshots/admin-ar-live.jpg：阿语首段与可用停止按钮。
+screenshots/admin-ar-complete.jpg：阿语完整回答。
+screenshots/admin-ar-stopped.jpg：从历史恢复的已停止回答及部分提示。
+screenshots/customer-en-live.jpg：Customer 英文首段与可用停止按钮。
+screenshots/customer-en-complete.jpg：Customer 英文完成回答底部及 Profile 边界。
+screenshots/customer-ar-live.jpg：Customer 阿语首段与可用停止按钮。
+screenshots/customer-ar-complete.jpg：Customer 阿语完成回答。
+Admin 前端验收按仓库要求使用 1920×1080 视口；结束后恢复默认。Customer 使用默认视口；内部长回答采用生成中/完成两张留存，不用图像缩放伪造完整内容。

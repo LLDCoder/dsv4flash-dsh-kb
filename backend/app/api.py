@@ -1160,13 +1160,22 @@ def make_router(service: DSHService) -> APIRouter:
         Answers use the shared verified-blocks/1 stream contract. assistant.chunk
         carries an append-only content delta, a zero-based chunkIndex and streamMode
         (guarded_generation or verified_projection). Model paragraphs are held
-        privately until cumulative language/fact validation passes. Deterministic
-        business cards are streamed as verified Markdown blocks, without an
+        privately until cumulative language/fact validation passes.
+        Live ordinary reader answers and capability explanations use the grounded
+        model presenter even when non-streaming callers retain card formatting.
+        Identity lookups and permission denials remain deterministic. Capability
+        paragraphs retain the signed-in, per-request read-only permission boundary
+        from their first published paragraph. Bounded-list scope notes precede
+        generated prose and survive cancellation.
+        Deterministic business cards are streamed as verified Markdown blocks, without an
         artificial typing delay. assistant.message is the authoritative persisted
         answer and its streamStatus is complete or partial. A rejected/interrupted
         remainder never rewrites a published prefix; an incomplete answer says so.
         Cancellation stops generation; reconnects recover the authoritative final
         answer from owned conversation history, not ephemeral token replay.
+        Cancellation terminal events retain the original submitted turn requestId,
+        not the transport session requestId; clients wait for turn.cancelled before
+        closing their subscription and recover its final partial-answer notice.
         Final answers use concise natural-language formatting over verified facts,
         with deterministic fallback when formatting cannot be validated. Equal
         headings or selected tabs do not merge independent evidence sources;

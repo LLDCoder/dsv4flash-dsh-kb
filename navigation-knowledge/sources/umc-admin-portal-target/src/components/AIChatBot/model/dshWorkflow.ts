@@ -16,6 +16,7 @@ import { useUserStore } from "@/store/user";
 import { useAdminAuthToken } from "./adminIdentity";
 import { captureReaderPageContext, filterExplicitTaskList } from "./readerPageContext";
 import { createDshTurnCorrelation } from "./dshTurnCorrelation";
+import { isDshTurnTerminal, requestDshStreamCancel } from "./dshStreamControl";
 import { getDshChatErrorPresentation, getDshRuntimeError, getDshSocketError } from "./dshErrors";
 import i18n from "@/localization/config";
 import type {
@@ -103,7 +104,7 @@ function completedTurnEvents(events: DshEvent[], clientMessageId: string) {
   if (userIndex < 0) return null;
   const turnEvents = events.slice(userIndex + 1);
   const assistant = turnEvents.find((event) => event.eventType === "assistant.message");
-  const completed = turnEvents.some((event) => event.eventType === "turn.completed");
+  const completed = turnEvents.some((event) => isDshTurnTerminal(event.eventType));
   return assistant && completed ? events : null;
 }
 
@@ -269,6 +270,11 @@ export function useDshChat(language: ChatLanguage): DshChatController {
   }, []);
 
   const stopStreaming = useCallback(() => {
+    if (pendingSendRef.current && requestDshStreamCancel(socketRef.current, activeConversationRef.current)) {
+      // Do not discard the subscription before the authoritative cancelled
+      // answer and partial-response notice arrive from the server.
+      return;
+    }
     requestRevisionRef.current += 1;
     pendingSendRef.current = false;
     closeSocket();
@@ -282,9 +288,18 @@ export function useDshChat(language: ChatLanguage): DshChatController {
 
   const cancelPending = useCallback(() => {
     historyRevisionRef.current += 1;
-    stopStreaming();
+    if (pendingSendRef.current) requestDshStreamCancel(socketRef.current, activeConversationRef.current);
+    requestRevisionRef.current += 1;
+    pendingSendRef.current = false;
+    closeSocket();
+    setStreaming(false);
+    setMessages((current) => current.flatMap((message) => (
+      message.status !== "streaming"
+        ? [message]
+        : message.text ? [{ ...message, status: undefined }] : []
+    )));
     setMessagesLoading(false);
-  }, [stopStreaming]);
+  }, [closeSocket]);
 
   const refreshConversations = useCallback(async () => {
     if (!identity) return;
@@ -672,7 +687,7 @@ export function useDshChat(language: ChatLanguage): DshChatController {
                 : message
             )));
           }
-          if (event.eventType === "turn.completed") {
+          if (isDshTurnTerminal(event.eventType)) {
             turnCompleted = true;
             pendingSendRef.current = false;
             closeSocket(activeSocket);

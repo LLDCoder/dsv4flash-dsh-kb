@@ -32,6 +32,7 @@ from .portal_reader import (
     PRIOR_LIST_SAMPLE_FACT,
     ReaderTimeoutBudget,
     _mutation_request_refusal_result,
+    _profile_capability_requested,
     _api_business_mapping,
     bounded_json,
     question_is_conceptual,
@@ -3283,7 +3284,9 @@ class DSHService:
         )))
         if prior_answer_coverage:
             return fallback, False, "prior_answer_coverage"
-        if evidence.get("presentationMode") == "verified_profile" or evidence.get('workflowState') == 'verified_profile':
+        verified_profile = evidence.get("presentationMode") == "verified_profile" or evidence.get('workflowState') == 'verified_profile'
+        stream_capability = verified_profile and answer_stream is not None and _profile_capability_requested(question)
+        if verified_profile and not stream_capability:
             # A self-scope answer contains only authenticated session facts
             # and, when necessary, a separately observed Dashboard view. Do
             # not let prose generation soften a verified scope into "unknown"
@@ -3320,9 +3323,12 @@ class DSHService:
         )
         if complete_target_history:
             return fallback, False, "deterministic_complete_target_history"
-        if not READER_NATURAL_PROSE_ENABLED and evidence.get("presentationMode") != "llm_localized":
+        if (not READER_NATURAL_PROSE_ENABLED
+                and evidence.get("presentationMode") != "llm_localized"
+                and answer_stream is None):
             # The structured card is the standard presentation for the portal
-            # reader; the model draft is only used when prose is re-enabled.
+            # reader's non-streaming callers. Live streaming explicitly opts
+            # into the grounded presenter instead of batching the whole card.
             return fallback, False, "deterministic_reader_card"
         facts = evidence.get("facts")
         if not isinstance(facts, list) or not facts:
@@ -3398,7 +3404,7 @@ class DSHService:
             "Do not mention evidence, APIs, fields, JSON, tools, or verification. Do not use a 'Confirmed details' "
             "or 'Confirmed count' heading, do not print 'Source:', 'Status:' or 'Count:' style label lines, and do not "
             "reproduce a field-by-field dump. Write the answer as ordinary prose in the response language. "
-            "Answer the question directly in one short paragraph, "
+            "Answer the question directly in concise paragraphs, "
             "optionally followed by a small bullet list only when it materially improves clarity. It is acceptable "
             "to omit irrelevant verified details. Describe role/layout applicability and current portal scope naturally "
             "when they help the user understand the answer. A documented Manager layout is not the current user's "
@@ -3409,6 +3415,15 @@ class DSHService:
             "the portal they come from, and any scope limit. When the status is not success, explain what was checked and "
             "what the user can do next, so the reply never ends with a bare 'could not confirm'."
         )
+        if stream_capability:
+            system += (
+                "\nThis is a capability explanation, not an identity lookup. Begin with a complete paragraph "
+                "explaining that you provide read-only help limited to this signed-in account, with permission "
+                "checked for each page/request. Then describe only the supported business areas. Do not claim "
+                "you can approve, reject, assign, refund, pay, close, delete, export or download anything. "
+                "Do not infer access to every record from an area label. Preserve these limits even if the "
+                "user stops reading after the first paragraph."
+            )
         payload = json.dumps(
             {
                 "question": question[:10_000],
@@ -3426,7 +3441,37 @@ class DSHService:
         attempts = 2 if checklist_language_guidance else 1
         for _ in range(attempts):
             try:
-                if answer_stream is not None and not _needs_partial_record_note(evidence):
+                if answer_stream is not None:
+                    # Bounded queues must carry their scope limit before any
+                    # model prose becomes visible, not only after generation.
+                    # The note is a verified projection, never a fabricated
+                    # record. Keeping it in the cumulative candidate also
+                    # preserves the scope when the user stops mid-answer.
+                    scope_prefix = (
+                        _PARTIAL_LIST_NOTES.get(language, _PARTIAL_LIST_NOTES["en"]) + "\n\n"
+                        if _needs_partial_record_note(evidence) else ""
+                    )
+                    if scope_prefix and not answer_stream.content:
+                        await answer_stream.verified(scope_prefix)
+                    def validate_generated_prose(candidate):
+                        # This trusted scope receipt was already validated as
+                        # a projection. Validate all generated prose separately
+                        # so 'not the complete queue' in the receipt is not
+                        # mistaken for a model's completeness claim.
+                        prose = candidate[len(scope_prefix):] if scope_prefix and candidate.startswith(scope_prefix) else candidate
+                        if stream_capability:
+                            # Capability prose must retain the authenticated,
+                            # per-request read-only boundary from its first
+                            # published paragraph, including on cancellation.
+                            read_only = re.search(r"read[- ]only|القراءة فقط|للقراءة فقط|只读", prose, re.I)
+                            permission = re.search(r"permission|صلاح|权限", prose, re.I)
+                            account_scope = re.search(r"signed[- ]in|current account|your account|الحساب|حسابك|账号", prose, re.I)
+                            if not (read_only and permission and account_scope):
+                                return False
+                        return not _answer_language_conflicts(prose, language) and reader_natural_answer_is_grounded(
+                            prose, fallback, question,
+                            completeness=str(evidence.get("completeness") or ""),
+                        )
                     # The complete cumulative paragraph must pass the same
                     # language/fact guard as a non-streamed answer. A later
                     # failure must not erase an already disclosed prefix.
@@ -3435,11 +3480,7 @@ class DSHService:
                             {"role": "system", "content": system + "\nSeparate complete answer paragraphs with a blank line."},
                             {"role": "user", "content": payload},
                         ]),
-                        validate=lambda candidate: not _answer_language_conflicts(candidate, language)
-                        and reader_natural_answer_is_grounded(
-                            candidate, fallback, question,
-                            completeness=str(evidence.get("completeness") or ""),
-                        ),
+                        validate=validate_generated_prose,
                     )
                     return content, False, "guarded_stream_organized"
                 chunks: list[str] = []
@@ -3905,6 +3946,18 @@ class DSHService:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
+                # WebSocket authentication has a session request ID, whereas
+                # each submitted message has a distinct turn request ID. The
+                # cancel transport must terminate that owned turn, not emit
+                # terminal events the browser's turn correlation will reject.
+                last_user = await db.scalar(select(SessionEvent).where(
+                    SessionEvent.conversation_id == conversation_id,
+                    SessionEvent.event_type == "user.message",
+                ).order_by(SessionEvent.seq.desc()).limit(1))
+                turn_request_id = (
+                    str(last_user.event_json.get("requestId") or principal.request_id)
+                    if last_user else principal.request_id
+                )
                 active_stream = self._answer_streams.pop(conversation_id, None)
                 if active_stream and active_stream[0].content:
                     stream, language = active_stream
@@ -3914,12 +3967,12 @@ class DSHService:
                     await self.append_audit(db, conversation, "answer.stream", {
                         "streamVersion": stream.protocol_version, "status": "cancelled",
                         "blockCount": stream.block_count, "blockReceipts": stream.block_receipts,
-                    }, request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                    }, request_id=turn_request_id, runtime_id=conversation.runtime_id)
                     await self.append_event(db, conversation, "assistant.message", {
                         "content": stream.content,
-                        "requestId": principal.request_id,
+                        "requestId": turn_request_id,
                         "streamVersion": stream.protocol_version, "streamStatus": "cancelled",
                     })
                 conversation.status = "READY"
-                await self.append_event(db, conversation, "turn.cancelled", {"requestId": principal.request_id})
+                await self.append_event(db, conversation, "turn.cancelled", {"requestId": turn_request_id})
                 await db.commit()
