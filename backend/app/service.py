@@ -20,6 +20,8 @@ from .knowledge import KnowledgeGatewayClient
 from .ocr import OCRGatewayClient
 from .platform import PlatformGatewayClient
 from .principal import Principal
+from .answer_stream import AnswerStream, incomplete_stream_notice, cancelled_stream_notice
+from .customer_answer_stream import customer_generated_answer
 from .profile_scope import ProfileContext, profile_context_from_payload, requested_profile
 from .response_safety import is_internal_tool_protocol
 from .runtime import RuntimeManager
@@ -445,6 +447,7 @@ class DSHService:
         self.umc_auth = UMCAuthClient(self.settings)
         self.skill_catalog = SkillCatalogCache(self.settings.redis_url)
         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
+        self._answer_streams: dict[str, tuple[AnswerStream, str]] = {}
         self._writer_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
@@ -1587,6 +1590,12 @@ class DSHService:
         return list((await db.execute(query)).scalars().all())
 
     async def append_event(self, db: AsyncSession, conversation: Conversation, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        active = getattr(self, "_answer_streams", {}).get(conversation.conversation_id)
+        if event_type == "assistant.message" and active:
+            stream, _ = active
+            await stream.verified(str(payload.get("content") or ""))
+            payload = {**payload, "streamVersion": stream.protocol_version,
+                       "streamStatus": stream.status}
         conversation.last_seq += 1
         conversation.last_activity_at = datetime.now(timezone.utc)
         event = SessionEvent(
@@ -1617,6 +1626,8 @@ class DSHService:
         await db.commit()
         result = {"seq": event.seq, "eventType": event.event_type, "data": event.event_json, "createdAt": datetime.now(timezone.utc).isoformat()}
         await self.broker.publish(conversation.conversation_id, result)
+        if event_type == "assistant.message":
+            getattr(self, "_answer_streams", {}).pop(conversation.conversation_id, None)
         return result
 
     async def publish_stream_event(self, conversation: Conversation, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1832,6 +1843,8 @@ class DSHService:
                 return {"accepted": True, "duplicate": False, "conversationId": conversation_id, "seq": event["seq"], "requestId": principal.request_id, "runtimeId": lease.runtime_id}
 
     async def _run_turn(self, principal: Principal, conversation_id: str, profile_context: ProfileContext | None = None) -> None:
+        if not hasattr(self, "_answer_streams"):
+            self._answer_streams = {}
         async with self.writer_lock_for(conversation_id):
             try:
                 async with SessionLocal() as db:
@@ -1845,21 +1858,16 @@ class DSHService:
                     latest_attachment = raw_attachment if isinstance(raw_attachment, dict) else None
                     response_language = response_language_for(latest_content)
 
-                    async def publish_answer_text(text: str, *, chunk_size: int = 28, pause_seconds: float = 0.012) -> None:
-                        """Push deterministic answers through the same live stream as LLM tokens."""
-                        value = str(text or "")
-                        for offset in range(0, len(value), chunk_size):
-                            await self.publish_stream_event(
-                                conversation,
-                                "assistant.chunk",
-                                {
-                                    "content": value[offset : offset + chunk_size],
-                                    "requestId": principal.request_id,
-                                    "runtimeId": conversation.runtime_id,
-                                },
-                            )
-                            if pause_seconds:
-                                await asyncio.sleep(pause_seconds)
+                    async def publish_block(payload: dict) -> dict:
+                        return await self.publish_stream_event(conversation, "assistant.chunk", {
+                            **payload, "requestId": principal.request_id,
+                            "runtimeId": conversation.runtime_id,
+                        })
+                    answer_stream = AnswerStream(publish_block)
+                    self._answer_streams[conversation_id] = (answer_stream, response_language)
+
+                    async def publish_answer_text(text: str) -> None:
+                        await answer_stream.verified(str(text or ""))
                     # Send a first visible update before deterministic routing,
                     # external calls, or the LLM request can spend time waiting.
                     await self.append_status(
@@ -2698,64 +2706,17 @@ class DSHService:
                             runtime_id=conversation.runtime_id,
                         )
                         try:
-                            suppress_answer_stream = bool(
-                                tool_request and tool_request[0] in self.APPLICATION_TOOL_NAMES
+                            sanitizer = getattr(self, "sanitize_customer_answer", None)
+                            content, reasoning, stream_status = await customer_generated_answer(
+                                answer_stream, self.llm, messages, response_language,
+                                sanitize=(lambda text: sanitizer(text, response_language)) if sanitizer else (lambda text: text),
                             )
-
-                            async def draft_answer(
-                                prompt_messages: list[dict[str, str]],
-                                *,
-                                suppress_stream: bool = False,
-                            ) -> tuple[str, str]:
-                                chunks: list[str] = []
-                                reasoning_chunks: list[str] = []
-                                pending_stream = ""
-                                last_stream_flush = time.monotonic()
-
-                                async def capture_reasoning(value: str) -> None:
-                                    reasoning_chunks.append(value)
-
-                                async for token in self.llm.stream(prompt_messages, on_reasoning=capture_reasoning):
-                                    chunks.append(token)
-                                    pending_stream += token
-                                    if (
-                                        not suppress_stream
-                                        and (len(pending_stream) >= 24 or time.monotonic() - last_stream_flush >= 0.08)
-                                    ):
-                                        await publish_answer_text(pending_stream)
-                                        pending_stream = ""
-                                        last_stream_flush = time.monotonic()
-                                if pending_stream and not suppress_stream:
-                                    await publish_answer_text(pending_stream)
-                                return "".join(chunks), "".join(reasoning_chunks)
-
-                            content, reasoning = await draft_answer(messages, suppress_stream=suppress_answer_stream)
-                            if is_internal_tool_protocol(content):
-                                retry_messages = [
-                                    *messages,
-                                    {
-                                        "role": "system",
-                                        "content": (
-                                            "The previous draft exposed an internal tool invocation. "
-                                            "Return a natural-language answer to the user using only the internal evidence. "
-                                            "Do not output JSON, tool names, arguments, API paths, or implementation details."
-                                        ),
-                                    },
-                                ]
-                                content, retry_reasoning = await draft_answer(
-                                    retry_messages,
-                                    suppress_stream=suppress_answer_stream,
-                                )
-                                reasoning += retry_reasoning
-                            if is_internal_tool_protocol(content):
-                                content = (
-                                    "تعذر تنسيق النتيجة المطلوبة. يرجى المحاولة مرة أخرى."
-                                    if response_language == "ar"
-                                    else "I could not format the requested result. Please try again."
-                                )
-                            content = self.sanitize_customer_answer(content, response_language)
-                            if suppress_answer_stream:
-                                await publish_answer_text(content)
+                            await self.append_audit(db, conversation, "answer.stream", {
+                                "streamVersion": answer_stream.protocol_version,
+                                "blockCount": answer_stream.block_count, "status": stream_status,
+                                "blockReceipts": answer_stream.block_receipts,
+                                "requestId": principal.request_id, "runtimeId": conversation.runtime_id,
+                            }, request_id=principal.request_id, runtime_id=conversation.runtime_id)
                         except Exception as exc:
                             await self.append_audit(
                                 db,
@@ -2812,10 +2773,22 @@ class DSHService:
                 lease = self.runtime_manager.get(conversation_id)
                 if lease:
                     lease.state = "READY"
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
+                active = self._answer_streams.pop(conversation_id, None)
                 async with SessionLocal() as db:
                     try:
                         conversation = await self.get_owned_conversation(db, principal, conversation_id)
+                        if active and active[0].content:
+                            stream, language = active
+                            conversation.last_seq = max(conversation.last_seq, stream.last_seq)
+                            await stream.verified(stream.content + incomplete_stream_notice(language))
+                            conversation.last_seq = max(conversation.last_seq, stream.last_seq)
+                            await self.append_event(db, conversation, "assistant.message", {
+                                "content": stream.content, "streamVersion": stream.protocol_version,
+                                "streamStatus": "partial", "requestId": principal.request_id,
+                            })
                         conversation.status = "DEAD"
                         conversation.last_error = str(exc)[:1_000]
                         await self.append_event(db, conversation, "runtime.error", {"requestId": principal.request_id, "error": str(exc)[:500]})
@@ -2834,6 +2807,20 @@ class DSHService:
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
+                active = self._answer_streams.pop(conversation_id, None)
+                if active and active[0].content:
+                    stream, language = active
+                    conversation.last_seq = max(conversation.last_seq, stream.last_seq)
+                    await stream.verified(stream.content + cancelled_stream_notice(language))
+                    conversation.last_seq = max(conversation.last_seq, stream.last_seq)
+                    await self.append_audit(db, conversation, "answer.stream", {
+                        "streamVersion": stream.protocol_version, "status": "cancelled",
+                        "blockCount": stream.block_count, "blockReceipts": stream.block_receipts,
+                    }, request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                    await self.append_event(db, conversation, "assistant.message", {
+                        "content": stream.content, "streamVersion": stream.protocol_version,
+                        "streamStatus": "cancelled", "requestId": principal.request_id,
+                    })
                 conversation.status = "READY"
                 await self.append_event(db, conversation, "turn.cancelled", {"requestId": principal.request_id})
                 await db.commit()

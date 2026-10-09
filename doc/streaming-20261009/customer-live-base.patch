@@ -1,0 +1,293 @@
+--- a/backend/app/service.py
++++ b/backend/app/service.py
+@@ -20,6 +20,8 @@
+ from .ocr import OCRGatewayClient
+ from .platform import PlatformGatewayClient
+ from .principal import Principal
++from .answer_stream import AnswerStream, incomplete_stream_notice, cancelled_stream_notice
++from .customer_answer_stream import customer_generated_answer
+ from .customer_record_intent import customer_record_intent
+ from .application_listing import application_list_answer, application_page_arguments, ordered_application_result
+ from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requires_profile_switch
+@@ -208,6 +210,7 @@
+         self.umc_auth = UMCAuthClient(self.settings)
+         self.skill_catalog = SkillCatalogCache(self.settings.redis_url)
+         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
++        self._answer_streams: dict[str, tuple[AnswerStream, str]] = {}
+         self._writer_locks: dict[str, asyncio.Lock] = {}
+ 
+     @staticmethod
+@@ -981,6 +984,12 @@
+         return list((await db.execute(query)).scalars().all())
+ 
+     async def append_event(self, db: AsyncSession, conversation: Conversation, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
++        active = getattr(self, "_answer_streams", {}).get(conversation.conversation_id)
++        if event_type == "assistant.message" and active:
++            stream, _ = active
++            await stream.verified(str(payload.get("content") or ""))
++            payload = {**payload, "streamVersion": stream.protocol_version,
++                       "streamStatus": stream.status}
+         conversation.last_seq += 1
+         conversation.last_activity_at = datetime.now(timezone.utc)
+         event = SessionEvent(
+@@ -1011,6 +1020,8 @@
+         await db.commit()
+         result = {"seq": event.seq, "eventType": event.event_type, "data": event.event_json, "createdAt": datetime.now(timezone.utc).isoformat()}
+         await self.broker.publish(conversation.conversation_id, result)
++        if event_type == "assistant.message":
++            getattr(self, "_answer_streams", {}).pop(conversation.conversation_id, None)
+         return result
+ 
+     async def publish_stream_event(self, conversation: Conversation, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+@@ -1211,6 +1222,8 @@
+                 return {"accepted": True, "duplicate": False, "conversationId": conversation_id, "seq": event["seq"], "requestId": principal.request_id, "runtimeId": lease.runtime_id}
+ 
+     async def _run_turn(self, principal: Principal, conversation_id: str, profile_context: ProfileContext | None = None) -> None:
++        if not hasattr(self, "_answer_streams"):
++            self._answer_streams = {}
+         async with self.writer_lock_for(conversation_id):
+             try:
+                 async with SessionLocal() as db:
+@@ -1223,6 +1236,14 @@
+                     raw_attachment = latest_user.event_json.get("attachment") if latest_user else None
+                     latest_attachment = raw_attachment if isinstance(raw_attachment, dict) else None
+                     response_language = response_language_for(latest_content)
++
++                    async def publish_block(payload: dict) -> dict:
++                        return await self.publish_stream_event(conversation, "assistant.chunk", {
++                            **payload, "requestId": principal.request_id,
++                            "runtimeId": conversation.runtime_id,
++                        })
++                    answer_stream = AnswerStream(publish_block)
++                    self._answer_streams[conversation_id] = (answer_stream, response_language)
+                     # Send a first visible update before deterministic routing,
+                     # external calls, or the LLM request can spend time waiting.
+                     await self.append_status(
+@@ -1954,15 +1975,7 @@
+                             request_id=principal.request_id,
+                             runtime_id=conversation.runtime_id,
+                         )
+-                        await self.publish_stream_event(
+-                            conversation,
+-                            "assistant.chunk",
+-                            {
+-                                "content": attachment_local_response,
+-                                "requestId": principal.request_id,
+-                                "runtimeId": conversation.runtime_id,
+-                            },
+-                        )
++                        await answer_stream.verified(attachment_local_response)
+                         await self.append_event(
+                             db,
+                             conversation,
+@@ -1994,69 +2007,17 @@
+                             runtime_id=conversation.runtime_id,
+                         )
+                         try:
+-                            async def draft_answer(prompt_messages: list[dict[str, str]]) -> tuple[str, str]:
+-                                chunks: list[str] = []
+-                                reasoning_chunks: list[str] = []
+-
+-                                async def capture_reasoning(value: str) -> None:
+-                                    reasoning_chunks.append(value)
+-
+-                                async for token in self.llm.stream(prompt_messages, on_reasoning=capture_reasoning):
+-                                    chunks.append(token)
+-                                return "".join(chunks), "".join(reasoning_chunks)
+-
+-                            content, reasoning = await draft_answer(messages)
+-                            if is_internal_tool_protocol(content):
+-                                retry_messages = [
+-                                    *messages,
+-                                    {
+-                                        "role": "system",
+-                                        "content": (
+-                                            "The previous draft exposed an internal tool invocation. "
+-                                            "Return a natural-language answer to the user using only the internal evidence. "
+-                                            "Do not output JSON, tool names, arguments, API paths, or implementation details."
+-                                        ),
+-                                    },
+-                                ]
+-                                content, retry_reasoning = await draft_answer(retry_messages)
+-                                reasoning += retry_reasoning
+-                            if is_internal_tool_protocol(content):
+-                                content = (
+-                                    "تعذر تنسيق النتيجة المطلوبة. يرجى المحاولة مرة أخرى."
+-                                    if response_language == "ar"
+-                                    else "I could not format the requested result. Please try again."
+-                                )
+-                            if contains_unexpected_response_script(content, response_language):
+-                                language_retry_messages = [
+-                                    *messages,
+-                                    {
+-                                        "role": "system",
+-                                        "content": (
+-                                            "Rewrite the previous draft completely in the required response language. "
+-                                            "Preserve the same verified facts, ordered steps, prerequisites, preview or confirmation conditions, "
+-                                            "limitations, and next action. Do not include bilingual labels, translated parenthetical labels, "
+-                                            "or foreign-script prose; retain only immutable identifiers and URLs when necessary."
+-                                        ),
+-                                    },
+-                                ]
+-                                content, retry_reasoning = await draft_answer(language_retry_messages)
+-                                reasoning += retry_reasoning
+-                            if contains_unexpected_response_script(content, response_language):
+-                                content = (
+-                                    "تعذر علي إعداد الرد باللغة المطلوبة. يرجى المحاولة مرة أخرى."
+-                                    if response_language == "ar"
+-                                    else "I could not prepare the response in the requested language. Please try again."
+-                                )
+-                            if content:
+-                                await self.publish_stream_event(
+-                                    conversation,
+-                                    "assistant.chunk",
+-                                    {
+-                                        "content": content,
+-                                        "requestId": principal.request_id,
+-                                        "runtimeId": conversation.runtime_id,
+-                                    },
+-                                )
++                            sanitizer = getattr(self, "sanitize_customer_answer", None)
++                            content, reasoning, stream_status = await customer_generated_answer(
++                                answer_stream, self.llm, messages, response_language,
++                                sanitize=(lambda text: sanitizer(text, response_language)) if sanitizer else (lambda text: text),
++                            )
++                            await self.append_audit(db, conversation, "answer.stream", {
++                                "streamVersion": answer_stream.protocol_version,
++                                "blockCount": answer_stream.block_count, "status": stream_status,
++                                "blockReceipts": answer_stream.block_receipts,
++                                "requestId": principal.request_id, "runtimeId": conversation.runtime_id,
++                            }, request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                         except Exception as exc:
+                             await self.append_audit(
+                                 db,
+@@ -2104,10 +2065,22 @@
+                 lease = self.runtime_manager.get(conversation_id)
+                 if lease:
+                     lease.state = "READY"
++            except asyncio.CancelledError:
++                raise
+             except Exception as exc:
++                active = self._answer_streams.pop(conversation_id, None)
+                 async with SessionLocal() as db:
+                     try:
+                         conversation = await self.get_owned_conversation(db, principal, conversation_id)
++                        if active and active[0].content:
++                            stream, language = active
++                            conversation.last_seq = max(conversation.last_seq, stream.last_seq)
++                            await stream.verified(stream.content + incomplete_stream_notice(language))
++                            conversation.last_seq = max(conversation.last_seq, stream.last_seq)
++                            await self.append_event(db, conversation, "assistant.message", {
++                                "content": stream.content, "streamVersion": stream.protocol_version,
++                                "streamStatus": "partial", "requestId": principal.request_id,
++                            })
+                         conversation.status = "DEAD"
+                         conversation.last_error = str(exc)[:1_000]
+                         await self.append_event(db, conversation, "runtime.error", {"requestId": principal.request_id, "error": str(exc)[:500]})
+@@ -2116,12 +2089,28 @@
+                         pass
+ 
+     async def cancel(self, principal: Principal, conversation_id: str) -> None:
++        async with SessionLocal() as db:
++            await self.get_owned_conversation(db, principal, conversation_id)
+         task = self._turn_tasks.get(conversation_id)
+         if task and not task.done():
+             task.cancel()
+         async with self.writer_lock_for(conversation_id):
+             async with SessionLocal() as db:
+                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
++                active = self._answer_streams.pop(conversation_id, None)
++                if active and active[0].content:
++                    stream, language = active
++                    conversation.last_seq = max(conversation.last_seq, stream.last_seq)
++                    await stream.verified(stream.content + cancelled_stream_notice(language))
++                    conversation.last_seq = max(conversation.last_seq, stream.last_seq)
++                    await self.append_audit(db, conversation, "answer.stream", {
++                        "streamVersion": stream.protocol_version, "status": "cancelled",
++                        "blockCount": stream.block_count, "blockReceipts": stream.block_receipts,
++                    }, request_id=principal.request_id, runtime_id=conversation.runtime_id)
++                    await self.append_event(db, conversation, "assistant.message", {
++                        "content": stream.content, "streamVersion": stream.protocol_version,
++                        "streamStatus": "cancelled", "requestId": principal.request_id,
++                    })
+                 conversation.status = "READY"
+                 await self.append_event(db, conversation, "turn.cancelled", {"requestId": principal.request_id})
+                 await db.commit()
+--- a/backend/app/api.py
++++ b/backend/app/api.py
+@@ -720,12 +720,36 @@
+             "cross-account requests receive a target-free refusal regardless of whether "
+             "the reference exists. Sentence punctuation around an account identifier "
+             "does not change this boundary. Reply language follows the question, "
+-            "independently of the portal display language."
++            "independently of the portal display language. "
++            "Streaming contract verified-blocks/1: token SSE events contain JSON strings "
++            "with validated complete paragraphs, preserving whitespace and Unicode. "
++            "result contains content, streamVersion and streamStatus "
++            "(complete, partial, failed, cancelled); end contains [DONE]. "
++            "No raw unvalidated tokens or simulated typing delay. Stop preserves the "
++            "published prefix plus a localized partial notice. Owned history returns "
++            "the persisted final answer on reconnect; ephemeral deltas are not replayed. "
++            "Existing token authentication and Profile isolation apply. "
++            "HTTP 422 for empty input, 404 for inaccessible conversation; "
++            "invalid authentication is rejected by the existing Portal dependency."
+         ),
+     )
+     async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
+         """Stream a customer-chat turn.
+ 
++        Shared streaming protocol: verified-blocks/1. Raw model tokens remain
++        private; only complete paragraphs passing language, public-output and
++        existing Profile-scope/evidence guards are sent. There is no simulated
++        typing delay. Deterministic results are streamed as verified blocks.
++        token event data is a JSON string (lossless whitespace and Unicode).
++        result event data contains content, streamVersion and streamStatus
++        (complete, partial, failed or cancelled), followed by end [DONE].
++        Stop preserves the published prefix plus a localized partial notice.
++        Reconnect recovers the final persisted answer through owned history;
++        ephemeral deltas are not a replay log. Authorization is unchanged:
++        a Global history reader cannot cancel another Profile's active turn.
++        Validation/ownership failures are HTTP 422/404; missing or invalid
++        authentication is rejected by the existing Portal auth dependency.
++
+         A clearly linked application follow-up after a Refund or Complaints
+         detail may be handed off to the read-only My Requests application
+         Skill.  The service uses only an application identifier present in the
+@@ -761,6 +785,9 @@
+                     data = event.get("data") or {}
+                     if event_type == "assistant.chunk":
+                         yield f"event: token\ndata: {data.get('content', '')}\n\n"
++                    elif event_type == "assistant.message":
++                        result = {key: data.get(key) for key in ("content", "streamVersion", "streamStatus")}
++                        yield f"event: result\ndata: {json.dumps(result, ensure_ascii=False)}\n\n"
+                     elif event_type == "assistant.status":
+                         # Additive, safe progress event for SSE clients. It
+                         # contains no prompts, tool arguments, or raw reasoning.
+diff --git a/backend/app/config.py b/backend/app/config.py
+index b9ddab1..762b921 100644
+--- a/backend/app/config.py
++++ b/backend/app/config.py
+@@ -11,6 +11,8 @@ class Settings(BaseSettings):
+     UMC_PORTALS: ClassVar[tuple[str, ...]] = ("customer", "admin", "public")
+     app_name: str = "DSH External Service"
+     environment: str = "development"
++    # Opt in only for an explicit fresh install/approved migration.
++    database_init_enabled: bool = False
+     database_url: str = "postgresql+asyncpg://dsh:dsh@postgres:5432/dsh"
+     redis_url: str = "redis://redis:6379/0"
+     cors_origins: str = "*"
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 5696d30..5f38009 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -29,7 +29,9 @@ service = DSHService(runtime_manager, llm, broker, ocr, knowledge, platform)
+ 
+ @asynccontextmanager
+ async def lifespan(app: FastAPI):
+-    await init_db()
++    # Code-only restarts must not migrate or reseed the existing database.
++    if settings.database_init_enabled:
++        await init_db()
+     await service.skill_catalog.invalidate()
+     # Re-apply operator-managed live settings after every container restart.
+     # The DB/Redis URLs remain restart-only because their pools are constructed

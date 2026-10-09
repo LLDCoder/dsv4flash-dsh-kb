@@ -825,6 +825,20 @@ def make_router(service: DSHService) -> APIRouter:
         browser clients. ``status`` and ``error`` events contain JSON objects;
         ``end`` uses ``[DONE]`` as its data value.
 
+        Shared streaming protocol: verified-blocks/1. Raw model tokens remain
+        private; only complete paragraphs passing language, public-output and
+        existing Profile-scope/evidence guards are sent. There is no simulated
+        typing delay. Deterministic results are streamed as verified blocks.
+        token event data is a JSON string (lossless whitespace and Unicode).
+        result event data contains content, streamVersion and streamStatus
+        (complete, partial, failed or cancelled), followed by end [DONE].
+        Stop preserves the published prefix plus a localized partial notice.
+        Reconnect recovers the final persisted answer through owned history;
+        ephemeral deltas are not a replay log. Authorization is unchanged:
+        a Global history reader cannot cancel another Profile's active turn.
+        Validation/ownership failures are HTTP 422/404; missing or invalid
+        authentication is rejected by the existing Portal auth dependency.
+
         A clearly linked application follow-up after a Refund or Complaints
         detail may be handed off to the read-only My Requests application
         Skill.  The service uses only an application identifier present in the
@@ -872,6 +886,9 @@ def make_router(service: DSHService) -> APIRouter:
                         # Encode the token as JSON so newlines, leading spaces,
                         # and non-ASCII text survive the SSE boundary exactly.
                         yield f"event: token\ndata: {json.dumps(str(data.get('content', '')), ensure_ascii=False)}\n\n"
+                    elif event_type == "assistant.message":
+                        result = {key: data.get(key) for key in ("content", "streamVersion", "streamStatus")}
+                        yield f"event: result\ndata: {json.dumps(result, ensure_ascii=False)}\n\n"
                     elif event_type == "assistant.status":
                         # Additive, safe progress event for SSE clients. It
                         # contains no prompts, tool arguments, or raw reasoning.

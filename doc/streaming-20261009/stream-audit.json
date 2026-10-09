@@ -1,0 +1,424 @@
+[
+  {
+    "question": "Explain the license application process for my current commercial profile. Give the supported prerequisites, documents and steps in separate short paragraphs, without submitting anything.",
+    "conversationId": "conv_d29702738e5c481db266",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "requestId": "3b5be784-18c3-4ffd-8510-89bb24af7237",
+      "runtimeId": "rt_b3627ea89bdb429b",
+      "blockCount": 6,
+      "streamVersion": "verified-blocks/1"
+    }
+  },
+  {
+    "question": "اعرض الطلبات التي أستطيع رؤيتها في الملف الحالي، مع بيان إجماليها وحالاتها. لا تستخدم بيانات أي ملف آخر ولا تقدم أي طلب.",
+    "conversationId": "conv_b7861a87477948e5839e",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": null
+  },
+  {
+    "question": "اشرح إجراءات طلب الترخيص لملفي التجاري الحالي. بيّن المتطلبات والمستندات والخطوات المدعومة بالمصادر في فقرات قصيرة منفصلة، دون تقديم أي طلب.",
+    "conversationId": "conv_a8567caa2b7c46ab80a2",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "requestId": "af96b770-8c00-4d63-b6fd-96c732a06115",
+      "runtimeId": "rt_20170fb176ce4f4a",
+      "blockCount": 11,
+      "blockReceipts": [
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 21475.1,
+          "chunkIndex": 0
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 21801.7,
+          "chunkIndex": 1
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 22065.4,
+          "chunkIndex": 2
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 22519.1,
+          "chunkIndex": 3
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 22876.3,
+          "chunkIndex": 4
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 23164,
+          "chunkIndex": 5
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 23274.1,
+          "chunkIndex": 6
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 23496.7,
+          "chunkIndex": 7
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 23962.5,
+          "chunkIndex": 8
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 24458.5,
+          "chunkIndex": 9
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 24870,
+          "chunkIndex": 10
+        }
+      ],
+      "streamVersion": "verified-blocks/1"
+    }
+  },
+  {
+    "question": "اشرح اللوائح الإعلامية المتاحة في قاعدة المعرفة في عشرين فقرة قصيرة منفصلة، مع حدود الأدلة والخطوات الآمنة للملف التجاري الحالي.",
+    "conversationId": "conv_7c33ed64dda74e03a1d5",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "requestId": "81ec3bfb-2792-4297-88a7-ef8877f30282",
+      "runtimeId": "rt_47f08f8d8912433a",
+      "blockCount": 20,
+      "blockReceipts": [
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 25120.3,
+          "chunkIndex": 0
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 25245.9,
+          "chunkIndex": 1
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 25385.6,
+          "chunkIndex": 2
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 25511.5,
+          "chunkIndex": 3
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 25718.2,
+          "chunkIndex": 4
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 25857.1,
+          "chunkIndex": 5
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 26025.5,
+          "chunkIndex": 6
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 26208.7,
+          "chunkIndex": 7
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 26363.8,
+          "chunkIndex": 8
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 26366.9,
+          "chunkIndex": 9
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 26516.3,
+          "chunkIndex": 10
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 26638.6,
+          "chunkIndex": 11
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 26820.2,
+          "chunkIndex": 12
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 26945.2,
+          "chunkIndex": 13
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 27148.4,
+          "chunkIndex": 14
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 27293.2,
+          "chunkIndex": 15
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 27447.8,
+          "chunkIndex": 16
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 27656.8,
+          "chunkIndex": 17
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 27976.2,
+          "chunkIndex": 18
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 28471.3,
+          "chunkIndex": 19
+        }
+      ],
+      "streamVersion": "verified-blocks/1"
+    }
+  },
+  {
+    "question": "اشرح اللوائح الإعلامية المتاحة في قاعدة المعرفة في عشرين فقرة قصيرة منفصلة، مع حدود الأدلة والخطوات الآمنة للملف التجاري الحالي.",
+    "conversationId": "conv_8b96bc8b3fe04c098369",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "cancelled",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.cancelled"
+    ],
+    "streamAudit": null
+  },
+  {
+    "question": "اشرح اللوائح الإعلامية المتاحة في قاعدة المعرفة في عشرين فقرة قصيرة منفصلة، مع حدود الأدلة والخطوات الآمنة للملف التجاري الحالي.",
+    "conversationId": "conv_c0a86002d82841f4ab3f",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "cancelled",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.cancelled"
+    ],
+    "streamAudit": {
+      "status": "cancelled",
+      "blockCount": 11,
+      "blockReceipts": [
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 28701.7,
+          "chunkIndex": 0
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 28709.5,
+          "chunkIndex": 1
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 28862.5,
+          "chunkIndex": 2
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 28986.2,
+          "chunkIndex": 3
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 29123.1,
+          "chunkIndex": 4
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 29220,
+          "chunkIndex": 5
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 29342.3,
+          "chunkIndex": 6
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 29396.3,
+          "chunkIndex": 7
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 29504.5,
+          "chunkIndex": 8
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 29504.6,
+          "chunkIndex": 9
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 29504.6,
+          "chunkIndex": 10
+        }
+      ],
+      "streamVersion": "verified-blocks/1"
+    }
+  },
+  {
+    "question": "Explain the media regulations available in the knowledge base in short paragraphs. State evidence limits and safe next steps for my current commercial profile; do not submit anything.",
+    "conversationId": "conv_246ddb967c8c47718fc7",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "requestId": "0db876a3-5888-433d-ac3c-213a92f3579f",
+      "runtimeId": "rt_ba6551afe3f6409e",
+      "blockCount": 17,
+      "blockReceipts": [
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 18841.2,
+          "chunkIndex": 0
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 19088.8,
+          "chunkIndex": 1
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 19102.5,
+          "chunkIndex": 2
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 19436.4,
+          "chunkIndex": 3
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 19826,
+          "chunkIndex": 4
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 19978.9,
+          "chunkIndex": 5
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 20478.9,
+          "chunkIndex": 6
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 20714,
+          "chunkIndex": 7
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 20727,
+          "chunkIndex": 8
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 21096.3,
+          "chunkIndex": 9
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 21136.7,
+          "chunkIndex": 10
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 21349.4,
+          "chunkIndex": 11
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 21364.9,
+          "chunkIndex": 12
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 21573.9,
+          "chunkIndex": 13
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 21586.3,
+          "chunkIndex": 14
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 22064.6,
+          "chunkIndex": 15
+        },
+        {
+          "mode": "guarded_generation",
+          "elapsedMs": 22144.8,
+          "chunkIndex": 16
+        }
+      ],
+      "streamVersion": "verified-blocks/1"
+    }
+  }
+]

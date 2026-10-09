@@ -29,7 +29,10 @@ service = DSHService(runtime_manager, llm, broker, ocr, knowledge, platform)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    # Existing production databases must not be migrated or reseeded by a
+    # routine code-only restart. Fresh installations explicitly opt in.
+    if settings.database_init_enabled:
+        await init_db()
     await service.skill_catalog.invalidate()
     # Re-apply operator-managed live settings after every container restart.
     # The DB/Redis URLs remain restart-only because their pools are constructed
