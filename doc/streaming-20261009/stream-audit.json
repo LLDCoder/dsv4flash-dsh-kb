@@ -1,0 +1,168 @@
+[
+  {
+    "question": "Give the totals and status breakdown of the licenses on my dashboard, using its current date range.",
+    "conversationId": "conv_1ab4f38fb2f14fe7b04a",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "blockCount": 15,
+      "streamVersion": "verified-blocks/1"
+    }
+  },
+  {
+    "question": "How many licenses can I currently see, and what are their statuses?",
+    "conversationId": "conv_8b0932585e7040a58385",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "blockCount": 4,
+      "streamVersion": "verified-blocks/1"
+    }
+  },
+  {
+    "question": "Summarize the status breakdown shown on the Licenses page.",
+    "conversationId": "conv_fb929b1c4a694be5a97a",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "blockCount": 13,
+      "blockReceipts": [
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 10.9,
+          "chunkIndex": 0
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 10.9,
+          "chunkIndex": 1
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 10.9,
+          "chunkIndex": 2
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 10.9,
+          "chunkIndex": 3
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 10.9,
+          "chunkIndex": 4
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 10.9,
+          "chunkIndex": 5
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 10.9,
+          "chunkIndex": 6
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 11,
+          "chunkIndex": 7
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 11,
+          "chunkIndex": 8
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 11,
+          "chunkIndex": 9
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 11,
+          "chunkIndex": 10
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 11,
+          "chunkIndex": 11
+        },
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 11,
+          "chunkIndex": 12
+        }
+      ],
+      "streamVersion": "verified-blocks/1"
+    }
+  },
+  {
+    "question": "لخّص توزيع حالات التراخيص المعروض في صفحة التراخيص.",
+    "conversationId": "conv_466ca5f8ee30439d931a",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "blockCount": 1,
+      "blockReceipts": [
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 5.4,
+          "chunkIndex": 0
+        }
+      ],
+      "streamVersion": "verified-blocks/1"
+    }
+  },
+  {
+    "question": "اشرح اللوائح الإعلامية المتاحة في قاعدة المعرفة ومتطلبات ترخيص الأنشطة الإعلامية، في فقرات قصيرة منفصلة، مع توضيح حدود الأدلة ودون إجراء أي تعديل.",
+    "conversationId": "conv_e63569bac50a4f44b45a",
+    "chunkCount": 0,
+    "chunkModes": [],
+    "finalStatus": "complete",
+    "chunkFinalParity": null,
+    "chunkStorage": "ephemeral; not replayed from session_event",
+    "terminalEvents": [
+      "turn.completed"
+    ],
+    "streamAudit": {
+      "status": "complete",
+      "blockCount": 1,
+      "blockReceipts": [
+        {
+          "mode": "verified_projection",
+          "elapsedMs": 5,
+          "chunkIndex": 0
+        }
+      ],
+      "streamVersion": "verified-blocks/1"
+    }
+  }
+]

@@ -1157,6 +1157,16 @@ def make_router(service: DSHService) -> APIRouter:
         persisted as a normal load_failed reader result and completed turn, so
         the client receives a bounded status answer instead of a dead-conversation
         Retry state. It never establishes a business-data conclusion.
+        Answers use the shared verified-blocks/1 stream contract. assistant.chunk
+        carries an append-only content delta, a zero-based chunkIndex and streamMode
+        (guarded_generation or verified_projection). Model paragraphs are held
+        privately until cumulative language/fact validation passes. Deterministic
+        business cards are streamed as verified Markdown blocks, without an
+        artificial typing delay. assistant.message is the authoritative persisted
+        answer and its streamStatus is complete or partial. A rejected/interrupted
+        remainder never rewrites a published prefix; an incomplete answer says so.
+        Cancellation stops generation; reconnects recover the authoritative final
+        answer from owned conversation history, not ephemeral token replay.
         Final answers use concise natural-language formatting over verified facts,
         with deterministic fallback when formatting cannot be validated. Equal
         headings or selected tabs do not merge independent evidence sources;

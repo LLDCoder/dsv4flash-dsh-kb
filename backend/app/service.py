@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, ReaderClarificationClaim, SessionEvent, SessionLocal, Skill, purge_expired_audit_data
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
+from .answer_stream import AnswerStream, incomplete_stream_notice, cancelled_stream_notice
 from .message_compression import (MESSAGE_COMPRESSION_THRESHOLD_CHARS, MessageCompressionError,
                                   compression_failure_message, message_source_hash, prepare_reader_input)
 from .generic_reader import GenericKnowledgeReader, render_generic_answer
@@ -2713,6 +2714,7 @@ class DSHService:
             else ""
         )
         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
+        self._answer_streams: dict[str, tuple[AnswerStream, str]] = {}
         self._writer_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
@@ -3269,6 +3271,7 @@ class DSHService:
         operator_prompt: str = "",
         skill_content: str = "",
         prior_answer_coverage: bool = False,
+        answer_stream: AnswerStream | None = None,
     ) -> tuple[str, bool, str]:
         """Let the model present verified facts naturally, with a deterministic fallback."""
 
@@ -3423,6 +3426,22 @@ class DSHService:
         attempts = 2 if checklist_language_guidance else 1
         for _ in range(attempts):
             try:
+                if answer_stream is not None and not _needs_partial_record_note(evidence):
+                    # The complete cumulative paragraph must pass the same
+                    # language/fact guard as a non-streamed answer. A later
+                    # failure must not erase an already disclosed prefix.
+                    content = await answer_stream.generate(
+                        self.llm.stream([
+                            {"role": "system", "content": system + "\nSeparate complete answer paragraphs with a blank line."},
+                            {"role": "user", "content": payload},
+                        ]),
+                        validate=lambda candidate: not _answer_language_conflicts(candidate, language)
+                        and reader_natural_answer_is_grounded(
+                            candidate, fallback, question,
+                            completeness=str(evidence.get("completeness") or ""),
+                        ),
+                    )
+                    return content, False, "guarded_stream_organized"
                 chunks: list[str] = []
                 async for chunk in self.llm.stream([
                     {"role": "system", "content": system},
@@ -3449,6 +3468,9 @@ class DSHService:
                             ),
                         )
             except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError) as exc:
+                if answer_stream is not None and answer_stream.content:
+                    return (answer_stream.content + incomplete_stream_notice(language),
+                            True, "guarded_stream_incomplete")
                 if evidence.get("presentationMode") == "llm_localized":
                     _reader_presentation_log.warning(
                         "localized reader presentation unavailable: %s", type(exc).__name__
@@ -3499,6 +3521,8 @@ class DSHService:
         uses ``admin_portal_reader``.
         """
 
+        if not hasattr(self, "_answer_streams"):
+            self._answer_streams = {}
         async with self.writer_lock_for(conversation_id):
             try:
                 async with SessionLocal() as db:
@@ -3744,7 +3768,19 @@ class DSHService:
                         # wording while retaining all cited numbers/identities.
                         evidence = {**evidence, "presentationMode": "llm_localized"}
                     await self.append_status(db, conversation, "drafting", language, request_id=principal.request_id)
+                    async def publish_answer_block(payload):
+                        return await self.publish_stream_event(
+                            conversation, "assistant.chunk",
+                            {**payload, "requestId": principal.request_id,
+                             "runtimeId": conversation.runtime_id},
+                        )
+                    answer_stream = AnswerStream(publish_answer_block, max_block_chars=6000)
+                    self._answer_streams[conversation_id] = (answer_stream, language)
                     assembly_started = time.perf_counter()
+                    bilingual_requested = bool(re.search(
+                        r"双语作答|雙語作答|(?:answer|respond)\s+(?:in\s+)?(?:both\s+)?english\s+(?:and|&)\s+arabic|"
+                        r"(?:باللغتين|باللغة\s+الإنجليزية\s+والعربية)", latest_content, re.I,
+                    ))
                     if "input_compression_failed" in evidence.get("missing", []):
                         content = compression_failure_message(language)
                         formatting_failed, assembly_strategy = False, "input_compression_failed"
@@ -3759,11 +3795,8 @@ class DSHService:
                             operator_prompt=str(self.settings.system_prompt or ""),
                             skill_content=str(getattr(selected_skill, "content", "") or ""),
                             prior_answer_coverage=audit_evidence.get("stage") == "prior_answer_coverage",
+                            answer_stream=None if bilingual_requested else answer_stream,
                         )
-                    bilingual_requested = bool(re.search(
-                        r"双语作答|雙語作答|(?:answer|respond)\s+(?:in\s+)?(?:both\s+)?english\s+(?:and|&)\s+arabic|"
-                        r"(?:باللغتين|باللغة\s+الإنجليزية\s+والعربية)", latest_content, re.I,
-                    ))
                     if bilingual_requested:
                         # Both renderings project the same verified fact set.
                         # An explicit two-language request is not a request to
@@ -3791,11 +3824,13 @@ class DSHService:
                         runtime_id=conversation.runtime_id,
                     )
                     if content:
-                        await self.publish_stream_event(
-                            conversation,
-                            "assistant.chunk",
-                            {"content": content, "requestId": principal.request_id, "runtimeId": conversation.runtime_id},
-                        )
+                        await answer_stream.verified(content)
+                    await self.append_audit(db, conversation, "answer.stream", {
+                        "streamVersion": answer_stream.protocol_version,
+                        "blockCount": answer_stream.block_count,
+                        "blockReceipts": answer_stream.block_receipts,
+                        "status": "partial" if assembly_strategy == "guarded_stream_incomplete" else "complete",
+                    }, request_id=principal.request_id, runtime_id=conversation.runtime_id)
                     await self.append_audit(
                         db,
                         conversation,
@@ -3814,7 +3849,9 @@ class DSHService:
                         db,
                         conversation,
                         "assistant.message",
-                        {"content": content, "requestId": principal.request_id},
+                        {"content": content, "requestId": principal.request_id,
+                         "streamVersion": answer_stream.protocol_version,
+                         "streamStatus": "partial" if assembly_strategy == "guarded_stream_incomplete" else "complete"},
                     )
                     await self.append_event(
                         db,
@@ -3826,15 +3863,26 @@ class DSHService:
                     conversation.last_error = None
                     conversation.last_activity_at = datetime.now(timezone.utc)
                     await db.commit()
+                    self._answer_streams.pop(conversation_id, None)
                 lease = self.runtime_manager.get(conversation_id)
                 if lease:
                     lease.state = "READY"
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                active = self._answer_streams.pop(conversation_id, None)
                 async with SessionLocal() as db:
                     try:
                         conversation = await self.get_owned_conversation(db, principal, conversation_id)
+                        if active and active[0].content:
+                            stream, language = active
+                            conversation.last_seq = max(conversation.last_seq, stream.last_seq)
+                            await stream.verified(stream.content + incomplete_stream_notice(language))
+                            conversation.last_seq = max(conversation.last_seq, stream.last_seq)
+                            await self.append_event(db, conversation, "assistant.message", {
+                                "content": stream.content, "streamVersion": stream.protocol_version,
+                                "streamStatus": "partial", "requestId": principal.request_id,
+                            })
                         conversation.status = "DEAD"
                         conversation.last_error = str(exc)[:1_000]
                         await self.append_event(
@@ -3848,12 +3896,30 @@ class DSHService:
                         pass
 
     async def cancel(self, principal: Principal, conversation_id: str) -> None:
+        # Reject cross-account cancellation before touching an active task.
+        async with SessionLocal() as db:
+            await self.get_owned_conversation(db, principal, conversation_id)
         task = self._turn_tasks.get(conversation_id)
         if task and not task.done():
             task.cancel()
         async with self.writer_lock_for(conversation_id):
             async with SessionLocal() as db:
                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
+                active_stream = self._answer_streams.pop(conversation_id, None)
+                if active_stream and active_stream[0].content:
+                    stream, language = active_stream
+                    conversation.last_seq = max(conversation.last_seq, stream.last_seq)
+                    await stream.verified(stream.content + cancelled_stream_notice(language))
+                    conversation.last_seq = max(conversation.last_seq, stream.last_seq)
+                    await self.append_audit(db, conversation, "answer.stream", {
+                        "streamVersion": stream.protocol_version, "status": "cancelled",
+                        "blockCount": stream.block_count, "blockReceipts": stream.block_receipts,
+                    }, request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                    await self.append_event(db, conversation, "assistant.message", {
+                        "content": stream.content,
+                        "requestId": principal.request_id,
+                        "streamVersion": stream.protocol_version, "streamStatus": "cancelled",
+                    })
                 conversation.status = "READY"
                 await self.append_event(db, conversation, "turn.cancelled", {"requestId": principal.request_id})
                 await db.commit()
