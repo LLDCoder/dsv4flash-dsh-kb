@@ -119,7 +119,7 @@ def allows_customer_auth(
         return True
     return (
         scope.get("type") == "http"
-        and path.startswith("/api/v1/conversations")
+        and (path.startswith("/api/v1/conversations") or path == "/api/v1/umc/services/fees")
         and has_bearer_authorization(headers)
     )
 

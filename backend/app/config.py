@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     UMC_PORTALS: ClassVar[tuple[str, ...]] = ("customer", "admin", "public")
     app_name: str = "DSH External Service"
     environment: str = "development"
+    # Opt in only for an explicit fresh install/approved migration.
+    database_init_enabled: bool = False
     database_url: str = "postgresql+asyncpg://dsh:dsh@postgres:5432/dsh"
     redis_url: str = "redis://redis:6379/0"
     cors_origins: str = "*"

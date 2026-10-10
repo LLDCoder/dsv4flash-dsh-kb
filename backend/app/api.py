@@ -37,6 +37,7 @@ from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .profile_scope import normalize_profile_scope
 from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, ServiceEligibilityResponse, SkillCreate, SkillUpsert, SwaggerImportRequest, TestCaseGenerateRequest, TestCaseRunRequest, ToolCreate, ToolUpsert, WSMessage
 from .service import DSHService
+from .service_fees import CustomerServiceFeeClient, ServiceFeeResponse, is_public_service_fee_query
 from .schemas import AuditLogoutResponse, AuditSessionResponse
 from .testcases import generate_test_cases, run_test_cases
 from .tool_registry import SYSTEM_DEFAULT_TOOL_NAMES, extract_operations, interface_key, is_system_default_tool, system_default_tool_definitions
@@ -720,11 +721,39 @@ def make_router(service: DSHService) -> APIRouter:
             "cross-account requests receive a target-free refusal regardless of whether "
             "the reference exists. Sentence punctuation around an account identifier "
             "does not change this boundary. Reply language follows the question, "
-            "independently of the portal display language."
+            "independently of the portal display language. "
+            "Published service fee questions read the live Customer Learn More card, "
+            "independently of Profile selection; ambiguous names require clarification. "
+            "Fees are not private invoices or account balances. Mixed/private record "
+            "queries retain existing authorization and Profile isolation. "
+            "Streaming contract verified-blocks/1: token SSE events contain JSON strings "
+            "with validated complete paragraphs, preserving whitespace and Unicode. "
+            "result contains content, streamVersion and streamStatus "
+            "(complete, partial, failed, cancelled); end contains [DONE]. "
+            "No raw unvalidated tokens or simulated typing delay. Stop preserves the "
+            "published prefix plus a localized partial notice. Owned history returns "
+            "the persisted final answer on reconnect; ephemeral deltas are not replayed. "
+            "Existing token authentication and Profile isolation apply. "
+            "HTTP 422 for empty input, 404 for inaccessible conversation; "
+            "invalid authentication is rejected by the existing Portal dependency."
         ),
     )
     async def ai_chat_stream(request: Request, db: AsyncSession = Depends(get_db), principal: Principal = Depends(chat_principal)):
         """Stream a customer-chat turn.
+
+        Shared streaming protocol: verified-blocks/1. Raw model tokens remain
+        private; only complete paragraphs passing language, public-output and
+        existing Profile-scope/evidence guards are sent. There is no simulated
+        typing delay. Deterministic results are streamed as verified blocks.
+        token event data is a JSON string (lossless whitespace and Unicode).
+        result event data contains content, streamVersion and streamStatus
+        (complete, partial, failed or cancelled), followed by end [DONE].
+        Stop preserves the published prefix plus a localized partial notice.
+        Reconnect recovers the final persisted answer through owned history;
+        ephemeral deltas are not a replay log. Authorization is unchanged:
+        a Global history reader cannot cancel another Profile's active turn.
+        Validation/ownership failures are HTTP 422/404; missing or invalid
+        authentication is rejected by the existing Portal auth dependency.
 
         A clearly linked application follow-up after a Refund or Complaints
         detail may be handed off to the read-only My Requests application
@@ -761,6 +790,9 @@ def make_router(service: DSHService) -> APIRouter:
                     data = event.get("data") or {}
                     if event_type == "assistant.chunk":
                         yield f"event: token\ndata: {data.get('content', '')}\n\n"
+                    elif event_type == "assistant.message":
+                        result = {key: data.get(key) for key in ("content", "streamVersion", "streamStatus")}
+                        yield f"event: result\ndata: {json.dumps(result, ensure_ascii=False)}\n\n"
                     elif event_type == "assistant.status":
                         # Additive, safe progress event for SSE clients. It
                         # contains no prompts, tool arguments, or raw reasoning.
@@ -805,6 +837,40 @@ def make_router(service: DSHService) -> APIRouter:
             return session
         except UMCAuthError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.get(
+        "/umc/services/fees", response_model=ServiceFeeResponse, tags=["UMC Services"],
+        summary="Read published fees from Customer Service Learn More cards",
+        description="Read-only live Customer service catalogue and Learn/Authorized lookup using the current UMC bearer token. Query is a service title (English or Arabic) or explicit service ID, not an account selector. Global View is supported. Only an unambiguous service returns published feeEn/feeAr; ambiguous names return choices without fees. Missing fees are null, never zero or estimated. No invoices, private records, payment, or application submission. Caller URLs and identity selectors are not accepted.",
+        responses={401: {"description": "Missing or invalid UMC authentication"},
+                   403: {"description": "UMC service-card access denied"},
+                   422: {"description": "Invalid query or unsupported identity selectors"},
+                   502: {"description": "Invalid, incomplete or mismatched service data"},
+                   503: {"description": "Customer service-card API unavailable"}},
+    )
+    async def get_service_fees(
+        request: Request, query: str = Query(min_length=2, max_length=500),
+        authorization: str | None = Header(default=None, description="Current Customer UMC bearer token"),
+    ):
+        token = _bearer_token(authorization)
+        if not token:
+            raise HTTPException(status_code=401, detail="UMC authentication is required")
+        if set(request.query_params) != {"query"} or len(request.query_params.getlist("query")) != 1:
+            raise HTTPException(status_code=422, detail="Only one service query is accepted")
+        # A name alone is accepted; explicit private/mixed fee requests are not.
+        if not is_public_service_fee_query("service fee for " + query):
+            raise HTTPException(status_code=422, detail="Specify a public service, not account records")
+        try:
+            return await CustomerServiceFeeClient(service.settings).lookup(query, umc_token=token)
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail="UMC authentication is required") from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            raise HTTPException(status_code=status if status in {401, 403} else 502, detail="Customer service card could not be read") from exc
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail="Customer service card is unavailable") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="Customer service data is invalid") from exc
 
     @router.get(
         "/umc/services/eligible",
