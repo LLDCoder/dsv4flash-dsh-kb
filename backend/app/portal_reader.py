@@ -251,6 +251,8 @@ class PortalReadRequest:
     inspection_task_rollup_view: str | None = None
     inspection_task_rollup_list: bool = False
     inspection_team_assignments: bool = False
+    inspection_task_number: str | None = None
+    inspection_checklist: bool = False
     browser_timezone: str | None = None
     collections: tuple[dict[str, Any], ...] = ()
 
@@ -275,6 +277,8 @@ class PortalReadRequest:
                if self.inspection_task_rollup_list else {}),
             **({'inspectionTeamAssignments': True}
                if self.inspection_team_assignments else {}),
+            **({'inspectionTaskNumber':self.inspection_task_number,'inspectionChecklist':self.inspection_checklist}
+               if self.inspection_task_number else {}),
             **({'browserTimezone': self.browser_timezone}
                if self.browser_timezone else {}),
         }
@@ -2215,6 +2219,9 @@ def bounded_portal_observation(value: Any) -> Any:
     """Bound page semantics while giving each captured API response its own depth budget."""
 
     projected = bounded_json(value, max_depth=10, max_items=60, max_string=1_000)
+    if isinstance(value,dict) and isinstance(projected,dict) and isinstance(value.get('inspectionExactTask'),dict):
+        # Keep the separately bounded checklist intact beyond the UI's 60 rows.
+        projected['inspectionExactTask']=_bounded_api_json(value['inspectionExactTask'],max_items=200,max_string=1200)
     if isinstance(value, dict) and isinstance(projected, dict) and 'inspectionTeamAssignments' in value:
         # The ordinary 60-item UI bound must not truncate a separately
         # verified all-page task receipt while leaving verified=True.
@@ -2498,6 +2505,14 @@ class ReadOnlyPortalPolicy:
             return "action_not_read_only"
         if not request.actions or len(request.actions) > self.max_actions:
             return "invalid_action_count"
+        if request.inspection_checklist and not request.inspection_task_number:
+            return 'inspection_checklist_requires_task'
+        if request.inspection_task_number is not None:
+            if not isinstance(request.inspection_task_number,str) or not re.fullmatch(r'IN-\d{4}-\d{1,20}',request.inspection_task_number):
+                return 'inspection_task_number_invalid'
+            if (request.start_path!='/inspection/tasks' or len(request.actions)!=1 or request.actions[0].get('type')!='observe'
+                    or request.completion_period or request.inspection_task_rollup_date or request.inspection_team_assignments or request.collections):
+                return 'inspection_exact_requires_tasks_observe'
         page_paths = {request.start_path}
         allowed_pages = tuple(path for path in (*permissions.pages, *permissions.subpages) if path.startswith("/"))
         if require_permission_context and (not permissions.roles or not allowed_pages):
@@ -11624,7 +11639,7 @@ _RECORD_DETAIL_REQUEST = re.compile(
     r"materials?|documents?|required\s+(?:documents?|items?)|attachments?|"
     r"next step|details?\b|street\s+address|checklist|violations?|evidence|handling\s+status|"
     r"处理人|谁处理|处理过|处理的|历史|处理记录|材料|资料|缺少哪些|需要哪些|必备|附件|下一步|详情|明细|"
-    r"المعالج|سجل|تاريخ|مستندات|مرفقات|المواد|مواد|الخطوات|خطوات|المتطلبات|متطلبات|الخطوة التالية|تفاصيل|عنوان|قائمة الفحص|قائمة التفتيش|المخالفات|الأدلة|حالة المعالجة",
+    r"المعالج|سجل|تاريخ|مستندات|الأوراق|أوراق|اوراق|أستعد|أجهز|تحضير|تجهيز|مرفقات|المواد|مواد|الخطوات|خطوات|المتطلبات|متطلبات|الخطوة التالية|تفاصيل|عنوان|قائمة الفحص|قائمة التفتيش|المخالفات|الأدلة|حالة المعالجة",
     re.I,
 )
 _HISTORY_OPERATION_PREFIX = "GET /api/ContentLibrary/GetHistoryList"
@@ -18941,7 +18956,7 @@ class AdminPortalReader:
                             scope=_permission_result_scope(permission_context),
                             summary='The task is visible, but its checklist/history fields were not returned by the authorized detail read.',
                             facts=(
-                                f'Task {inspection_identity} was identified on Inspection > Task Management.',
+                                f'The requested task number is {inspection_identity}; its exact detail was not verified.',
                                 'The current authorized response did not expose the requested checklist/history collection; no materials, penalties, contacts, or unrelated task were inferred.',
                                 'Open the task detail or the institution/inspection history panel in the portal to view fields that are not rendered in the queue.',
                             ),

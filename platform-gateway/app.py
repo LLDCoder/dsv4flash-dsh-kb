@@ -8,7 +8,7 @@ if "dsh_platform_timing" not in sys.modules:
     _timing_module=_timing_importlib.module_from_spec(_timing_spec)
     sys.modules["dsh_platform_timing"]=_timing_module
     _timing_spec.loader.exec_module(_timing_module)
-from dsh_platform_timing import install_gateway, span as timing_span, request as timed_request, backoff, CURRENT as TIMING_CURRENT, PARENT as TIMING_PARENT, timed_await, TimedLock, headers as timing_headers
+from dsh_platform_timing import install_gateway, span as timing_span, request as timed_request, backoff, CURRENT as TIMING_CURRENT, PARENT as TIMING_PARENT, timed_await, TimedLock, headers as timing_headers, route_template
 import asyncio
 import hashlib
 import json
@@ -374,6 +374,10 @@ class AdminPortalReadRequest(BaseModel):
     inspection_team_assignments: bool = Field(
         default=False, alias='inspectionTeamAssignments',
         description='Read every permitted Team Tasks page twice for a stable task-to-inspector list, retaining observed assignment IDs for current-user exclusion. Display names cannot prove ownership. Return a route only when an actual route field is present; never infer one from Area.')
+    inspection_task_number: str | None = Field(default=None, alias='inspectionTaskNumber',
+        pattern=r'^IN-\d{4}-\d{1,20}$', description='Exact inspection task number. Search only permitted native task queues, bind its returned reference, then verify the own task detail. No business mutation or guessed numeric ID.')
+    inspection_checklist: bool = Field(default=False, alias='inspectionChecklist',
+        description='With inspectionTaskNumber, read the verified task checklist template. This is a GET, never start-visit/checklist submission; checklist points do not prove a complete materials list or procedure.')
 
     @field_validator('browser_timezone')
     @classmethod
@@ -1723,7 +1727,7 @@ def _page_read_target(spec, portal_origin):
     if not policy_allowed and method == 'GET':
         policy_template = re.sub(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', r':\1', template)
         policy_allowed = (
-            origin == portal_origin
+            urlsplit(url).netloc == urlsplit(portal_origin).netloc
             and policy_template in READER_READ_ONLY_GET_PATHS
             and not _reader_is_mutation_route(template)
         )
@@ -1737,28 +1741,36 @@ async def _reader_get_document(page, url, *, method="GET", parameters=None, disp
     for attempt in range(3):
         try:
             transport = getattr(page, '_reader_request_context', None) or page.context.request
-            options = {'headers': {'Accept-Language': display_language}} if display_language else {}
-            response = (await transport.get(url, max_redirects=0, timeout=10000, **options) if method == "GET"
-                        else await transport.fetch(url, method=method, data=parameters,
-                                                   max_redirects=0, timeout=10000, **options))
+            response = None
             try:
+                with timing_span('http.request', owner='UMC', sourceOwner='UMC', method=method,
+                        route=re.sub(r'/(?:\d+|IN-\d{4}-\d+)(?=/|$)','/{id}',route_template(urlsplit(url).path)), attempt=attempt+1,
+                        measurement='client_transport_to_body_complete', upstreamInternalMs=None,
+                        missingReason='UMC_server_internal_spans_not_instrumented') as call:
+                    options = {'headers': {**timing_headers(), **({'Accept-Language':display_language} if display_language else {})}}
+                    response = (await transport.get(url, max_redirects=0, timeout=10000, **options) if method == "GET"
+                                else await transport.fetch(url, method=method, data=parameters,
+                                                           max_redirects=0, timeout=10000, **options))
+                    if call:call.row['statusCode']=response.status
+                    body = await response.body()
+                    if call:call.finish('completed' if 200 <= response.status < 300 else 'http_error')
                 if not 200 <= response.status < 300:
                     raise CollectionDependencyError('related_source_denied' if response.status in {401,403} else 'related_source_failed',
                         {'upstreamStatus':response.status, 'attempts':attempt+1})
-                body = await response.body()
-                if len(body) > READER_MAX_API_EVIDENCE_BYTES:
-                    raise ValueError('related_source_too_large')
-                payload = json.loads(body)
-                if not isinstance(payload,dict) or payload.get('isSuccess') is False or payload.get('success') is False:
-                    raise ValueError('related_source_failed')
+                with timing_span('page.read_decode'):
+                    if len(body) > READER_MAX_API_EVIDENCE_BYTES:
+                        raise ValueError('related_source_too_large')
+                    payload = json.loads(body)
+                    if not isinstance(payload,dict) or payload.get('isSuccess') is False or payload.get('success') is False:
+                        raise ValueError('related_source_failed')
                 return payload, response.status
             finally:
-                await response.dispose()
+                if response is not None:await response.dispose()
         except Exception as exc:
             retryable = (exc.diagnostic.get('upstreamStatus') in {408,429,500,502,503,504}
                 if isinstance(exc,CollectionDependencyError) else type(exc).__name__ in {'Error','TimeoutError'})
             if not retryable or attempt == 2: raise
-            await asyncio.sleep(0.2*(attempt+1))
+            await backoff(0.2*(attempt+1))
 
 
 async def _reader_page_reads(page, specs, portal_origin):
@@ -2305,6 +2317,14 @@ def _validate_reader_request(request: AdminPortalReadRequest) -> None:
         raise HTTPException(status_code=422, detail={"code": "invalid_reader_path"})
     if request.dashboard_context is not None and request.start_path != request.dashboard_context.route:
         raise HTTPException(status_code=422, detail='dashboard_context_route_mismatch')
+    if request.inspection_checklist and not request.inspection_task_number:
+        raise HTTPException(status_code=422, detail='inspection_checklist_requires_task')
+    if request.inspection_task_number and (
+        request.start_path != '/inspection/tasks' or len(request.actions)!=1 or request.actions[0].type!='observe'
+        or request.page_reads or request.related_reads or request.collections or request.completion_period
+        or request.native_record_lookup or request.inspection_task_rollup_date or request.inspection_team_assignments
+        or request.dashboard_context):
+        raise HTTPException(status_code=422, detail='inspection_exact_requires_tasks_observe')
     if request.inspection_task_rollup_date is not None and (
         urlsplit(request.start_path).path != '/inspection/tasks'
         or len(request.actions) != 1
@@ -4817,6 +4837,99 @@ async def _inspection_team_assignments(
             'sourceOperation': 'POST /api/inspection/team-management/tasks/query'}
 
 
+async def _inspection_exact_task(page, number, checklist, portal_origin, buttons):
+    """Bind one task in permitted native queues before any own-detail GET.
+
+    A default Queued page is not the manager's TeamTodo collection. Only
+    gateway-owned query parameters and operation catalog routes are used.
+    """
+    scopes=_inspection_rollup_scopes(buttons)
+    receipt={'verified':False,'taskNo':number,'searches':[],'checklistRequested':checklist}
+    if not scopes:
+        return {**receipt,'reason':'inspection_task_queue_not_permitted'}
+    limiter=asyncio.Semaphore(2)
+    async def search(scope):
+        async with limiter:
+            with timing_span('inspection.exact_queue_search',purpose=scope):
+                team=scope.startswith('Team')
+                params=({'view':'completed' if scope=='TeamCompleted' else 'todo','taskMode':'inspectionTasks',
+                         'keyword':number,'pageIndex':1,'pageSize':25} if team else
+                        {'scope':scope,'search':number,'pageIndex':1,'pageSize':25})
+                operation=('POST /api/inspection/team-management/tasks/query' if team else 'GET /api/admin/inspection/tasks')
+                try:
+                    url=_page_read_target(SimpleNamespace(operationKey=operation,parameters=params),portal_origin)
+                    payload,_=await _reader_get_document(page,url,method='POST' if team else 'GET',parameters=params if team else None)
+                    rows,total,index,size=(_inspection_team_rollup_page(payload) if team else _inspection_rollup_page(payload))
+                    if index!=1:raise ValueError('inspection_exact_page_mismatch')
+                    matches=[]
+                    for row in rows:
+                        if str(row.get('taskNo') or '').strip().casefold()!=number.casefold():continue
+                        reference=(row.get('sourceId') or row.get('taskId')) if team else row.get('id')
+                        if type(reference) not in {str,int} or not re.fullmatch(r'[A-Za-z0-9_-]{1,120}',str(reference)):
+                            raise ValueError('inspection_exact_reference_missing')
+                        matches.append(str(reference))
+                    return {'scope':scope,'verified':True,'complete':index*size>=total,
+                            'matches':matches,'total':total,'operationKey':operation}
+                except (ValueError,KeyError,TypeError,CollectionDependencyError) as exc:
+                    status=exc.diagnostic.get('upstreamStatus') if isinstance(exc,CollectionDependencyError) else None
+                    return {'scope':scope,'verified':False,'reason':'inspection_queue_access_denied' if status in {401,403} else 'inspection_queue_read_unconfirmed','upstreamStatus':status}
+    # gather cancels neither a parent nor siblings on an ordinary scoped gap;
+    # caller cancellation still propagates to and awaits every child.
+    jobs=[asyncio.create_task(search(s)) for s in scopes]
+    try:searches=await asyncio.gather(*jobs)
+    finally:
+        for job in jobs:
+            if not job.done():job.cancel()
+        await asyncio.gather(*jobs,return_exceptions=True)
+    receipt['searches']=searches
+    references={r for s in searches for r in s.get('matches',[])}
+    if len(references)!=1:
+        return {**receipt,'reason':'inspection_identity_ambiguous' if len(references)>1 else
+                'inspection_record_not_found_in_permitted_queues','searchComplete':all(s.get('complete') is True for s in searches)}
+    reference=next(iter(references))
+    try:
+        with timing_span('inspection.exact_detail'):
+            operation='GET /api/admin/inspection/tasks/{id}'
+            url=_page_read_target(SimpleNamespace(operationKey=operation,parameters={'id':reference}),portal_origin)
+            payload,_=await _reader_get_document(page,url)
+            task=payload.get('data',payload)
+            if not isinstance(task,dict) or str(task.get('taskNo') or '').casefold()!=number.casefold():
+                raise ValueError('inspection_detail_identity_mismatch')
+            actual=task.get('id')
+            if type(actual) not in {int,str} or not re.fullmatch(r'\d{1,12}',str(actual)):
+                raise ValueError('inspection_detail_id_missing')
+            # The native reference may itself be a supported task number. The
+            # numeric detail ID always comes from the verified server response.
+            if reference.isdigit() and str(actual)!=reference:
+                raise ValueError('inspection_detail_identity_mismatch')
+            receipt.update(verified=True,taskId=str(actual),bindingScopes=[s['scope'] for s in searches if reference in s.get('matches',[])],
+                           detail={k:task[k] for k in ['taskNo','statusName','inspectionMethodCode','inspectionMethodName'] if k in task})
+        if checklist:
+            with timing_span('inspection.checklist'):
+                operation='GET /api/admin/inspection/tasks/{id}/checklist-template'
+                url=_page_read_target(SimpleNamespace(operationKey=operation,parameters={'id':str(actual)}),portal_origin)
+                payload,_=await _reader_get_document(page,url)
+                template=payload.get('data',payload)
+                if not isinstance(template,dict) or str(template.get('taskId'))!=str(actual) or not isinstance(template.get('items'),list):
+                    raise ValueError('inspection_checklist_identity_mismatch')
+                items=template['items']
+                if len(items)>200:raise ValueError('inspection_checklist_budget_exceeded')
+                projected=[];codes=set()
+                for item in items:
+                    if not isinstance(item,dict):raise ValueError('inspection_checklist_row_invalid')
+                    if item.get('isVisibleInChecklist') is False or item.get('isActive') is False:continue
+                    code,name=item.get('checklistCode'),item.get('checklistName')
+                    if not isinstance(code,str) or not isinstance(name,str) or not code.strip() or not name.strip() or len(name)>1000 or code in codes:
+                        raise ValueError('inspection_checklist_row_invalid')
+                    codes.add(code);projected.append({'code':code,'name':name,'displayOrder':item.get('displayOrder')})
+                receipt['checklist']={'verified':True,'items':projected,'sourceItemCount':len(items),
+                    'materialsListProvided':False,'procedureProvided':False}
+    except (ValueError,KeyError,TypeError,CollectionDependencyError) as exc:
+        receipt['reason']=str(exc) if isinstance(exc,ValueError) else 'inspection_detail_dependency_unavailable'
+        if isinstance(exc,CollectionDependencyError):receipt['dependency']=exc.diagnostic
+    return receipt
+
+
 @app.post("/admin/portal/read")
 async def admin_portal_read(
     request: AdminPortalReadRequest,
@@ -4966,7 +5079,7 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                 await context.route("**/*", route_handler)
                 page = await timed_await('browser.page_create', context.new_page())
                 setattr(page, "_reader_health", reader_health)
-                if request.related_reads or request.page_reads or request.inspection_task_rollup_date:
+                if request.related_reads or request.page_reads or request.inspection_task_rollup_date or request.inspection_task_number:
                     # Use the same verified bearer principal in an isolated API
                     # transport. Browser cookies/navigation state must not affect
                     # supplementary GETs; operation policy is checked separately.
@@ -5011,6 +5124,12 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                         reader_health["failed"].pop(request_path, None)
                     _reader_api_discovery_state(reader_health)["requestKeys"].pop(request_id, None)
                 def request_failed(request_obj: Any) -> None:
+                    item=network_spans.get(id(request_obj))
+                    if item:
+                        failure=getattr(request_obj,'failure',None)
+                        item.row['networkFailure']=failure if isinstance(failure,str) and re.fullmatch(r'net::ERR_[A-Z_]+',failure) else 'unclassified_browser_transport_failure'
+                        if failure=='net::ERR_BLOCKED_BY_CLIENT':
+                            item.row['missingReason']='request_blocked_before_upstream_by_readonly_policy'
                     finish_network(request_obj, "failed")
                     request_id = id(request_obj)
                     request_path = reader_health["pending"].pop(request_id, "")
@@ -5086,6 +5205,14 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     observation['pageReadOutcomes'] = await timed_await('page.supplemental_read', _reader_page_reads(page, request.page_reads, portal_origin))
                     observation['apiDiscovery'] = _reader_api_discovery_snapshot(page)
                     result = (*result[:4], observation)
+                if request.inspection_task_number:
+                    stage='inspection_exact_record'
+                    progress['stage']=stage
+                    observation=result[4] or {}
+                    observation['inspectionExactTask']=await timed_await('inspection.exact_record',
+                        _inspection_exact_task(page,request.inspection_task_number,request.inspection_checklist,
+                                               portal_origin,permission_context['buttons']))
+                    result=(*result[:4],observation)
                 if request.related_reads:
                     stage = 'related_read'
                     progress['stage'] = stage

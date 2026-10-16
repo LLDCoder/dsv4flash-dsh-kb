@@ -953,6 +953,13 @@ def make_router(service: DSHService) -> APIRouter:
         """Queue a message; read the eventual answer and reader.result in conversation events.
 
         Admin Portal requests use GetUserInfo permissions and read-only page operations.
+        Exact inspection status/preparation reads search permitted native queues,
+        verify one returned task identity, then read its detail and optionally
+        checklist-template. A default Queued view cannot establish absence from
+        Team Tasks. Checklist points are not a formal materials list or complete
+        visit procedure: unavailable source fields remain explicit omissions.
+        Supplemental UMC HTTP attempts, queue searches, detail and checklist have
+        separate timing spans. No inspection execution or business write occurs.
         Reader results distinguish success, no_data, no_permission, load_failed and
         not_confirmed. A bounded row sample is not a collection total or proof of
         personal assignment. Knowledge answers require retrieved supporting text.

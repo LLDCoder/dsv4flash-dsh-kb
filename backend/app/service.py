@@ -433,8 +433,13 @@ def _sanitize_reader_internal_ids(text: str) -> str:
 
 
 def _reader_next_step_sentence(reader_result: dict[str, Any], language: str) -> str:
-    """Explain why a request could not be completed and what to do next."""
-
+    """Explain the actual missing source without asking for an already bound ID."""
+    if reader_result.get('workflowState')=='inspection_exact_detail' and any(
+            code in reader_result.get('missing',[]) for code in
+            ['formal_materials_list_not_provided_by_source','complete_visit_procedure_not_provided_by_source']):
+        return {'ar':'تمت قراءة قائمة التفتيش لهذه المهمة؛ قائمة المستندات الرسمية وإجراءات الزيارة الكاملة غير متاحة في هذه المعلومات.',
+                'en':'The task checklist has been read; a formal documents list and complete visit procedure are not provided here.',
+                'zh':'已读取该任务的检查清单；当前信息未提供正式材料目录和完整到访流程。'}.get(language,'The task checklist has been read; a formal documents list and complete visit procedure are not provided here.')
     status = str(reader_result.get("result") or "")
     page = str(reader_result.get("page") or "").strip()
     if (status == "not_confirmed"
@@ -726,7 +731,7 @@ def reader_evidence_only_response(
         if not _reader_view_note_present(raw_facts, selected_view, selected_view_label):
             view_limit = 499 if str(reader_result.get('workflowState') or '') in {
                 'team_member_cards_full', 'inspection_overdue_full', 'inspection_date_list_full',
-                'inspection_team_assignment_full', 'license_overdue_full', 'inspection_detail_full',
+                'inspection_team_assignment_full', 'license_overdue_full', 'inspection_detail_full', 'inspection_exact_detail',
             } else 19
             raw_facts = [*raw_facts[:view_limit], view_fact]
     workflow = str(reader_result.get('workflowState') or '')
@@ -845,7 +850,7 @@ def reader_evidence_only_response(
     fact_limit = 500 if workflow in {
         "inspection_overdue_full", "inspection_date_list_full", "inspection_team_assignment_full",
         "license_overdue_full",
-        "inspection_detail_full",
+        "inspection_detail_full", "inspection_exact_detail",
         "team_member_cards_full",
     } else 20
     facts = [fact for fact in (
@@ -3421,6 +3426,12 @@ class DSHService:
             "the portal they come from, and any scope limit. When the status is not success, explain what was checked and "
             "what the user can do next, so the reply never ends with a bare 'could not confirm'."
         )
+        if evidence.get('workflowState')=='inspection_exact_detail':
+            system += ('\nThis task identity and its own detail have already been verified. Never ask the user to supply '
+                'the same task number again. A returned checklist is not a formal documents list or a complete visit '
+                'procedure. Preserve that specific source gap; do not invent extra materials or preparation steps. '
+                'If checklist points are present, preserve every returned item code and meaning, including negation; '
+                'translate descriptions into the response language. Do not label a checklist as an exhaustive materials list.')
         if stream_capability:
             system += (
                 "\nThis is a capability explanation, not an identity lookup. Begin with a complete paragraph "

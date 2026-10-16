@@ -1,6 +1,6 @@
 # umc.admin-inspection.read
 
-Version: 1.0.0. Business operations are read-only.
+Version: 1.1.0. Business operations are read-only.
 
 Load only for this business topic after trusted GetUserInfo. This skill never grants permissions.
 Use the fixed operation IDs in manifest.json; never accept model URLs, headers, identity, SQL or methods.
@@ -11,4 +11,26 @@ Project only requested, allowed fields; no form JSON, credentials, leave explana
 A task count is not an application count; StatusCount is not keyword/date-filtered Page.Total.
 Unknown, missing, failed and denied are not zero. Do not assert payment amounts from these APIs.
 Return source operation, observation time, scope, coverage, omissions and trace references; one final answer only.
+
+## Exact task status and visit preparation (page capability)
+
+The Page Agent may use the gateway-owned `inspectionTaskNumber` workflow on
+`/inspection/tasks`. This is not a new arbitrary API adapter or authorization.
+The default Queued tab cannot prove absence from Team Tasks. Search only queues
+named by fresh TaskManagement button permissions: Queued, and TeamTodo /
+TeamCompleted (or personal Todo/Completed when Team Tasks is not permitted).
+Independent exact-keyword queue queries run at most two at a time. Require a
+unique exact taskNo match, retain its returned reference, then GET its own task
+detail. Validate the returned taskNo and numeric ID; never derive an ID.
+
+For materials/preparation questions in either language, GET checklist-template
+only after the detail identity is verified. Require matching taskId and preserve
+every visible active checklist point within the 200-item bound. No start-visit,
+check-in, checklist submission, download or other write is permitted.
+Checklist points are not a formal document list or a complete procedure. Report
+those source gaps explicitly, even when the checklist read succeeds. Missing or
+denied detail/checklist reads must never say the task was verified as visible.
+
+Trace queue searches, detail, checklist, each supplemental HTTP attempt, decode,
+retry and backoff. UMC service-internal processing remains uninstrumented.
 

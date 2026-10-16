@@ -1,15 +1,22 @@
 {
   "schemaVersion": 1,
   "skillId": "umc.admin-inspection.read",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "readOnly": true,
   "tools": [],
   "operations": [],
   "pageAgent": true,
   "knowledgeAgent": true,
   "missing": [
-    "no_verified_admin_staff_api"
+    "no_standalone_api_agent_adapter",
+    "formal_materials_list_and_complete_visit_procedure_not_provided"
   ],
+  "pageWorkflow": {
+    "capability": "admin.portal.read",
+    "arguments": ["inspectionTaskNumber", "inspectionChecklist"],
+    "steps": ["permission_scoped_exact_queue_search", "verified_own_task_detail", "optional_identity_bound_checklist"],
+    "readOnly": true
+  },
   "maxParallelRequests": 2,
   "maxPageSize": 20,
   "maxPages": 3

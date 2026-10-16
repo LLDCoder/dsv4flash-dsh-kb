@@ -174,3 +174,57 @@ These are isolated-stage results, not approval to replace the original entry.
 Keep the original 18081 deployment and the private rollback backup. Exported
 private Excel/evidence distinguishes diagnostic iterations, final samples,
 unavailable upstream internals and unexecuted write-operation tests.
+
+## Follow-up: exact inspection identity and preparation reads
+
+The default Inspection Queued tab does not cover manager Team Tasks. The new
+gateway-owned `inspectionTaskNumber` workflow searches only current button-
+permitted native queues, at most two independent searches concurrently. One
+exact taskNo must bind a unique returned reference before the detail GET. The
+detail taskNo / numeric ID and the checklist taskId must agree. Ambiguity,
+denial, missing fields or a failed read cannot become a visible-record claim.
+
+English/Arabic status and preparation variants use the same typed capability.
+History/violation/collection questions and unsupported semantic fields retain
+their separate readers. Checklist projection keeps every visible active point
+within a separate 200-item limit, including beyond the UI's sixty-item bound.
+The response explicitly distinguishes a task checklist from a formal materials
+directory and a complete visit procedure: those cannot be invented when the
+source does not provide them. No UMC deployment or business mutation is added.
+
+Supplemental Playwright APIRequestContext reads now emit each actual UMC HTTP
+attempt, correlated headers, status, body-completion latency, decode and retry
+backoff. Previously page network listeners did not observe that separate API
+transport. UMC internal processing remains uninstrumented. This change is
+deployed and tested only on the isolated 18281 entry; 18081 is retained.
+
+### Follow-up verification (isolated environment only)
+
+The final build was exercised through the real portal assistant with eight
+English/Arabic original/rephrased questions: four current-status variants
+returned the identity-bound status, and four preparation variants returned all
+35 active task checklist codes. Preparation remains partially confirmed: the
+source does not provide a separate formal documents list or complete visit
+procedure. A checklist is not a substitute for those missing business fields.
+
+Fourteen observed turns include six diagnostic/intermediate/repeated samples;
+all are retained privately, including one same-build Arabic preparation answer
+whose final prose was incomplete after validation/generation. A repeat completed,
+but this does not establish that the intermittent presentation issue is fixed.
+The unpublished rejected text was not retained, so its exact cause is unknown.
+
+Every final variant performed one portal read/browser startup. Its native
+business requests were three permission-scoped searches, one bound detail,
+and (for preparation only) one checklist read. These are not four/five full
+page reloads. Native HTTP round trips were measured separately from navigation,
+readiness, DOM extraction and final model output. The 3,159 collected stages and
+412 HTTP attempts have unique span identities, complete parents, nonnegative
+durations and zero dropped spans. Attempts include failed page requests, not
+just successful upstream execution. UMC internal processing is still unknown.
+
+The follow-up source suite has 2,046 passing tests, the same 129 failures and
+three collection errors as the previous implementation: 24 new passing checks
+and zero new failure identities. The new tests include bounded concurrency,
+permission denial, ambiguous/wrong identity rejection, complete checklist
+projection and ToolGateway argument forwarding. No customer service, UMC
+deployment, business mutation or original 18081 replacement was performed.

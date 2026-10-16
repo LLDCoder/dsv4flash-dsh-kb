@@ -78,6 +78,8 @@ class ToolGateway:
                 inspection_task_rollup_view=arguments.get('inspectionTaskRollupView'),
                 inspection_task_rollup_list=arguments.get('inspectionTaskRollupList') is True,
                 inspection_team_assignments=arguments.get('inspectionTeamAssignments') is True,
+                inspection_task_number=arguments.get('inspectionTaskNumber'),
+                inspection_checklist=arguments.get('inspectionChecklist') is True,
                 browser_timezone=arguments.get('browserTimezone'),
             )
             policy = ReadOnlyPortalPolicy(self.platform.portal_base_url)

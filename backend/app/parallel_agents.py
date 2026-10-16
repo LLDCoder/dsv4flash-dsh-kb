@@ -24,6 +24,7 @@ from .readonly_api import ReadonlyAPI, SKILLS, ROOT
 from .skills import response_language_for
 from .timing import span, agent_scope, utc, CURRENT
 from .reader_knowledge_selection import split_passages, rank_items
+from .inspection_read import exact_inspection_request, inspection_public
 
 
 class KBExcerpt(BaseModel):
@@ -342,6 +343,9 @@ class ParallelReader:
                     break
             task=semantic.task if semantic else None
             skills,module=selected_skills(task,context,permission)
+            inspection_request=exact_inspection_request(question,task)
+            if inspection_request and 'umc.admin-inspection.read' not in skills:
+                skills=[*skills,'umc.admin-inspection.read']
             loaded=[]
             for sid in skills:
                 manifest=next(p for p in ROOT.glob('*/manifest.json') if json.loads(p.read_text())['skillId']==sid)
@@ -362,6 +366,21 @@ class ParallelReader:
         page_reader.prepared_semantic_task=semantic
 
         async def page_job():
+            if inspection_request:
+                number,kind=inspection_request
+                with span('reader.inspection_exact'):
+                    observation=await page_gateway.invoke(principal,'admin.portal.read',
+                        {'startPath':'/inspection/tasks','actions':[{'type':'observe'}],
+                         'inspectionTaskNumber':number,'inspectionChecklist':kind=='checklist'},
+                        allowed_tools=['admin.portal.read'])
+                source=observation.get('result') or {}
+                receipt=(source.get('observation') or {}).get('inspectionExactTask')
+                public=inspection_public(receipt,number,kind)
+                if source.get('status')=='no_permission' or observation.get('code')=='permission_denied':
+                    public.update(result='no_permission',facts=[],missing=['inspection_page_not_authorized'])
+                return AgentResult('page',public['result'],facts=public['facts'],missing=public['missing'],
+                    evidence={'public':public,'reader':{'stage':'inspection_exact_read','inspectionExactTask':receipt,
+                        'result':public},'portalCalls':page_gateway.page_calls,'mode':'verified_inspection_exact'})
             # For the exact, fully mapped status capability, one independent
             # authorized page observation is enough. Do not run the legacy
             # five-read semantic drill after the API has covered every field.
