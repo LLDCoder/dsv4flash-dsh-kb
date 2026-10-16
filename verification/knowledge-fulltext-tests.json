@@ -1,0 +1,17 @@
+{
+  "previous": {
+    "failure": 129,
+    "error": 3,
+    "passed": 2061,
+    "skipped": 0
+  },
+  "current": {
+    "failure": 129,
+    "error": 3,
+    "passed": 2079,
+    "skipped": 0
+  },
+  "newRegressions": [],
+  "resolved": [],
+  "newPassingTests": 18
+}

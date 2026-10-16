@@ -21,7 +21,7 @@ def exact_inspection_request(question, task=None):
                  'documents','document','paperwork','papers','preparation','prepare','steps','step','procedure','checklist','items','item','visit','before','the','for','to','have','ready','guidance','pre','requirements'}
         if any(set(re.findall('[a-z]+',x.casefold()))-allowed for x in task.requestedAttributes+task.requestedMeasures):return None
         if task.groupBy or task.requestedOrdering:return None
-        filter_words={'inspection','visit','identifier','id','task','taskno','taskid','number','record','recordidentity','no','exact','equals','is','for','the'}
+        filter_words={'inspection','visit','identifier','id','task','case','taskno','taskid','number','record','recordidentity','no','exact','equals','is','for','the'}
         for f in task.filters:
             rest=re.sub(re.escape(ids[0]),'',f,flags=re.I)
             if re.search(r'\d',rest) or set(re.findall('[a-z]+',rest.casefold()))-filter_words:return None
