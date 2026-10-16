@@ -49,18 +49,20 @@ not extend to business mutations or changes to server access-control settings.
 - When changing DSH routing, Nginx static asset handling, or `frontend/index.html`, update the CSS and JS cache-version query values together. CSS/JS paths must return their asset or `404`, never the SPA HTML fallback, otherwise browsers can cache an HTML response as a stylesheet and make the audit page appear duplicated or unstyled.
 - The DSH entry HTML and its CSS/JS must use `Cache-Control: no-store` in the local proxy environment. After changing routing or static assets, perform one browser hard refresh before visual QA so an old cached `index.html` cannot continue referencing an obsolete asset pair.
 
-## Admin Portal Reader Architecture
+## Admin Portal Reader Architecture (authorized 2026-10-16)
 
-- The current Admin architecture has exactly two Skills: `general_knowledge` and `admin_portal_reader`.
-- Do not use the legacy module-by-module Skill delivery approach for this work. In particular, do not create or expand Dashboard, Licensing, or other business-domain Skills or business-specific page Tools.
-- The generic `admin_portal_reader` may use only `knowledge.search` and the read-only `admin.portal.read` Tool. `GetUserInfo` is the runtime source of truth for the current user's role, department, page permissions, subpage permissions, button permissions, and data scope.
-- `admin.portal.read` must enforce read-only behavior in code. It may navigate, query, filter, paginate, switch tabs, and expand details. It must reject approval, submission, modification, deletion, assignment, sending, export, upload, download, and every other business mutation.
-- Dashboard and Licensing are the first knowledge and regression coverage areas, not separate runtime Skills. Their user manuals live only in the knowledge base; do not add a duplicate manual to the repository.
-- Keep one generic `module-contract.yaml` and one corresponding `regression.yaml` for the portal-reader capability. These files describe engineering behavior and tests, not page manuals.
-- The reader Subagent must obtain `GetUserInfo` before page work, retrieve relevant knowledge itself, visit only pages needed for the question, and return a bounded structured result that distinguishes `success`, `no_data`, `no_permission`, `load_failed`, and `not_confirmed`.
-- Do not pass full HTML, full pages, complete tables, irrelevant fields, credentials, cookies, or tokens back to the main Agent. Technical evidence belongs in the existing audit trail; user-facing answers are concise natural language.
-- Do not retain module-level Skills or their runtime routing as a compatibility layer. Recovery comes from Git history and the read-only remote database snapshot, not from keeping two architectures active in the local runtime.
-- Admin Portal authentication is currently observed to synchronize across browser task spaces. Do not perform concurrent multi-account login scans unless session isolation has been independently proven. Serialize account switching and re-check `GetUserInfo` after every login.
+- The user authorized versioned business skills and three concurrent result agents on server 77.
+- `parallel_v1` loads app-owned manifests in `backend/app/business_skills`, not personal Codex skills or DB-seeded business skills.
+- Identity, role, department and page/button permissions come only from fresh GetUserInfo. Check token/user/tenant boundaries; routing never grants data access.
+- API Agent: only fixed `readonly_api.OPERATIONS`, configured Admin origin, strict parameters and safe response projections. Default-deny certificates/content library and unverified module member populations.
+- Page Agent: existing read-only navigation, filtering, pagination and detail policy. Keep global browser READER_LOCK; serialize account switches and recheck identity. Page work may request field knowledge through the turn-scoped KB broker.
+- Knowledge Agent: authorized retrieval with manifest integrity checks, exact-request single flight scoped to one principal and turn. Knowledge cannot authorize a page or API or establish a live value.
+- Start three tasks together after shared authorization and semantic task resolution. Independent HTTP concurrency <=2 per capability; dependent list -> taskId -> detail remains sequential.
+- One join, explicit failure/deadline/gap states, one grounded final answer. Never infer empty=zero or task count=application count. Preserve conflicting values as not_confirmed.
+- Agents never share an AsyncSession. The conversation writer and a bounded audit flush persist results and timing receipts. Propagate cancellation and await every child cleanup.
+- No business mutation, assignment, approval, sending, export, upload or download. Do not return full HTML, tables, forms, tokens, contact or leave details.
+- Logs use UTC labels and monotonic durations, span parents and exact HTTP attempt owners. UMC server internals remain null unless independently measured. Never sum inclusive parents and overlapping children.
+- Existing legacy/generic modes are available for isolated regression only. Run one selected pipeline per deployment; rollback uses the separately preserved server version, not simultaneous execution of old and new full pipelines.
 
 ## Scope Boundary
 

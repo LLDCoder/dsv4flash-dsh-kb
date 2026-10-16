@@ -32,3 +32,9 @@ umc-customer-portal-features-ai-chatbot-upgrade/.env.*
 # This is a separately managed customer frontend workspace, not part of the
 # DSH knowledge-base repository.
 /umc-customer-portal-features-ai-chatbot-upgrade/
+
+# Server-only isolated test configuration and private business evidence.
+/private-stage/
+/stage-receipt.json
+/evidence/
+/runtime-results*.json

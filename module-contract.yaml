@@ -1,0 +1,46 @@
+version: admin-parallel-v1.20261016
+portal: admin
+pipeline: parallel_v1
+business_mode: read_only
+identity_authority: trusted_GetUserInfo
+skill_manifests: backend/app/business_skills/*/manifest.json
+agents:
+  api:
+    capability: umc.readonly.invoke
+    implementation: readonly_api.ReadonlyAPI
+    method_and_origin: fixed_by_code_not_model
+    max_parallel_http: 2
+    output: safe_fields_with_scope_coverage_and_missing_reasons
+  page:
+    capability: admin.portal.read
+    global_browser_lock: retained
+    identity_revalidation: every_gateway_read
+    incomplete_api_coverage: existing_permission_checked_reader
+  knowledge:
+    capability: knowledge.search
+    max_parallel_retrievals: 2
+    cache_scope: one_turn_and_principal
+    evidence: verified_manifests_and_literal_original_prose_quotes
+    live_value_authority: false
+orchestration:
+  dispatch: simultaneous_after_identity_and_TaskSpec
+  join: all_terminal_or_common_deadline
+  agent_database_sessions: forbidden
+  answer_writers: 1
+  cancellation: cancel_and_await_all_children
+  final_answer_budget: remaining_absolute_turn_budget
+readonly:
+  allow: navigate_filter_paginate_tabs_details_fixed_query_endpoints
+  deny: approve_reject_submit_modify_delete_assign_send_pay_export_upload_download
+  certificates: disabled_pending_global_scope_contract
+  content_library: disabled_pending_authorization_and_source_contract
+  unknown_finance_inspection_apis: unavailable_not_invented
+telemetry:
+  clock: monotonic_durations_with_UTC_labels
+  identity: requestId_traceId_spanId_parentSpanId_agent_owner_componentRevision
+  http: each_attempt_method_route_status_start_end_duration
+  payloads_and_SQL_and_credentials: never_timing_fields
+  parent_durations: inclusive
+  parallel_durations: overlapping_do_not_sum
+  UMC_server_internals: null_until_independently_instrumented
+  unverified_KB_or_model_internal_breakdowns: null_not_estimated

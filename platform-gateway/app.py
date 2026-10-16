@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path as _TimingPath
+sys.path.insert(0, str(_TimingPath(__file__).resolve().parent))
+from timing import install_gateway, span as timing_span, request as timed_request, backoff, CURRENT as TIMING_CURRENT, PARENT as TIMING_PARENT, timed_await, TimedLock, headers as timing_headers
 import asyncio
 import hashlib
 import json
@@ -446,7 +450,7 @@ async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = 
         async with httpx.AsyncClient(timeout=min(TIMEOUT_SECONDS, 8) if attempts > 1 else TIMEOUT_SECONDS) as client:
             for attempt in range(attempts):
                 try:
-                    response = await client.request(method, f"{UMC_BASE_URL}{path}", json=json, params=params,
+                    response = await timed_request(client, method, f"{UMC_BASE_URL}{path}", owner="UMC", attempt=attempt+1, json=json, params=params,
                         headers={"Authorization": forwarded, "Content-Type": "application/json"})
                     response.raise_for_status()
                     break
@@ -456,7 +460,7 @@ async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = 
                     if not retryable or attempt + 1 == attempts:
                         raise
                     logger.info('umc_identity_retry request_id=%s attempt=%s error_type=%s', trace_id, attempt + 1, type(exc).__name__)
-                    await asyncio.sleep(0.2 * (attempt + 1))
+                    await backoff(0.2 * (attempt + 1))
         logger.info(
             "umc_response portal=%s request_id=%s token_ref=%s method=%s path=%s status=%s",
             UMC_PORTAL,
@@ -488,6 +492,9 @@ async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = 
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(status_code=503, detail={"code": "umc_upstream_unavailable",
             "attempts": attempt + 1, "errorType": type(exc).__name__}) from exc
+
+
+install_gateway(app, "DSH.platform-gateway")
 
 
 @app.get("/healthz")
@@ -2065,7 +2072,7 @@ async def _reader_collect(page, specs, portal_origin):
                             raise
                         raise CollectionDependencyError('collection_dependency_unavailable',
                             {'errorType': type(exc).__name__, 'attempts': attempt + 1}) from exc
-                    await asyncio.sleep(0.2 * (attempt + 1))
+                    await backoff(0.2 * (attempt + 1))
         try:
             result.append(await _collect_projected_rows(spec, captured, fetch))
         except Exception as exc:
@@ -2952,7 +2959,7 @@ async def _restore_dashboard_context(page, context, portal_origin, principal_use
             if await control.get_attribute('aria-expanded') == 'true':
                 await control.press('Escape', timeout=READER_ACTION_TIMEOUT_MS)
         await _select_only_filter(page, control, label)
-        await _settle_page(page)
+        await timed_await('page.readiness_wait', _settle_page(page))
     after = await read_markers()
     if not same(after, wanted):
         raise RuntimeError('dashboard_applied_context_unconfirmed')
@@ -3673,7 +3680,7 @@ async def _observe_semantics(page: Page, limit: int) -> dict[str, Any]:
         after = await page.evaluate(stamp_script, None)
         if before == after:
             return observation
-        await _settle_page(page)
+        await timed_await('page.readiness_wait', _settle_page(page))
     return {"readHealth": {"healthy": False, "pending": ["table_updated_during_observation"]},
             "sectionSummaries": [], "regionSummaries": [], "rowSummaries": []}
 
@@ -4280,12 +4287,12 @@ async def _execute_reader_actions(
     # waits can exhaust the total budget on valid pages without heading markup.
     # Every subsequent navigation/action and observation still checks readiness.
     if not initially_settled:
-        await _settle_page(page)
+        await timed_await('page.readiness_wait', _settle_page(page))
     for action_index, action in enumerate(request.actions, start=1):
         action_type = action.type.strip().casefold().replace("-", "_")
         _reader_set_api_discovery_trigger(page, f"action:{action_index}:{action_type}")
         if action_type == "observe":
-            observation = await _observe_semantics(page, request.max_output_items)
+            observation = await timed_await('page.dom_extract', _observe_semantics(page, request.max_output_items))
             if observation.get("readHealth", {}).get("healthy") is not True:
                 has_empty = bool(
                     observation.get("rowSummaries") == []
@@ -4296,28 +4303,28 @@ async def _execute_reader_actions(
         elif action_type == "navigate":
             path = action.path or action.url
             if path:
-                response = await page.goto(urljoin(portal_origin + "/", path.lstrip("/")), wait_until="domcontentloaded")
+                response = await timed_await('page.navigation', page.goto(urljoin(portal_origin + "/", path.lstrip("/")), wait_until="domcontentloaded"))
                 if response and response.status in {401, 403}:
                     raise PermissionError("portal_login_required" if response.status == 401 else "page_not_permitted")
                 if response and (response.status == 404 or response.status >= 500):
                     raise HTTPException(status_code=response.status, detail="page_response_failed")
-                await _settle_page(page)
+                await timed_await('page.readiness_wait', _settle_page(page))
                 await record_page()
                 pending_filters.clear()
                 applied_filters.clear()
         elif action_type == "filter":
-            await _set_filter_value(page, action)
+            await timed_await('page.set_filter', _set_filter_value(page, action))
             pending_filters[action.selector or action.field or action.name or action.label or "filter"] = [
                 str(value) for value in (action.values or [action.value]) if value is not None
             ]
             applied_filters.clear()
-            await _settle_page(page)
+            await timed_await('page.readiness_wait', _settle_page(page))
         elif action_type == "query":
-            label, values, query_confirmed_empty = await _query_page_values(
+            label, values, query_confirmed_empty = await timed_await('page.query', _query_page_values(
                 page,
                 action,
                 request.max_output_items - len(facts),
-            )
+            ))
             if values or query_confirmed_empty:
                 if label not in observed_fields:
                     observed_fields.append(label)
@@ -4327,13 +4334,13 @@ async def _execute_reader_actions(
         else:
             before_url = page.url
             overlays_before = await _visible_overlay_count(page)
-            await _safe_click(page, action)
+            await timed_await('page.click', _safe_click(page, action))
             if action_type == "apply_filter":
                 applied_filters = [value for values in pending_filters.values() for value in values]
             elif action_type in {"reset_filter", "switch_tab"} or page.url != before_url:
                 pending_filters.clear()
                 applied_filters.clear()
-            await _settle_page(page)
+            await timed_await('page.readiness_wait', _settle_page(page))
             await record_page()
             overlays_after = await _visible_overlay_count(page)
             if action_type == "show_filter" and overlays_after <= overlays_before:
@@ -4371,7 +4378,7 @@ async def _execute_reader_actions(
     ):
         # Capture the bounded semantic state after a verified read-only
         # interaction so callers can validate the resulting tab, page, or view.
-        observation = await _observe_semantics(page, request.max_output_items)
+        observation = await timed_await('page.dom_extract', _observe_semantics(page, request.max_output_items))
     if observation is None:
         observation = {}
     await _reader_wait_for_api_response_evidence(page)
@@ -4906,22 +4913,22 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
         if async_playwright is None:
             raise RuntimeError("reader_browser_unavailable")
         async with async_playwright() as playwright:
-            browser: Browser = await playwright.chromium.launch(
+            browser: Browser = await timed_await('browser.launch', playwright.chromium.launch(
                 headless=True,
                 args=["--disable-dev-shm-usage", "--no-sandbox"],
-            )
+            ))
             auxiliary_context = None
             try:
-                context = await browser.new_context(
+                context = await timed_await('browser.context_create', browser.new_context(
                     accept_downloads=False,
                     viewport={"width": 1920, "height": 1080},
-                    extra_http_headers={"Authorization": forwarded},
+                    extra_http_headers={"Authorization": forwarded, **timing_headers()},
                     service_workers="block",
                     **_dashboard_browser_context_options(request.dashboard_context),
                     **({'timezone_id': request.browser_timezone}
                        if request.dashboard_context is None and request.browser_timezone else {}),
-                )
-                await context.add_init_script(_auth_init_script(raw_token))
+                ))
+                await timed_await('browser.auth_inject', context.add_init_script(_auth_init_script(raw_token)))
                 reader_health.update({
                     "blocked": [], "failed": {}, "pending": {}, "responses": {},
                     "responseCaptureTasks": set(),
@@ -4942,7 +4949,7 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     await _guard_reader_request(route, portal_origin, declared_paths, reader_health=reader_health)
 
                 await context.route("**/*", route_handler)
-                page = await context.new_page()
+                page = await timed_await('browser.page_create', context.new_page())
                 setattr(page, "_reader_health", reader_health)
                 if request.related_reads or request.page_reads or request.inspection_task_rollup_date:
                     # Use the same verified bearer principal in an isolated API
@@ -4950,15 +4957,46 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     # supplementary GETs; operation policy is checked separately.
                     auxiliary_context = await playwright.request.new_context(
                         extra_http_headers={"Authorization": forwarded,
-                            "Accept": "application/json", "Accept-Language": "en"})
+                            "Accept": "application/json", "Accept-Language": "en", **timing_headers()})
                     setattr(page, '_reader_request_context', auxiliary_context)
+                network_spans = {}
+                network_trace = TIMING_CURRENT.get()
+                network_parent = TIMING_PARENT.get()
+                def request_started(request_obj):
+                    parts = urlsplit(request_obj.url)
+                    if network_trace and parts.path.startswith('/api/'):
+                        owner = 'UMC' if parts.netloc == urlsplit(portal_origin).netloc else 'unknown.upstream'
+                        from timing import route_template
+                        trigger = _reader_api_discovery_state(reader_health).get('trigger','initial')
+                        action_match = re.fullmatch(r'action:(\d+):([a-z_]+)',str(trigger))
+                        network_spans[id(request_obj)] = network_trace.begin('browser.http.request',
+                            owner=owner, parent_id=network_parent, method=request_obj.method,
+                            route=route_template(parts.path), sourceOwner=owner,
+                            actionIndex=int(action_match[1]) if action_match else 0,
+                            actionType=action_match[2] if action_match else 'initial_navigation',
+                            measurement='browser_request_to_response_body_finished',
+                            upstreamInternalMs=None, missingReason='UMC_server_internal_spans_not_instrumented')
+                def finish_network(request_obj, status):
+                    item = network_spans.pop(id(request_obj), None)
+                    if item:
+                        try:
+                            timing = request_obj.timing
+                            item.row['browserTimingMs'] = {k:v for k,v in timing.items() if k in {
+                                'domainLookupStart','domainLookupEnd','connectStart','secureConnectionStart',
+                                'connectEnd','requestStart','responseStart','responseEnd'} and isinstance(v,(int,float))}
+                        except Exception:
+                            item.row['browserTimingMissing'] = 'playwright_timing_unavailable'
+                        item.finish(status)
+                page.on('request', request_started)
                 def request_finished(request_obj: Any) -> None:
+                    finish_network(request_obj, "completed")
                     request_id = id(request_obj)
                     request_path = reader_health["pending"].pop(request_id, "")
                     if request_path and int(reader_health["responses"].pop(request_id, 200)) < 400:
                         reader_health["failed"].pop(request_path, None)
                     _reader_api_discovery_state(reader_health)["requestKeys"].pop(request_id, None)
                 def request_failed(request_obj: Any) -> None:
+                    finish_network(request_obj, "failed")
                     request_id = id(request_obj)
                     request_path = reader_health["pending"].pop(request_id, "")
                     _reader_api_discovery_state(reader_health)["requestKeys"].pop(request_id, None)
@@ -4969,6 +5007,8 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     request_id = id(request_obj) if request_obj is not None else None
                     request_path = urlsplit(getattr(response, "url", "")).path
                     if request_id is not None:
+                        if request_id in network_spans:
+                            network_spans[request_id].row["statusCode"] = int(getattr(response,"status",0))
                         reader_health["responses"][request_id] = int(getattr(response, "status", 200))
                         operation_key = _reader_api_discovery_response_seen(
                             reader_health, request_obj, int(getattr(response, "status", 200)),
@@ -4991,36 +5031,36 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                 start_url = urljoin(portal_origin + "/", request.start_path.lstrip("/"))
                 stage = 'navigation'
                 progress['stage'] = stage
-                response = await page.goto(start_url, wait_until="domcontentloaded")
+                response = await timed_await('page.navigation', page.goto(start_url, wait_until="domcontentloaded"))
                 if response and response.status in {401, 403}:
                     raise PermissionError("portal_login_required" if response.status == 401 else "page_not_permitted")
                 if response and (response.status == 404 or response.status >= 500):
                     raise HTTPException(status_code=response.status, detail="page_response_failed")
                 stage = 'settle'
                 progress['stage'] = stage
-                await _settle_page(page)
+                await timed_await('page.readiness_wait', _settle_page(page))
                 if urlsplit(page.url).path.casefold().rstrip("/").endswith("/login"):
                     raise PermissionError("portal_login_required")
                 stage = 'dashboard_context'
                 progress['stage'] = stage
-                dashboard_receipt = await _restore_dashboard_context(
-                    page, request.dashboard_context, portal_origin, permission_context['userId'])
+                dashboard_receipt = await timed_await('page.context_verify', _restore_dashboard_context(
+                    page, request.dashboard_context, portal_origin, permission_context['userId']))
                 stage = 'actions'
                 progress['stage'] = stage
-                result = await _execute_reader_actions(
+                result = await timed_await('page.action_batch', _execute_reader_actions(
                     page,
                     request,
                     portal_origin,
                     (*permission_context["pages"], *permission_context["subpages"]),
                     initially_settled=True,
-                )
+                ))
                 if dashboard_receipt is not None:
                     # Every answer observation must retain the verified constraints.
                     # Conflicting planner actions never reuse the pre-action receipt.
                     stage = 'dashboard_context_final'
                     progress['stage'] = stage
-                    await _restore_dashboard_context(page, request.dashboard_context, portal_origin,
-                                                     permission_context['userId'], allow_restore=False)
+                    await timed_await('page.context_verify', _restore_dashboard_context(page, request.dashboard_context, portal_origin,
+                                                     permission_context['userId'], allow_restore=False))
                     observation = result[4] or {}
                     observation['dashboardContextReceipt'] = dashboard_receipt
                     result = (*result[:4], observation)
@@ -5028,21 +5068,21 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     stage = 'supplemental_page_read'
                     progress['stage'] = stage
                     observation = result[4] or {}
-                    observation['pageReadOutcomes'] = await _reader_page_reads(page, request.page_reads, portal_origin)
+                    observation['pageReadOutcomes'] = await timed_await('page.supplemental_read', _reader_page_reads(page, request.page_reads, portal_origin))
                     observation['apiDiscovery'] = _reader_api_discovery_snapshot(page)
                     result = (*result[:4], observation)
                 if request.related_reads:
                     stage = 'related_read'
                     progress['stage'] = stage
                     observation = result[4] or {}
-                    observation['relatedReadOutcomes'] = await _reader_related(page, request.related_reads, portal_origin)
+                    observation['relatedReadOutcomes'] = await timed_await('page.related_read', _reader_related(page, request.related_reads, portal_origin))
                     observation['apiDiscovery'] = _reader_api_discovery_snapshot(page)
                     result = (*result[:4], observation)
                 if request.collections:
                     stage = 'collection'
                     progress['stage'] = stage
                     observation = result[4] or {}
-                    observation["collections"] = await _reader_collect(page, request.collections, portal_origin)
+                    observation["collections"] = await timed_await('page.collection', _reader_collect(page, request.collections, portal_origin))
                     result = (*result[:4], observation)
                 if request.completion_period:
                     stage = 'completion'
@@ -5092,16 +5132,18 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     result = (*result[:4], observation)
                 return result
             finally:
+                for item in locals().get('network_spans', {}).values():
+                    item.finish('cancelled', missingReason='browser_closed_before_request_finished')
                 if auxiliary_context is not None:
-                    await auxiliary_context.dispose()
-                await browser.close()
+                    await timed_await('browser.aux_close', auxiliary_context.dispose())
+                await timed_await('browser.close', browser.close())
 
     try:
         # Authentication is currently shared between browser task spaces in
         # the Admin Portal. Serialize execution until isolation is proven.
         stage = 'queue'
         progress['stage'] = stage
-        async with READER_LOCK:
+        async with TimedLock(READER_LOCK, name="browser.lock_queue"):
             facts, pages, observed_fields, confirmed_empty, observation = await asyncio.wait_for(execute(), timeout=request.timeout_seconds)
     except PermissionError as exc:
         return _sanitize_reader_output({"status": "no_permission", "summary": "The requested Admin Portal page is not permitted.",

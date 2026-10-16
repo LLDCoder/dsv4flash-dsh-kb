@@ -15,7 +15,7 @@ from .reader_limits import (
 class Settings(BaseSettings):
     app_name: str = "DSH External Service"
     environment: str = "development"
-    reader_pipeline: Literal["legacy", "generic_v3"] = "legacy"
+    reader_pipeline: Literal["legacy", "generic_v3", "parallel_v1"] = "legacy"
     reader_artifacts_dir: str = "/reader-artifacts"
     reader_business_timezone: str = "UTC"
     reader_routing_mode: Literal["catalog", "single"] = "catalog"

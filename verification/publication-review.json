@@ -1,0 +1,236 @@
+{
+  "scope": "new source and engineering contracts only; no live configs, private evidence, database or image archives",
+  "files": [
+    {
+      "path": ".gitignore",
+      "sha256": "83f70de2c575010cdb8de2ee0b6403d990a0d0acb1ab93d37e93d19304fc60e5",
+      "bytes": 1178
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "3feaaa0c52eee06b7056b5278c9e93a0a977beab9ceffa85f66e18043eabbf05",
+      "bytes": 8606
+    },
+    {
+      "path": "README.md",
+      "sha256": "d52572bf09933d0461eceb3c1dd2afeeb3ec9207c63b8f18690fedfc62018a1f",
+      "bytes": 12938
+    },
+    {
+      "path": "backend/app/answer_stream.py",
+      "sha256": "0a738e31ee34d56b950e6cc087886a03bcb6a78c29a71034b166d1a0ce99fb4f",
+      "bytes": 8585
+    },
+    {
+      "path": "backend/app/api.py",
+      "sha256": "718e05abdc29ffd6591db542c95716e22a7d5c1a3efb443c2f62b360cab53ad4",
+      "bytes": 99188
+    },
+    {
+      "path": "backend/app/business_skills/certificates/SKILL.md",
+      "sha256": "93d9a1cdc652e90905f2206568537703e6d1d50601cebe62b94582bd356e9197",
+      "bytes": 2394
+    },
+    {
+      "path": "backend/app/business_skills/certificates/manifest.json",
+      "sha256": "5ce4693e3bca2de38194262b925ad66e89f9e94f2383736a791ae4df07b2c7b1",
+      "bytes": 3021
+    },
+    {
+      "path": "backend/app/business_skills/content-library/SKILL.md",
+      "sha256": "c33080aebe48bb6f120a98e30d95ec9b44dd50acd5ab8c0465efe5647a4b087d",
+      "bytes": 2930
+    },
+    {
+      "path": "backend/app/business_skills/content-library/manifest.json",
+      "sha256": "36d75c33c1b4b2dde7904e691e38adb4b85687bb7c7dd853fc1ac858c893699e",
+      "bytes": 4658
+    },
+    {
+      "path": "backend/app/business_skills/content-work/SKILL.md",
+      "sha256": "682ee21cf29b5746352b74769b2bb904ce58e3653a74abbaf89c402ebb2928b9",
+      "bytes": 3023
+    },
+    {
+      "path": "backend/app/business_skills/content-work/manifest.json",
+      "sha256": "21f0b45189276d361a707c3f65177fa60cb225b304911cc83244aeb0f53cbc9b",
+      "bytes": 4450
+    },
+    {
+      "path": "backend/app/business_skills/finance/SKILL.md",
+      "sha256": "8acda6d90f0753dc4939fe98ba038f0262a10bed527aec9d832e61a92c5fa5f9",
+      "bytes": 1011
+    },
+    {
+      "path": "backend/app/business_skills/finance/manifest.json",
+      "sha256": "dcb920fa1b942c9f3ab40ce549c798b9f71ec314c685808caffef215a1510329",
+      "bytes": 308
+    },
+    {
+      "path": "backend/app/business_skills/inspection/SKILL.md",
+      "sha256": "bd6273f96dcba056333d46eb0f8d970129f2fba367d58ea5e21b34e786c913d5",
+      "bytes": 1014
+    },
+    {
+      "path": "backend/app/business_skills/inspection/manifest.json",
+      "sha256": "e56fa2d963019fa4442660f46108e82ceeccfb5f51facfe21d8645231a9b544e",
+      "bytes": 311
+    },
+    {
+      "path": "backend/app/business_skills/licensing-work/SKILL.md",
+      "sha256": "6df1959dc4d880c4ab806df461c6df09d07dc42d5474f3c0f726428317e3c9f1",
+      "bytes": 3045
+    },
+    {
+      "path": "backend/app/business_skills/licensing-work/manifest.json",
+      "sha256": "35f1e042cc652c7c83b2c98eef0b0e4b32fd694cf89d08db93f72924ca2fcbb5",
+      "bytes": 4467
+    },
+    {
+      "path": "backend/app/business_skills/team-workload/SKILL.md",
+      "sha256": "8f29846cf4101442ecab5c3e1c83187402c67966696a4f6f1123c2f807a3eb4e",
+      "bytes": 4056
+    },
+    {
+      "path": "backend/app/business_skills/team-workload/manifest.json",
+      "sha256": "814a59b6eb3b63ece60b539a707d6177e1fbeef429f6c65867dfc496cd812369",
+      "bytes": 7363
+    },
+    {
+      "path": "backend/app/config.py",
+      "sha256": "700bc17d7963cd85409d0b41c3fd444d064acdaae816fd8ed64e08d84cdb94c2",
+      "bytes": 9407
+    },
+    {
+      "path": "backend/app/db.py",
+      "sha256": "65540c94de8ea6e1953c02b92e519d5ce584eb9830dada990c7f0eb1d570868a",
+      "bytes": 17789
+    },
+    {
+      "path": "backend/app/generic_reader.py",
+      "sha256": "37f49bbae2b57e3ce6ed766425cbb33ad0beb60b3ee90afd3d28b9e041902788",
+      "bytes": 315903
+    },
+    {
+      "path": "backend/app/knowledge.py",
+      "sha256": "48fcfb0a27bc02ad426adc426c28117b728a988d4afe128656bec9ef972bea89",
+      "bytes": 6472
+    },
+    {
+      "path": "backend/app/llm.py",
+      "sha256": "9f1179ca8b89f0dce6c3b74c7a3ad339387d5f0a707de5a56cf6150047c9bbc8",
+      "bytes": 104795
+    },
+    {
+      "path": "backend/app/main.py",
+      "sha256": "76e03b1a999ef46f15d1053bfb2b298ed8446ba39a856084fdc62427e2db4950",
+      "bytes": 3489
+    },
+    {
+      "path": "backend/app/parallel_agents.py",
+      "sha256": "10bd57a784d3f0dfb80abb4d2e9392f157355c7d0f1b8ae0c35301af4cfcf695",
+      "bytes": 31331
+    },
+    {
+      "path": "backend/app/platform.py",
+      "sha256": "7bfeed2f46c06884d666825155ac44fc051de86365c60d60b1e48f83a3d1d37c",
+      "bytes": 3195
+    },
+    {
+      "path": "backend/app/portal_reader.py",
+      "sha256": "fa90305b6ea43da894e60d3aff3507665bf38b7dd39a8dfbfd076d409364122b",
+      "bytes": 1285017
+    },
+    {
+      "path": "backend/app/reader_knowledge.py",
+      "sha256": "ba706abe383b7a3a2991ee3177308fdd6eb3f0af122f5083ac332f68d15abe47",
+      "bytes": 16530
+    },
+    {
+      "path": "backend/app/readonly_api.py",
+      "sha256": "388dd213ba762d8fff1d772534b3ed2315a2caf1037116812a25dc8bf2c94201",
+      "bytes": 9899
+    },
+    {
+      "path": "backend/app/service.py",
+      "sha256": "5d934c696d5f068f2194e30f8b9c4ade1868bbb8bb57dbf2675f589215d654f3",
+      "bytes": 241858
+    },
+    {
+      "path": "backend/app/timing.py",
+      "sha256": "3e16046d2f6aadcea55b9147b1f1b0558ff64afb7152bfc808131cf36a316ea8",
+      "bytes": 11400
+    },
+    {
+      "path": "backend/app/timing_report.py",
+      "sha256": "867b6f538803f69662d89904bfedb23bb6a21d8c15947ca32063b1a4f4d0b83b",
+      "bytes": 2357
+    },
+    {
+      "path": "backend/tests/test_parallel_agents_v1.py",
+      "sha256": "b42b227f096cfa914422d326b024050ecfa10b1df595cdf998940292f148278b",
+      "bytes": 18683
+    },
+    {
+      "path": "doc/parallel-v1/DELIVERY.md",
+      "sha256": "70c36fcd841eaacb2b094788e3246d967b49ca497da1dbb5bab18f0ace1f2579",
+      "bytes": 9240
+    },
+    {
+      "path": "knowledge-gateway/Dockerfile",
+      "sha256": "75cd8fc59315147dd2190361df3df08779cd12ae7f562713b0fcac1874868c2e",
+      "bytes": 309
+    },
+    {
+      "path": "knowledge-gateway/app.py",
+      "sha256": "39e1e60fdd3723107e8e2a85a819872fcb6dee15b7c91fbaa92115f311d88f52",
+      "bytes": 4913
+    },
+    {
+      "path": "knowledge-gateway/timing.py",
+      "sha256": "3e16046d2f6aadcea55b9147b1f1b0558ff64afb7152bfc808131cf36a316ea8",
+      "bytes": 11400
+    },
+    {
+      "path": "module-contract.yaml",
+      "sha256": "41cc680f19418a4e9ad237e3ec9be66f79d84478067f09ee0e1430bff6280969",
+      "bytes": 1898
+    },
+    {
+      "path": "platform-gateway/Dockerfile",
+      "sha256": "7394dd041646cf14eaec4aa3c129aae14af2454c1ea7cbaff2a6c9e81a378c81",
+      "bytes": 327
+    },
+    {
+      "path": "platform-gateway/app.py",
+      "sha256": "e35c29a49760383b2f572278006b731966375a9f49ec72f13f6eca5d17ba4131",
+      "bytes": 287784
+    },
+    {
+      "path": "platform-gateway/timing.py",
+      "sha256": "3e16046d2f6aadcea55b9147b1f1b0558ff64afb7152bfc808131cf36a316ea8",
+      "bytes": 11400
+    },
+    {
+      "path": "regression.yaml",
+      "sha256": "e7bd00a53d6bdc645eaf21ca1526c2e2b3fb0cf3abba41c951663eed0663ee8e",
+      "bytes": 1238
+    },
+    {
+      "path": "scripts/stage_server77.py",
+      "sha256": "450827d3522ca9e1737c05bd166f50f6b3ac4d526ad324746ec063f1893a7b5c",
+      "bytes": 6059
+    },
+    {
+      "path": "verification/baseline-comparison.json",
+      "sha256": "932db7297e9fd666b7b1d19b5bbb3fb77075da1f66215ec45cfc80a6ece128e9",
+      "bytes": 394
+    },
+    {
+      "path": "verification/openapi.json",
+      "sha256": "510fdc2d9d22afe934c8de199d25820bbc328b962dc381d2b1575052e763fba7",
+      "bytes": 64284
+    }
+  ],
+  "credentialPatternFindings": []
+}

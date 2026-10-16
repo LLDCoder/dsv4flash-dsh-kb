@@ -1,0 +1,19 @@
+{
+  "baseline": {
+    "passed": 1968,
+    "failure": 129,
+    "error": 3
+  },
+  "implementation": {
+    "passed": 2016,
+    "failure": 129,
+    "error": 3
+  },
+  "newRegressions": [],
+  "newPassingTests": 48,
+  "baselineCollectionReasons": [
+    "removed _page_context_source helper",
+    "removed _guard_subject_record_substitution helper",
+    "removed MAX_CHAT_MESSAGE_CHARS constant"
+  ]
+}

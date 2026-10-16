@@ -40,6 +40,7 @@ from .reader_intent import (
 from .reader_limits import PORTAL_EXECUTION_TIMEOUT_SECONDS, READER_TOTAL_TIMEOUT_SECONDS, bounded_reader_total_timeout, requested_record_limit
 from .reader_text import normalized_text
 from .skills import response_language_for
+from .timing import span, timed_await
 from .reader_semantic_task import (
     TASK_INSTRUCTION, ReaderTaskSpec, bound_subject, current_task, dispatch_text, profile_request, semantic_context, semantic_task, validate_task,
 )
@@ -205,7 +206,7 @@ async def _await_reader_stage(awaitable: Any, *, stage: str, cap_seconds: float,
     remaining = max(0.001, deadline - asyncio.get_running_loop().time())
     timeout_seconds = min(max(0.001, cap_seconds), remaining)
     try:
-        return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+        return await timed_await("reader." + stage, asyncio.wait_for(awaitable, timeout=timeout_seconds))
     except asyncio.TimeoutError as exc:
         raise ReaderStageTimeout(stage, timeout_seconds, total_budget=remaining <= cap_seconds) from exc
 
@@ -14905,7 +14906,7 @@ class AdminPortalReader:
         *,
         conversation_context: dict[str, Any] | None = None,
     ) -> ReaderOutcome:
-        token = current_task.set(None)
+        token = current_task.set(getattr(self, "prepared_semantic_task", None))
         try:
             outcome = await self._run_scoped(principal, question, conversation_context=conversation_context)
             task = semantic_task(question)
@@ -17086,7 +17087,7 @@ class AdminPortalReader:
         # TaskSpec, not a second domain classifier. Fresh GetUserInfo and the
         # read-only guard above remain the sole authorization boundary.
         structured = getattr(self.planner, 'generic_reader_json', None)
-        if callable(structured):
+        if callable(structured) and semantic_task(question) is None:
             semantic_started = time.perf_counter()
             semantic_failure = 'semantic_task_unavailable'
             candidate = None

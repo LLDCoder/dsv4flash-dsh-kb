@@ -12,6 +12,7 @@ import inspect
 import json
 import re
 import time
+from .timing import CURRENT, span
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 
 
@@ -51,6 +52,10 @@ class AnswerStream:
         })
         if isinstance(receipt, dict) and isinstance(receipt.get("seq"), int):
             self.last_seq = max(self.last_seq, receipt["seq"])
+        trace = CURRENT.get()
+        if trace and self.block_count == 0:
+            with span("answer.first_verified_block") as receipt_span:
+                receipt_span.row["sinceMessageReceivedMs"] = round((time.monotonic()-trace.received_monotonic)*1000,3)
         self.content += text
         self.block_receipts.append({
             "chunkIndex": self.block_count, "mode": mode,

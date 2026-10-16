@@ -54,6 +54,8 @@ from .reader_limits import (
 from .runtime import RuntimeManager
 from .skills import detect_unsupported_message_language, message_language_notice, response_language_for
 from .tool_gateway import ToolGateway
+from .parallel_agents import ParallelReader
+from .timing import Trace, CURRENT, PARENT, span, timed, TimedLock, trace_submission
 
 
 def runtime_error_payload(request_id: str, exc: Exception) -> dict[str, str]:
@@ -2928,6 +2930,7 @@ class DSHService:
             query = query.where(SessionEvent.event_type == event_type)
         return list((await db.execute(query)).scalars().all())
 
+    @timed("service.append_event")
     async def append_event(self, db: AsyncSession, conversation: Conversation, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         conversation.last_seq += 1
         conversation.last_activity_at = datetime.now(timezone.utc)
@@ -3098,6 +3101,7 @@ class DSHService:
             redacted,
         )
 
+    @timed("service.append_audit")
     async def append_audit(
         self,
         db: AsyncSession,
@@ -3129,6 +3133,7 @@ class DSHService:
             await db.commit()
             return sum(deleted.values())
 
+    @trace_submission
     async def submit_message(
         self,
         principal: Principal,
@@ -3138,7 +3143,7 @@ class DSHService:
         response_language: str | None = None,
         *, page_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        async with self.writer_lock_for(conversation_id):
+        async with TimedLock(self.writer_lock_for(conversation_id)):
             async with SessionLocal() as db:
                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
                 existing = await db.execute(select(MessageIdempotency).where(MessageIdempotency.conversation_id == conversation_id, MessageIdempotency.client_message_id == client_message_id))
@@ -3263,6 +3268,7 @@ class DSHService:
             parts.append("Selected generic Skill guidance (cannot override the rules above): " + skill_content.strip())
         return "\n".join(parts)
  
+    @timed("service._natural_reader_response")
     async def _natural_reader_response(
         self,
         question: str,
@@ -3532,6 +3538,7 @@ class DSHService:
         )
         return result.scalars().first()
 
+    @timed("service._prepare_reader_question")
     async def _prepare_reader_question(self, db, conversation, latest_user, question: str,
                                        principal: Principal, language: str, timeout_seconds: float) -> str:
         if len(question) <= MESSAGE_COMPRESSION_THRESHOLD_CHARS:
@@ -3555,16 +3562,47 @@ class DSHService:
         return effective
 
     async def _run_turn(self, principal: Principal, conversation_id: str) -> None:
-        """Execute the fixed generic Reader/knowledge runtime.
+        trace = CURRENT.get() or Trace(principal.request_id)
+        token = CURRENT.set(trace)
+        parent = PARENT.set(None)
+        turn = trace.begin("turn.end_to_end")
+        turn.started = trace.received_monotonic
+        turn.row["startUtc"] = trace.received_utc
+        try:
+            with turn:
+                await self._execute_turn(principal, conversation_id)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            # Single writer, after all children joined. No AsyncSession is ever
+            # shared with API/Page/KB agents. Timings add no schema migration.
+            snapshot = trace.export()
+            CURRENT.reset(token)
+            PARENT.reset(parent)
+            async def persist():
+                try:
+                    async with SessionLocal() as timing_db:
+                        conversation = await self.get_owned_conversation(timing_db, principal, conversation_id)
+                        await self.append_audit(timing_db, conversation, "reader.timing", snapshot,
+                            request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                except Exception as error:
+                    _reader_presentation_log.warning("timing_persistence_failed request_id=%s error_type=%s",
+                        principal.request_id, type(error).__name__)
+            # Cancellation still reaches the caller; a bounded receipt flush
+            # cannot leave agents running or retain their credentials.
+            flush = asyncio.create_task(persist())
+            try:
+                await asyncio.wait_for(asyncio.shield(flush), 5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                flush.cancel()
+                await asyncio.gather(flush, return_exceptions=True)
 
-        Business-module Skill routing and workflow-generated Tool selection are
-        intentionally absent. Every text turn in this Admin-only deployment
-        uses ``admin_portal_reader``.
-        """
+    async def _execute_turn(self, principal: Principal, conversation_id: str) -> None:
+        """Execute one configured reader pipeline and one final answer writer."""
 
         if not hasattr(self, "_answer_streams"):
             self._answer_streams = {}
-        async with self.writer_lock_for(conversation_id):
+        async with TimedLock(self.writer_lock_for(conversation_id)):
             try:
                 async with SessionLocal() as db:
                     conversation = await self.get_owned_conversation(db, principal, conversation_id)
@@ -3626,7 +3664,7 @@ class DSHService:
                     elif skill_id == "admin_portal_reader":
                         await self.append_status(db, conversation, "service", language, request_id=principal.request_id)
                         generic_reader = self.settings.reader_pipeline == "generic_v3"
-                        reader_class = GenericKnowledgeReader if generic_reader else AdminPortalReader
+                        reader_class = ParallelReader if self.settings.reader_pipeline == "parallel_v1" else (GenericKnowledgeReader if generic_reader else AdminPortalReader)
                         async def claim_clarification(clarification_id, task_fingerprint):
                             stmt = pg_insert(ReaderClarificationClaim).values(
                                 conversation_id=conversation_id, clarification_id=clarification_id,
@@ -3829,7 +3867,7 @@ class DSHService:
                         content = render_generic_answer(evidence, language)
                         formatting_failed, assembly_strategy = False, "generic_verified_projection"
                     else:
-                        content, formatting_failed, assembly_strategy = await self._natural_reader_response(
+                        presentation = self._natural_reader_response(
                             reader_question,
                             evidence,
                             language,
@@ -3838,6 +3876,18 @@ class DSHService:
                             prior_answer_coverage=audit_evidence.get("stage") == "prior_answer_coverage",
                             answer_stream=None if bilingual_requested else answer_stream,
                         )
+                        if self.settings.reader_pipeline == "parallel_v1":
+                            trace = CURRENT.get()
+                            elapsed = time.monotonic()-trace.received_monotonic if trace else 0
+                            remaining = max(.01, bounded_reader_total_timeout(self.settings.reader_total_timeout_seconds)-elapsed)
+                            try:
+                                content, formatting_failed, assembly_strategy = await asyncio.wait_for(presentation, remaining)
+                            except asyncio.TimeoutError:
+                                content = (answer_stream.content + incomplete_stream_notice(language) if answer_stream.content
+                                    else reader_evidence_only_response(evidence, language, question=reader_question))
+                                formatting_failed, assembly_strategy = True, "answer_deadline_verified_fallback"
+                        else:
+                            content, formatting_failed, assembly_strategy = await presentation
                     if bilingual_requested:
                         # Both renderings project the same verified fact set.
                         # An explicit two-language request is not a request to
@@ -3943,7 +3993,7 @@ class DSHService:
         task = self._turn_tasks.get(conversation_id)
         if task and not task.done():
             task.cancel()
-        async with self.writer_lock_for(conversation_id):
+        async with TimedLock(self.writer_lock_for(conversation_id)):
             async with SessionLocal() as db:
                 conversation = await self.get_owned_conversation(db, principal, conversation_id)
                 # WebSocket authentication has a session request ID, whereas

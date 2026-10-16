@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "skillId": "umc.admin-content-work.read",
+  "version": "1.0.0",
+  "readOnly": true,
+  "tools": [
+    "umc.readonly.invoke"
+  ],
+  "operations": [
+    {
+      "id": "CON01",
+      "method": "POST",
+      "path": "/api/Content/MyTodoPage",
+      "enabled": true,
+      "module": "content",
+      "scope": "personal",
+      "leaderRequired": false,
+      "missingReason": null,
+      "order": "先身份权限→按待办/已处理选择此表；申请号Contains检索后必须精确匹配。CON01/02位置未知才二选一补查，或最多两路并行；字段够用即停止。",
+      "replaces": "/content/ContentApplications：可替代首次页面observe、切待办/已处理标签、输入搜索、读取列表；仅限接口字段覆盖的事实。",
+      "constraints": "列表含申请号、状态、TaskId、SLA、AI状态等；只取问题所需字段。StatusCount在关键词/日期过滤前计算；过滤后总数用Page.Total（以实际响应契约为准）。不提供权威应付/实付金额。",
+      "auditEvidence": "E033, E024, E025, E248, E245"
+    },
+    {
+      "id": "CON02",
+      "method": "POST",
+      "path": "/api/Content/MyComplatedPage",
+      "enabled": true,
+      "module": "content",
+      "scope": "personal",
+      "leaderRequired": false,
+      "missingReason": null,
+      "order": "先身份权限→按待办/已处理选择此表；申请号Contains检索后必须精确匹配。CON01/02位置未知才二选一补查，或最多两路并行；字段够用即停止。",
+      "replaces": "/content/ContentApplications：可替代首次页面observe、切待办/已处理标签、输入搜索、读取列表；仅限接口字段覆盖的事实。",
+      "constraints": "列表含申请号、状态、TaskId、SLA、AI状态等；只取问题所需字段。StatusCount在关键词/日期过滤前计算；过滤后总数用Page.Total（以实际响应契约为准）。不提供权威应付/实付金额。",
+      "auditEvidence": "E034, E024, E025, E248, E245"
+    },
+    {
+      "id": "CON03",
+      "method": "GET",
+      "path": "/api/Content/MyReviewDetail/{taskId}",
+      "enabled": true,
+      "module": "content",
+      "scope": "personal",
+      "leaderRequired": false,
+      "missingReason": null,
+      "order": "先CON01或02精确定位取得字符串taskId→此详情；同范围可信taskId已知可省列表定位。不能与其前置列表同时发；列表足够时不调用。",
+      "replaces": "/content/ContentApplications：可替代打开本人任务详情及读取表单/时间线；不能用于团队他人的详情或财务字段。",
+      "constraints": "任务详情、FormData、ApplicationTimeline及相关书目；按需投影。没有独立、已确认的员工付款金额契约。",
+      "auditEvidence": "E035, E028, E025, E252"
+    },
+    {
+      "id": "CON04",
+      "method": "GET",
+      "path": "/api/Content/IsLeader",
+      "enabled": true,
+      "module": "content",
+      "scope": "team",
+      "leaderRequired": false,
+      "missingReason": null,
+      "order": "团队查询前的能力判断；若可信权限上下文已经明确负责人则可不重复。仅查紧急数时UrgenCount内部已做此判断，无须为了它额外先发一次。",
+      "replaces": "可替代为确认负责人身份而先打开团队页面；不能取消可信身份和模块授权校验。",
+      "constraints": "bool负责人标志；同一请求/身份/部门可复用；不能作为全局证照许可。",
+      "auditEvidence": "E036, E030, E025"
+    },
+    {
+      "id": "CON05",
+      "method": "GET",
+      "path": "/api/Content/UrgenCount",
+      "enabled": true,
+      "module": "content",
+      "scope": "team",
+      "leaderRequired": true,
+      "missingReason": null,
+      "order": "权限明确后按需单调；内部IsLeader→团队任务→紧急条件计数。与独立问题可并行；不要为同一紧急数同时取全量团队列表。",
+      "replaces": "可替代为读取许可/内容紧急数量卡片而加载页面；不可据一页列表反推全量紧急数。",
+      "constraints": "当前负责人所见、对应模块的紧急待办任务数；计数按任务，不能保证等于去重后的申请数。",
+      "auditEvidence": "E037, E032, E025"
+    }
+  ],
+  "pageAgent": true,
+  "knowledgeAgent": true,
+  "missing": [],
+  "maxParallelRequests": 2,
+  "maxPageSize": 20,
+  "maxPages": 3
+}

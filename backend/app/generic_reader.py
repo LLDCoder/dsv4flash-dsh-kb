@@ -46,6 +46,7 @@ from .reader_answers import (KnowledgeAnswerReview, validate_answer_review, ANSW
 from .reader_expansion import (QueryExpansion, PROMPT as EXPANSION_PROMPT, validate_expansion, search_variants,
                                InputNormalization, NORMALIZATION_PROMPT, validate_normalization)
 from .reader_quality import QualityLedger
+from .timing import span
 from .reader_locale import text as localized_text
 
 PIPELINE = "generic_v3"
@@ -1260,7 +1261,8 @@ class GenericKnowledgeReader:
                 if hasattr(awaitable, "close"):
                     awaitable.close()
                 raise asyncio.TimeoutError()
-            result = await asyncio.wait_for(awaitable, min(cap, remaining))
+            with span("reader." + str(stage)):
+                result = await asyncio.wait_for(awaitable, min(cap, remaining))
             self.trace.append({"stage": stage, "status": "completed", "checkType": "execution",
                                "durationMs": round((time.monotonic()-started)*1000)})
             return result
@@ -2714,8 +2716,6 @@ class GenericKnowledgeReader:
                 "never translate overdue/urgency/priority into an invented status filter. "
                 "requestedGrain is the counted ENTITY, never the groupBy field. For 'How many open specimens by color?' "
                 "requestedGrain is specimen or unknown, groupBy=['color']. Current/now does not request a calendar period. "
-                "Naming the owners of counted tasks is an owner attribute, not a request for dated employee performance cards. "
-                "Set owner grouping only when a per-owner breakdown is requested; its counted grain remains task. "
                 "Do not invent ambiguity when knowledge can resolve ordinary business wording. "
                 "readOnly=false for mutations. searchQuery: 5-20 English BUSINESS keywords, preserving identifiers "
                 "and conditional/hypothetical rule wording even when it is not a live-data filter. Exclude guessed "

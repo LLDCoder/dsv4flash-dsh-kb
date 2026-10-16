@@ -67,7 +67,9 @@ async def lifespan(app: FastAPI):
                 await background_task
 
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.1.0", lifespan=lifespan)
+from .timing import install_gateway
+install_gateway(app, "DSH.backend")
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.add_middleware(ConsoleAuthMiddleware, get_password=lambda: service.console_password)
 app.include_router(make_router(service))

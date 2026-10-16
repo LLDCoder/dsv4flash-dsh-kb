@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "skillId": "umc.admin-certificates.read",
+  "version": "1.0.0",
+  "readOnly": true,
+  "tools": [],
+  "operations": [
+    {
+      "id": "LIC06",
+      "method": "POST",
+      "path": "/api/LicenseManagement/list",
+      "enabled": false,
+      "module": "team",
+      "scope": "team",
+      "leaderRequired": false,
+      "missingReason": "global_scope_permission_contract_missing",
+      "order": "先确认全局数据权限；权限来源未闭环前不调用。列表精确定位证书Id→必要时详情；只问统计可直查统计；同时确需列表和统计可并行。",
+      "replaces": "/licensing/licenses证照列表/详情/统计：仅在全局证照权限确认、字段映射完成后替代；目前保留受阻。",
+      "constraints": "只保留证照号、状态、有效期及问题所需公开字段；列表/详情可含CertificatePassword；密码、身份证、电话、邮箱等默认剔除。全局统计不能称为本人或本部门统计。",
+      "auditEvidence": "E050, E051, E052, E246"
+    },
+    {
+      "id": "LIC07",
+      "method": "GET",
+      "path": "/api/LicenseManagement/{id}",
+      "enabled": false,
+      "module": "team",
+      "scope": "team",
+      "leaderRequired": false,
+      "missingReason": "global_scope_permission_contract_missing",
+      "order": "先确认全局数据权限；权限来源未闭环前不调用。列表精确定位证书Id→必要时详情；只问统计可直查统计；同时确需列表和统计可并行。",
+      "replaces": "/licensing/licenses证照列表/详情/统计：仅在全局证照权限确认、字段映射完成后替代；目前保留受阻。",
+      "constraints": "只保留证照号、状态、有效期及问题所需公开字段；列表/详情可含CertificatePassword；密码、身份证、电话、邮箱等默认剔除。全局统计不能称为本人或本部门统计。",
+      "auditEvidence": "E053, E054, E052, E247"
+    },
+    {
+      "id": "LIC08",
+      "method": "GET",
+      "path": "/api/LicenseManagement/statistics",
+      "enabled": false,
+      "module": "team",
+      "scope": "team",
+      "leaderRequired": false,
+      "missingReason": "global_scope_permission_contract_missing",
+      "order": "先确认全局数据权限；权限来源未闭环前不调用。列表精确定位证书Id→必要时详情；只问统计可直查统计；同时确需列表和统计可并行。",
+      "replaces": "/licensing/licenses证照列表/详情/统计：仅在全局证照权限确认、字段映射完成后替代；目前保留受阻。",
+      "constraints": "只保留证照号、状态、有效期及问题所需公开字段；列表/详情可含CertificatePassword；密码、身份证、电话、邮箱等默认剔除。全局统计不能称为本人或本部门统计。",
+      "auditEvidence": "E055, E056, E052"
+    }
+  ],
+  "pageAgent": true,
+  "knowledgeAgent": true,
+  "missing": [],
+  "maxParallelRequests": 2,
+  "maxPageSize": 20,
+  "maxPages": 3
+}

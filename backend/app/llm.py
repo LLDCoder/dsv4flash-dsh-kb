@@ -1,8 +1,10 @@
+import time
 import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import httpx
+from .timing import request as timed_request, span, timed
 
 from .config import Settings
 from .message_compression import (MESSAGE_COMPRESSION_TARGET_CHARS, MESSAGE_COMPRESSION_THRESHOLD_CHARS,
@@ -189,6 +191,7 @@ class LLMAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
+    @timed("model.compress_user_message", owner="model")
     async def compress_user_message(self, question: str) -> dict:
         """A single, non-tool model request, independent of planner repair retries."""
         if not self.settings.llm_base_url or not self.settings.llm_api_key:
@@ -212,8 +215,8 @@ class LLMAdapter:
             "that limit. Do not cut off text to fit. No explanations outside the JSON."
         )
         async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
-            response = await client.post(
-                self.settings.llm_base_url.rstrip("/") + "/chat/completions",
+            response = await timed_request(client, "POST",
+                self.settings.llm_base_url.rstrip("/") + "/chat/completions", owner="model",
                 headers={"Authorization": "Bearer " + self.settings.llm_api_key},
                 json={"model": self.settings.llm_model, "temperature": 0, "thinking": {"type": "disabled"},
                       "max_tokens": 6500, "response_format": {"type": "json_object"},
@@ -224,6 +227,12 @@ class LLMAdapter:
             )
         response.raise_for_status()
         body = response.json()
+        from .timing import CURRENT
+        usage_trace = CURRENT.get()
+        if usage_trace and isinstance(body, dict) and isinstance(body.get('usage'),dict):
+            with span('model.usage_receipt', owner='model') as usage_span:
+                usage_span.row['usageUnits'] = {k:v for k,v in body['usage'].items()
+                    if k in {'prompt_tokens','completion_tokens','total_tokens'} and type(v) is int}
         content = _planner_content(body)
         if any(choice.get("finish_reason") == "length" for choice in body.get("choices", []) if isinstance(choice, dict)):
             raise MessageCompressionError("summary_output_limit")
@@ -233,6 +242,7 @@ class LLMAdapter:
                               if key in {"prompt_tokens", "completion_tokens", "total_tokens"} and type(value) is int}
         return candidate
 
+    @timed("model.generic_reader_json", owner="model")
     async def generic_reader_json(self, *, instruction: str, schema: dict, data: dict, correction: str = "") -> dict:
         """V3 stage protocol; independent of legacy page/answer repair prompts."""
         if not self.settings.llm_base_url or not self.settings.llm_api_key:
@@ -254,8 +264,8 @@ class LLMAdapter:
         if correction:
             system += "\nThe previous candidate failed validation. Correct this stage only: " + correction
         async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
-            response = await client.post(
-                self.settings.llm_base_url.rstrip("/") + "/chat/completions",
+            response = await timed_request(client, "POST",
+                self.settings.llm_base_url.rstrip("/") + "/chat/completions", owner="model",
                 headers={"Authorization": "Bearer " + self.settings.llm_api_key},
                 json={"model": self.settings.llm_model, "temperature": 0, "thinking": {"type": "disabled"},
                       "max_tokens": 6500, "response_format": {"type": "json_object"},
@@ -264,6 +274,12 @@ class LLMAdapter:
             )
         response.raise_for_status()
         body = response.json()
+        from .timing import CURRENT
+        usage_trace = CURRENT.get()
+        if usage_trace and isinstance(body, dict) and isinstance(body.get('usage'),dict):
+            with span('model.usage_receipt', owner='model') as usage_span:
+                usage_span.row['usageUnits'] = {k:v for k,v in body['usage'].items()
+                    if k in {'prompt_tokens','completion_tokens','total_tokens'} and type(v) is int}
         content = ""
         try:
             content = _planner_content(body)
@@ -283,6 +299,7 @@ class LLMAdapter:
                     diagnostics[target] = usage[source]
             return {"invalidStageResponse": True, 'responseDiagnostics': diagnostics}
 
+    @timed("model.resolve_admin_portal_intent", owner="model")
     async def resolve_admin_portal_intent(
         self,
         question: str,
@@ -542,7 +559,7 @@ class LLMAdapter:
                             ),
                         },
                     ]
-                response = await client.post(url, headers=headers, json={**payload, "messages": request_messages})
+                response = await timed_request(client, "POST", url, owner="model", headers=headers, json={**payload, "messages": request_messages})
                 response.raise_for_status()
                 try:
                     candidate = _bind_answer_shape_quote(
@@ -560,6 +577,7 @@ class LLMAdapter:
                         raise
         raise ValueError("Reader intent resolver did not return a JSON object")
 
+    @timed("model.plan_admin_portal_read", owner="model")
     async def plan_admin_portal_read(
         self,
         question: str,
@@ -1093,7 +1111,7 @@ class LLMAdapter:
                             "content": "Retry the same planning request. Return one JSON object only.",
                         },
                     ]
-                response = await client.post(url, headers=headers, json={**payload, "messages": request_messages})
+                response = await timed_request(client, "POST", url, owner="model", headers=headers, json={**payload, "messages": request_messages})
                 response.raise_for_status()
                 try:
                     candidate = _parse_planner_object(_planner_content(response.json()))
@@ -1298,26 +1316,29 @@ class LLMAdapter:
                 yield token
             return
 
-        url = self.settings.llm_base_url.rstrip("/") + "/chat/completions"
-        headers = {"Authorization": f"Bearer {self.settings.llm_api_key}", "Content-Type": "application/json"}
-        payload = {"model": self.settings.llm_model, "messages": messages, "stream": True}
-        async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line.removeprefix("data:").strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                        if reasoning and on_reasoning:
-                            await on_reasoning(str(reasoning))
-                        text = delta.get("content")
-                        if text:
-                            yield text
-                    except json.JSONDecodeError:
-                        continue
+        with span("model.answer_stream", owner="model", model=self.settings.llm_model) as model_span:
+            url = self.settings.llm_base_url.rstrip("/") + "/chat/completions"
+            headers = {"Authorization": f"Bearer {self.settings.llm_api_key}", "Content-Type": "application/json"}
+            payload = {"model": self.settings.llm_model, "messages": messages, "stream": True}
+            async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
+                async with client.stream("POST", url, headers=headers, json=payload) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line.removeprefix("data:").strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                            if reasoning and on_reasoning:
+                                await on_reasoning(str(reasoning))
+                            text = delta.get("content")
+                            if text:
+                                if model_span and "firstContentMs" not in model_span.row:
+                                    model_span.row["firstContentMs"] = round((time.monotonic()-model_span.started)*1000, 3)
+                                yield text
+                        except json.JSONDecodeError:
+                            continue

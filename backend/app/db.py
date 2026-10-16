@@ -280,7 +280,10 @@ async def purge_expired_audit_data(
 
 settings = get_settings()
 engine = create_async_engine(settings.database_url, pool_pre_ping=True, pool_size=10, max_overflow=20)
-SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+from .timing import timing_session_class
+SessionLocal = async_sessionmaker(engine, class_=timing_session_class(AsyncSession), expire_on_commit=False)
+from .timing import install_sql_timing
+install_sql_timing(engine)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

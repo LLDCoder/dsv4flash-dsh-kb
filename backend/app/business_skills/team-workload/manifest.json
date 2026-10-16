@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "skillId": "umc.team-workload.read",
+  "version": "1.0.0",
+  "readOnly": true,
+  "tools": [
+    "umc.readonly.invoke"
+  ],
+  "operations": [
+    {
+      "id": "TEAM01",
+      "method": "GET",
+      "path": "/api/Team/MyTeamMembers",
+      "enabled": true,
+      "module": "team",
+      "scope": "team",
+      "leaderRequired": true,
+      "missingReason": null,
+      "order": "可信负责人上下文后，可与已知范围的团队任务并行；需按姓名解析MemberId时必须先此接口再成员任务。模块人员归属须另有可信来源。",
+      "replaces": "可替代“我所带领的全部部门成员”名单读取；不能单独替代某一模块成员卡片及零任务成员归属判断。",
+      "constraints": "UserId/UserName；isLeave默认false，true表示排除离岗。返回全部本人领导部门的成员，不带DepartmentId；不可直接称为某一模块完整成员名单。",
+      "auditEvidence": "E108, E109"
+    },
+    {
+      "id": "TL1",
+      "method": "POST",
+      "path": "/api/Application/MyTeamTodoPage",
+      "enabled": true,
+      "module": "licensing",
+      "scope": "team",
+      "leaderRequired": true,
+      "missingReason": null,
+      "order": "先模块权限及负责人→选择待办/已处理表。位置未知可最多两路并行；成员清单与此查询互不依赖时可并行。不能拿本人MyReviewDetail读取他人团队详情。",
+      "replaces": "可替代许可/内容团队列表的进入、标签切换、搜索、读行；不覆盖团队他人任务详情。 页面范围：/licensing/team-management或/content/team-management（DSH定位路由，公网API映射未实测）。",
+      "constraints": "团队任务分页、StatusCount；状态卡片统计在搜索过滤前计算；带筛选条件的结果数量用Page.Total。含离岗信息时按最小字段返回。",
+      "auditEvidence": "E110, E111, E149, E150, E151, E152, E153, E154, E155, E232"
+    },
+    {
+      "id": "TL2",
+      "method": "POST",
+      "path": "/api/Application/MyTeamComplatedPage",
+      "enabled": true,
+      "module": "licensing",
+      "scope": "team",
+      "leaderRequired": true,
+      "missingReason": null,
+      "order": "先模块权限及负责人→选择待办/已处理表。位置未知可最多两路并行；成员清单与此查询互不依赖时可并行。不能拿本人MyReviewDetail读取他人团队详情。",
+      "replaces": "可替代许可/内容团队列表的进入、标签切换、搜索、读行；不覆盖团队他人任务详情。 页面范围：/licensing/team-management或/content/team-management（DSH定位路由，公网API映射未实测）。",
+      "constraints": "团队任务分页、StatusCount；状态卡片统计在搜索过滤前计算；带筛选条件的结果数量用Page.Total。含离岗信息时按最小字段返回。",
+      "auditEvidence": "E112, E111, E149, E150, E151, E152, E153, E154, E155, E232"
+    },
+    {
+      "id": "TL3",
+      "method": "POST",
+      "path": "/api/Application/MyTeamMemberTask",
+      "enabled": true,
+      "module": "licensing",
+      "scope": "team",
+      "leaderRequired": true,
+      "missingReason": null,
+      "order": "先确定模块和负责人；姓名→TEAM01→可信MemberId→此接口。MemberId已受信可省查名；仅需要计数就不额外拉团队明细。空结果不能直接解释为0。",
+      "replaces": "可替代对应模块成员工作量表；不覆盖检查/客服团队专用分类，也不覆盖可靠SLA比例。 页面范围：/licensing/team-management或/content/team-management（DSH定位路由，公网API映射未实测）。",
+      "constraints": "成员任务总数/完成数/超时数等；按请求MemberId精确保留，去掉跨模块零值成员。SLA有整数除法/分母口径问题，不作为准确百分比；离岗原因等不传模型。",
+      "auditEvidence": "E113, E111, E146, E149, E150, E151, E152, E153, E154, E155, E232"
+    },
+    {
+      "id": "TC1",
+      "method": "POST",
+      "path": "/api/Content/MyTeamTodoPage",
+      "enabled": true,
+      "module": "content",
+      "scope": "team",
+      "leaderRequired": true,
+      "missingReason": null,
+      "order": "先模块权限及负责人→选择待办/已处理表。位置未知可最多两路并行；成员清单与此查询互不依赖时可并行。不能拿本人MyReviewDetail读取他人团队详情。",
+      "replaces": "可替代许可/内容团队列表的进入、标签切换、搜索、读行；不覆盖团队他人任务详情。 页面范围：/licensing/team-management或/content/team-management（DSH定位路由，公网API映射未实测）。",
+      "constraints": "团队任务分页、StatusCount；状态卡片统计在搜索过滤前计算；带筛选条件的结果数量用Page.Total。含离岗信息时按最小字段返回。",
+      "auditEvidence": "E114, E111, E149, E150, E151, E152, E153, E154, E155, E232"
+    },
+    {
+      "id": "TC2",
+      "method": "POST",
+      "path": "/api/Content/MyTeamComplatedPage",
+      "enabled": true,
+      "module": "content",
+      "scope": "team",
+      "leaderRequired": true,
+      "missingReason": null,
+      "order": "先模块权限及负责人→选择待办/已处理表。位置未知可最多两路并行；成员清单与此查询互不依赖时可并行。不能拿本人MyReviewDetail读取他人团队详情。",
+      "replaces": "可替代许可/内容团队列表的进入、标签切换、搜索、读行；不覆盖团队他人任务详情。 页面范围：/licensing/team-management或/content/team-management（DSH定位路由，公网API映射未实测）。",
+      "constraints": "团队任务分页、StatusCount；状态卡片统计在搜索过滤前计算；带筛选条件的结果数量用Page.Total。含离岗信息时按最小字段返回。",
+      "auditEvidence": "E115, E111, E149, E150, E151, E152, E153, E154, E155, E232"
+    },
+    {
+      "id": "TC3",
+      "method": "POST",
+      "path": "/api/Content/MyTeamMemberTask",
+      "enabled": true,
+      "module": "content",
+      "scope": "team",
+      "leaderRequired": true,
+      "missingReason": null,
+      "order": "先确定模块和负责人；姓名→TEAM01→可信MemberId→此接口。MemberId已受信可省查名；仅需要计数就不额外拉团队明细。空结果不能直接解释为0。",
+      "replaces": "可替代对应模块成员工作量表；不覆盖检查/客服团队专用分类，也不覆盖可靠SLA比例。 页面范围：/licensing/team-management或/content/team-management（DSH定位路由，公网API映射未实测）。",
+      "constraints": "成员任务总数/完成数/超时数等；按请求MemberId精确保留，去掉跨模块零值成员。SLA有整数除法/分母口径问题，不作为准确百分比；离岗原因等不传模型。",
+      "auditEvidence": "E116, E111, E146, E149, E150, E151, E152, E153, E154, E155, E232"
+    }
+  ],
+  "pageAgent": true,
+  "knowledgeAgent": true,
+  "missing": [],
+  "maxParallelRequests": 2,
+  "maxPageSize": 20,
+  "maxPages": 3,
+  "runtimeCaveats": [
+    "TEAM01 spans all caller-led departments; no implicit module membership.",
+    "TL3/TC3 expose bounded nonzero module task rows only; zero-task membership and SLA formula are not authoritative."
+  ]
+}

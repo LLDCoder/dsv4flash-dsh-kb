@@ -1,3 +1,12 @@
+## Server 77 parallel read pipeline
+
+The `parallel_v1` deployment adds seven app-owned business skill manifests,
+concurrent API/Page/Knowledge result agents and request-scoped timing receipts.
+See [the delivery contract](doc/parallel-v1/DELIVERY.md) for the exact supported
+API mapping, permission boundaries, unverified internals, isolated testing and
+recovery procedure. The existing modes below describe their own deployments.
+The new pipeline does not authorize UMC business writes or shared DB migrations.
+
 # Admin DSH Portal Reader
 
 这是 Admin Portal 的知识库与只读页面问答服务，所有运行依赖通过 Docker Compose 管理。

@@ -1,0 +1,26 @@
+version: admin-parallel-v1.20261016
+primary: backend/tests/test_parallel_agents_v1.py
+coverage:
+  - fixed_operation_and_loaded_skill_intersection
+  - disabled_and_unpermitted_operations_never_send_HTTP
+  - strict_parameters_identity_origin_redirect_and_limits
+  - leader_prerequisite_and_personal_task_boundary
+  - exact_member_projection_even_when_upstream_ignores_MemberId
+  - no_sensitive_fields_or_unreliable_member_SLA
+  - three_agents_start_without_serial_result_dependencies
+  - branch_failure_isolation_and_parent_cancellation_cleanup
+  - no_cache_or_results_cross_principals
+  - exact_source_quote_binding_and_no_profile_from_policy
+  - semantic_kind_actor_and_business_object_consistency
+  - preserve_additional_filters_and_count_population_semantics
+  - timing_owners_attempts_unique_parent_links_and_no_credentials
+  - Swagger_auth_responses_and_unavailable_internals
+broader_regression: backend/tests
+baseline_comparison: verification/baseline-comparison.json
+live_testing:
+  location: server77_isolated_Admin_stack
+  business_operations: read_only
+  account_switching: sequential
+  questions: original_and_rephrased_English_and_Arabic
+  evidence: private_outputs_not_public_Git
+  no_live_business_write_refusal_probes: true

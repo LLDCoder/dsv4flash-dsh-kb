@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "skillId": "umc.admin-inspection.read",
+  "version": "1.0.0",
+  "readOnly": true,
+  "tools": [],
+  "operations": [],
+  "pageAgent": true,
+  "knowledgeAgent": true,
+  "missing": [
+    "no_verified_admin_staff_api"
+  ],
+  "maxParallelRequests": 2,
+  "maxPageSize": 20,
+  "maxPages": 3
+}

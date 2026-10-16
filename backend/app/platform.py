@@ -4,6 +4,7 @@ import asyncio
 import httpx
 
 from .config import Settings
+from .timing import request as timed_request, backoff
 from .reader_limits import effective_platform_timeout
 
 
@@ -39,7 +40,7 @@ class PlatformGatewayClient:
             async with httpx.AsyncClient(timeout=min(self.timeout, 8), follow_redirects=False) as client:
                 for attempt in range(3):
                     try:
-                        response = await client.post(self.user_info_url,
+                        response = await timed_request(client, "POST", self.user_info_url, owner="UMC", attempt=attempt+1,
                             headers=self._headers(umc_token, request_id))
                         response.raise_for_status()
                         return response.json()
@@ -48,7 +49,7 @@ class PlatformGatewayClient:
                             exc.response.status_code in {408, 429, 500, 502, 503, 504})
                         if not retryable or attempt == 2:
                             raise
-                        await asyncio.sleep(0.2 * (attempt + 1))
+                        await backoff(0.2 * (attempt + 1))
         return await asyncio.wait_for(request_identity(), timeout=self.timeout)
 
     async def admin_portal_read(
@@ -62,8 +63,8 @@ class PlatformGatewayClient:
         """Execute a validated browser-read plan through the isolated gateway."""
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/admin/portal/read",
+            response = await timed_request(client, "POST",
+                f"{self.base_url}/admin/portal/read", owner="DSH.platform-gateway",
                 json=request,
                 headers=self._headers(umc_token, request_id, user_id),
             )

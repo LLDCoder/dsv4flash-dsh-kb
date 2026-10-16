@@ -4,6 +4,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
+from .timing import request as timed_request, backoff
 from .reader_knowledge import hydrate_packages, timed_knowledge, KnowledgeBudgetExpired
 from .knowledge_errors import retrieval_failure
 
@@ -23,7 +24,7 @@ class KnowledgeGatewayClient:
     async def _get(self, path: str, params: dict[str, Any] | None = None, *, umc_token: str | None = None) -> dict[str, Any]:
         headers = self._headers(umc_token)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(f"{self.base_url}{path}", params=params or {}, headers=headers)
+            response = await timed_request(client, "GET", f"{self.base_url}{path}", owner="DSH.knowledge-gateway", params=params or {}, headers=headers)
             response.raise_for_status()
             return response.json()
 
@@ -33,9 +34,9 @@ class KnowledgeGatewayClient:
         for attempt in range(self.retry_attempts):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.post(f"{self.base_url}{path}", json=body, headers=headers)
+                    response = await timed_request(client, "POST", f"{self.base_url}{path}", owner="DSH.knowledge-gateway", attempt=attempt+1, json=body, headers=headers)
                 if response.status_code in {429, 502, 503, 504} and attempt < self.retry_attempts - 1:
-                    await asyncio.sleep(min(2**attempt, 4))
+                    await backoff(min(2**attempt, 4))
                     continue
                 response.raise_for_status()
                 return response.json()
@@ -45,7 +46,7 @@ class KnowledgeGatewayClient:
                     raise
                 if attempt >= self.retry_attempts - 1:
                     raise
-                await asyncio.sleep(min(2**attempt, 4))
+                await backoff(min(2**attempt, 4))
         raise last_error or RuntimeError("knowledge gateway request failed")
 
     async def search(self, query: str, folder_id: str, top_k: int = 32, *, umc_token: str | None = None,

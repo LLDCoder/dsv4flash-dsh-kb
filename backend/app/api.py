@@ -35,6 +35,8 @@ from .conversation_auth import authenticate_conversation_principal
 from .principal import Principal, _bearer_token, _token_reference, get_principal
 from .schemas import AuditLogin, AuditOperatorCreate, AuditOperatorUpdate, AuditPasswordReset, ConfigPatch, ConsoleLogin, ConversationCreate, MessageCreate, MessageFeedbackCreate, TestCaseGenerateRequest, TestCaseRunRequest, WSMessage
 from .service import DSHService
+from .readonly_api import skill_catalog
+from .timing_report import ConversationTimings, report
 from .stream_transport import forward_events_with_heartbeat
 from .testcases import generate_test_cases, run_test_cases
 
@@ -944,7 +946,7 @@ def make_router(service: DSHService) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"deleted": True, "conversationId": conversation_id}
 
-    @router.post("/conversations/{conversation_id}/messages", summary="Submit an owner-scoped assistant request with KB-backed page routing",
+    @router.post("/conversations/{conversation_id}/messages", summary="Submit a read-only question with API, page and knowledge agents",
                  responses={401: {"description": "Authentication required"},
                             404: {"description": "Conversation not owned by the current principal"}})
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(conversation_principal)):
@@ -1427,6 +1429,46 @@ def make_router(service: DSHService) -> APIRouter:
             "rating": payload.rating,
             "reason": reason,
         }
+
+    @router.get("/readonly/skills", tags=["Read-only parallel agents"],
+                summary="Versioned business skills and fixed Admin read operations",
+                responses={401: {"description": "Admin sign-in required"}, 403: {"description": "Identity or tenant mismatch"}})
+    async def readonly_skills(principal: Principal = Depends(conversation_principal)):
+        """Engineering catalog, not an authorization grant. Certificates and content-library
+        operations remain disabled. Team member population gaps are not inferred as zero.
+        API, page and knowledge agents share one trusted identity and one final presenter.
+        No write operation, arbitrary URL or model-selected credential is executable.
+        """
+        return {"pipeline":service.settings.reader_pipeline,"skills":skill_catalog()}
+
+    @router.get("/conversations/{conversation_id}/timings", tags=["Read-only parallel agents"],
+                response_model=ConversationTimings,
+                summary="Every stage and DSH/UMC HTTP attempt for an owned conversation",
+                responses={401: {"description": "Admin sign-in required"},
+                           403: {"description": "Identity or tenant mismatch"},
+                           404: {"description": "Conversation not accessible"}})
+    async def conversation_timings(conversation_id: str,
+        request_id: str | None = Query(default=None, alias="requestId",max_length=128),
+        limit: int = Query(default=10,ge=1,le=20),
+        db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_principal)):
+        """UTC timestamps with monotonic millisecond durations. No SQL, prompts, secrets
+        or business payloads. Parent spans include children and parallel branches overlap;
+        never add all rows. totalMs is receipt-to-terminal completion; firstVerifiedAnswerMs
+        is distinct from model firstContentMs. UMC HTTP times are client round trips;
+        UMC-internal SQL/domain durations are null with an explicit missing reason.
+        A cancelled/failed attempt still has a terminal span. A timing receipt can appear
+        up to five seconds after the answer while the single audit writer flushes.
+        """
+        try:
+            conversation, is_admin = await service.get_audit_conversation(db, principal, conversation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        query=select(AuditRecord).where(AuditRecord.conversation_id==conversation.conversation_id,
+            AuditRecord.record_type=="reader.timing")
+        if request_id:
+            query=query.where(AuditRecord.request_id==request_id)
+        rows=(await db.execute(query.order_by(AuditRecord.id.desc()).limit(limit))).scalars().all()
+        return {"conversationId":conversation_id,"turns":[report(x.payload) for x in reversed(rows)]}
 
     @router.get("/conversations/{conversation_id}/audit", tags=["Audit"])
     async def get_conversation_audit(

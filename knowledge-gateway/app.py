@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path as _TimingPath
+sys.path.insert(0, str(_TimingPath(__file__).resolve().parent))
+from timing import install_gateway, span as timing_span, request as timed_request, backoff, CURRENT as TIMING_CURRENT, PARENT as TIMING_PARENT
 import asyncio
 import os
 import uuid
@@ -8,28 +12,16 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 UPSTREAM_BASE_URL = os.getenv("KNOWLEDGE_BASE_URL", "http://ai-generation-service:8091").rstrip("/")
-GATEWAY_AUTH = os.getenv("KNOWLEDGE_GATEWAY_AUTH", "").strip()
-GATEWAY_TENANT_ID = os.getenv("KNOWLEDGE_GATEWAY_TENANT_ID", "").strip()
-GATEWAY_SUBJECT_ID = os.getenv("KNOWLEDGE_GATEWAY_SUBJECT_ID", "").strip()
-GATEWAY_SUBJECT_ROLES = os.getenv("KNOWLEDGE_GATEWAY_SUBJECT_ROLES", "").strip()
 PUBLIC_KNOWLEDGE_PATH = os.getenv("KNOWLEDGE_PUBLIC_PATH", "/public/knowledge").rstrip("/")
 TIMEOUT_SECONDS = float(os.getenv("KNOWLEDGE_TIMEOUT_SECONDS", "30"))
 RETRY_ATTEMPTS = max(1, int(os.getenv("KNOWLEDGE_RETRY_ATTEMPTS", "2")))
 UPSTREAM_MAX_TOP_K = max(1, int(os.getenv("KNOWLEDGE_UPSTREAM_MAX_TOP_K", "20")))
 RETRIEVAL_MODES = tuple(x.strip().lower() for x in os.getenv("KNOWLEDGE_RETRIEVAL_MODES", "bm25,graph,vector").split(",") if x.strip())
 
-app = FastAPI(
-    title="DSH Knowledge Gateway", version="0.3.0",
-    description=(
-        "Internal read/search gateway. Upstream authentication is deployment-managed: "
-        "KNOWLEDGE_GATEWAY_AUTH enables X-FF-Gateway-Auth; optional "
-        "KNOWLEDGE_GATEWAY_TENANT_ID, KNOWLEDGE_GATEWAY_SUBJECT_ID and "
-        "KNOWLEDGE_GATEWAY_SUBJECT_ROLES supply the authorized service context. "
-        "No service context is sent without the credential. API callers cannot "
-        "override this identity. Upstream HTTP failures return 502; connection "
-        "failures return 503. Keep this service on the internal deployment network."
-    ),
-)
+app = FastAPI(title="DSH Knowledge Gateway", version="0.3.0")
+
+
+install_gateway(app, "DSH.knowledge-gateway")
 
 
 class SearchRequest(BaseModel):
@@ -43,17 +35,7 @@ def _headers() -> dict[str, str]:
     # not synthesize ``Authorization: Bearer `` when no service token exists:
     # httpx rejects that malformed header before the request reaches 77 and
     # the gateway previously surfaced the client-side failure as HTTP 503.
-    headers = {"X-Request-ID": str(uuid.uuid4())}
-    if GATEWAY_AUTH:
-        headers["X-FF-Gateway-Auth"] = GATEWAY_AUTH
-        for key, value in (
-            ("X-FF-Tenant-ID", GATEWAY_TENANT_ID),
-            ("X-FF-Subject-ID", GATEWAY_SUBJECT_ID),
-            ("X-FF-Subject-Roles", GATEWAY_SUBJECT_ROLES),
-        ):
-            if value:
-                headers[key] = value
-    return headers
+    return {"X-Request-ID": str(uuid.uuid4())}
 
 
 async def _request(method: str, path: str, *, params: dict[str, Any] | None = None, json: dict[str, Any] | None = None) -> Any:
@@ -61,15 +43,15 @@ async def _request(method: str, path: str, *, params: dict[str, Any] | None = No
     for attempt in range(RETRY_ATTEMPTS):
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-                response = await client.request(method, f"{UPSTREAM_BASE_URL}{path}", params=params, json=json, headers=_headers())
+                response = await timed_request(client, method, f"{UPSTREAM_BASE_URL}{path}", owner="KB.provider", attempt=attempt+1, params=params, json=json, headers=_headers())
             if response.status_code not in {429, 502, 503, 504} or attempt == RETRY_ATTEMPTS - 1:
                 break
-            await asyncio.sleep(min(2 ** attempt, 2))
+            await backoff(min(2 ** attempt, 2))
         except httpx.HTTPError as exc:
             last_error = exc
             if attempt == RETRY_ATTEMPTS - 1:
                 raise HTTPException(status_code=503, detail={"code": "knowledge_upstream_unavailable", "message": str(exc)[:500]}) from exc
-            await asyncio.sleep(min(2 ** attempt, 2))
+            await backoff(min(2 ** attempt, 2))
     if response.is_error:
         try:
             body = response.json()
@@ -89,7 +71,7 @@ async def healthz() -> dict[str, Any]:
         "provider": "dsh-knowledge-proxy",
         "upstream": UPSTREAM_BASE_URL,
         "upstreamPath": PUBLIC_KNOWLEDGE_PATH,
-        "authMode": "service-gateway" if GATEWAY_AUTH else "anonymous-public",
+        "authMode": "anonymous-public",
         "retrievalModes": list(RETRIEVAL_MODES),
         "upstreamMaxTopK": UPSTREAM_MAX_TOP_K,
     }

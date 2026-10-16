@@ -7,6 +7,7 @@ import asyncio
 import copy
 import httpx
 from .knowledge_errors import retrieval_failure
+from .timing import span
 from contextvars import ContextVar
 
 MAX_DOCUMENT_BYTES = 1024 * 1024
@@ -47,7 +48,8 @@ async def timed_knowledge(stage, operation):
     started = time.monotonic()
     status = "interrupted"
     try:
-        result = await operation
+        with span("knowledge." + str(stage)):
+            result = await operation
         status = "passed"
         return result
     finally:
