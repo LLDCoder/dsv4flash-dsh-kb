@@ -1,0 +1,1354 @@
+{
+  "kind": "server77-public-code-baseline",
+  "server": "77.242.240.158",
+  "snapshotTime": "2026-10-16T08:10:20.533820+00:00",
+  "serverSourceHead": "b3440d53da04c1cdaa0088787c8c017c16fd7755",
+  "remoteRepository": "https://github.com/LLDCoder/dsv4flash-dsh-kb.git",
+  "backupBranch": "codex/server77-pre-multi-agent-20261016",
+  "historyPolicy": "Independent root commit: server Git history is intentionally not uploaded because it contains historical database dumps.",
+  "sourcePolicy": "Live host application source/build files plus separate actual running-container source mirrors; no application implementation changes.",
+  "privateFullBackup": "/data/backups/admin-dsh-before-multi-agent-20261016T080833Z",
+  "runtimeSourceFiles": 115,
+  "pythonSyntaxFiles": 247,
+  "runtimeVersions": [
+    {
+      "name": "dsh-admin-service-backend-1",
+      "imageId": "sha256:20057319d815b330191dbd0d9e4d2af7a4a98004d6a3b51347c17733b7221e33",
+      "imageRef": "dsh-admin-backend:codex-member-boundary-20260930",
+      "startedAt": "2026-10-09T08:33:06.031328658Z"
+    },
+    {
+      "name": "dsh-admin-service-frontend-1",
+      "imageId": "sha256:17f89caa9e585ff74ae1924c818812ea0c0614934c7e5fd1cb2fd66138000a01",
+      "imageRef": "dsh-admin-frontend:audit-entry-20261005-2",
+      "startedAt": "2026-10-05T13:53:50.627615653Z"
+    },
+    {
+      "name": "dsh-admin-service-platform-gateway-1",
+      "imageId": "sha256:676a4fcffe5f1d13f38365f25406ee4070386a3f4d2408e52d1782dfe42b1073",
+      "imageRef": "dsh-admin-platform-gateway:3b8f6d9",
+      "startedAt": "2026-10-08T06:13:55.415504724Z"
+    },
+    {
+      "name": "dsh-admin-service-knowledge-gateway-1",
+      "imageId": "sha256:c5ae4952641acb59a7e508c09bf36d9ced13f79f091526896fe556471a323947",
+      "imageRef": "dsh-admin-knowledge-gateway:97b8062-20260907",
+      "startedAt": "2026-10-04T09:38:41.573376733Z"
+    },
+    {
+      "name": "umc-admin-gateway",
+      "imageId": "sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752",
+      "imageRef": "nginx:alpine",
+      "startedAt": "2026-09-02T12:27:19.266688518Z"
+    },
+    {
+      "name": "umc-admin-portal",
+      "imageId": "sha256:8f0dc0434f8d76232dccd5ab57842d210f4654c716a98ff1e8638524ce9ed50c",
+      "imageRef": "umc-admin-portal:acc-nine-stability-20261003",
+      "startedAt": "2026-10-02T18:20:16.662230989Z"
+    }
+  ],
+  "files": {
+    ".gitignore": {
+      "sha256": "1fd25fe3ab9481215b428b913bc99c42cda7dc04fb01d4fb283dd720b3da3dc8",
+      "origin": "source"
+    },
+    "AGENTS.md": {
+      "sha256": "4074457aee2849a8477af26a40f4663cdd830a9ea49c0e9717e803ecbf11b14d",
+      "origin": "source"
+    },
+    "README.md": {
+      "sha256": "542ea7fc8e0c55911c79ff018e5c8ae00d04d6fd56c764c3f825264322ea4331",
+      "origin": "source"
+    },
+    "backend/Dockerfile": {
+      "sha256": "cef8d2623c9764eaf8027655bea512518d44f98d8522b0b1a3bd3cd936bb2864",
+      "origin": "source"
+    },
+    "backend/app/__init__.py": {
+      "sha256": "1fb949f92bcc7d29fa00d169af5cba1229917020acb55191f28d9e513e316437",
+      "origin": "source"
+    },
+    "backend/app/answer_stream.py": {
+      "sha256": "7634e4d3945e0bc65e7b361b8964368cc8de3b34d3a1c558fafa45c0f9940b37",
+      "origin": "source"
+    },
+    "backend/app/api.py": {
+      "sha256": "8465214c33dded5feb2c717f4d90d4a7a663ac5ae86491df7e52769af1bd30d0",
+      "origin": "source"
+    },
+    "backend/app/audit_auth.py": {
+      "sha256": "bfc5d0af9ca931c0d30f465d7a6b46037ef8d416ed07b51c458120a72f657246",
+      "origin": "source"
+    },
+    "backend/app/config.py": {
+      "sha256": "ee33c10a813410e195e1b3beabc20dd67d128164b60d6136b8cd660b5e17293e",
+      "origin": "source"
+    },
+    "backend/app/console_auth.py": {
+      "sha256": "643e7fc1b05e8886579a47915445250b13e95bc7488c3021b894453d5cd1b863",
+      "origin": "source"
+    },
+    "backend/app/conversation_auth.py": {
+      "sha256": "b9cbb0c07d64d2fc2a4f67593d1e5a42e0107204c5e2755a231f6e383668e830",
+      "origin": "source"
+    },
+    "backend/app/db.py": {
+      "sha256": "e6a43783d111261b6c62b7e7dc3bbdf476b4374fd2ea34da45e873450f7b544b",
+      "origin": "source"
+    },
+    "backend/app/generic_reader.py": {
+      "sha256": "d88059f581e54daf2d6f658cf8cca771161b2ad46cb3231818087cde104bb6e2",
+      "origin": "source"
+    },
+    "backend/app/generic_reader_contracts.py": {
+      "sha256": "8527b4f9a4012237336ccfdd5ad84c4152f64e7cbdcbceddc853ce2668b6b20f",
+      "origin": "source"
+    },
+    "backend/app/inspection_assignment.py": {
+      "sha256": "c319e597bbb994fe564fc90fe0bd87c585c30a6f0e87afc49fc2f54af680f72a",
+      "origin": "source"
+    },
+    "backend/app/knowledge.py": {
+      "sha256": "811b949ef02961ee89f7b48f26eff825d253bb2a1e1ba1f409c69ea4ba2023c7",
+      "origin": "source"
+    },
+    "backend/app/knowledge_errors.py": {
+      "sha256": "af94fc783abf673bf1ca59680fac0d98bdb86dce3e5cac38e0b393b12dd4a305",
+      "origin": "source"
+    },
+    "backend/app/llm.py": {
+      "sha256": "8c5df732beee8aaf3731df7e4bc4d3df12f23dfea66074b24e630fba408bef7b",
+      "origin": "source"
+    },
+    "backend/app/main.py": {
+      "sha256": "d7f18b3aaec2de75d99479bb03136682c1326fa0a261e90faa5698c771f48c92",
+      "origin": "source"
+    },
+    "backend/app/message_compression.py": {
+      "sha256": "0d6314401bec816d5a3763c6128368af6fbd80ec548411b03d5f5065d4d60f94",
+      "origin": "source"
+    },
+    "backend/app/platform.py": {
+      "sha256": "398cdeae783c07981f497b1f8404c982bc2439f14dcc6f2200cf3569045cd84b",
+      "origin": "source"
+    },
+    "backend/app/portal_reader.py": {
+      "sha256": "20acc02b19539604d79a33a6907470f5c8592eba86b282541b394c7939eaf3da",
+      "origin": "source"
+    },
+    "backend/app/principal.py": {
+      "sha256": "a471aaf92c555d464807cf8c5d4ee41bc7059c8c48612e3e330d2edd24e54a05",
+      "origin": "source"
+    },
+    "backend/app/reader_absence.py": {
+      "sha256": "64f15b6e853be92eaa57e1e2b8b4e3007ba14261b847aa8ad19c19bbed4d3edb",
+      "origin": "source"
+    },
+    "backend/app/reader_answer_scope.py": {
+      "sha256": "6bd55ae3ae3b35585765b7c112b9a391d327189c7d62477bc0a4e20b92e760e7",
+      "origin": "source"
+    },
+    "backend/app/reader_answers.py": {
+      "sha256": "22dc955992e1c77340549bcf29484dfafea036ac3622c42a3a8aeb1fde029abc",
+      "origin": "source"
+    },
+    "backend/app/reader_bindings.py": {
+      "sha256": "bf6fdb4164fbfc518fb615fb4ffb2dbd3415daff180008d05c75a41dadcbdd3f",
+      "origin": "source"
+    },
+    "backend/app/reader_boundary_navigation.py": {
+      "sha256": "41bc0505cefea0f675adec9607c5a7da0c812b2f2732768a590b4af098fe4ddf",
+      "origin": "source"
+    },
+    "backend/app/reader_branch_bindings.py": {
+      "sha256": "c560aab8ba7226867096e35a5357e4ffff3bf4ca8e53a5b4339fe3c24b4bec45",
+      "origin": "source"
+    },
+    "backend/app/reader_capability_intro.py": {
+      "sha256": "c875e5c4d0378872f1d96dd35d76cb43a1f01808f1ba23fd5e490b2e9e80f84a",
+      "origin": "source"
+    },
+    "backend/app/reader_catalog_access.py": {
+      "sha256": "ee9bc5da605a3f97f80737a10cc99f0b8553cb67190f3ff59ac1e294beedd20b",
+      "origin": "source"
+    },
+    "backend/app/reader_clarification_guard.py": {
+      "sha256": "8dea023cf45cbbedf5a64b79e220ddeff8419f8ef0c3e14053c85a0aed9bf28c",
+      "origin": "source"
+    },
+    "backend/app/reader_collection.py": {
+      "sha256": "3106db099e5451a4b26c513c83dbd9ff4509d7729370455310f635df5005854f",
+      "origin": "source"
+    },
+    "backend/app/reader_context.py": {
+      "sha256": "b27778a5f9bed1fe036125c59b74b86377236b65a41d2a765640c5d91d44e4db",
+      "origin": "source"
+    },
+    "backend/app/reader_dashboard_context.py": {
+      "sha256": "adc000793e32071f1e97d3c13c8b91dfc61ce9f568a2d3cc22552c2c8fb02121",
+      "origin": "source"
+    },
+    "backend/app/reader_derivations.py": {
+      "sha256": "972af8b7e3b92fb7e8fe2696b788411ea8b23283115a4fb8f94b35682e46434e",
+      "origin": "source"
+    },
+    "backend/app/reader_documents.py": {
+      "sha256": "1b984c4bc77ec375133159e79f85e4973fa98eba394ec753c7bd8e4946a5a41e",
+      "origin": "source"
+    },
+    "backend/app/reader_drafts.py": {
+      "sha256": "af245849a061ae35177b3f350f834011b5464dd30e3621223027117ec8cf00d6",
+      "origin": "source"
+    },
+    "backend/app/reader_empty_display.py": {
+      "sha256": "6a51166fff484046fcfeb39d4222876a0cb8b72937ea34bba1a39b719479d6a7",
+      "origin": "source"
+    },
+    "backend/app/reader_evidence_explanation.py": {
+      "sha256": "e6aeb5c2ec8fe4becd6c51923360d7f0002abde8232d0f753f3770ae9a3727e7",
+      "origin": "source"
+    },
+    "backend/app/reader_expansion.py": {
+      "sha256": "f3bf8d6a04c197228c3516d8f3ec7c363373978a1370e7a406698209d760dcb2",
+      "origin": "source"
+    },
+    "backend/app/reader_finance_skill.py": {
+      "sha256": "8233168dbbd15dc0fc54bb20f5db5d71d6d3be163dfece1f0b9db312aa7fea43",
+      "origin": "source"
+    },
+    "backend/app/reader_forms.py": {
+      "sha256": "ef697c804f91f231cca25fb529ef735cb7ea4a74f7241e6280bbf5b9cd77f727",
+      "origin": "source"
+    },
+    "backend/app/reader_gaps.py": {
+      "sha256": "4eaef730590ba331e0584291b945befaeeb6425e4caa34bb7c6f697537018a1f",
+      "origin": "source"
+    },
+    "backend/app/reader_group_domain.py": {
+      "sha256": "ce282f187a39e5b3c20a18ad1d82620ed68b959140f116e9953ac06edae7199c",
+      "origin": "source"
+    },
+    "backend/app/reader_guidance.py": {
+      "sha256": "aed62550d566930d5f252ceabac2841b929c03b0d96ebf1af6c24cb6d1feef01",
+      "origin": "source"
+    },
+    "backend/app/reader_input_clarification.py": {
+      "sha256": "18f3cb2a0d6e9bd5c4b3a27eb6cc477777ae052079d8ef942311684f642454b6",
+      "origin": "source"
+    },
+    "backend/app/reader_intent.py": {
+      "sha256": "87e06d52f14e0719ad0125cbeeb1fabaa207858e5a56bc2d3497dcd0c722ab42",
+      "origin": "source"
+    },
+    "backend/app/reader_intent_aliases.py": {
+      "sha256": "e7808dd32cc9f3dddbd441cbd2e951316708032de3a30d7ee0a3745c4d79c94b",
+      "origin": "source"
+    },
+    "backend/app/reader_intent_dedup.py": {
+      "sha256": "acbb80ffd489f9f36f1c553340f7f2ec696f4e6d9be97a765b1f258c440f42dc",
+      "origin": "source"
+    },
+    "backend/app/reader_interpretations.py": {
+      "sha256": "680d74f2dbdfbeff9104acf8c723696fd278cb14f5c8e4927a7c7d61abe4d17d",
+      "origin": "source"
+    },
+    "backend/app/reader_knowledge.py": {
+      "sha256": "68aa639a8e52236b5d0c45150fa0eb1325cc9186751307dfea9da43e8058ed1e",
+      "origin": "source"
+    },
+    "backend/app/reader_knowledge_coverage.py": {
+      "sha256": "0bc349ae7be4c58463f6a5b9c1745d70633664e0af5599e7ab6513dcf9fbab70",
+      "origin": "source"
+    },
+    "backend/app/reader_knowledge_selection.py": {
+      "sha256": "8054c5811e8b7386122bec7aa37593a5ea258dcab956114e9ec79eef30987832",
+      "origin": "source"
+    },
+    "backend/app/reader_licensing_happiness_skill.py": {
+      "sha256": "fcf73ecffdefb12ad58107ec5c9b2099f86702039145dd791eb5bbb0f60ddad8",
+      "origin": "source"
+    },
+    "backend/app/reader_limits.py": {
+      "sha256": "0df77af69e77bbf48e6f04b51427c62f69fb1a5d72908334db8d23d09322035a",
+      "origin": "source"
+    },
+    "backend/app/reader_locale.py": {
+      "sha256": "2a10dbe03c15d1ed83a1ddbb697f542f94c182a115f14770ac1227c4b0367b80",
+      "origin": "source"
+    },
+    "backend/app/reader_lookup_absence.py": {
+      "sha256": "d56e7fbe8862493cd28af8bb438421f1f7efc5835cf07ba934094dc3ac9bc51a",
+      "origin": "source"
+    },
+    "backend/app/reader_metadata.py": {
+      "sha256": "25abbf7012d6933b6f001a55d2e5d27a1adabee30a93b822334cfa2aa648ff01",
+      "origin": "source"
+    },
+    "backend/app/reader_ordering.py": {
+      "sha256": "2ae891af0133cffb267ae0b10152876ce27c55228ea2fda8dcbc3b82eef0ac8f",
+      "origin": "source"
+    },
+    "backend/app/reader_output_scope.py": {
+      "sha256": "3028764bce6a1cd47f4960eaefc4e88133d1bc82a11112c7dbf282b202ba3327",
+      "origin": "source"
+    },
+    "backend/app/reader_page_clarification.py": {
+      "sha256": "d270202beaf2d99a636591e4dffe9c99099bd3f046d390218d0bb297b13efc42",
+      "origin": "source"
+    },
+    "backend/app/reader_partial_answer.py": {
+      "sha256": "3e3612c58ac2cf63e57cd04f8b29f20db8821069b1b220ab53015a1c0a640586",
+      "origin": "source"
+    },
+    "backend/app/reader_plan_dependencies.py": {
+      "sha256": "75c4d634cc10731deaec317b949fcea36ab63380bead5e886a534b7292e8eb01",
+      "origin": "source"
+    },
+    "backend/app/reader_prerequisites.py": {
+      "sha256": "b7ff48bb2ae9c5cb9932388523adca6cdfad9747945ecf35d272fda3a3e1ee94",
+      "origin": "source"
+    },
+    "backend/app/reader_previous_answer.py": {
+      "sha256": "f68261c98b4eac25869db05567319ce59aeeb28034a7914bcc752b7bb3085af9",
+      "origin": "source"
+    },
+    "backend/app/reader_projection_acceptance.py": {
+      "sha256": "ca98af91f144fb55c3269ce8571dfee7f51ed89f641e16077e41abc990387a4d",
+      "origin": "source"
+    },
+    "backend/app/reader_prompt_policy.py": {
+      "sha256": "4de758372a4133178f6ddcf91cc500ebc575078369915d6bcec2b585cb2c879e",
+      "origin": "source"
+    },
+    "backend/app/reader_public_keys.py": {
+      "sha256": "dc53bb44b00453674e8389707cde14ddb0af8418ad20289bc7c1e9d42eade6b4",
+      "origin": "source"
+    },
+    "backend/app/reader_quality.py": {
+      "sha256": "5f28bf0e415ca35530c3d55c0e311f6c08736b4be9e0276d082718a9f11a78e6",
+      "origin": "source"
+    },
+    "backend/app/reader_query_identity.py": {
+      "sha256": "5d9c78cad199dfc41179a98c9e5516824dd3527018e38b4494b9e0f92e5dc0eb",
+      "origin": "source"
+    },
+    "backend/app/reader_record_request.py": {
+      "sha256": "b3cc1e00de6e2a883fef034a3fc678dbb186c90b49822a9daab0e012b4184443",
+      "origin": "source"
+    },
+    "backend/app/reader_record_type.py": {
+      "sha256": "b472cfa7b59be862eb83c609e234e06ce84892f999edbad145c4480073b070fc",
+      "origin": "source"
+    },
+    "backend/app/reader_related.py": {
+      "sha256": "a91c0b88a84be145d706c7ea5341cacd27f89a927c155598be54668d8be55764",
+      "origin": "source"
+    },
+    "backend/app/reader_related_collection.py": {
+      "sha256": "89be1b1667eae4428e41383e9d5fd69013388b35436da652ff50c42b1272650f",
+      "origin": "source"
+    },
+    "backend/app/reader_request_boundary.py": {
+      "sha256": "540ec448489d0d922f718a127237c6c0a7ff4e84709f21a517bce81e7989830c",
+      "origin": "source"
+    },
+    "backend/app/reader_requirements.py": {
+      "sha256": "30d8852e23e0604d2320a535c4a9be538f0f7004fc512b9c3082a31aa2c3b6ca",
+      "origin": "source"
+    },
+    "backend/app/reader_retrieval.py": {
+      "sha256": "abe72c7158589eda2005372af121a50153c9ed629c8734396941b0083324aae6",
+      "origin": "source"
+    },
+    "backend/app/reader_routing.py": {
+      "sha256": "4c79a9766ea9cf17c10f31e30170ce73f16fc76b2a830b560c7131965e1040e1",
+      "origin": "source"
+    },
+    "backend/app/reader_scalars.py": {
+      "sha256": "634ceaf56d5770971bb3646fb3632b3be3689c6c14ec78cf10f0972bc7c4fce0",
+      "origin": "source"
+    },
+    "backend/app/reader_scenario_skill.py": {
+      "sha256": "475413013ba8765ebae22f9f1d82911a32796b6499b25aa97c69b58231de3727",
+      "origin": "source"
+    },
+    "backend/app/reader_scope_explanation.py": {
+      "sha256": "dc5c402328293e6749c831565300365abdf9f555fa5f4e970b0f18e36a52f7d5",
+      "origin": "source"
+    },
+    "backend/app/reader_semantic_task.py": {
+      "sha256": "d582cd4f3fa3d2a3e1b251afffd21604d13ad852c4447432f5f94c09862d3097",
+      "origin": "source"
+    },
+    "backend/app/reader_session_scope.py": {
+      "sha256": "583d8a0b795f5c6db5f25cb66be437af3adde5926db9f55d797de8917726e52a",
+      "origin": "source"
+    },
+    "backend/app/reader_snapshots.py": {
+      "sha256": "670b8249f4e3444a6b73c456e771ac8858558204f83443ec8dc698fd4bb6f339",
+      "origin": "source"
+    },
+    "backend/app/reader_source_choices.py": {
+      "sha256": "bd74f3a0eade0b717e1546156b021b13f9264cc36be9d95a2177c0974636feec",
+      "origin": "source"
+    },
+    "backend/app/reader_source_paths.py": {
+      "sha256": "5614124ed7e9ce050bc8a679ce48518d8df0be4a8c8b98954af77adb79f75720",
+      "origin": "source"
+    },
+    "backend/app/reader_subject.py": {
+      "sha256": "f37e54c35dc9cbe1b464a1634387e71ed454ebec23e72351fb50bf98752a53a8",
+      "origin": "source"
+    },
+    "backend/app/reader_temporal.py": {
+      "sha256": "12fa6adfe6ee64786ad5e778ba0937623c8ad95f80636b87d4e2ee95c19bb19c",
+      "origin": "source"
+    },
+    "backend/app/reader_text.py": {
+      "sha256": "beb63e041e4fa4fbecb6343d029934b089aaa63e1c8b94e945d2a0add2e300b8",
+      "origin": "source"
+    },
+    "backend/app/reader_upstream_failure.py": {
+      "sha256": "30c812d49af2f02c54b12c7af526889475addf4d84ea1bf33aadcff5d25597df",
+      "origin": "source"
+    },
+    "backend/app/reader_view_population.py": {
+      "sha256": "d488d58297b49de0fe5422c938c14e6aef43d02ae751351c1d467bb8d283b009",
+      "origin": "source"
+    },
+    "backend/app/response_safety.py": {
+      "sha256": "2e13778b2c0c6d68248af98e39c791307ade49187eb6d26d682ff8e65e40aebc",
+      "origin": "source"
+    },
+    "backend/app/runtime.py": {
+      "sha256": "af7eb520de26f51b3f0967c3438eb65ed6c5c05ca80f13366b2e2179bc9058d5",
+      "origin": "source"
+    },
+    "backend/app/schemas.py": {
+      "sha256": "c61de8687295d201c89323b41ddcba505046d4476acc05b99110220a7675bf70",
+      "origin": "source"
+    },
+    "backend/app/service.py": {
+      "sha256": "f8ad34d11b01e0d7c2983a068aa1d9d6cdc33d42f827846ef2b36b17345dcf0d",
+      "origin": "source"
+    },
+    "backend/app/skills.py": {
+      "sha256": "7b065ae1200afa0c88367f58a20ebed3745aadd7e357807f185ca784f0201687",
+      "origin": "source"
+    },
+    "backend/app/stream_transport.py": {
+      "sha256": "d0561ab66e3dacb1116a5725487bfc329811b392274f96e49c2a843fa3d35771",
+      "origin": "source"
+    },
+    "backend/app/testcases.py": {
+      "sha256": "07a87488a235ef9cc2a47005eb68c9fd8b7bcfcc31e976af0245d920ae1954d9",
+      "origin": "source"
+    },
+    "backend/app/tool_gateway.py": {
+      "sha256": "f774795eb0e0c15313c1d845be7c17d42f584558187ade599ccdab3341e7ef9c",
+      "origin": "source"
+    },
+    "backend/requirements.txt": {
+      "sha256": "e3dd056d53319afe1b7ca993ac89ca29317de621330c9a7ad382e3a58b2a465a",
+      "origin": "source"
+    },
+    "backend/tests/test_admin_portal_reader.py": {
+      "sha256": "ff0b2e093a4973296fb2e07f59dc5a579ca7848fe03a7e51d04d252343e495ea",
+      "origin": "source"
+    },
+    "backend/tests/test_audit_and_reader_regression.py": {
+      "sha256": "0413a1467357bd1dd113a2730c9d40a427e2fc266fa7b9b1023a24e057d0abc2",
+      "origin": "source"
+    },
+    "backend/tests/test_audit_auth.py": {
+      "sha256": "a2c589e0c28d9b48028c0f212790bf7bcc9887109ec43330620a22130fafa380",
+      "origin": "source"
+    },
+    "backend/tests/test_completion_period_count.py": {
+      "sha256": "2a4925676448d46a1dc41189575babe23044eebf17b6a3457d212d8629387d0e",
+      "origin": "source"
+    },
+    "backend/tests/test_excel_admin_bugs.py": {
+      "sha256": "2b509a59fb5b52af5e99bb52d28666210cfb5d1f883b24f82c5c9e33df5d8181",
+      "origin": "source"
+    },
+    "backend/tests/test_excel_new_pending.py": {
+      "sha256": "8a02057dc0249ec9c3a833622dc05ee8cfccaaf2454c95b865ae2f79031ca758",
+      "origin": "source"
+    },
+    "backend/tests/test_filter_return.py": {
+      "sha256": "a8f73086edde172b7fb6b87488b38bff35837004023ad5d3c23c457992f38cb1",
+      "origin": "source"
+    },
+    "backend/tests/test_fixed_capabilities.py": {
+      "sha256": "a7c5d8e6b07636dbdf084acc2660d49f447b4fb6601307a5a157b1a683671aab",
+      "origin": "source"
+    },
+    "backend/tests/test_inspection_assignment.py": {
+      "sha256": "36483ff102a19bcd8af5a6faeb92e2cb4c65aa08d05d5e09b4026619f413ba76",
+      "origin": "source"
+    },
+    "backend/tests/test_llm_planner.py": {
+      "sha256": "6fd5541dfcb60ce7cd3c300a90f1bf5365de46390d3203ebafea8d46b234292f",
+      "origin": "source"
+    },
+    "backend/tests/test_message_feedback.py": {
+      "sha256": "0b7e6be72b2b421d5030d72c35f07b5f5f66ce861e70c01f51abfe5d6c9f1a5d",
+      "origin": "source"
+    },
+    "backend/tests/test_platform_portal_reader.py": {
+      "sha256": "12846a4f54b00019021cd404f6610797cf94a69bdd61520fe7d1abea69dd8661",
+      "origin": "source"
+    },
+    "backend/tests/test_portal_identity.py": {
+      "sha256": "304bdfe8a9a781824cd164c8c0aa285a0685b28b1e010c8e97c5c01e0114113e",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_acc_20261005.py": {
+      "sha256": "2a6d692ab3e5c86994c3e8d29ee71778519895c960d3923b6d4467ccaa2e9875",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_answer_coverage.py": {
+      "sha256": "7dabf52929c8ee81fa05e662e1f8473e44811cd2ed89e6ee7198f9888af1f384",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_api_discovery.py": {
+      "sha256": "5cc9696f932b26064fc59e3bde6a8ad74c26394da13aadca5d3d7a39d13ad9ee",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_business_repair.py": {
+      "sha256": "59747a5f342ae1acebad70babab9254afe076d239e61a0ea52c4919ebf0362c8",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_command_refusal.py": {
+      "sha256": "58da687af3ea1c2722211c6cb1efbc901acad09aaec16893d5efac527f99cda9",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_conceptual_questions.py": {
+      "sha256": "019e1d660881021aaae05ffe6b73eb981ccccfa7965b38e56941d62c29a7576c",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_conversation_context.py": {
+      "sha256": "192282639eed1599d85a2bc70d6900b5e2899ae53cec5213208f72c88511d144",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_deadline_route_recovery.py": {
+      "sha256": "21adb6da45716ba3d0fc1807f9f120641a68da9477b87f0811041d0911708cc2",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_evidence_delivery.py": {
+      "sha256": "d3937bd030fec82659a19f74213b9364b842c47df0b4408205e6646f3887f230",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_evidence_retention.py": {
+      "sha256": "5c8183215165699e8277130dd441611eadce4cb8dab427eadb96c8a1d75997d2",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_excel_pending.py": {
+      "sha256": "6e0cba703b721e8cf6adf326aa34a2f98c7d4a1bb27c6ec592671e15a4133f3b",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_field_bindings.py": {
+      "sha256": "976d5853e3163bd568322d453f135ca13c0ce9a403dddfebc70e884ee1c72924",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_field_explanation_scope.py": {
+      "sha256": "a7f2f0f1c6944260dd66f03838ee57eaf6e5f4f21c38d20aceba48636d1fd104",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_formatting_integration.py": {
+      "sha256": "1cf036545688c971fda0f73e11fcf20efb21d6d888e493ac717fa77f0fe262ec",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_historical_retest.py": {
+      "sha256": "a0cf02d8298885640a6c156f453b15d0a55cebdb35a94dc4d4e888ea20269f1d",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_intent_adapter.py": {
+      "sha256": "fee77bd5440bb9bacc364d2abc0399eecc8334e230232cda6af3df78a3f18cc4",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_intent_flow.py": {
+      "sha256": "6ab99b9e8ae92bfa7a14e4b6a773115ae47e22eda6e82b1e74273e767012f55c",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_intent_schema.py": {
+      "sha256": "e140e52d0342ee27491a1a0a7be315dfe5f0b4d843d1127eefcb33d1f0788855",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_intent_service.py": {
+      "sha256": "32019b3efe2c45d3f60acbac9d1976bce739677a754cba9125c2aaad3894d314",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_knowledge_compound.py": {
+      "sha256": "9143f749ccfdbf4764da827a8a09d331e0a1ff02c09b18e456784578a8228a69",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_knowledge_envelope.py": {
+      "sha256": "5fc635f18cf001bb2a2e51185ee20e8e47e2263d39b30dad2913e4d21204b857",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_layered_repairs.py": {
+      "sha256": "0a4f62cf67cade06e1bce47072df9dcd746e379a5b80c5f71197a38cc68e11ca",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_list_selection_review.py": {
+      "sha256": "80f0febbea7f8fe675992b96bab73e61dfe0004b61be344c180321c0198b8acf",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_network_policy.py": {
+      "sha256": "794ba5b1263ea9e1cd7255dcdfe6d218682eac7eefc536d0a4012dab423b100b",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_pagination_totals.py": {
+      "sha256": "5fe56627ee9a5e5da3a5e7d200e9d313fcec78e265670e7387b9b2abbe4b9899",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_remaining_failures.py": {
+      "sha256": "5afbd11b80a5fe30b565fd748b4e71e34a693ae0f56ae099b57ca26bbdfdfdfe",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_role_object_boundary.py": {
+      "sha256": "bcf2d1d779a0d8c272063ac16d33f3796b92c4ae8d4ef8cadb6e0284fc989bb0",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_section_evidence.py": {
+      "sha256": "711370563073be7e2aa063e03af9dc545ac06ac8925e4544b289c54f6d32cf9b",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_semantic_resolution.py": {
+      "sha256": "8fc6fd54de077514f9afd84dcd16c64edc73b54f124004d64fcd2171f35f4bc6",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_source_binding.py": {
+      "sha256": "ab942b329eb956346ba8136f91fef7c65cbb231672367322cca253021146d7df",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_source_continuity.py": {
+      "sha256": "7dc4c7a1221b13aee0d6cd99f32916f734d6abf3140d4300fdf71d58850f2652",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_subject_boundary.py": {
+      "sha256": "f9767541313ce17921eb98fd6808cfa4b6ddcdf50b67cbdb0c1e31a7c371eb85",
+      "origin": "source"
+    },
+    "backend/tests/test_reader_tab_scope.py": {
+      "sha256": "811c7dc314e0728f95cc20d99306948e4b6341501c0f60d8bce747e20030e3ca",
+      "origin": "source"
+    },
+    "backend/tests/test_runtime_error_contract.py": {
+      "sha256": "3416c4c89ea053d6a3eda1191070046da7dc49e5f76e25c4c63277116663989c",
+      "origin": "source"
+    },
+    "backend/tests/test_service_reader_context.py": {
+      "sha256": "2858864d2df80f6b8e61d55624f36f281657a27f1b62139a0c61a2e3ddcd6f70",
+      "origin": "source"
+    },
+    "backend/tests/test_shared_database_startup.py": {
+      "sha256": "85afaa49b272ec4585a843f8de82fdb5adb8c523f76b747fd7563fa71495fdaf",
+      "origin": "source"
+    },
+    "backend/tests/test_workbook_pending_generic.py": {
+      "sha256": "607679e0c2c07cb7d818151630eac04a851c7ff7f8f9581060fd83e9e00f8dbb",
+      "origin": "source"
+    },
+    "doc/baselines/server77-20261016/UMC只读接口_skill划分与调用方案.xlsx": {
+      "sha256": "b31b20724639de281dfe56c916cbcdf27dfca15e4643db4a6a52b0cb099d3510",
+      "origin": "architecture-proposal"
+    },
+    "doc/baselines/server77-20261016/compose.snapshot.example.json": {
+      "sha256": "b64555ee11a48e26c7161d8d34358dbd8366bed37c50ce8c448797ac11bd9219",
+      "origin": "sanitized-template"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/__init__.py": {
+      "sha256": "1fb949f92bcc7d29fa00d169af5cba1229917020acb55191f28d9e513e316437",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/answer_stream.py": {
+      "sha256": "7634e4d3945e0bc65e7b361b8964368cc8de3b34d3a1c558fafa45c0f9940b37",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/api.py": {
+      "sha256": "8465214c33dded5feb2c717f4d90d4a7a663ac5ae86491df7e52769af1bd30d0",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/audit_auth.py": {
+      "sha256": "bfc5d0af9ca931c0d30f465d7a6b46037ef8d416ed07b51c458120a72f657246",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/config.py": {
+      "sha256": "ee33c10a813410e195e1b3beabc20dd67d128164b60d6136b8cd660b5e17293e",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/console_auth.py": {
+      "sha256": "643e7fc1b05e8886579a47915445250b13e95bc7488c3021b894453d5cd1b863",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/conversation_auth.py": {
+      "sha256": "b9cbb0c07d64d2fc2a4f67593d1e5a42e0107204c5e2755a231f6e383668e830",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/db.py": {
+      "sha256": "e6a43783d111261b6c62b7e7dc3bbdf476b4374fd2ea34da45e873450f7b544b",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/generic_reader.py": {
+      "sha256": "6baddf59c3054439f132b67b11869779f31b24ea458bba26beef3fda34c6165a",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/generic_reader_contracts.py": {
+      "sha256": "8527b4f9a4012237336ccfdd5ad84c4152f64e7cbdcbceddc853ce2668b6b20f",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/inspection_assignment.py": {
+      "sha256": "c319e597bbb994fe564fc90fe0bd87c585c30a6f0e87afc49fc2f54af680f72a",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/knowledge.py": {
+      "sha256": "811b949ef02961ee89f7b48f26eff825d253bb2a1e1ba1f409c69ea4ba2023c7",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/knowledge_errors.py": {
+      "sha256": "af94fc783abf673bf1ca59680fac0d98bdb86dce3e5cac38e0b393b12dd4a305",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/llm.py": {
+      "sha256": "8c5df732beee8aaf3731df7e4bc4d3df12f23dfea66074b24e630fba408bef7b",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/main.py": {
+      "sha256": "d7f18b3aaec2de75d99479bb03136682c1326fa0a261e90faa5698c771f48c92",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/message_compression.py": {
+      "sha256": "0d6314401bec816d5a3763c6128368af6fbd80ec548411b03d5f5065d4d60f94",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/platform.py": {
+      "sha256": "398cdeae783c07981f497b1f8404c982bc2439f14dcc6f2200cf3569045cd84b",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/portal_reader.py": {
+      "sha256": "20acc02b19539604d79a33a6907470f5c8592eba86b282541b394c7939eaf3da",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/principal.py": {
+      "sha256": "a471aaf92c555d464807cf8c5d4ee41bc7059c8c48612e3e330d2edd24e54a05",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_absence.py": {
+      "sha256": "64f15b6e853be92eaa57e1e2b8b4e3007ba14261b847aa8ad19c19bbed4d3edb",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_answer_scope.py": {
+      "sha256": "6bd55ae3ae3b35585765b7c112b9a391d327189c7d62477bc0a4e20b92e760e7",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_answers.py": {
+      "sha256": "22dc955992e1c77340549bcf29484dfafea036ac3622c42a3a8aeb1fde029abc",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_bindings.py": {
+      "sha256": "bf6fdb4164fbfc518fb615fb4ffb2dbd3415daff180008d05c75a41dadcbdd3f",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_boundary_navigation.py": {
+      "sha256": "41bc0505cefea0f675adec9607c5a7da0c812b2f2732768a590b4af098fe4ddf",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_branch_bindings.py": {
+      "sha256": "c560aab8ba7226867096e35a5357e4ffff3bf4ca8e53a5b4339fe3c24b4bec45",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_capability_intro.py": {
+      "sha256": "c875e5c4d0378872f1d96dd35d76cb43a1f01808f1ba23fd5e490b2e9e80f84a",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_catalog_access.py": {
+      "sha256": "ee9bc5da605a3f97f80737a10cc99f0b8553cb67190f3ff59ac1e294beedd20b",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_clarification_guard.py": {
+      "sha256": "8dea023cf45cbbedf5a64b79e220ddeff8419f8ef0c3e14053c85a0aed9bf28c",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_collection.py": {
+      "sha256": "3106db099e5451a4b26c513c83dbd9ff4509d7729370455310f635df5005854f",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_context.py": {
+      "sha256": "b27778a5f9bed1fe036125c59b74b86377236b65a41d2a765640c5d91d44e4db",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_dashboard_context.py": {
+      "sha256": "adc000793e32071f1e97d3c13c8b91dfc61ce9f568a2d3cc22552c2c8fb02121",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_derivations.py": {
+      "sha256": "972af8b7e3b92fb7e8fe2696b788411ea8b23283115a4fb8f94b35682e46434e",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_documents.py": {
+      "sha256": "1b984c4bc77ec375133159e79f85e4973fa98eba394ec753c7bd8e4946a5a41e",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_drafts.py": {
+      "sha256": "af245849a061ae35177b3f350f834011b5464dd30e3621223027117ec8cf00d6",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_empty_display.py": {
+      "sha256": "6a51166fff484046fcfeb39d4222876a0cb8b72937ea34bba1a39b719479d6a7",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_evidence_explanation.py": {
+      "sha256": "e6aeb5c2ec8fe4becd6c51923360d7f0002abde8232d0f753f3770ae9a3727e7",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_expansion.py": {
+      "sha256": "f3bf8d6a04c197228c3516d8f3ec7c363373978a1370e7a406698209d760dcb2",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_finance_skill.py": {
+      "sha256": "8233168dbbd15dc0fc54bb20f5db5d71d6d3be163dfece1f0b9db312aa7fea43",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_forms.py": {
+      "sha256": "ef697c804f91f231cca25fb529ef735cb7ea4a74f7241e6280bbf5b9cd77f727",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_gaps.py": {
+      "sha256": "4eaef730590ba331e0584291b945befaeeb6425e4caa34bb7c6f697537018a1f",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_group_domain.py": {
+      "sha256": "ce282f187a39e5b3c20a18ad1d82620ed68b959140f116e9953ac06edae7199c",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_guidance.py": {
+      "sha256": "aed62550d566930d5f252ceabac2841b929c03b0d96ebf1af6c24cb6d1feef01",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_input_clarification.py": {
+      "sha256": "18f3cb2a0d6e9bd5c4b3a27eb6cc477777ae052079d8ef942311684f642454b6",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_intent.py": {
+      "sha256": "87e06d52f14e0719ad0125cbeeb1fabaa207858e5a56bc2d3497dcd0c722ab42",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_intent_aliases.py": {
+      "sha256": "e7808dd32cc9f3dddbd441cbd2e951316708032de3a30d7ee0a3745c4d79c94b",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_intent_dedup.py": {
+      "sha256": "acbb80ffd489f9f36f1c553340f7f2ec696f4e6d9be97a765b1f258c440f42dc",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_interpretations.py": {
+      "sha256": "680d74f2dbdfbeff9104acf8c723696fd278cb14f5c8e4927a7c7d61abe4d17d",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_knowledge.py": {
+      "sha256": "68aa639a8e52236b5d0c45150fa0eb1325cc9186751307dfea9da43e8058ed1e",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_knowledge_coverage.py": {
+      "sha256": "0bc349ae7be4c58463f6a5b9c1745d70633664e0af5599e7ab6513dcf9fbab70",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_knowledge_selection.py": {
+      "sha256": "8054c5811e8b7386122bec7aa37593a5ea258dcab956114e9ec79eef30987832",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_licensing_happiness_skill.py": {
+      "sha256": "fcf73ecffdefb12ad58107ec5c9b2099f86702039145dd791eb5bbb0f60ddad8",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_limits.py": {
+      "sha256": "0df77af69e77bbf48e6f04b51427c62f69fb1a5d72908334db8d23d09322035a",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_locale.py": {
+      "sha256": "2a10dbe03c15d1ed83a1ddbb697f542f94c182a115f14770ac1227c4b0367b80",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_lookup_absence.py": {
+      "sha256": "d56e7fbe8862493cd28af8bb438421f1f7efc5835cf07ba934094dc3ac9bc51a",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_metadata.py": {
+      "sha256": "25abbf7012d6933b6f001a55d2e5d27a1adabee30a93b822334cfa2aa648ff01",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_ordering.py": {
+      "sha256": "2ae891af0133cffb267ae0b10152876ce27c55228ea2fda8dcbc3b82eef0ac8f",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_output_scope.py": {
+      "sha256": "3028764bce6a1cd47f4960eaefc4e88133d1bc82a11112c7dbf282b202ba3327",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_page_clarification.py": {
+      "sha256": "d270202beaf2d99a636591e4dffe9c99099bd3f046d390218d0bb297b13efc42",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_partial_answer.py": {
+      "sha256": "3e3612c58ac2cf63e57cd04f8b29f20db8821069b1b220ab53015a1c0a640586",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_plan_dependencies.py": {
+      "sha256": "75c4d634cc10731deaec317b949fcea36ab63380bead5e886a534b7292e8eb01",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_prerequisites.py": {
+      "sha256": "b7ff48bb2ae9c5cb9932388523adca6cdfad9747945ecf35d272fda3a3e1ee94",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_previous_answer.py": {
+      "sha256": "f68261c98b4eac25869db05567319ce59aeeb28034a7914bcc752b7bb3085af9",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_projection_acceptance.py": {
+      "sha256": "ca98af91f144fb55c3269ce8571dfee7f51ed89f641e16077e41abc990387a4d",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_prompt_policy.py": {
+      "sha256": "4de758372a4133178f6ddcf91cc500ebc575078369915d6bcec2b585cb2c879e",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_public_keys.py": {
+      "sha256": "dc53bb44b00453674e8389707cde14ddb0af8418ad20289bc7c1e9d42eade6b4",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_quality.py": {
+      "sha256": "5f28bf0e415ca35530c3d55c0e311f6c08736b4be9e0276d082718a9f11a78e6",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_query_identity.py": {
+      "sha256": "5d9c78cad199dfc41179a98c9e5516824dd3527018e38b4494b9e0f92e5dc0eb",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_record_request.py": {
+      "sha256": "b3cc1e00de6e2a883fef034a3fc678dbb186c90b49822a9daab0e012b4184443",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_record_type.py": {
+      "sha256": "b472cfa7b59be862eb83c609e234e06ce84892f999edbad145c4480073b070fc",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_related.py": {
+      "sha256": "a91c0b88a84be145d706c7ea5341cacd27f89a927c155598be54668d8be55764",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_related_collection.py": {
+      "sha256": "89be1b1667eae4428e41383e9d5fd69013388b35436da652ff50c42b1272650f",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_request_boundary.py": {
+      "sha256": "540ec448489d0d922f718a127237c6c0a7ff4e84709f21a517bce81e7989830c",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_requirements.py": {
+      "sha256": "30d8852e23e0604d2320a535c4a9be538f0f7004fc512b9c3082a31aa2c3b6ca",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_retrieval.py": {
+      "sha256": "abe72c7158589eda2005372af121a50153c9ed629c8734396941b0083324aae6",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_routing.py": {
+      "sha256": "4c79a9766ea9cf17c10f31e30170ce73f16fc76b2a830b560c7131965e1040e1",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_scalars.py": {
+      "sha256": "634ceaf56d5770971bb3646fb3632b3be3689c6c14ec78cf10f0972bc7c4fce0",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_scenario_skill.py": {
+      "sha256": "475413013ba8765ebae22f9f1d82911a32796b6499b25aa97c69b58231de3727",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_scope_explanation.py": {
+      "sha256": "dc5c402328293e6749c831565300365abdf9f555fa5f4e970b0f18e36a52f7d5",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_semantic_task.py": {
+      "sha256": "d582cd4f3fa3d2a3e1b251afffd21604d13ad852c4447432f5f94c09862d3097",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_session_scope.py": {
+      "sha256": "583d8a0b795f5c6db5f25cb66be437af3adde5926db9f55d797de8917726e52a",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_snapshots.py": {
+      "sha256": "670b8249f4e3444a6b73c456e771ac8858558204f83443ec8dc698fd4bb6f339",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_source_choices.py": {
+      "sha256": "bd74f3a0eade0b717e1546156b021b13f9264cc36be9d95a2177c0974636feec",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_source_paths.py": {
+      "sha256": "5614124ed7e9ce050bc8a679ce48518d8df0be4a8c8b98954af77adb79f75720",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_subject.py": {
+      "sha256": "f37e54c35dc9cbe1b464a1634387e71ed454ebec23e72351fb50bf98752a53a8",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_temporal.py": {
+      "sha256": "12fa6adfe6ee64786ad5e778ba0937623c8ad95f80636b87d4e2ee95c19bb19c",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_text.py": {
+      "sha256": "beb63e041e4fa4fbecb6343d029934b089aaa63e1c8b94e945d2a0add2e300b8",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_upstream_failure.py": {
+      "sha256": "30c812d49af2f02c54b12c7af526889475addf4d84ea1bf33aadcff5d25597df",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/reader_view_population.py": {
+      "sha256": "d488d58297b49de0fe5422c938c14e6aef43d02ae751351c1d467bb8d283b009",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/response_safety.py": {
+      "sha256": "2e13778b2c0c6d68248af98e39c791307ade49187eb6d26d682ff8e65e40aebc",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/runtime.py": {
+      "sha256": "af7eb520de26f51b3f0967c3438eb65ed6c5c05ca80f13366b2e2179bc9058d5",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/schemas.py": {
+      "sha256": "c61de8687295d201c89323b41ddcba505046d4476acc05b99110220a7675bf70",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/service.py": {
+      "sha256": "f8ad34d11b01e0d7c2983a068aa1d9d6cdc33d42f827846ef2b36b17345dcf0d",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/skills.py": {
+      "sha256": "7b065ae1200afa0c88367f58a20ebed3745aadd7e357807f185ca784f0201687",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/stream_transport.py": {
+      "sha256": "d0561ab66e3dacb1116a5725487bfc329811b392274f96e49c2a843fa3d35771",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/testcases.py": {
+      "sha256": "07a87488a235ef9cc2a47005eb68c9fd8b7bcfcc31e976af0245d920ae1954d9",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/app/tool_gateway.py": {
+      "sha256": "f774795eb0e0c15313c1d845be7c17d42f584558187ade599ccdab3341e7ef9c",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/backend/app/requirements.txt": {
+      "sha256": "e3dd056d53319afe1b7ca993ac89ca29317de621330c9a7ad382e3a58b2a465a",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/50x.html": {
+      "sha256": "876766b4e80133fd490603e073d3567425b88794828a9292104244c9e40875ed",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/app.js": {
+      "sha256": "66471974e51755cf86195c1ccd3c2fbaa99924aa17ec7493d9627a1f753aba18",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/assets/login-bg.png": {
+      "sha256": "5c92fe41a2d131777d2c467b7081a788b3d90d35aa48a9eed978cf5a10f15b04",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/assets/login-logo.png": {
+      "sha256": "08638cf35098dbd8ac17fb987ffdac2754249a12d8c83588a72932cde0b1f21d",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/assets/logo.svg": {
+      "sha256": "477428b62992af8938e8bdd5d3938e14efd5a9c7c2c66d1e200354e93768a9f5",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js": {
+      "sha256": "45030564c201fc9eb8432dcf2296d897ee37b05fe83b731bb802c8db76dfc225",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-styles.css": {
+      "sha256": "6c7f78759d6cf29b27fb022ac0f83656c2492592e3415e45cc325835ced79d0d",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/favicon.svg": {
+      "sha256": "477428b62992af8938e8bdd5d3938e14efd5a9c7c2c66d1e200354e93768a9f5",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/index.html": {
+      "sha256": "28483cd7a738b6ce2b651064f75303ca491beebe2560aa3e96e5359747cb182e",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/model-service-error.js": {
+      "sha256": "23a1baafe6a1d6534e2e64db65301a2d86be5813874fdf2fff2a4689fd238008",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/frontend/html/styles.css": {
+      "sha256": "d172308225fd60d82a28c0b39d9f6fd48e1dfa7a771193665246ef4a0d77ebd5",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/knowledge-gateway/app/app.py": {
+      "sha256": "9d57bb7fc78ede87e5f089092bd17cf55e10db6fffb04b35d6157fa1837bb123",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/knowledge-gateway/app/requirements.txt": {
+      "sha256": "c8dcfe93a957849ae781b99d47df92c3553a38b1295a54efaa17c023e28f7be0",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/platform-gateway/app/app.py": {
+      "sha256": "e64f0576672996f801102e970f3932fc4c181cdcf33c8baa30f3dd2c9bc2a8d5",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/platform-gateway/app/config/reader-network-policy.json": {
+      "sha256": "be5b1a1922ac7c2340b85685564153335111628095f97546d72a7193d793f8c2",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/platform-gateway/app/config/reader-operation-catalog.json": {
+      "sha256": "6889139fc5bbf2f39a71a9b18234d20a4afeb83a3800464bfb92cb3a6f66837b",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/platform-gateway/app/config/reader-related-collection-contracts.json": {
+      "sha256": "8163d514344a4c3b86c0268c60fa6c0d6898f18163ed1873dd183d8372ed59e4",
+      "origin": "running-container"
+    },
+    "doc/baselines/server77-20261016/runtime-sources/platform-gateway/app/requirements.txt": {
+      "sha256": "2bf18dc376ffb898aa70b1b05ea8d5e5cb469cdf2e79615204774347420774b1",
+      "origin": "running-container"
+    },
+    "frontend/Dockerfile": {
+      "sha256": "e79cd976ad37f5ae6e38ff2205da37dbf31978e4088391ae9b6e333c885081e7",
+      "origin": "source"
+    },
+    "frontend/app.js": {
+      "sha256": "23570e11589c33a97e3f78233528c939a0fd7eadc936b7f8117b046fee7601dd",
+      "origin": "source"
+    },
+    "frontend/assets/login-bg.png": {
+      "sha256": "5c92fe41a2d131777d2c467b7081a788b3d90d35aa48a9eed978cf5a10f15b04",
+      "origin": "source"
+    },
+    "frontend/assets/login-logo.png": {
+      "sha256": "08638cf35098dbd8ac17fb987ffdac2754249a12d8c83588a72932cde0b1f21d",
+      "origin": "source"
+    },
+    "frontend/assets/logo.svg": {
+      "sha256": "477428b62992af8938e8bdd5d3938e14efd5a9c7c2c66d1e200354e93768a9f5",
+      "origin": "source"
+    },
+    "frontend/audit-app.js": {
+      "sha256": "45030564c201fc9eb8432dcf2296d897ee37b05fe83b731bb802c8db76dfc225",
+      "origin": "source"
+    },
+    "frontend/audit-styles.css": {
+      "sha256": "6c7f78759d6cf29b27fb022ac0f83656c2492592e3415e45cc325835ced79d0d",
+      "origin": "source"
+    },
+    "frontend/dsh-frontend-app.js": {
+      "sha256": "848fc85c8160759efdacbd841a92c577e89bd65c5359599f705e03be4d1f9300",
+      "origin": "source"
+    },
+    "frontend/dsh-index.html": {
+      "sha256": "ed8c48e6b91eb889101cc042e37130b1b22aee88b3135c2b22748b2ee8551364",
+      "origin": "source"
+    },
+    "frontend/favicon.svg": {
+      "sha256": "477428b62992af8938e8bdd5d3938e14efd5a9c7c2c66d1e200354e93768a9f5",
+      "origin": "source"
+    },
+    "frontend/index.html": {
+      "sha256": "840d8f6cf50dc277b10e8004646c020960615e69b1f132af0754ec608f227d63",
+      "origin": "source"
+    },
+    "frontend/model-service-error.js": {
+      "sha256": "23a1baafe6a1d6534e2e64db65301a2d86be5813874fdf2fff2a4689fd238008",
+      "origin": "source"
+    },
+    "frontend/styles.css": {
+      "sha256": "d172308225fd60d82a28c0b39d9f6fd48e1dfa7a771193665246ef4a0d77ebd5",
+      "origin": "source"
+    },
+    "knowledge-gateway/Dockerfile": {
+      "sha256": "522b2906197438387482af0a9c6b31eb6b0afc0c85722f675cab3c46d4ccd66d",
+      "origin": "source"
+    },
+    "knowledge-gateway/app.py": {
+      "sha256": "af9be0dc1e5956b6fc2099f1aec167c4f58b89818c17a1a0073574cecf1f1404",
+      "origin": "source"
+    },
+    "knowledge-gateway/requirements.txt": {
+      "sha256": "c8dcfe93a957849ae781b99d47df92c3553a38b1295a54efaa17c023e28f7be0",
+      "origin": "source"
+    },
+    "knowledge-gateway/test_gateway_auth.py": {
+      "sha256": "8cf10ae2e6138e1bf5849522c6c6598192b7d14159bf3446194c14d0dde2b631",
+      "origin": "source"
+    },
+    "platform-gateway/Dockerfile": {
+      "sha256": "84a5dc5a084890807507644fe6dc1c1d66e437e9c1c3fd6519b22e48a1773cfa",
+      "origin": "source"
+    },
+    "platform-gateway/app.py": {
+      "sha256": "e64f0576672996f801102e970f3932fc4c181cdcf33c8baa30f3dd2c9bc2a8d5",
+      "origin": "source"
+    },
+    "platform-gateway/config/reader-network-policy.json": {
+      "sha256": "be30ed164b3400fd957e6f04a461b667e845642248fe3ad2ce5d6c3ba6aefe83",
+      "origin": "source"
+    },
+    "platform-gateway/config/reader-operation-catalog.json": {
+      "sha256": "6889139fc5bbf2f39a71a9b18234d20a4afeb83a3800464bfb92cb3a6f66837b",
+      "origin": "source"
+    },
+    "platform-gateway/config/reader-related-collection-contracts.json": {
+      "sha256": "8163d514344a4c3b86c0268c60fa6c0d6898f18163ed1873dd183d8372ed59e4",
+      "origin": "source"
+    },
+    "platform-gateway/requirements.txt": {
+      "sha256": "2bf18dc376ffb898aa70b1b05ea8d5e5cb469cdf2e79615204774347420774b1",
+      "origin": "source"
+    },
+    "reader-network-policy.production.json": {
+      "sha256": "be5b1a1922ac7c2340b85685564153335111628095f97546d72a7193d793f8c2",
+      "origin": "source"
+    }
+  },
+  "excluded": [
+    "Git history",
+    "environment values and credentials",
+    "raw business records and retest captures",
+    "old backup scripts and source copies",
+    "database dumps",
+    "Docker image and rootfs binary archives",
+    "compiled Python caches"
+  ],
+  "checks": {
+    "credentialPatternScan": "passed",
+    "reviewedLiteralExceptions": [
+      {
+        "file": "backend/tests/test_audit_auth.py",
+        "line": 38,
+        "reason": "password-policy schema unit-test fixture"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 180,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 187,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 190,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 216,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 259,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 376,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 383,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 386,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 412,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 452,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "frontend/audit-app.js",
+        "line": 480,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 180,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 187,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 190,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 216,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 259,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 376,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 383,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 386,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 412,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 452,
+        "reason": "UI translation label"
+      },
+      {
+        "file": "doc/baselines/server77-20261016/runtime-sources/frontend/html/audit-app.js",
+        "line": 480,
+        "reason": "UI translation label"
+      }
+    ],
+    "pythonSyntax": "passed on server Python; no imports or runtime test execution",
+    "deployedSourceAgainstBackupSha256": "matched",
+    "runningContainerIdsAndStartTimes": "unchanged"
+  },
+  "scope": "A version-preservation snapshot and architecture proposal, not implementation or deployment of multi-agent changes."
+}

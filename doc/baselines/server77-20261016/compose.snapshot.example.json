@@ -1,0 +1,130 @@
+{
+  "services": {
+    "dsh-admin-service-backend-1": {
+      "image": "dsh-admin-backend:codex-member-boundary-20260930",
+      "environment": {
+        "READER_TOTAL_TIMEOUT_SECONDS": "${READER_TOTAL_TIMEOUT_SECONDS}",
+        "REDIS_URL": "${REDIS_URL}",
+        "AUDIT_ADMIN_ENABLED": "${AUDIT_ADMIN_ENABLED}",
+        "UMC_LOGIN_PASSWORD": "${UMC_LOGIN_PASSWORD}",
+        "KNOWLEDGE_GATEWAY_URL": "${KNOWLEDGE_GATEWAY_URL}",
+        "UMC_LOGIN_EMAIL": "${UMC_LOGIN_EMAIL}",
+        "LLM_MODEL": "${LLM_MODEL}",
+        "OCR_GATEWAY_URL": "${OCR_GATEWAY_URL}",
+        "EXTERNAL_TOOLS_ENABLED": "${EXTERNAL_TOOLS_ENABLED}",
+        "UMC_PORTAL": "${UMC_PORTAL}",
+        "SKILL_ROUTER_MODE": "${SKILL_ROUTER_MODE}",
+        "PLATFORM_GATEWAY_URL": "${PLATFORM_GATEWAY_URL}",
+        "LLM_API_KEY": "${LLM_API_KEY}",
+        "AUDIT_CLEANUP_ENABLED": "${AUDIT_CLEANUP_ENABLED}",
+        "UMC_DOCUMENT_BASE_URL": "${UMC_DOCUMENT_BASE_URL}",
+        "LLM_TIMEOUT_SECONDS": "${LLM_TIMEOUT_SECONDS}",
+        "KNOWLEDGE_TIMEOUT_SECONDS": "${KNOWLEDGE_TIMEOUT_SECONDS}",
+        "DATABASE_URL": "${DATABASE_URL}",
+        "RUNTIME_IDLE_TTL_SECONDS": "${RUNTIME_IDLE_TTL_SECONDS}",
+        "UMC_LOGIN_TIMEOUT_SECONDS": "${UMC_LOGIN_TIMEOUT_SECONDS}",
+        "UMC_PUBLIC_BASE_URL": "${UMC_PUBLIC_BASE_URL}",
+        "LLM_BASE_URL": "${LLM_BASE_URL}",
+        "KNOWLEDGE_DEFAULT_FOLDER_ID": "${KNOWLEDGE_DEFAULT_FOLDER_ID}",
+        "PYTHONUNBUFFERED": "${PYTHONUNBUFFERED}",
+        "UMC_DOCUMENT_TIMEOUT_SECONDS": "${UMC_DOCUMENT_TIMEOUT_SECONDS}",
+        "PLATFORM_TIMEOUT_SECONDS": "${PLATFORM_TIMEOUT_SECONDS}",
+        "DATABASE_INIT_ENABLED": "${DATABASE_INIT_ENABLED}",
+        "CORS_ORIGINS": "${CORS_ORIGINS}",
+        "OCR_TIMEOUT_SECONDS": "${OCR_TIMEOUT_SECONDS}",
+        "AUDIT_ADMIN_USER_IDS": "${AUDIT_ADMIN_USER_IDS}",
+        "UMC_CUSTOMER_BASE_URL": "${UMC_CUSTOMER_BASE_URL}",
+        "PYTHONDONTWRITEBYTECODE": "${PYTHONDONTWRITEBYTECODE}",
+        "KNOWLEDGE_TOP_K": "${KNOWLEDGE_TOP_K}",
+        "SKILL_ROUTER_TIMEOUT_SECONDS": "${SKILL_ROUTER_TIMEOUT_SECONDS}",
+        "UMC_ADMIN_BASE_URL": "${UMC_ADMIN_BASE_URL}",
+        "AUDIT_CLEANUP_INTERVAL_SECONDS": "${AUDIT_CLEANUP_INTERVAL_SECONDS}",
+        "AUDIT_RETENTION_DAYS": "${AUDIT_RETENTION_DAYS}",
+        "UMC_LOGIN_URL": "${UMC_LOGIN_URL}",
+        "KNOWLEDGE_RETRY_ATTEMPTS": "${KNOWLEDGE_RETRY_ATTEMPTS}",
+        "PATH": "${PATH}",
+        "LANG": "${LANG}",
+        "GPG_KEY": "${GPG_KEY}",
+        "PYTHON_VERSION": "${PYTHON_VERSION}",
+        "PYTHON_SHA256": "${PYTHON_SHA256}"
+      },
+      "working_dir": "/app"
+    },
+    "dsh-admin-service-frontend-1": {
+      "image": "dsh-admin-frontend:audit-entry-20261005-2",
+      "environment": {
+        "PATH": "${PATH}",
+        "NGINX_VERSION": "${NGINX_VERSION}",
+        "NJS_VERSION": "${NJS_VERSION}",
+        "NJS_RELEASE": "${NJS_RELEASE}",
+        "ACME_VERSION": "${ACME_VERSION}",
+        "PKG_RELEASE": "${PKG_RELEASE}",
+        "DYNPKG_RELEASE": "${DYNPKG_RELEASE}"
+      },
+      "working_dir": "/"
+    },
+    "dsh-admin-service-platform-gateway-1": {
+      "image": "dsh-admin-platform-gateway:3b8f6d9",
+      "environment": {
+        "UMC_CUSTOMER_BASE_URL": "${UMC_CUSTOMER_BASE_URL}",
+        "UMC_PORTAL": "${UMC_PORTAL}",
+        "PLATFORM_RETRY_ATTEMPTS": "${PLATFORM_RETRY_ATTEMPTS}",
+        "UMC_ADMIN_BASE_URL": "${UMC_ADMIN_BASE_URL}",
+        "PORTAL_READER_WHITELIST_ENABLED": "${PORTAL_READER_WHITELIST_ENABLED}",
+        "PLATFORM_TIMEOUT_SECONDS": "${PLATFORM_TIMEOUT_SECONDS}",
+        "PLATFORM_BASE_URL": "${PLATFORM_BASE_URL}",
+        "UMC_PUBLIC_BASE_URL": "${UMC_PUBLIC_BASE_URL}",
+        "PORTAL_READER_WHITELIST_FILE": "${PORTAL_READER_WHITELIST_FILE}",
+        "PATH": "${PATH}",
+        "LANG": "${LANG}",
+        "GPG_KEY": "${GPG_KEY}",
+        "PYTHON_VERSION": "${PYTHON_VERSION}",
+        "PYTHON_SHA256": "${PYTHON_SHA256}"
+      },
+      "working_dir": "/app"
+    },
+    "dsh-admin-service-knowledge-gateway-1": {
+      "image": "dsh-admin-knowledge-gateway:97b8062-20260907",
+      "environment": {
+        "KNOWLEDGE_RETRY_ATTEMPTS": "${KNOWLEDGE_RETRY_ATTEMPTS}",
+        "KNOWLEDGE_UPSTREAM_MAX_TOP_K": "${KNOWLEDGE_UPSTREAM_MAX_TOP_K}",
+        "KNOWLEDGE_RETRIEVAL_MODES": "${KNOWLEDGE_RETRIEVAL_MODES}",
+        "KNOWLEDGE_BASE_URL": "${KNOWLEDGE_BASE_URL}",
+        "KNOWLEDGE_PUBLIC_PATH": "${KNOWLEDGE_PUBLIC_PATH}",
+        "KNOWLEDGE_TIMEOUT_SECONDS": "${KNOWLEDGE_TIMEOUT_SECONDS}",
+        "PATH": "${PATH}",
+        "LANG": "${LANG}",
+        "GPG_KEY": "${GPG_KEY}",
+        "PYTHON_VERSION": "${PYTHON_VERSION}",
+        "PYTHON_SHA256": "${PYTHON_SHA256}"
+      },
+      "working_dir": "/app"
+    },
+    "umc-admin-gateway": {
+      "image": "nginx:alpine",
+      "environment": {
+        "PATH": "${PATH}",
+        "NGINX_VERSION": "${NGINX_VERSION}",
+        "PKG_RELEASE": "${PKG_RELEASE}",
+        "DYNPKG_RELEASE": "${DYNPKG_RELEASE}",
+        "NJS_VERSION": "${NJS_VERSION}",
+        "NJS_RELEASE": "${NJS_RELEASE}",
+        "ACME_VERSION": "${ACME_VERSION}"
+      },
+      "working_dir": "/"
+    },
+    "umc-admin-portal": {
+      "image": "umc-admin-portal:acc-nine-stability-20261003",
+      "environment": {
+        "PATH": "${PATH}",
+        "NGINX_VERSION": "${NGINX_VERSION}",
+        "PKG_RELEASE": "${PKG_RELEASE}",
+        "DYNPKG_RELEASE": "${DYNPKG_RELEASE}",
+        "NJS_VERSION": "${NJS_VERSION}",
+        "NJS_RELEASE": "${NJS_RELEASE}"
+      },
+      "working_dir": "/"
+    }
+  },
+  "x-note": "Example only. Restore exact commands, networks, binds and secret values from the private 77 backup; do not deploy this placeholder template directly."
+}

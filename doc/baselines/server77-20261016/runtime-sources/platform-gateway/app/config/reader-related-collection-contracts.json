@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "notice": "Reviewed parent-to-collection identity contracts only. This registry never grants page, API or field permission; all ordinary read policy and current native authorization checks remain mandatory.",
+  "contracts": [
+    {
+      "relationshipRef": "admin.enquiry.timeline",
+      "operationKey": "GET /api/Enquiry/Management/{enquiryId}/Timeline",
+      "parentOperationKey": "GET /api/Enquiry/Management/{enquiryId}/EnquiryInfo",
+      "parentPath": "/data",
+      "parentField": "id",
+      "parameter": "enquiryId",
+      "collectionPath": "/data",
+      "allowedFields": [
+        "changeStatusObj.nameEn",
+        "changeStatusObj.statusName",
+        "departmentName",
+        "changeOnTime"
+      ],
+      "sources": [
+        {
+          "reference": "navigation-knowledge/sources/umc-admin-portal-target/src/pages/TicketsDetails/components/TicketTimeline/index.tsx",
+          "sha256": "ae21f708f6cf104f41d3769711e787677f31cc3a4b65a74a2bfe1adcf2f40176"
+        },
+        {
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.Application/Services/EnquiryApp/EnquiryAppService.cs",
+          "sha256": "693bbed263aff3b567409dc654fe221d835351077272abc6df9ef2fc35cd31a2"
+        },
+        {
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.API/Controllers/EnquiryController.cs",
+          "sha256": "aee90d03eea602911e84f04871018a0c7cdf32c67d964e3f9502f537d2e44521"
+        }
+      ]
+    },
+    {
+      "relationshipRef": "admin.inspection.task.target-history",
+      "operationKey": "GET /api/admin/inspection/tasks/by-target",
+      "parentOperationKey": "GET /api/admin/inspection/tasks/{id}",
+      "parentPath": "/data",
+      "parentField": "id",
+      "parameter": "taskId",
+      "collectionPath": "/data/items",
+      "allowedFields": [
+        "id",
+        "taskNo",
+        "targetName",
+        "targetTypeName",
+        "statusName",
+        "inspectorName",
+        "createdOn",
+        "dueDate",
+        "assignmentState"
+      ],
+      "sources": [
+        {
+          "reference": "navigation-knowledge/sources/umc-admin-portal-target/src/services/inspection.ts",
+          "sha256": "4a841e7f947b4e73a3960cc0d1b6478b8d43c28652c0113c0b9f0fc38035f618"
+        },
+        {
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.Application/Services/InspectionTasks/InspectionTaskAppService.cs",
+          "sha256": "a68f2bc0ce96ca363f0384ca86982dd989ed8838929749b11c28a3c6950196aa"
+        },
+        {
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.API/Controllers/InspectionTaskController.cs",
+          "sha256": "9015dc75d7bf99acf0e1067d2156b17564061b7f66cf3eab82f0ca6e0299f5d7"
+        }
+      ]
+    },
+    {
+      "relationshipRef": "admin.inspection.violation.target-history",
+      "operationKey": "GET /api/admin/inspection/violations/by-target",
+      "parentOperationKey": "GET /api/admin/inspection/tasks/{id}",
+      "parentPath": "/data",
+      "parentField": "id",
+      "parameter": "taskId",
+      "collectionPath": "/data/items",
+      "allowedFields": [
+        "violationId",
+        "violationNo",
+        "violatorName",
+        "violationTypeName",
+        "fineAmount",
+        "statusName",
+        "sourceTaskId",
+        "sourceTaskNo",
+        "reportedByName",
+        "createdOn",
+        "paidTime"
+      ],
+      "sources": [
+        {
+          "reference": "navigation-knowledge/sources/umc-admin-portal-target/src/services/inspection.ts",
+          "sha256": "4a841e7f947b4e73a3960cc0d1b6478b8d43c28652c0113c0b9f0fc38035f618"
+        },
+        {
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.Application/Services/InspectionViolations/InspectionViolationAppService.cs",
+          "sha256": "be67e0321eba606160880e95c87e77859a1e675396c5f731e4e34e1081737e0f"
+        },
+        {
+          "reference": "navigation-knowledge/sources/adminportalservice/UMC.AdminPortal.API/Controllers/InspectionViolationController.cs",
+          "sha256": "3f36b3f979e11d23d4966cdd72c27766d415fca863302adf3c97e2a29b61c93a"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+.env
+.env.lite
+.env.admin.postgres18.local
+.env.admin.remote.local
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.docx-render-*/
+.docx-inspect-*/
+.xlsx-inspect-*/
+outputs/**/*.inspect.ndjson
+outputs/**/artifact-work/
+outputs/**/previews/
+outputs/**/term1_rerun_raw*.json
+outputs/**/term1_knowledge_retry*.json
+outputs/**/platform_checks.json
+Term1-Test.zip
+dist/docker-release/
+**/__MACOSX/
+**/._*
+
+# Imported frontend local environment files may contain API keys and must stay
+# outside version control. Commit a sanitized example file instead.
+umc-customer-portal-features-ai-chatbot-upgrade/.env
+umc-customer-portal-features-ai-chatbot-upgrade/.env.*
+!umc-customer-portal-features-ai-chatbot-upgrade/.env.example
+
+# Test outputs can contain authenticated responses or generated artifacts.
+# Keep existing tracked outputs available, but do not add new local captures.
+/outputs/**
+
+# This is a separately managed customer frontend workspace, not part of the
+# DSH knowledge-base repository.
+/umc-customer-portal-features-ai-chatbot-upgrade/
