@@ -1,5 +1,5 @@
 {
-  "scope": "new source and engineering contracts only; no live configs, private evidence, database or image archives",
+  "scope": "reviewed implementation source, tests and engineering contracts only; no live configs, credentials, private evidence or business records",
   "files": [
     {
       "path": ".gitignore",
@@ -158,23 +158,28 @@
     },
     {
       "path": "backend/app/timing.py",
-      "sha256": "3e16046d2f6aadcea55b9147b1f1b0558ff64afb7152bfc808131cf36a316ea8",
-      "bytes": 11400
+      "sha256": "b86d52f3c4c861a88c7bc113ca2cdb8391ce56009f3fd3a8c5e76eede3809931",
+      "bytes": 12160
     },
     {
       "path": "backend/app/timing_report.py",
-      "sha256": "867b6f538803f69662d89904bfedb23bb6a21d8c15947ca32063b1a4f4d0b83b",
-      "bytes": 2357
+      "sha256": "4ac687a1cb25d4cf17dc853120a8445240bb647f1bb092366688da47dbaf7a11",
+      "bytes": 2682
     },
     {
       "path": "backend/tests/test_parallel_agents_v1.py",
-      "sha256": "b42b227f096cfa914422d326b024050ecfa10b1df595cdf998940292f148278b",
-      "bytes": 18683
+      "sha256": "607e5d678c5067efe901d808606208a3b0bb91aefc226d16d2a19b6aa63ea942",
+      "bytes": 20819
+    },
+    {
+      "path": "backend/tests/test_platform_portal_reader.py",
+      "sha256": "2a98239168b353048fc897264476852f7586db94ce63a657ac600e4d77c01447",
+      "bytes": 110794
     },
     {
       "path": "doc/parallel-v1/DELIVERY.md",
-      "sha256": "70c36fcd841eaacb2b094788e3246d967b49ca497da1dbb5bab18f0ace1f2579",
-      "bytes": 9240
+      "sha256": "ec75b7e21a4e4a6c626233d52fb218e5e239f576c4ca2b3f32b8a7b19c2b6d36",
+      "bytes": 10902
     },
     {
       "path": "knowledge-gateway/Dockerfile",
@@ -183,13 +188,13 @@
     },
     {
       "path": "knowledge-gateway/app.py",
-      "sha256": "39e1e60fdd3723107e8e2a85a819872fcb6dee15b7c91fbaa92115f311d88f52",
-      "bytes": 4913
+      "sha256": "769b27e9192f4323ce379b8dd44570348fe228a46585b0c9c1fa2e2cc0fb98c4",
+      "bytes": 5255
     },
     {
       "path": "knowledge-gateway/timing.py",
-      "sha256": "3e16046d2f6aadcea55b9147b1f1b0558ff64afb7152bfc808131cf36a316ea8",
-      "bytes": 11400
+      "sha256": "b86d52f3c4c861a88c7bc113ca2cdb8391ce56009f3fd3a8c5e76eede3809931",
+      "bytes": 12160
     },
     {
       "path": "module-contract.yaml",
@@ -203,13 +208,13 @@
     },
     {
       "path": "platform-gateway/app.py",
-      "sha256": "e35c29a49760383b2f572278006b731966375a9f49ec72f13f6eca5d17ba4131",
-      "bytes": 287784
+      "sha256": "40ce062b791db604f91cdb434d97c1f4acbbad86dd76626c8c283aec14c7a1ea",
+      "bytes": 288509
     },
     {
       "path": "platform-gateway/timing.py",
-      "sha256": "3e16046d2f6aadcea55b9147b1f1b0558ff64afb7152bfc808131cf36a316ea8",
-      "bytes": 11400
+      "sha256": "b86d52f3c4c861a88c7bc113ca2cdb8391ce56009f3fd3a8c5e76eede3809931",
+      "bytes": 12160
     },
     {
       "path": "regression.yaml",
@@ -223,8 +228,8 @@
     },
     {
       "path": "verification/baseline-comparison.json",
-      "sha256": "932db7297e9fd666b7b1d19b5bbb3fb77075da1f66215ec45cfc80a6ece128e9",
-      "bytes": 394
+      "sha256": "9c2ec2e3a7fe390e60e71bc52f800d48460d7ab429836a4c6114aa9504e59936",
+      "bytes": 428
     },
     {
       "path": "verification/openapi.json",

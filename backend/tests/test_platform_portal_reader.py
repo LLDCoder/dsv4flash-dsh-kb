@@ -2676,3 +2676,13 @@ def test_gateway_rechecks_cell_detail_destination_permission_before_browser(monk
 
     assert error_code(raised.value) == "page_not_permitted"
     assert calls == [("POST", "/api/AdminUser/GetUserInfo")]
+
+
+@pytest.mark.parametrize('path,expected',[
+    ('/api/AdminUser/GetUserInfo','UMC'),
+    ('/api/Application/MyTeamTodoPage','UMC'),
+    ('/api/v1/conversations','DSH.backend'),
+    ('/dsh-api/api/v1/ws','DSH.backend'),
+])
+def test_timing_owner_follows_actual_portal_proxy_routes(path,expected):
+    assert gateway._portal_http_owner('http://portal.test'+path,'http://portal.test')==expected

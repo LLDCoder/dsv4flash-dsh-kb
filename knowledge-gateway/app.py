@@ -1,7 +1,12 @@
 import sys
+import importlib.util as _timing_importlib
 from pathlib import Path as _TimingPath
-sys.path.insert(0, str(_TimingPath(__file__).resolve().parent))
-from timing import install_gateway, span as timing_span, request as timed_request, backoff, CURRENT as TIMING_CURRENT, PARENT as TIMING_PARENT
+if "dsh_knowledge_timing" not in sys.modules:
+    _timing_spec=_timing_importlib.spec_from_file_location("dsh_knowledge_timing",_TimingPath(__file__).with_name("timing.py"))
+    _timing_module=_timing_importlib.module_from_spec(_timing_spec)
+    sys.modules["dsh_knowledge_timing"]=_timing_module
+    _timing_spec.loader.exec_module(_timing_module)
+from dsh_knowledge_timing import install_gateway, span as timing_span, request as timed_request, backoff, CURRENT as TIMING_CURRENT, PARENT as TIMING_PARENT
 import asyncio
 import os
 import uuid

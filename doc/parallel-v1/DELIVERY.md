@@ -50,6 +50,12 @@ question. Parent spans are inclusive. Concurrent agent spans overlap. Do not sum
 all spans, or add API/Page/KB branch times. `agentWallMs`, `criticalBranch`,
 `firstVerifiedAnswerMs` and `longestHttp` are separate measurements.
 
+HTTP transport timing stops when the response body is complete. Remote timing-receipt
+processing is a separate DSH span. A DSH gateway service span is linked to its
+exact caller and exposed separately from transport. The deployed portal proxy
+routes ordinary `/api/` to the UMC domain; `/api/v1/` and the DSH prefixes route
+to DSH. Static local UMC code is not proof of the external service build.
+
 UMC HTTP duration is client round trip including the response body, not the UMC
 server's SQL/auth/domain/serialization breakdown. Those internals remain null.
 KB transport/manifest/document stages are measured; internal embedding, vector,
@@ -147,3 +153,24 @@ suite. `verification/baseline-comparison.json` distinguishes failures already
 present in the snapshot from new regressions. Real-business evidence and
 credentials belong in private test outputs, never in this public repository.
 There is no live approval/assignment/write-refusal test in this delivery.
+
+## Verification status on the isolated server
+
+The final source suite has 2,022 passing tests, 129 failures and three collection
+errors. The same deployed-source baseline has 1,968 passing tests and the same
+129 failures / three errors: 54 additional passing checks, zero new failing test
+identities. This is not an all-green suite. Collection errors concern old tests
+importing helpers/constants absent from the deployed snapshot.
+
+Authorized License queries verified the original and rephrased status questions
+in English and Arabic. Live adapter probes passed nine License/team read
+contracts. Eight Content contracts remain blocked by the available account's
+permissions; no additional account was authorized. Nine certificate/library
+contracts remain deliberately disabled. Inspection uses the existing page
+fallback: status lookup limitations reproduced on the unchanged deployment,
+and visit-preparation queries did not establish the requested checklist.
+
+These are isolated-stage results, not approval to replace the original entry.
+Keep the original 18081 deployment and the private rollback backup. Exported
+private Excel/evidence distinguishes diagnostic iterations, final samples,
+unavailable upstream internals and unexecuted write-operation tests.

@@ -48,8 +48,12 @@ def report(payload):
     roots=[s for s in spans if s.get('stage')=='turn.end_to_end']
     answer=[s for s in spans if s.get('stage')=='answer.first_verified_block']
     branches={}
+    # Broker worker spans also carry agent.knowledge, but are nested under a
+    # caller stage. They are not the independently dispatched root KB task.
+    dispatch_parents={s.get('parentSpanId') for s in spans if s.get('stage') in {'agent.api','agent.page'}}
     for s in spans:
-        if s.get('stage') in {'agent.api','agent.page','agent.knowledge'}:
+        if (s.get('stage') in {'agent.api','agent.page','agent.knowledge'}
+                and s.get('parentSpanId') in dispatch_parents):
             branches[s['agent']]=max(branches.get(s['agent'],0),s['durationMs'])
     calls=[s for s in spans if s.get('stage') in {'http.request','browser.http.request'}]
     longest=max(calls,key=lambda x:x['durationMs']) if calls else None

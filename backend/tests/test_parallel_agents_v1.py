@@ -358,3 +358,43 @@ def test_semantic_kind_must_match_the_actor_and_business_object(kind,obj,valid):
     if valid:pa.validate_semantic_kind(candidate)
     else:
         with pytest.raises(ValueError):pa.validate_semantic_kind(candidate)
+
+
+
+def test_timing_summary_does_not_replace_root_kb_task_with_nested_broker_worker():
+    rows=[{'stage':'agent.api','agent':'api','parentSpanId':'root','durationMs':100},
+          {'stage':'agent.page','agent':'page','parentSpanId':'root','durationMs':900},
+          {'stage':'agent.knowledge','agent':'knowledge','parentSpanId':'root','durationMs':150},
+          {'stage':'agent.knowledge','agent':'knowledge','parentSpanId':'page-field-request','durationMs':500}]
+    value=report({'spans':rows})
+    assert value['agentWallMs']=={'api':100,'page':900,'knowledge':150}
+    assert value['criticalBranch']=='page'
+
+
+def test_remote_gateway_time_is_separate_from_transport_and_receipt_decode(monkeypatch):
+    import app.timing as timing
+    import time
+    original=timing.ingest
+    def handler(req):
+        remote=Trace(req.headers['X-Request-ID'],trace_id=req.headers['X-DSH-Trace-ID'],
+            parent_id=req.headers['X-DSH-Parent-Span'],owner='DSH.platform-gateway')
+        with remote.begin('gateway.request'):pass
+        return httpx.Response(200,json={},headers={'X-DSH-Timing':timing_header(remote)})
+    def slow(response):
+        time.sleep(.03)
+        return original(response)
+    monkeypatch.setattr(timing,'ingest',slow)
+    async def scenario():
+        trace=Trace('request-1');ctx=CURRENT.set(trace)
+        try:
+            with span('parent'):
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                    await request(client,'GET','http://gateway.test/read',owner='DSH.platform-gateway')
+            transport=next(s for s in trace.spans if s['stage']=='http.request')
+            receipt=next(s for s in trace.spans if s['stage']=='timing.remote_receipt_processing')
+            assert transport['endUtc']<=receipt['startUtc'] and receipt['durationMs']>=20
+            assert receipt['parentSpanId']==transport['parentSpanId']
+            assert transport['upstreamTraceAvailable'] is True and transport['missingReason'] is None
+            assert transport['upstreamInternalMs'] is not None
+        finally:CURRENT.reset(ctx)
+    run(scenario())

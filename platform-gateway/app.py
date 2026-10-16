@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import sys
+import importlib.util as _timing_importlib
 from pathlib import Path as _TimingPath
-sys.path.insert(0, str(_TimingPath(__file__).resolve().parent))
-from timing import install_gateway, span as timing_span, request as timed_request, backoff, CURRENT as TIMING_CURRENT, PARENT as TIMING_PARENT, timed_await, TimedLock, headers as timing_headers
+if "dsh_platform_timing" not in sys.modules:
+    _timing_spec=_timing_importlib.spec_from_file_location("dsh_platform_timing",_TimingPath(__file__).with_name("timing.py"))
+    _timing_module=_timing_importlib.module_from_spec(_timing_spec)
+    sys.modules["dsh_platform_timing"]=_timing_module
+    _timing_spec.loader.exec_module(_timing_module)
+from dsh_platform_timing import install_gateway, span as timing_span, request as timed_request, backoff, CURRENT as TIMING_CURRENT, PARENT as TIMING_PARENT, timed_await, TimedLock, headers as timing_headers
 import asyncio
 import hashlib
 import json
@@ -4858,6 +4863,16 @@ async def admin_portal_read(
         READER_PROGRESS.reset(progress_token)
 
 
+def _portal_http_owner(url, portal_origin):
+    parts=urlsplit(url)
+    if parts.netloc != urlsplit(portal_origin).netloc:
+        return 'unknown.upstream'
+    path=parts.path
+    if path=='/api/v1' or path.startswith(('/api/v1/','/dsh-api/api/','/dsh-audit/api/')):
+        return 'DSH.backend'
+    return 'UMC' if path.startswith('/api/') else 'unknown.upstream'
+
+
 async def _execute_admin_portal_read(request, authorization, x_request_id, x_user_id):
     """Execute a serialized, same-origin, read-only Admin Portal inspection."""
     stage = 'identity'
@@ -4964,9 +4979,9 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                 network_parent = TIMING_PARENT.get()
                 def request_started(request_obj):
                     parts = urlsplit(request_obj.url)
-                    if network_trace and parts.path.startswith('/api/'):
-                        owner = 'UMC' if parts.netloc == urlsplit(portal_origin).netloc else 'unknown.upstream'
-                        from timing import route_template
+                    if network_trace and parts.path.startswith(('/api/','/dsh-api/api/','/dsh-audit/api/')):
+                        owner = _portal_http_owner(request_obj.url,portal_origin)
+                        from dsh_platform_timing import route_template
                         trigger = _reader_api_discovery_state(reader_health).get('trigger','initial')
                         action_match = re.fullmatch(r'action:(\d+):([a-z_]+)',str(trigger))
                         network_spans[id(request_obj)] = network_trace.begin('browser.http.request',

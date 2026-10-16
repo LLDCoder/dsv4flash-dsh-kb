@@ -74,6 +74,7 @@ class Trace:
 class Span:
     def __init__(self, trace, name, owner, parent_id, fields):
         self.trace, self.started, self.ended = trace, time.monotonic(), False
+        self.measurement_end = None
         self.row = {"version": VERSION, "componentRevision": COMPONENT_REVISION, "requestId": trace.request_id, "traceId": trace.trace_id,
                     "spanId": uuid.uuid4().hex[:16], "parentSpanId": parent_id,
                     "agent": AGENT.get(), "owner": owner, "stage": str(name)[:120],
@@ -88,7 +89,8 @@ class Span:
         if self.ended:
             return
         self.ended = True
-        self.row.update({"endUtc": utc(), "durationMs": round((time.monotonic()-self.started)*1000, 3),
+        end_clock, end_utc = self.measurement_end or (time.monotonic(), utc())
+        self.row.update({"endUtc": end_utc, "durationMs": round((end_clock-self.started)*1000, 3),
                          "status": status})
         self.row.update({k: v for k, v in fields.items() if k in {
             "statusCode", "errorType", "missingReason", "firstByteMs", "inputUnits", "outputUnits"}})
@@ -164,6 +166,7 @@ def ingest(response):
         for row in remote.get("spans", [])[:1000]:
             if isinstance(row, dict) and row.get("traceId") == trace.trace_id:
                 trace.append(row)
+        return remote
     except (ValueError, TypeError, zlib.error):
         LOGGER.warning("dsh_timing remote_receipt_invalid")
 
@@ -173,7 +176,7 @@ async def request(client, method, url, *, owner, attempt=1, **kwargs):
     h = dict(kwargs.pop("headers", None) or {})
     with span("http.request", owner=owner, sourceOwner=owner, method=method.upper(),
               route=route_template(urlsplit(url).path), attempt=attempt,
-              measurement="client_round_trip_including_body",
+              measurement="client_transport_to_body_complete",
               upstreamInternalMs=None, missingReason="upstream_internal_spans_not_exposed") as item:
         h.update(headers())
         active = {}
@@ -190,14 +193,24 @@ async def request(client, method, url, *, owner, attempt=1, **kwargs):
         extensions['trace'] = transport_event
         try:
             response = await client.request(method, url, headers=h, extensions=extensions, **kwargs)
+            if item:
+                item.measurement_end = (time.monotonic(), utc())
         finally:
             for pending in active.values():
                 pending.finish('interrupted')
+        remote = None
+        if response.headers.get("X-DSH-Timing"):
+            with span("timing.remote_receipt_processing", parent_id=item.row['parentSpanId'] if item else None):
+                remote = ingest(response)
         if item:
             item.row["statusCode"] = response.status_code
+            if remote:
+                roots=[s for s in remote.get('spans',[]) if s.get('stage')=='gateway.request'
+                       and s.get('parentSpanId')==item.row['spanId']]
+                if roots:
+                    item.row.update(upstreamInternalMs=roots[-1]['durationMs'],missingReason=None,upstreamTraceAvailable=True)
             if response.is_error:
                 item.finish("http_error", statusCode=response.status_code)
-        ingest(response)
         return response
 
 
