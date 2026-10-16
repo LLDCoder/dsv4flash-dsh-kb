@@ -20,7 +20,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, ReaderClarificationClaim, SessionEvent, SessionLocal, Skill, purge_expired_audit_data
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
-from .answer_stream import AnswerStream, incomplete_stream_notice, cancelled_stream_notice
+from .answer_stream import AnswerStream, AnswerStreamRejected, incomplete_stream_notice, cancelled_stream_notice
+from .inspection_read import complete_verified_checklist_tail
 from .message_compression import (MESSAGE_COMPRESSION_THRESHOLD_CHARS, MessageCompressionError,
                                   compression_failure_message, message_source_hash, prepare_reader_input)
 from .generic_reader import GenericKnowledgeReader, render_generic_answer
@@ -2094,21 +2095,21 @@ def _needs_partial_record_note(evidence: dict[str, Any]) -> bool:
     return bool(evidence.get('page')) and str(evidence.get('completeness') or '') != 'complete' and evidence.get('answerShape') in {'list', 'overview', 'attention', 'due'}
 
 
-def reader_natural_answer_is_grounded(answer: str, verified_text: str, question: str, *, completeness: str = "") -> bool:
+def reader_natural_answer_rejection(answer: str, verified_text: str, question: str, *, completeness: str = "") -> str:
     """Reject drafts that introduce identifiers or numeric facts absent from the evidence."""
  
     if not answer.strip() or len(answer) > 6_000:
-        return False
+        return "empty_or_oversized_answer"
     lowered = answer.casefold()
     if any(marker in lowered for marker in (
         "bounded verified result", "reader.result", "operationkey", "api path",
         "system prompt", "tool call", "[redacted]",
     )):
-        return False
+        return "internal_marker"
     support = f"{verified_text}\n{question}".casefold()
     advice = r"\b(?:prioriti[sz]e|start with|you (?:should|may want to|might want to))\b"
     if re.search(advice, lowered) and not re.search(advice, verified_text, re.I):
-        return False
+        return "unsupported_advice"
     # A visible sample cannot establish the size of the whole queue. The
     # question itself (e.g. "show all") is never proof of completeness.
     if completeness != 'complete' and re.search(
@@ -2119,18 +2120,18 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
         r'|(?:全部|完整)(?:队列|列表|记录)|没有更多(?:记录|请求|任务)',
         lowered,
     ):
-        return False
+        return "unsupported_complete_queue"
     if completeness != 'complete' and re.search(
         r'\bthere are (?:\d+|one|two|three|four|five) (?:applications|tasks|records)\b', answer, re.I,
     ):
-        return False
+        return "unsupported_population_count"
     # Formatting an amount must not silently assign a currency.
     for symbol in ('$', '€', '£', '¥'):
         if symbol in answer and symbol not in verified_text:
-            return False
+            return "unsupported_currency_symbol"
     for currency in re.findall(r'\b(?:USD|AED|EUR|GBP|CNY|SAR)\b', answer):
         if currency.casefold() not in verified_text.casefold():
-            return False
+            return "unsupported_currency_code"
     # Field-oriented amount questions must not be reduced to a heading or
     # configuration metadata. If a decimal amount was observed, at least one
     # exact observed amount must survive the natural-language presentation.
@@ -2142,7 +2143,7 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
             for amount in re.findall(r'(?<![\w-])[-+]?\d[\d,]*\.\d{2}(?!\w)', line)
         ]
         if observed_amounts and not any(amount in answer for amount in observed_amounts):
-            return False
+            return "observed_amount_missing"
         if re.search(r'\b(?:total|sum)\b|总额|合计|الإجمالي|المجموع', question, re.I) and len(observed_amounts) >= 2:
             try:
                 total = sum((Decimal(item.replace(",", "")) for item in observed_amounts), Decimal("0")).quantize(Decimal("0.01"))
@@ -2151,25 +2152,25 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
             if total is not None:
                 total_text = f"{total:.2f}"
                 if total_text not in answer and total_text.rstrip("0").rstrip(".") not in answer:
-                    return False
+                    return "observed_total_missing"
     if re.search(r'\b(?:currenc(?:y|ies))\b|币种|عملة|عملات', question, re.I):
         observed_currencies = set(re.findall(r'\b(?:USD|AED|EUR|GBP|CNY|SAR)\b', verified_text, re.I))
         if observed_currencies and not any(code.casefold() in answer.casefold() for code in observed_currencies):
-            return False
+            return "observed_currency_missing"
     # Layout applicability and isolated UI state are material facts, not
     # optional prose that the formatter may turn into current-user access.
     qualifiers = re.findall(r'\b([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,4}) layout\b', verified_text)
     qualifiers += re.findall(r'\brechecked for ([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,4})(?=[;.,])', verified_text)
     qualifiers += re.findall(r'\bverified for (?:the )?([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*){0,4}) representative', verified_text)
     if any(role.casefold() not in lowered for role in qualifiers):
-        return False
+        return "layout_qualifier_missing"
     if 'fresh read-only view' in verified_text.casefold() and 'fresh' not in lowered:
-        return False
+        return "fresh_scope_missing"
     # Negation/ownership claims need their own evidence; blank cells and queue
     # labels cannot establish either a positive or negative personal assignment.
     if re.search(r'\b(?:not assigned to you|unassigned|rather than assigned to you)\b', lowered):
         if not re.search(r'\b(?:not assigned to you|unassigned)\b', verified_text, re.I):
-            return False
+            return "unsupported_personal_assignment"
     factual_tokens = re.findall(
         r"(?<![\w])(?:[a-z]+-\d[\w-]*|[a-z]*\d[\w-]*|[-+]?\d+(?:[.,:]\d+)*(?:%|[a-z]+)?)(?![\w])",
         answer,
@@ -2182,7 +2183,11 @@ def reader_natural_answer_is_grounded(answer: str, verified_text: str, question:
         return re.sub(r"[\s,]", "", str(text)).casefold()
 
     flat_support = _flat(support)
-    return all(_flat(token) in flat_support for token in factual_tokens)
+    return "unsupported_factual_token" if any(_flat(token) not in flat_support for token in factual_tokens) else ""
+
+def reader_natural_answer_is_grounded(answer: str, verified_text: str, question: str, *, completeness: str = "") -> bool:
+    return not reader_natural_answer_rejection(answer, verified_text, question, completeness=completeness)
+
  
  
 def _reader_semantic_anchors(result: dict[str, Any]) -> dict[str, Any]:
@@ -3485,10 +3490,14 @@ class DSHService:
                             account_scope = re.search(r"signed[- ]in|current account|your account|الحساب|حسابك|账号", prose, re.I)
                             if not (read_only and permission and account_scope):
                                 return False
-                        return not _answer_language_conflicts(prose, language) and reader_natural_answer_is_grounded(
-                            prose, fallback, question,
-                            completeness=str(evidence.get("completeness") or ""),
-                        )
+                        with span('answer.validation', owner='DSH.backend') as check:
+                            reason = ('response_language_conflict' if _answer_language_conflicts(prose, language)
+                                else reader_natural_answer_rejection(prose, fallback, question,
+                                    completeness=str(evidence.get('completeness') or '')))
+                            if check:
+                                check.row.update(rejectionReason=reason or 'accepted',
+                                    candidateCharacters=len(prose), publishedCharacters=len(answer_stream.content))
+                            return not reason
                     # The complete cumulative paragraph must pass the same
                     # language/fact guard as a non-streamed answer. A later
                     # failure must not erase an already disclosed prefix.
@@ -3526,7 +3535,21 @@ class DSHService:
                             ),
                         )
             except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError) as exc:
+                with span('answer.presentation_failure', owner='DSH.backend') as failure:
+                    if failure:
+                        failure.row.update(errorType=type(exc).__name__,
+                            publishedCharacters=len(answer_stream.content) if answer_stream else 0,
+                            rejectionReason=('final_block_failed_validation'
+                                if str(exc)=='final block failed validation' else 'presentation_exception'))
                 if answer_stream is not None and answer_stream.content:
+                    if isinstance(exc,AnswerStreamRejected) and str(exc)=='final block failed validation':
+                        with span('answer.checklist_tail_completion',owner='DSH.backend') as completion:
+                            recovered=complete_verified_checklist_tail(evidence,answer_stream.content,language)
+                            if completion:
+                                completion.row.update(recovery='verified_source_close' if recovered else 'coverage_incomplete',
+                                    publishedCharacters=len(answer_stream.content))
+                        if recovered:
+                            return recovered,True,'verified_checklist_tail_completion'
                     return (answer_stream.content + incomplete_stream_notice(language),
                             True, "guarded_stream_incomplete")
                 if evidence.get("presentationMode") == "llm_localized":

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "skillId": "umc.admin-inspection.read",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "readOnly": true,
   "tools": [],
   "operations": [],
@@ -13,8 +13,15 @@
   ],
   "pageWorkflow": {
     "capability": "admin.portal.read",
-    "arguments": ["inspectionTaskNumber", "inspectionChecklist"],
-    "steps": ["permission_scoped_exact_queue_search", "verified_own_task_detail", "optional_identity_bound_checklist"],
+    "arguments": [
+      "inspectionTaskNumber",
+      "inspectionChecklist"
+    ],
+    "steps": [
+      "permission_scoped_exact_queue_search",
+      "verified_own_task_detail",
+      "optional_identity_bound_checklist"
+    ],
     "readOnly": true
   },
   "maxParallelRequests": 2,

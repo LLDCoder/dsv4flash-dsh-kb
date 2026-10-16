@@ -4924,6 +4924,8 @@ async def _inspection_exact_task(page, number, checklist, portal_origin, buttons
                     codes.add(code);projected.append({'code':code,'name':name,'displayOrder':item.get('displayOrder')})
                 receipt['checklist']={'verified':True,'items':projected,'sourceItemCount':len(items),
                     'materialsListProvided':False,'procedureProvided':False}
+                if template.get('templateType')=='AllChecklistItems':
+                    receipt['checklist']['templateType']='AllChecklistItems'
     except (ValueError,KeyError,TypeError,CollectionDependencyError) as exc:
         receipt['reason']=str(exc) if isinstance(exc,ValueError) else 'inspection_detail_dependency_unavailable'
         if isinstance(exc,CollectionDependencyError):receipt['dependency']=exc.diagnostic

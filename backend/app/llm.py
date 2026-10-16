@@ -1328,15 +1328,23 @@ class LLMAdapter:
                             continue
                         data = line.removeprefix("data:").strip()
                         if data == "[DONE]":
+                            if model_span:model_span.row['doneReceived'] = True
                             break
                         try:
                             chunk = json.loads(data)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            choice = chunk.get("choices", [{}])[0]
+                            finish_reason = choice.get('finish_reason')
+                            if finish_reason and model_span:
+                                model_span.row['finishReason'] = (finish_reason if finish_reason in
+                                    {'stop','length','content_filter','tool_calls','function_call'} else 'other')
+                            delta = choice.get("delta", {})
                             reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                             if reasoning and on_reasoning:
                                 await on_reasoning(str(reasoning))
                             text = delta.get("content")
                             if text:
+                                if model_span:
+                                    model_span.row['generatedCharacters'] = model_span.row.get('generatedCharacters',0)+len(text)
                                 if model_span and "firstContentMs" not in model_span.row:
                                     model_span.row["firstContentMs"] = round((time.monotonic()-model_span.started)*1000, 3)
                                 yield text

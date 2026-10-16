@@ -49,12 +49,54 @@ def inspection_public(receipt, number, kind):
             payload['missing'].append(receipt.get('reason') or 'inspection_checklist_not_verified')
         else:
             items=checklist['items']
+            payload['inspectionCoverage']={'verified':True,'taskNo':number,'statusName':status,
+                'codes':[item.get('code') for item in items if isinstance(item,dict)]}
             payload['facts'].append(f'Inspection checklist points for {number}: {len(items)} visible active points were returned.')
             for item in items:
                 if not isinstance(item,dict) or not isinstance(item.get('code'),str) or not isinstance(item.get('name'),str):
                     payload['facts']=[];payload['missing']=['inspection_checklist_row_invalid'];return payload
                 payload['facts'].append(_sanitize_untrusted_text(item['code']+': '+item['name'],max_length=1200))
-            payload['facts'].append('These are the task-specific inspection checklist points to prepare against. A separate formal materials/documents list and a complete visit procedure were not provided; the checklist alone does not establish either.')
+            payload['facts'].append('These are the visible active checklist catalog points returned through this verified task. The source catalog does not establish that every point applies to this particular visit. A separate formal materials/documents list and a complete visit procedure were not provided; the checklist alone does not establish either.')
             payload['missing'].extend(['formal_materials_list_not_provided_by_source','complete_visit_procedure_not_provided_by_source'])
     payload['result']='success' if not payload['missing'] else 'not_confirmed'
     return payload
+
+
+def complete_verified_checklist_tail(evidence, published, language):
+    """Replace only an unpublished rejected tail after every source code survived.
+
+    Already published blocks passed the normal guards and are immutable. This
+    cannot fill a missing item, repair a failed read, translate new facts, or
+    accept any of the rejected model prose. The close is an app-owned projection
+    of the source gap and account scope, not a second model attempt.
+    """
+    coverage=evidence.get('inspectionCoverage')
+    if (evidence.get('workflowState')!='inspection_exact_detail' or language not in {'en','ar'}
+            or not isinstance(coverage,dict) or coverage.get('verified') is not True
+            or not published or evidence.get('result')!='not_confirmed'
+            or set(evidence.get('missing') or [])!={'formal_materials_list_not_provided_by_source',
+                'complete_visit_procedure_not_provided_by_source'}):return None
+    number=coverage.get('taskNo');status=coverage.get('statusName');codes=coverage.get('codes')
+    if (not isinstance(number,str) or number!=evidence.get('recordIdentity') or number not in published
+            or not isinstance(status,str) or not status.strip() or status not in published
+            or not isinstance(codes,list) or not 0<len(codes)<=200
+            or not all(isinstance(c,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,39}',c) for c in codes)
+            or len(set(codes))!=len(codes)):return None
+    facts=evidence.get('facts') or []
+    for code in codes:
+        if (not any(isinstance(f,str) and f.startswith(code+': ') for f in facts)
+                or not re.search(r'(?m)^\s*(?:[-*•]\s*)?(?:\*\*)?'+re.escape(code)+r'(?:\*\*)?\s*:',published)):
+            return None
+    scope=evidence.get('scope')
+    if scope not in {'team','unknown'}:return None
+    if language=='ar':
+        close=('هذه نقاط قائمة التحقق الظاهرة التي أعادتها المهمة في صفحة التفتيش / المهام، '
+            'ولا يعني عرضها أن جميعها تنطبق على هذه الزيارة. ليست هذه قائمة مستندات رسمية أو إجراء زيارة كاملاً؛ '
+            'لم يوفّر المصدر قائمة المستندات الرسمية ولا خطوات الزيارة الكاملة.')
+        close+=(' القراءة ضمن عرض الفريق الحالي.' if scope=='team' else ' نطاق القراءة هو ما أتاحه الحساب الحالي، ولم يتأكد نطاق الفريق.')
+    else:
+        close=('These are the visible checklist catalog points returned through the task on Inspection / Tasks; '
+            'their presence does not establish that every point applies to this visit. The source did not provide '
+            'a formal documents list or a complete visit procedure, so neither can be confirmed.')
+        close+=(' This read covers the current team view.' if scope=='team' else ' This read is limited to what the current account returned; team scope is unconfirmed.')
+    return published+('' if published.endswith('\n\n') else '\n\n')+close

@@ -228,3 +228,39 @@ and zero new failure identities. The new tests include bounded concurrency,
 permission denial, ambiguous/wrong identity rejection, complete checklist
 projection and ToolGateway argument forwarding. No customer service, UMC
 deployment, business mutation or original 18081 replacement was performed.
+
+## Follow-up: validated checklist tail completion and source discovery
+
+The old presenter could publish all validated checklist items, reject an
+unpublished final paragraph and then mark the answer partial. The historical
+unpublished sentence and precise rejection clause were not retained; they
+cannot be reconstructed from a successful model-duration span. New payload-free
+diagnostics distinguish language/grounding rejection codes, presentation
+exception type, model finishReason/DONE and the recovery decision.
+
+Only the exact inspection checklist workflow may complete this case with a
+fixed source-gap/account-scope close. It requires the identity-bound status and
+every verified item code already present as a labelled item in the immutable,
+guarded public prefix. It never accepts the rejected model paragraph. Missing
+items, wrong identity, denied reads and HTTP/transport failures stay partial.
+The recovered answer retains its original prefix and uses the ordinary
+verified_projection publication contract. Tests replay this failure path,
+including negative coverage/identity/transport cases. The existing historical
+35-code prefix was also replayed privately without issuing any business write.
+
+Source discovery found that the live task has no attachments and its template
+is AllChecklistItems, which does not establish that every point applies to the
+visit. Local UI sources define three pre-visit preparation checks and separate
+field/digital execution steps; they are UI guidance, not an approved complete
+SOP. Knowledge metadata lists an inspection user manual and an engineering
+guide. Search yields bounded snippets, but full-content reads return 404 because
+the current knowledge gateway has no /files/{id}/content route. Do not interpret
+that as proof that upstream documents do not exist. A guide snippet lists report
+submission before checkout, while local execution code explicitly requires
+checkout before submit-report. No workflow write was used to test that order.
+An applicable, versioned formal documents inventory and approved SOP remain
+unconfirmed; they require the inspection business owner's authoritative source.
+
+This change exposes Swagger 1.1.2 on the isolated entry only. Focused checks are
+39 passing; the full suite is 2,061 passing with the same 129 failures and three
+collection errors: 15 new passing checks, no new failing test identities.

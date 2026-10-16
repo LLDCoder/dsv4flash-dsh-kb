@@ -1,6 +1,6 @@
 # umc.admin-inspection.read
 
-Version: 1.1.0. Business operations are read-only.
+Version: 1.1.1. Business operations are read-only.
 
 Load only for this business topic after trusted GetUserInfo. This skill never grants permissions.
 Use the fixed operation IDs in manifest.json; never accept model URLs, headers, identity, SQL or methods.
@@ -30,6 +30,10 @@ check-in, checklist submission, download or other write is permitted.
 Checklist points are not a formal document list or a complete procedure. Report
 those source gaps explicitly, even when the checklist read succeeds. Missing or
 denied detail/checklist reads must never say the task was verified as visible.
+The current AllChecklistItems catalog also does not prove that every returned
+criterion applies to this visit. Pre-visit UI guidance and an engineering guide
+are references, not a versioned, approved formal document inventory or full SOP.
+Preserve disagreements between guide order and execution prerequisites.
 
 Trace queue searches, detail, checklist, each supplemental HTTP attempt, decode,
 retry and backoff. UMC service-internal processing remains uninstrumented.

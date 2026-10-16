@@ -1185,6 +1185,14 @@ def make_router(service: DSHService) -> APIRouter:
         artificial typing delay. assistant.message is the authoritative persisted
         answer and its streamStatus is complete or partial. A rejected/interrupted
         remainder never rewrites a published prefix; an incomplete answer says so.
+        For identity-bound inspection checklists only, a final paragraph rejected
+        after all verified item codes and the status were already published may
+        be replaced with an app-owned source-gap/scope close. Missing items,
+        denied reads and transport failures remain partial. Timing receipts
+        distinguish answer.validation rejection reasons, presentation failures
+        and checklist_tail_completion; model streams include finishReason and
+        doneReceived without logging model text. The returned checklist catalog
+        does not establish that every criterion applies to the specific visit.
         Cancellation stops generation; reconnects recover the authoritative final
         answer from owned conversation history, not ephemeral token replay.
         Cancellation terminal events retain the original submitted turn requestId,

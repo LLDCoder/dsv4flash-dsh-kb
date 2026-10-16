@@ -1,0 +1,17 @@
+{
+  "previousInspectionFix": {
+    "failure": 129,
+    "error": 3,
+    "skipped": 0,
+    "passed": 2046
+  },
+  "tailFix": {
+    "failure": 129,
+    "error": 3,
+    "skipped": 0,
+    "passed": 2061
+  },
+  "newRegressions": [],
+  "resolved": [],
+  "newPassingTests": 15
+}
