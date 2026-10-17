@@ -31,7 +31,7 @@ DOCUMENT_SCOPE = os.getenv("KNOWLEDGE_DOCUMENT_FOLDER_ID", "")
 DOCUMENT_ROOT = Path(os.getenv("KNOWLEDGE_DOCUMENT_OBJECT_ROOT", "/app/document_objects"))
 MAX_DOCUMENT_BYTES = 1024 * 1024
 
-app = FastAPI(title="DSH Knowledge Gateway", version="0.4.0")
+app = FastAPI(title="DSH Knowledge Gateway", version="0.4.1")
 
 
 install_gateway(app, "DSH.knowledge-gateway")

@@ -21,7 +21,7 @@ from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, Read
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
 from .answer_stream import AnswerStream, AnswerStreamRejected, incomplete_stream_notice, cancelled_stream_notice
-from .inspection_read import complete_verified_checklist_tail
+from .inspection_read import complete_verified_checklist_tail, normalize_inspection_status
 from .message_compression import (MESSAGE_COMPRESSION_THRESHOLD_CHARS, MessageCompressionError,
                                   compression_failure_message, message_source_hash, prepare_reader_input)
 from .generic_reader import GenericKnowledgeReader, render_generic_answer
@@ -3298,6 +3298,12 @@ class DSHService:
             prior_answer_coverage=prior_answer_coverage,
             question=question,
         )))
+        def localize_status(text):
+            with span('answer.inspection_status_locale',owner='DSH.backend') as receipt:
+                localized=normalize_inspection_status(text,evidence,language)
+                if receipt:receipt.row.update(locale=language,changed=localized!=text,labelMapVersion='inspection-portal-v1')
+                return localized
+        fallback=localize_status(fallback)
         if prior_answer_coverage:
             return fallback, False, "prior_answer_coverage"
         verified_profile = evidence.get("presentationMode") == "verified_profile" or evidence.get('workflowState') == 'verified_profile'
@@ -3437,6 +3443,8 @@ class DSHService:
                 'procedure. Preserve that specific source gap; do not invent extra materials or preparation steps. '
                 'If checklist points are present, preserve every returned item code and meaning, including negation; '
                 'translate descriptions into the response language. Do not label a checklist as an exhaustive materials list.')
+            if language=='ar':
+                system+=' Preserve the exact English status verbatim. Its Arabic label is supplied by the application using the portal label map, never an improvised translation.'
         if stream_capability:
             system += (
                 "\nThis is a capability explanation, not an identity lookup. Begin with a complete paragraph "
@@ -3507,6 +3515,7 @@ class DSHService:
                             {"role": "user", "content": payload},
                         ]),
                         validate=validate_generated_prose,
+                        sanitize=localize_status,
                     )
                     return content, False, "guarded_stream_organized"
                 chunks: list[str] = []
@@ -3519,6 +3528,7 @@ class DSHService:
                         break
                 else:
                     draft = _dedupe_reader_notes(_sanitize_reader_internal_ids("".join(chunks).strip()))
+                    draft=localize_status(draft)
                     if _needs_partial_record_note(evidence):
                         draft = ensure_partial_list_note(draft, language)
                     if not _answer_language_conflicts(draft, language) and reader_natural_answer_is_grounded(

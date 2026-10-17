@@ -93,7 +93,7 @@ def test_non_utf8_is_not_silently_decoded(document):
 def test_openapi_documents_contract(document):
     op=g.app.openapi()['paths']['/files/{file_id}/content']['get']
     assert set(op['responses'])>={'200','403','404','409','422','502','503'}
-    assert g.app.openapi()['info']['version']=='0.4.0'
+    assert g.app.openapi()['info']['version']=='0.4.1'
 
 
 def test_exact_inspection_identifier_case_alias_does_not_disable_native_lookup():

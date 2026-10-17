@@ -960,13 +960,19 @@ def make_router(service: DSHService) -> APIRouter:
         visit procedure: unavailable source fields remain explicit omissions.
         Supplemental UMC HTTP attempts, queue searches, detail and checklist have
         separate timing spans. No inspection execution or business write occurs.
-        Internal knowledge gateway v0.4 adds GET /files/{file_id}/content:
+        Internal knowledge gateway v0.4.1 supports GET /files/{file_id}/content:
         exact configured root, scoped manifests before/after, read-only mounted
         text object, 1 MiB limit and UTF-8/SHA-256/size verification. A missing
         mount is an explicit 503, not a guessed retrieval or fabricated full text.
         Knowledge reference steps may conflict with local UMC implementation;
         a reference document alone does not certify a formal materials list or
         the running UMC procedure. Internal stages are independently timed.
+        The isolated inspection rollout mounts the eight discovered inspection
+        file records plus their referenced Admin API guide, preserving duplicate
+        identities/versions. Other unmounted documents still fail closed with503.
+        Verified exact-inspection Arabic status labels are canonicalized using
+        the portal vocabulary before streaming publication and fact validation;
+        model wording cannot replace Pending Visit with an improvised Arabic label.
         Reader results distinguish success, no_data, no_permission, load_failed and
         not_confirmed. A bounded row sample is not a collection total or proof of
         personal assignment. Knowledge answers require retrieved supporting text.

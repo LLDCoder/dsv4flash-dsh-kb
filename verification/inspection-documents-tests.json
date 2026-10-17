@@ -1,0 +1,10 @@
+{
+  "previousPass": 2079,
+  "currentPass": 2097,
+  "newRegressions": [],
+  "resolved": [],
+  "newPassingTests": 18,
+  "failures": 129,
+  "collectionErrors": 3,
+  "targetedPass": 75
+}

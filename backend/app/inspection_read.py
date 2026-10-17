@@ -7,6 +7,42 @@ MATERIALS=re.compile(r'materials?|documents?|checklist|prepar\w*|\bbring\b|\bste
     r'أجهز|اجهز|أستعد|استعد|تجهيز|تحضير|قائمة\s+(?:الفحص|التفتيش|التحقق)',re.I)
 STATUS=re.compile(r'\b(?:status|stage|state)\b|الحالة|حالة|مرحلة|وضع',re.I)
 
+# App-owned labels from Admin Portal ar.json inspection.labels. A model may
+# translate checklist descriptions, but cannot choose the current status label.
+INSPECTION_STATUS_AR={
+    'Queued':'في قائمة الانتظار','Pending Visit':'بانتظار الزيارة',
+    'In Progress':'قيد التنفيذ','Access Failed':'تعذر الوصول',
+    'Completed':'مكتمل','Cancelled':'ملغى',
+}
+
+
+def normalize_inspection_status(text, evidence, language):
+    """Canonicalize only a verified exact task's status before publication.
+
+    Idempotent on cumulative streaming text; never touch checklist lines,
+    identities, permissions, or unverified/other-workflow prose.
+    """
+    receipt=evidence.get('inspectionStatus')
+    if (language!='ar' or evidence.get('result') not in {'success','not_confirmed'} or evidence.get('workflowState')!='inspection_exact_detail'
+            or not isinstance(receipt,dict) or receipt.get('verified') is not True
+            or receipt.get('taskNo')!=evidence.get('recordIdentity')):return text
+    status=receipt.get('statusName');label=INSPECTION_STATUS_AR.get(status)
+    if not label or not any(isinstance(f,str) and f.startswith(
+            f'Inspection {receipt["taskNo"]}: status: {status}.') for f in evidence.get('facts',[])):return text
+    # Consume only exact portal labels or the observed wrong alias. Unknown
+    # parenthetical prose/numbers must survive for the ordinary fact guard.
+    aliases='|'.join(re.escape(s) for s in [*INSPECTION_STATUS_AR.values(),'قيد الزيارة'])
+    pattern=re.compile(r'(?<![A-Za-z])('+re.escape(status)+r'(?:\*\*)?)(?:[ \t]*\((?:'+aliases+r')\))?(?![A-Za-z])')
+    rows=[]
+    for line in text.splitlines(keepends=True):
+        if re.match(r'^\s*(?:[-*•]\s*)?(?:\*\*)?[LC]\d+(?:\*\*)?\s*:',line):
+            rows.append(line);continue
+        line=pattern.sub(lambda m:m[1]+' ('+label+')',line)
+        if status=='Pending Visit' and (receipt['taskNo'] in line or re.search(r'حال(?:ة|تها|ته)|الحالة',line)):
+            line=re.sub(r'(?<![\u0600-\u06ff])قيد\s+الزيارة(?![\u0600-\u06ff])',label,line)
+        rows.append(line)
+    return ''.join(rows)
+
 def exact_inspection_request(question, task=None):
     ids=re.findall(r'\bIN-\d{4}-\d{1,20}\b',question,re.I)
     if len(set(x.upper() for x in ids))!=1:return None
@@ -42,6 +78,7 @@ def inspection_public(receipt, number, kind):
     status=detail.get('statusName')
     if isinstance(status,str) and status.strip():
         payload['facts'].append(f'Inspection {number}: status: '+_sanitize_untrusted_text(status,max_length=200)+'.')
+        payload['inspectionStatus']={'verified':True,'taskNo':number,'statusName':status}
     else:payload['missing'].append('inspection_status_not_exposed')
     if kind=='checklist':
         checklist=receipt.get('checklist')

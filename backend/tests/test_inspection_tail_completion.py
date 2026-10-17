@@ -54,7 +54,7 @@ def test_final_validation_rejection_is_completed_with_source_close_and_logged():
         try:
             result,failed,strategy=await service._natural_reader_response('ما مستندات التفتيش '+NUMBER+'؟',evidence(),'ar',answer_stream=stream)
             assert strategy=='verified_checklist_tail_completion' and failed
-            assert result.startswith(PREFIX) and 'ZZ-999999999' not in result
+            assert result.startswith(PREFIX.replace('Pending Visit','Pending Visit (بانتظار الزيارة)')) and 'ZZ-999999999' not in result
             await stream.verified(result)
             assert stream.content==result and ''.join(e['content'] for e in events)==result
             assert any(s.get('rejectionReason')=='unsupported_factual_token' for s in trace.spans)
