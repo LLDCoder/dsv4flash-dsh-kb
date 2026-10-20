@@ -6,6 +6,14 @@ import httpx
 from .config import Settings
 
 
+def _first_choice(body: dict) -> dict | None:
+    """Usage-only OpenAI-compatible frames legitimately have no choices."""
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    return choices[0]
+
+
 class LLMAdapter:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -51,7 +59,8 @@ class LLMAdapter:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             body = response.json()
-        content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+        choice = _first_choice(body) or {}
+        content = (choice.get("message") or {}).get("content", "")
         if isinstance(content, list):
             content = "".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
         if not isinstance(content, str) or not content.strip():
@@ -97,7 +106,14 @@ class LLMAdapter:
                         break
                     try:
                         chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        if chunk.get("error"):
+                            # Never present provider errors or credentials as an answer.
+                            raise RuntimeError("LLM provider returned a stream error")
+                        choice = _first_choice(chunk)
+                        if choice is None:
+                            # DashScope ends with a usage-only frame before [DONE].
+                            continue
+                        delta = choice.get("delta") or {}
                         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                         if reasoning and on_reasoning:
                             await on_reasoning(str(reasoning))

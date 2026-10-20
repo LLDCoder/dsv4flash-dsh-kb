@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     warm_pool_min_idle: int = 1
     llm_base_url: str = ""
     llm_api_key: str = ""
-    llm_model: str = "deepseek-v4-flash"
+    llm_model: str = "qwen3.8-flash"
     llm_timeout_seconds: float = 60.0
     skill_router_mode: str = "llm"
     skill_router_timeout_seconds: float = 10.0
