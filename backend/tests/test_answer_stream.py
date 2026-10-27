@@ -40,7 +40,7 @@ def test_rejected_fragment_never_reaches_client_and_prefix_cannot_be_retried():
         with pytest.raises(AnswerStreamRejected):
             await stream.verified("A replacement response.")
         await stream.verified(stream.content + incomplete_stream_notice("en"))
-        assert "partial" in stream.content
+        assert "incomplete" in stream.content
     asyncio.run(run())
 
 
@@ -135,6 +135,38 @@ def test_internal_payload_is_blocked_before_portal_validator(text):
             yield text[6:]
         with pytest.raises(AnswerStreamRejected):
             await stream.generate(tokens(), validate=lambda value: True)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("text", [
+    'See [the portal](https://example.com',
+    'See [the portal',
+])
+def test_unfinished_markdown_structure_is_not_published(text):
+    async def run():
+        async def publish(value): raise AssertionError("unfinished markdown published")
+        stream = AnswerStream(publish)
+        async def tokens():
+            yield text[:5]
+            yield text[5:]
+        with pytest.raises(AnswerStreamRejected):
+            await stream.generate(tokens(), validate=lambda value: True)
+    asyncio.run(run())
+
+
+def test_unclosed_code_fence_at_end_of_stream_is_rejected():
+    async def run():
+        events = []
+        async def publish(value): events.append(value)
+        stream = AnswerStream(publish)
+        async def tokens():
+            # The completed paragraph is publishable; the trailing fence is not.
+            yield "Conclusion first.\n\n"
+            yield "```python\nprint(\"hi\")"
+        with pytest.raises(AnswerStreamRejected):
+            await stream.generate(tokens(), validate=lambda value: True)
+        assert events == [{"content": "Conclusion first.\n\n", "streamVersion": "verified-blocks/1",
+                           "chunkIndex": 0, "streamMode": "guarded_generation"}]
     asyncio.run(run())
 
 
