@@ -22,11 +22,13 @@ def normalize_record_text(value: str) -> str:
 
 AR_RECORD_NOUNS = {
     "طلب": "applications", "طلبات": "applications",
+    "استرداد": "refunds", "استرجاع": "refunds",
     "رخصه": "licenses", "رخص": "licenses", "ترخيص": "licenses", "تراخيص": "licenses",
     "غرامه": "fines", "غرامات": "fines", "مخالفه": "fines", "مخالفات": "fines",
     "مهام": "pending", "اجراء": "pending", "اجراءات": "pending",
 }
 EN_RECORD_NOUNS = {
+    "refund": "refunds", "refunds": "refunds",
     "application": "applications", "applications": "applications", "request": "applications", "requests": "applications",
     "license": "licenses", "licenses": "licenses", "licence": "licenses", "licences": "licenses", "permit": "licenses", "permits": "licenses",
     "fine": "fines", "fines": "fines", "violation": "fines", "violations": "fines", "tasks": "pending", "actions": "pending",
@@ -88,14 +90,14 @@ def customer_record_intent(content: str, context: ProfileContext | None = None) 
     # leading ellipsis) must not hide an otherwise external owner.
     external = bool(re.search(r"(?<![\w-])[\w+-]+(?:[.@][\w+-]+)+(?![\w-])", owner_text))
     owner_patterns = (
-        r"\b(?:show|find|query|list|check|search|view|display)\s+(?:me\s+)?([\w@.+-]+)(?:['’]s|\s+(?=(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?|pending)\b))",
-        r"\b(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?)\s+(?:for|of|belonging\s+to)\s+([\w@.+-]+)",
+        r"\b(?:show|find|query|list|check|search|view|display)\s+(?:me\s+)?([\w@.+-]+)(?:['’]s|\s+(?=(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?|refunds?|pending)\b))",
+        r"\b(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?|refunds?)\s+(?:for|of|belonging\s+to)\s+([\w@.+-]+)",
         r"(?:" + "|".join(map(re.escape, AR_RECORD_NOUNS)) + r")\s+(?:الخاصه\s+ب)?([\w@.+-]+)",
         r"(?:\bprofile\s+|ملف\s+)([\w@.+-]+)",
     )
     non_owners = SELF_WORDS | QUERY_WORDS | frozenset(EN_RECORD_NOUNS) | frozenset(AR_RECORD_NOUNS) | {
-        "and", "in", "the", "a", "this", "current", "selected", "to", "و", "والغرامات", "والمهام", "المعلقه", "الشخصي", "الحالي", "المحدد",
-        "في", "من", "ضمن", "تحت", "هذا", "هذه",
+        "and", "in", "the", "a", "this", "current", "selected", "to", "all", "جميع", "كل", "لحسابي", "حسابنا", "و", "والغرامات", "والمهام", "المعلقه", "الشخصي", "الحالي", "المحدد",
+        "في", "من", "ضمن", "تحت", "هذا", "هذه", "الرسوم", "رسوم", "المبالغ", "مبالغ",
     }
     for pattern in owner_patterns:
         for match in re.finditer(pattern, owner_text):

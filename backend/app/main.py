@@ -111,6 +111,22 @@ def custom_openapi():
                 "duplicate": "true reuses the original persisted requestId; replay its events without creating another user message",
                 "busy": "conversation_busy is not accepted or queued; preserve the draft and show a retryable notice",
             },
+            "applicationList": {
+                "examples": ["Show all requests for my current account.", "اعرض جميع الطلبات في حسابي الحالي"],
+                "selectedProfile": "Reads the selected Profile through My Requests.",
+                "globalView": "Uses the authenticated Global View UMC bearer to read requests across authorized Profiles, with totals, status counts, and Profile names for returned rows.",
+                "display": "Up to 100 rows (20 by default); displayed and total counts are reported separately.",
+                "failure": "An unavailable lookup returns a read failure without claiming that the account has zero applications.",
+            },
+            "customerRecordLists": {
+                "examples": ["Show my refund requests.", "أرني طلبات استرداد الرسوم الخاصة بي",
+                             "Show all my violations and fines.", "أرني جميع مخالفاتي وغراماتي"],
+                "scope": "Reads the selected UMC Profile or the authorized aggregate with a Global View UMC bearer.",
+                "response": "assistant.message includes totals, public record references, amounts, dates and localized statuses. Global View rows include the owning Profile display name.",
+                "limits": "Displays 20 rows by default and up to 100 for an all-records request. Full violations and pending violations are distinct reads.",
+                "failure": "Denied or unavailable upstream reads return a localized failure and do not report an empty list.",
+                "sideEffect": "Read only.",
+            },
             "profileConfirmation": {
                 "profileContext.confirmedTargetProfileId": "Optional user-selected intent resolution; only honored when it equals the authenticated token Profile and matches the named candidates. It cannot authorize another Profile.",
             },

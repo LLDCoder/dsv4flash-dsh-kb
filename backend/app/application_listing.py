@@ -12,7 +12,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from .customer_record_intent import AR_RECORD_NOUNS, normalize_record_text
+from .customer_record_intent import AR_RECORD_NOUNS, customer_record_intent, normalize_record_text
 from .profile_scope import ProfileContext
 
 
@@ -73,17 +73,30 @@ def _display_limit(content: str, context: ProfileContext) -> int | None:
         if normalized:
             text = re.sub(r"(?<!\w)" + re.escape(normalized) + r"(?!\w)", " ", text)
     words = re.findall(r"\d+|[^\W\d_]+", text)
-    vocabulary = set("show list view display me my mine our ours the latest recent newest last top first applications application requests request current profile in for under of this from all overview summary statistics count please".split())
-    vocabulary.update(normalize_record_text("عرض اعرض ارني اظهر استعرض احدث اخر طلب طلبات طلبي طلباتي طلبنا طلباتنا لي لدي لدينا حسابي ملف ملفي الملف الشخصي في من هذا الحالي جميع كل قائمه ملخص احصاء احصاءات احصائيات عدد نظرة عامه علي").split())
+    vocabulary = set("show list view display me my mine our ours the latest recent newest last top first applications application requests request current profile account in for under of this from all overview summary statistics count please".split())
+    vocabulary.update(normalize_record_text("عرض اعرض ارني اظهر استعرض احدث اخر طلب طلبات طلبي طلباتي طلبنا طلباتنا لي لدي لدينا حسابي لحسابي حسابنا حساب الحساب ملف ملفي الملف الشخصي في من هذا الحالي جميع كل قائمه ملخص احصاء احصاءات احصائيات عدد نظرة عامه علي").split())
     for noun, category in AR_RECORD_NOUNS.items():
         if category == "applications":
             vocabulary.update(noun + suffix for suffix in ("", "ي", "نا"))
+            vocabulary.add("ال" + noun)
     if not words or any(not word.isdecimal() and word not in vocabulary for word in words):
         return None
     numbers = [int(word) for word in words if word.isdecimal()]
     if len(numbers) > 1 or (numbers and numbers[0] <= 0):
         return None
     return min(numbers[0], 100) if numbers else 100 if any(word in {"all", "جميع", "كل"} for word in words) else 20
+
+
+def is_basic_application_list(content: str, context: ProfileContext | None) -> bool:
+    if not context or re.search(r"\d", content):
+        return False
+    intent = customer_record_intent(content, context)
+    return (
+        intent.query
+        and intent.categories == {"applications"}
+        and not intent.external_owner
+        and _display_limit(content, context) is not None
+    )
 
 
 def _cell(value: Any, unavailable: str) -> str:
@@ -102,9 +115,16 @@ def _display_date(value: Any, language: str) -> str:
     return date.strftime("%d %B %Y %H:%M:%S")
 
 
-def application_list_answer(content: str, tool_result: dict[str, Any], language: str, context: ProfileContext | None) -> str | None:
+def application_list_answer(
+    content: str,
+    tool_result: dict[str, Any],
+    language: str,
+    context: ProfileContext | None,
+    *,
+    allow_global_view: bool = False,
+) -> str | None:
     """Render only basic list/statistics views, from a successful masked DTO."""
-    if not context or context.is_global_view or not tool_result.get("ok"):
+    if not context or (context.is_global_view and not allow_global_view) or not tool_result.get("ok"):
         return None
     limit = _display_limit(content, context)
     if limit is None:
@@ -125,8 +145,12 @@ def application_list_answer(content: str, tool_result: dict[str, Any], language:
     unavailable = "غير متاح" if ar else "Not available"
     suffix = "Ar" if ar else "En"
     name = _cell(context.active_profile_name, unavailable)
+    if context.is_global_view:
+        scope = "العرض الشامل: الطلبات في الملفات المخوّلة لحسابك." if ar else "Global View: applications across your account’s authorized Profiles."
+    else:
+        scope = f"الملف الحالي: **{name}**. نطاق البيانات: هذا الملف المحدد فقط." if ar else f"Current Profile: **{name}**. Data scope: this selected Profile only."
     lines = ["## نظرة عامة على طلباتك" if ar else "## Your applications",
-             f"الملف الحالي: **{name}**. نطاق البيانات: هذا الملف المحدد فقط." if ar else f"Current Profile: **{name}**. Data scope: this selected Profile only.",
+             scope,
              f"الإجمالي: **{total}**" if ar else f"Total: **{total}**"]
     counts = data.get("applicationStatusCounts")
     if isinstance(counts, list):
@@ -145,11 +169,18 @@ def application_list_answer(content: str, tool_result: dict[str, Any], language:
     if not complete_result:
         lines.append("تم ترتيب السجلات التي أعادتها الصفحة فقط؛ لا يمكن تأكيد أنها أحدث الطلبات ضمن القائمة كاملة." if ar else "Only the returned page has been sorted; these records cannot be confirmed as the latest across the entire list.")
     if selected:
-        lines.extend(["", "| رقم الطلب | الخدمة | نوع الطلب | وقت التقديم | الحالة |" if ar else "| Application number | Service | Application type | Submission time | Status |", "|---|---|---|---|---|"])
+        header = "| رقم الطلب | الخدمة | نوع الطلب | وقت التقديم | الحالة |" if ar else "| Application number | Service | Application type | Submission time | Status |"
+        separator = "|---|---|---|---|---|"
+        if context.is_global_view:
+            header += " الملف |" if ar else " Profile |"
+            separator += "---|"
+        lines.extend(["", header, separator])
         for item in selected:
             fields = (item["applicationNumber"], item.get("serviceName"+suffix), item.get("typeName"+suffix), _display_date(item.get("createdOn"), language), item.get("applicationStatusName"+suffix))
+            if context.is_global_view:
+                fields += (item.get("profileName"),)
             lines.append("| " + " | ".join(_cell(value, unavailable) for value in fields) + " |")
-    if len(selected) < total:
+    if len(selected) < total and not context.is_global_view:
         lines.extend(["", "هذه قائمة مختصرة وليست جميع الطلبات؛ الإجمالي وإحصاءات الحالات تخص الملف المحدد." if ar else "This is a bounded list, not all applications; the total and status counts apply to the selected Profile."])
     lines.extend(["", "هذه معاينة للقراءة فقط؛ لم يتم تعديل أي طلب أو إرساله أو إلغاؤه أو دفع رسومه." if ar else "Read-only lookup; no application has been changed, submitted, cancelled, or paid.",
                   "افتح [طلباتي](/my-requests) لعرض القائمة كاملة أو تفاصيل طلب محدد." if ar else "Open [My Requests](/my-requests) for the full list or a specific application's details."])

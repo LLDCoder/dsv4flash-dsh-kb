@@ -1668,9 +1668,10 @@ def make_router(service: DSHService) -> APIRouter:
         target-free refusal without a Profile action or an existence lookup.
         Sentence punctuation around account identifiers does not change this
         boundary. Reply language follows the question, not the portal locale.
-        Global View record queries require an authorized concrete Profile,
-        including exact application references. Authorized cross-Profile
-        queries return ``profileAction.type=open_profile_menu`` and
+        In the authenticated Customer WebSocket, basic own-account application
+        lists also support Global View via the current UMC bearer. Other Global
+        View record queries require an authorized concrete Profile, including
+        exact application references. Authorized cross-Profile queries return ``profileAction.type=open_profile_menu`` and
         ``code=profile_switch_required``; after portal identity switching,
         the client resumes the question under the new token's Profile scope.
         Ambiguous authorized names return ``code=profile_choice_required``

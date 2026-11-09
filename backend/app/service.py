@@ -23,8 +23,9 @@ from .principal import Principal
 from .answer_stream import AnswerStream, incomplete_stream_notice, cancelled_stream_notice
 from .customer_answer_stream import customer_generated_answer
 from .customer_record_intent import customer_record_intent
+from .customer_record_listing import LIST_REQUESTS, REFUND_STATUSES_TOOL, record_list_answer, record_list_query, successful_data
 from .service_fees import CustomerServiceFeeClient, is_public_service_fee_query, fee_answer
-from .application_listing import application_list_answer, application_page_arguments, ordered_application_result
+from .application_listing import application_list_answer, application_page_arguments, is_basic_application_list, ordered_application_result
 from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requested_profile_candidates, requires_profile_switch
 from .response_safety import contains_unexpected_response_script, is_internal_tool_protocol
 from .runtime import RuntimeManager
@@ -110,7 +111,13 @@ class DSHService:
         return "applications" in intent.categories and intent.query
 
     @staticmethod
-    def profile_scope_guard(content: str, response_language: str, profile_context: ProfileContext | None) -> dict[str, Any] | None:
+    def profile_scope_guard(
+        content: str,
+        response_language: str,
+        profile_context: ProfileContext | None,
+        *,
+        allow_global_application_list: bool = False,
+    ) -> dict[str, Any] | None:
         """Return deterministic scope responses before routing or model generation."""
 
         if is_public_service_fee_query(content):
@@ -167,7 +174,7 @@ class DSHService:
                     else f"You are currently using {profile_context.active_profile_name or 'the current profile'}. This request needs the {kind_label} {requested.name}. Switch to that authorized profile to continue."
                 ),
             }
-        if DSHService.is_global_profile_record_request(content, profile_context):
+        if not allow_global_application_list and DSHService.is_global_profile_record_request(content, profile_context):
             return {
                 "code": "profile_selection_required",
                 "profileAction": {
@@ -1262,6 +1269,55 @@ class DSHService:
                 )
                 return {"accepted": True, "duplicate": False, "conversationId": conversation_id, "seq": event["seq"], "requestId": principal.request_id, "runtimeId": lease.runtime_id}
 
+    async def read_customer_record_list(
+        self, db: AsyncSession, conversation: Conversation, principal: Principal,
+        profile_context: ProfileContext, query: tuple[str, int], language: str,
+    ) -> str:
+        kind, limit = query
+        tool_name, arguments = LIST_REQUESTS[kind]
+        await self.append_event(db, conversation, "skill.route", {
+            "skillId": kind, "category": "data_query", "mode": "answer",
+            "toolName": tool_name, "requestId": principal.request_id,
+        })
+
+        async def read(name: str, params: dict[str, Any]) -> Any:
+            row = (await db.execute(select(Tool).where(
+                Tool.tool_name == name, Tool.enabled.is_(True), Tool.published.is_(True),
+            ))).scalar_one_or_none()
+            if (
+                not self.settings.external_tools_enabled or not row
+                or row.http_method != "GET" or row.side_effect != "read" or row.confirmation_required
+                or row.auth_strategy != "current_umc_bearer_token"
+                or profile_scope_for_definition({"profileScope": row.profile_scope}).get("mode") != "token_scoped"
+            ):
+                return None
+            await self.append_event(db, conversation, "tool.call", {
+                "toolName": name, "arguments": params, "requestId": principal.request_id,
+            })
+            result = await self.tool_gateway.invoke(
+                principal, name, params, allowed_tools=[name],
+                profile_context=profile_context,
+                tool_definition={
+                    "source": row.source, "httpMethod": row.http_method, "httpPath": row.http_path,
+                    "parameters": row.parameters, "sideEffect": row.side_effect, "profileScope": row.profile_scope,
+                },
+            )
+            data = successful_data(result)
+            # Persist the operation outcome, not refund attachments, payment
+            # information, violator identity or the upstream raw payload.
+            await self.append_event(db, conversation, "tool.result", {
+                "toolName": name, "ok": data is not None, "requestId": principal.request_id,
+            })
+            return data
+
+        data = await read(tool_name, arguments)
+        statuses = await read(REFUND_STATUSES_TOOL, {}) if kind == "refunds" and isinstance(data, dict) and data.get("items") else None
+        answer = record_list_answer(kind, data, statuses, limit, language, profile_context)
+        return answer or (
+            "تعذر جلب هذه السجلات من البوابة حالياً. يرجى المحاولة مرة أخرى."
+            if language == "ar" else "I couldn’t retrieve these records from the portal right now. Please try again."
+        )
+
     async def _run_turn(self, principal: Principal, conversation_id: str, profile_context: ProfileContext | None = None) -> None:
         if not hasattr(self, "_answer_streams"):
             self._answer_streams = {}
@@ -1294,7 +1350,26 @@ class DSHService:
                         response_language,
                         request_id=principal.request_id,
                     )
-                    scope_guard = self.profile_scope_guard(latest_content, response_language, profile_context)
+                    basic_application_list = (
+                        not latest_attachment
+                        and bool(principal.umc_token)
+                        and is_basic_application_list(latest_content, profile_context)
+                    )
+                    global_application_list = (
+                        basic_application_list
+                        and principal.profile_id == "0"
+                        and bool(profile_context and profile_context.is_global_view)
+                    )
+                    customer_list = (
+                        record_list_query(latest_content, profile_context)
+                        if not latest_attachment and principal.umc_token and profile_context
+                        and principal.profile_id and principal.profile_id == profile_context.active_profile_id
+                        else None
+                    )
+                    scope_guard = self.profile_scope_guard(
+                        latest_content, response_language, profile_context,
+                        allow_global_application_list=global_application_list or bool(customer_list and principal.profile_id == "0"),
+                    )
                     if scope_guard:
                         await self.append_audit(
                             db,
@@ -1327,37 +1402,42 @@ class DSHService:
                         if lease:
                             lease.state = "READY"
                         return
-                    if is_public_service_fee_query(latest_content) and not latest_attachment:
-                        # Read the same live Learn More source as Customer Portal.
-                        # No model, knowledge fee schedule, or caller identity
-                        # selector may supply or replace the published fee.
-                        await self.append_event(db, conversation, "skill.route", {
-                            "skillId": "service_fees", "category": "data_query",
-                            "toolName": "umc.services.fees", "mode": "answer",
-                            "requestId": principal.request_id,
-                        })
-                        await self.append_event(db, conversation, "tool.call", {
-                            "toolName": "umc.services.fees", "arguments": {"query": latest_content[:500]},
-                            "requestId": principal.request_id,
-                        })
-                        try:
-                            if not self.settings.external_tools_enabled:
-                                raise RuntimeError("External tools are disabled")
-                            fee_result = await CustomerServiceFeeClient(self.settings).lookup(latest_content, umc_token=principal.umc_token)
-                            fee_content = fee_answer(fee_result, response_language)
-                            fee_event = {"ok": True, "result": fee_result.model_dump()}
-                        except (httpx.HTTPError, PermissionError, RuntimeError, ValueError):
-                            fee_content = (
-                                "تعذر قراءة رسوم بطاقة الخدمة حالياً. راجع اعرف المزيد في صفحة الخدمات أو حاول مرة أخرى. لا يمكنني تقدير الرسوم."
-                                if response_language == "ar" else
-                                "I could not read the service card fee right now. Check Learn More on the Services page or retry. I cannot estimate the fee."
+                    if customer_list or (is_public_service_fee_query(latest_content) and not latest_attachment):
+                        if customer_list:
+                            direct_content = await self.read_customer_record_list(
+                                db, conversation, principal, profile_context, customer_list, response_language,
                             )
-                            fee_event = {"ok": False, "code": "service_fee_unavailable"}
-                        await self.append_event(db, conversation, "tool.result", {
-                            "toolName": "umc.services.fees", **fee_event, "requestId": principal.request_id,
-                        })
+                        else:
+                            # Read the same live Learn More source as Customer Portal.
+                            # No model, knowledge fee schedule, or caller identity
+                            # selector may supply or replace the published fee.
+                            await self.append_event(db, conversation, "skill.route", {
+                                "skillId": "service_fees", "category": "data_query",
+                                "toolName": "umc.services.fees", "mode": "answer",
+                                "requestId": principal.request_id,
+                            })
+                            await self.append_event(db, conversation, "tool.call", {
+                                "toolName": "umc.services.fees", "arguments": {"query": latest_content[:500]},
+                                "requestId": principal.request_id,
+                            })
+                            try:
+                                if not self.settings.external_tools_enabled:
+                                    raise RuntimeError("External tools are disabled")
+                                fee_result = await CustomerServiceFeeClient(self.settings).lookup(latest_content, umc_token=principal.umc_token)
+                                direct_content = fee_answer(fee_result, response_language)
+                                fee_event = {"ok": True, "result": fee_result.model_dump()}
+                            except (httpx.HTTPError, PermissionError, RuntimeError, ValueError):
+                                direct_content = (
+                                    "تعذر قراءة رسوم بطاقة الخدمة حالياً. راجع اعرف المزيد في صفحة الخدمات أو حاول مرة أخرى. لا يمكنني تقدير الرسوم."
+                                    if response_language == "ar" else
+                                    "I could not read the service card fee right now. Check Learn More on the Services page or retry. I cannot estimate the fee."
+                                )
+                                fee_event = {"ok": False, "code": "service_fee_unavailable"}
+                            await self.append_event(db, conversation, "tool.result", {
+                                "toolName": "umc.services.fees", **fee_event, "requestId": principal.request_id,
+                            })
                         await self.append_event(db, conversation, "assistant.message", {
-                            "content": fee_content, "requestId": principal.request_id,
+                            "content": direct_content, "requestId": principal.request_id,
                         })
                         await self.append_event(db, conversation, "turn.completed", {
                             "requestId": principal.request_id, "runtimeId": conversation.runtime_id,
@@ -1376,7 +1456,7 @@ class DSHService:
                         resolve_configured_skill(latest_content, route_catalog, canonicalize=False)
                         or resolve_skill(latest_content)
                     )
-                    if self.is_application_list_request(latest_content):
+                    if basic_application_list or self.is_application_list_request(latest_content):
                         application_status_entry = next(
                             (item for item in route_catalog if str(item.get("skillId") or "") == "application_status"),
                             None,
@@ -1395,7 +1475,7 @@ class DSHService:
                         route_context["recentMessages"] = route_context["recentMessages"][:-1]
                     active_skill_id = str(route_context.get("activeSkillId") or "")
                     cross_skill_handoff: dict[str, Any] | None = None
-                    if active_skill_id:
+                    if active_skill_id and not basic_application_list:
                         active_catalog_entry = next(
                             (item for item in route_catalog if str(item.get("skillId") or "") == active_skill_id),
                             None,
@@ -1531,9 +1611,9 @@ class DSHService:
                             merged_skill_workflow(selected_skill.skill_id, selected_skill.workflow) if selected_skill else {},
                             allowed_tool_names,
                             latest_content,
-                            history,
-                            intent_id=route_metadata.get("intentId"),
-                            filters=route_metadata.get("filters"),
+                            [] if basic_application_list else history,
+                            intent_id="list" if basic_application_list else route_metadata.get("intentId"),
+                            filters=None if basic_application_list else route_metadata.get("filters"),
                         )
                         if not tool_request:
                             # Legacy request parsing remains for established
@@ -1679,6 +1759,15 @@ class DSHService:
                     attachment_local_response: str | None = None
                     attachment_handoff_skill_id: str | None = None
                     attachment_handoff_result: dict[str, Any] | None = None
+                    if global_application_list and tool_request:
+                        definition = tool_definition_by_name.get(tool_request[0]) or {}
+                        if (
+                            tool_request[0] != "umc.applications"
+                            or profile_scope_for_definition(definition).get("mode") != "token_scoped"
+                            or definition.get("sideEffect") != "read"
+                            or definition.get("authStrategy") != "current_umc_bearer_token"
+                        ):
+                            tool_request = None
                     if tool_request:
                         tool_name, arguments = tool_request
                         if tool_name == "umc.applications":
@@ -1797,7 +1886,10 @@ class DSHService:
                         masking_policy = str((tool_definition_by_name.get(tool_name) or {}).get("maskingPolicy") or "default")
                         masked_tool_result = mask_tool_result(tool_result, masking_policy)
                         if tool_name == "umc.applications" and not latest_attachment and not forced_response_message:
-                            forced_response_message = application_list_answer(latest_content, masked_tool_result, response_language, profile_context)
+                            forced_response_message = application_list_answer(
+                                latest_content, masked_tool_result, response_language, profile_context,
+                                allow_global_view=global_application_list,
+                            )
                         # OCR text is sensitive customer data.  Keep the OCR
                         # output inside this process and persist only bounded
                         # reference hints for the audit trail.
@@ -2041,6 +2133,12 @@ class DSHService:
                                 handoff_skill_id=attachment_handoff_skill_id,
                                 handoff_result=attachment_handoff_result,
                             )
+                    if basic_application_list and not forced_response_message:
+                        forced_response_message = (
+                            "تعذر جلب طلباتك من البوابة حالياً. يرجى المحاولة مرة أخرى."
+                            if response_language == "ar"
+                            else "I couldn’t retrieve your applications from the portal right now. Please try again."
+                        )
                     if forced_response_message:
                         await self.append_event(db, conversation, "assistant.message", {"content": forced_response_message, "requestId": principal.request_id})
                     elif attachment_local_response:

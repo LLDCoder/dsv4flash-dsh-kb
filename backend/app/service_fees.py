@@ -24,7 +24,7 @@ def is_public_service_fee_query(content: str) -> bool:
     private = re.search(
         r"\b(?:my|our|his|her|their|paid|unpaid|payment|payments|receipt|invoice|refund|fines?|violations?|pending|status|balance)\b|\w+['’]s\b"
         r"|\b(?:show|list|view|display)\s+(?:me\s+)?(?:licenses|licences|permits|applications|requests)\s+(?:for|of)\b"
-        r"|غرام|مخالف|معلقه|حساب|رصيد|ايصال|فاتوره|مدفوع|طلباتي|طلبي|تراخيصي|رخصتي|رخصي"
+        r"|غرام|مخالف|معلقه|حساب|رصيد|ايصال|فاتوره|مدفوع|استرداد|استرجاع|طلباتي|طلبي|تراخيصي|رخصتي|رخصي"
         r"|(?:[\w+-]+[.@])+[\w+-]+|\b[a-z]{2,6}(?:-\d+){3,}\b", text,
     )
     return private is None
