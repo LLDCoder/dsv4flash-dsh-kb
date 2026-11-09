@@ -10,7 +10,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from .profile_scope import ProfileContext, requested_profile
+from .profile_scope import ProfileContext, requested_profile_candidates
 
 
 def normalize_record_text(value: str) -> str:
@@ -70,15 +70,14 @@ def customer_record_intent(content: str, context: ProfileContext | None = None) 
         # Refuse it without probing existence or letting the model reuse the
         # previous external target. Public application references are hyphenated.
         bare_owner = text.strip(" .،؟?!")
-        if re.fullmatch(r"[\w+-]+(?:[.@][\w+-]+)+", bare_owner) and not requested_profile(content, context):
+        if re.fullmatch(r"[\w+-]+(?:[.@][\w+-]+)+", bare_owner) and not requested_profile_candidates(content, context):
             return CustomerRecordIntent(frozenset(categories), True, True)
         return CustomerRecordIntent(frozenset(categories), False, False)
 
-    # Remove only an unambiguous, authorized Profile name from owner grammar.
+    # Remove matched authorized names even when the display name is ambiguous.
     # Other identifiers in the same sentence must still be refused.
-    target = requested_profile(content, context)
     owner_text = text
-    if target:
+    for target in requested_profile_candidates(content, context):
         for profile_name in (target.name, *target.aliases):
             name = normalize_record_text(profile_name)
             owner_text = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", " ", owner_text)
@@ -100,7 +99,11 @@ def customer_record_intent(content: str, context: ProfileContext | None = None) 
     }
     for pattern in owner_patterns:
         for match in re.finditer(pattern, owner_text):
-            candidate = match.group(1)
+            # Removing an authorized name may leave only sentence punctuation
+            # after "profile"/"ملف". It is not an unknown account owner.
+            candidate = match.group(1).strip(" .،؟?!")
+            if not candidate:
+                continue
             arabic_candidate = candidate.removeprefix("و").removeprefix("ال")
             is_record_word = arabic_candidate in AR_RECORD_NOUNS or any(
                 arabic_candidate.endswith(suffix) and arabic_candidate[:-len(suffix)] in AR_RECORD_NOUNS

@@ -1673,6 +1673,10 @@ def make_router(service: DSHService) -> APIRouter:
         queries return ``profileAction.type=open_profile_menu`` and
         ``code=profile_switch_required``; after portal identity switching,
         the client resumes the question under the new token's Profile scope.
+        Ambiguous authorized names return ``code=profile_choice_required``
+        with ``profileAction.candidateProfiles`` before any business lookup.
+        A duplicate ``clientMessageId`` returns the original persisted
+        ``requestId`` for event replay; it never creates a second user turn.
 
         Basic Customer English/Arabic application lists and statistics are
         projected from the successful masked My Requests response, rather

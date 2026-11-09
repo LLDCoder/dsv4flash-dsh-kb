@@ -25,7 +25,7 @@ from .customer_answer_stream import customer_generated_answer
 from .customer_record_intent import customer_record_intent
 from .service_fees import CustomerServiceFeeClient, is_public_service_fee_query, fee_answer
 from .application_listing import application_list_answer, application_page_arguments, ordered_application_result
-from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requires_profile_switch
+from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requested_profile_candidates, requires_profile_switch
 from .response_safety import contains_unexpected_response_script, is_internal_tool_protocol
 from .runtime import RuntimeManager
 from .skill_router import SkillCatalogCache, add_keyword_skill_candidate, configured_knowledge_fallback, normalized_router_mode, recall_skill_candidates, route_context_from_history, valid_llm_route
@@ -69,6 +69,18 @@ class EventBroker:
 
 
 class DSHService:
+    @staticmethod
+    def profile_question_language(content: str, context: ProfileContext | None) -> str:
+        """Detect question prose without treating authorized proper names as votes."""
+        prose = content
+        names = {
+            name for item in requested_profile_candidates(content, context)
+            for name in (item.name, *item.aliases) if name.strip()
+        }
+        for name in sorted(names, key=len, reverse=True):
+            prose = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", " ", prose, flags=re.IGNORECASE)
+        return response_language_for(prose if prose.strip(" .،؟?!") else content)
+
     @staticmethod
     def is_cross_account_record_request(content: str, profile_context: ProfileContext | None) -> bool:
         """Refuse unknown record owners without querying whether they exist."""
@@ -115,6 +127,24 @@ class DSHService:
                 ),
             }
         requested = requested_profile(content, profile_context)
+        candidates = requested_profile_candidates(content, profile_context)
+        if not requested and len(candidates) > 1 and profile_context:
+            return {
+                "code": "profile_choice_required",
+                "profileAction": {
+                    "type": "open_profile_menu",
+                    "code": "profile_choice_required",
+                    "candidateProfiles": [
+                        {"profileId": item.profile_id, "profileName": item.name}
+                        for item in candidates
+                    ],
+                },
+                "content": (
+                    f"أنت تستخدم حالياً ملف {profile_context.active_profile_name or 'الحالي'}. يطابق طلبك أكثر من ملف مخول. اختر الملف المقصود أدناه؛ لن أستبدل بيانات ملفك الحالي ببيانات الملف المطلوب أو أختار ملفاً بالنيابة عنك."
+                    if response_language == "ar"
+                    else f"You are currently using {profile_context.active_profile_name or 'the current profile'}. More than one authorized Profile matches your request. Choose the intended Profile below; I will not substitute the current Profile's records or choose a Profile on your behalf."
+                ),
+            }
         if (
             requested
             and profile_context
@@ -1193,7 +1223,13 @@ class DSHService:
                 existing = await db.execute(select(MessageIdempotency).where(MessageIdempotency.conversation_id == conversation_id, MessageIdempotency.client_message_id == client_message_id))
                 idem = existing.scalar_one_or_none()
                 if idem:
-                    return {"accepted": False, "duplicate": True, "conversationId": conversation_id, "seq": idem.user_event_seq, "requestId": principal.request_id}
+                    original = (await db.execute(select(SessionEvent).where(
+                        SessionEvent.conversation_id == conversation_id,
+                        SessionEvent.seq == idem.user_event_seq,
+                        SessionEvent.event_type == "user.message",
+                    ))).scalar_one_or_none()
+                    original_request_id = (original.event_json or {}).get("requestId") if original else None
+                    return {"accepted": False, "duplicate": True, "conversationId": conversation_id, "seq": idem.user_event_seq, "requestId": original_request_id}
                 active_task = self._turn_tasks.get(conversation_id)
                 if active_task and not active_task.done():
                     return {"accepted": False, "duplicate": False, "busy": True, "code": "conversation_busy", "conversationId": conversation_id, "requestId": principal.request_id}
@@ -1240,7 +1276,7 @@ class DSHService:
                     latest_content = latest_user.event_json.get("content", "") if latest_user else ""
                     raw_attachment = latest_user.event_json.get("attachment") if latest_user else None
                     latest_attachment = raw_attachment if isinstance(raw_attachment, dict) else None
-                    response_language = response_language_for(latest_content)
+                    response_language = self.profile_question_language(latest_content, profile_context)
 
                     async def publish_block(payload: dict) -> dict:
                         return await self.publish_stream_event(conversation, "assistant.chunk", {

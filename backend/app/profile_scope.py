@@ -73,6 +73,7 @@ class ProfileContext:
     active_profile_name: str
     is_global_view: bool
     profiles: tuple[ProfileReference, ...]
+    confirmed_target_id: str | None = None
 
 
 def profile_context_from_payload(value: object, *, trusted_profile_id: str | None = None) -> ProfileContext | None:
@@ -100,7 +101,11 @@ def profile_context_from_payload(value: object, *, trusted_profile_id: str | Non
     active_profile_name = next((item.name for item in profiles if item.profile_id == active_profile_id), active_profile_name)
     if not active_profile_id and not is_global_view:
         return None
-    return ProfileContext(active_profile_id, active_profile_name, is_global_view, tuple(profiles))
+    confirmed = str(value.get("confirmedTargetProfileId") or "").strip()
+    # This is an intent confirmation, never an authorization override. It may
+    # only refer to the Profile already selected by the authenticated token.
+    confirmed = confirmed if trusted_profile_id is not None and confirmed == active_profile_id else None
+    return ProfileContext(active_profile_id, active_profile_name, is_global_view, tuple(profiles), confirmed)
 
 
 def _profile_aliases(name: str) -> set[str]:
@@ -128,11 +133,11 @@ def _contains_profile_name(text: str, name: str) -> bool:
     return any(text_words[index:index + width] == name_words for index in range(len(text_words) - width + 1))
 
 
-def requested_profile(text: str, context: ProfileContext | None) -> ProfileReference | None:
-    """Resolve only an unambiguous profile already known to the portal."""
+def requested_profile_candidates(text: str, context: ProfileContext | None) -> tuple[ProfileReference, ...]:
+    """Match authorized names without silently discarding ambiguous targets."""
 
     if not context or not text.strip():
-        return None
+        return ()
     words = re.findall(r"[\w]+", text.casefold(), flags=re.UNICODE)
     profile_word_indexes = [index for index, word in enumerate(words) if word == "profile"]
     matches: dict[str, ProfileReference] = {}
@@ -150,7 +155,32 @@ def requested_profile(text: str, context: ProfileContext | None) -> ProfileRefer
                 break
         if exact_match or contextual_match:
             matches[profile.profile_id] = profile
-    return next(iter(matches.values())) if len(matches) == 1 else None
+    return tuple(matches.values())
+
+
+def requested_profile(text: str, context: ProfileContext | None) -> ProfileReference | None:
+    """Resolve one named target; never choose arbitrarily between namesakes."""
+
+    matches = requested_profile_candidates(text, context)
+    if context and context.confirmed_target_id == context.active_profile_id:
+        confirmed = next((item for item in matches if item.profile_id == context.active_profile_id), None)
+        if confirmed:
+            return confirmed
+    if len(matches) > 1 and context and not context.is_global_view:
+        # A question may mention both the current identity and the requested
+        # destination. The current identity is context, not another destination.
+        current = next((item for item in matches if item.profile_id == context.active_profile_id), None)
+        def matched_names(item: ProfileReference) -> set[tuple[str, ...]]:
+            return {tuple(re.findall(r"[\w]+", name.casefold())) for name in (item.name, *item.aliases) if _contains_profile_name(text, name)}
+        # Two identities sharing the same mentioned name are still ambiguous,
+        # including when one of them happens to be currently selected.
+        shared_name = current and any(
+            matched_names(current) & matched_names(item)
+            for item in matches if item.profile_id != current.profile_id
+        )
+        if not shared_name:
+            matches = tuple(item for item in matches if item.profile_id != context.active_profile_id)
+    return matches[0] if len(matches) == 1 else None
 
 
 def requires_profile_switch(definition: dict[str, Any], context: ProfileContext | None, user_text: str) -> ProfileReference | None:

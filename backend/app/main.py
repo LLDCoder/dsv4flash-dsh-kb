@@ -106,12 +106,21 @@ def custom_openapi():
                 "frame": {"type": "auth", "umctoken": "string"},
                 "requirements": ["UMC bearer token", "owned conversation"],
             },
+            "messageAcceptance": {
+                "accepted": "true for a new persisted user turn; false for busy or duplicate",
+                "duplicate": "true reuses the original persisted requestId; replay its events without creating another user message",
+                "busy": "conversation_busy is not accepted or queued; preserve the draft and show a retryable notice",
+            },
+            "profileConfirmation": {
+                "profileContext.confirmedTargetProfileId": "Optional user-selected intent resolution; only honored when it equals the authenticated token Profile and matches the named candidates. It cannot authorize another Profile.",
+            },
             "assistantMessage": {
                 "profileAction": {
                     "type": "open_profile_menu",
                     "code": [
                         "profile_selection_required",
                         "profile_switch_required",
+                        "profile_choice_required",
                         "selected_profile_not_available",
                         "no_results_current_profile",
                     ],
@@ -119,11 +128,16 @@ def custom_openapi():
                         "profileId": "authorized profile identifier",
                         "profileName": "display name",
                     },
+                    "candidateProfiles": [
+                        {"profileId": "authorized profile identifier", "profileName": "matching display name"}
+                    ],
                 },
                 "scope": (
                     "targetProfile is present only for an authorized profile resolved "
                     "from the current account context; clients must still match it "
                     "against their refreshed authorized profile list before switching."
+                    " Ambiguous names return profile_choice_required with candidateProfiles, "
+                    "without reading business records or selecting a destination automatically."
                 ),
             },
         },
