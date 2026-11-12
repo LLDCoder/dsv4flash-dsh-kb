@@ -124,3 +124,50 @@ def record_list_answer(
     else:
         lines += ["", "عرض القائمة الكاملة في [المخالفات والغرامات](/violations-fines)." if ar else "Open [Violations and Fines](/violations-fines) for the full list."]
     return "\n".join(lines)
+
+
+BOOK_FIELDS = (
+    ("title", "Title", "العنوان"),
+    ("authorName", "Author", "المؤلف"),
+    ("isbn", "ISBN", "الرقم الدولي المعياري للكتاب"),
+    ("versionNumber", "Version", "الإصدار"),
+    ("printYear", "Print year", "سنة الطباعة"),
+    ("language", "Language", "اللغة"),
+    ("subjectCategory", "Subject category", "التصنيف الموضوعي"),
+    ("subjectSubCategory", "Subject subcategory", "التصنيف الفرعي"),
+    ("nationalDepositoryNo", "National deposit number", "رقم الإيداع الوطني"),
+)
+
+
+def isbn_lookup_answer(isbn: str, result: dict[str, Any], language: str) -> str:
+    """Project verified bibliographic fields and preserve their original scripts."""
+    rows = successful_data(result)
+    ar = language == "ar"
+    unavailable = "غير متاح" if ar else "Not available"
+    if not isinstance(rows, list) or any(
+        not isinstance(row, dict) or not row.get("isbn") for row in rows
+    ):
+        return (
+            "تعذر التحقق من نتيجة البحث عن الكتاب حالياً. يرجى المحاولة مرة أخرى."
+            if ar else "I couldn’t verify the book lookup right now. Please try again."
+        )
+    heading = f"## ISBN {_cell(isbn, unavailable)}"
+    if not rows:
+        return f"{heading}\n\n" + (
+            "لم يعثر البحث على سجلات مطابقة." if ar else "The lookup returned no matching records."
+        )
+
+    lines = [heading, "", f"**السجلات المطابقة: {len(rows)}**" if ar else f"**Matching records: {len(rows)}**"]
+    for index, row in enumerate(rows, start=1):
+        lines.extend([
+            "", f"### السجل {index}" if ar else f"### Record {index}", "",
+            "| الحقل | القيمة |" if ar else "| Field | Value |", "|---|---|",
+        ])
+        for field, en_label, ar_label in BOOK_FIELDS:
+            value = row.get(field)
+            if field == "language" and isinstance(value, list):
+                value = ("، " if ar else ", ").join(v for v in value if isinstance(v, str) and v.strip())
+            if type(value) not in (str, int, float) or value == "":
+                value = None
+            lines.append(f"| {ar_label if ar else en_label} | {_cell(value, unavailable)} |")
+    return "\n".join(lines)

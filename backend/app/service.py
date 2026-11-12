@@ -23,7 +23,9 @@ from .principal import Principal
 from .answer_stream import AnswerStream, incomplete_stream_notice, cancelled_stream_notice
 from .customer_answer_stream import customer_generated_answer
 from .customer_record_intent import customer_record_intent
-from .customer_record_listing import LIST_REQUESTS, REFUND_STATUSES_TOOL, record_list_answer, record_list_query, successful_data
+from .customer_record_listing import (
+    LIST_REQUESTS, REFUND_STATUSES_TOOL, isbn_lookup_answer, record_list_answer, record_list_query, successful_data,
+)
 from .service_fees import CustomerServiceFeeClient, is_public_service_fee_query, fee_answer
 from .application_listing import application_list_answer, application_page_arguments, is_basic_application_list, ordered_application_result
 from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requested_profile_candidates, requires_profile_switch
@@ -1756,6 +1758,7 @@ class DSHService:
                         if attachment_ocr_route and "ocr.layout_parsing" not in allowed_tool_names
                         else None
                     )
+                    isbn_response: str | None = None
                     attachment_local_response: str | None = None
                     attachment_handoff_skill_id: str | None = None
                     attachment_handoff_result: dict[str, Any] | None = None
@@ -1890,6 +1893,8 @@ class DSHService:
                                 latest_content, masked_tool_result, response_language, profile_context,
                                 allow_global_view=global_application_list,
                             )
+                        if tool_name == "umc.book_by_isbn" and not latest_attachment and not forced_response_message:
+                            isbn_response = isbn_lookup_answer(str(arguments.get("isbn") or ""), masked_tool_result, response_language)
                         # OCR text is sensitive customer data.  Keep the OCR
                         # output inside this process and persist only bounded
                         # reference hints for the audit trail.
@@ -2141,6 +2146,14 @@ class DSHService:
                         )
                     if forced_response_message:
                         await self.append_event(db, conversation, "assistant.message", {"content": forced_response_message, "requestId": principal.request_id})
+                    elif isbn_response:
+                        content = await answer_stream.verified(isbn_response)
+                        await self.append_event(db, conversation, "assistant.message", {
+                            "content": content,
+                            "streamVersion": answer_stream.protocol_version,
+                            "streamStatus": "complete",
+                            "requestId": principal.request_id,
+                        })
                     elif attachment_local_response:
                         await self.append_audit(
                             db,

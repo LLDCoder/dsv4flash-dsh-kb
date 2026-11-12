@@ -127,6 +127,12 @@ def custom_openapi():
                 "failure": "Denied or unavailable upstream reads return a localized failure and do not report an empty list.",
                 "sideEffect": "Read only.",
             },
+            "isbnLookup": {
+                "example": "Look up ISBN 9781302000011.",
+                "scope": "Uses the published read-only book lookup and current UMC bearer.",
+                "response": "assistant.message returns each verified book record with its original bibliographic values, including mixed-language fields, and streamStatus complete.",
+                "emptyOrUnavailable": "A confirmed empty list and an unavailable or unverified lookup have distinct replies.",
+            },
             "profileConfirmation": {
                 "profileContext.confirmedTargetProfileId": "Optional user-selected intent resolution; only honored when it equals the authenticated token Profile and matches the named candidates. It cannot authorize another Profile.",
             },
