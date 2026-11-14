@@ -195,20 +195,26 @@ async def hydrate_packages(client, result, folder_id, top_k, umc_token=None, *, 
                 doc_id, folder_id, umc_token=umc_token), optional=True)
             content = document.get('content')
             receipt = document.get('manifest', {})
-            if (manifest_version(receipt) != manifest_version(manifest)
+            if document.get('available') is False:
+                if KNOWLEDGE_TRACE.get() is not None:
+                    KNOWLEDGE_TRACE.get().append({'stage':'document_content',
+                        'status':'fallback_to_verified_chunks','reason':document.get('reason'),
+                        'httpStatus':document.get('httpStatus')})
+            elif (manifest_version(receipt) != manifest_version(manifest)
                     or not isinstance(content, str)
                     or len(content.encode()) != manifest['size']
                     or hashlib.sha256(content.encode()).hexdigest() != manifest.get('sha256')
                     or document.get('content_hash') != manifest.get('sha256')):
                 raise ValueError('knowledge_document_integrity_mismatch')
-            parsed = json.loads(content)
-            if not isinstance(parsed, dict) or not isinstance(parsed.get('records'), list):
-                raise ValueError('knowledge_document_format_invalid')
-            package = {'id': 'kbfile:' + doc_id + '#complete', 'document_id': doc_id,
-                       'source_name': manifest['name'], 'content': content,
-                       'content_hash': manifest['sha256'], 'document_version': str(manifest['updated_at']),
-                       'hydration': {'method': 'authorized_document_sha256',
-                                     'manifestVersion': list(manifest_version(manifest))}}
+            if document.get('available') is not False:
+                parsed = json.loads(content)
+                if not isinstance(parsed, dict) or not isinstance(parsed.get('records'), list):
+                    raise ValueError('knowledge_document_format_invalid')
+                package = {'id': 'kbfile:' + doc_id + '#complete', 'document_id': doc_id,
+                           'source_name': manifest['name'], 'content': content,
+                           'content_hash': manifest['sha256'], 'document_version': str(manifest['updated_at']),
+                           'hydration': {'method': 'authorized_document_sha256',
+                                         'manifestVersion': list(manifest_version(manifest))}}
         if package is None:
             # The authorized recursive manifest supplies this file's directory.
             # Search there so unrelated sibling documents cannot consume the

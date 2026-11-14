@@ -3,18 +3,28 @@ from typing import Any
 
 
 def requested_response_language(text: str) -> str | None:
-    """Return an explicitly requested output language, when one is present.
+    """Find a requested reply language without mistaking quoted context for it.
 
-    Explicit requests must win over script heuristics: Arabic users may ask for
-    English and English users may ask for Arabic in the same turn.
+    A sentence such as "the note is in English" describes the question, not
+    the requested answer. When several actual directives occur, the last one
+    wins. This is language-level behavior, independent of business scenarios.
     """
     value = str(text or "")
-    if re.search(r"\b(?:in|answer|respond|reply|write)\s+(?:in\s+)?english\b|بال(?:لغة\s+)?الإنجليزية|بالإنجليزية", value, re.I):
-        return "en"
-    if re.search(r"\b(?:in|answer|respond|reply|write)\s+(?:in\s+)?arabic\b|بال(?:لغة\s+)?العربية|بالعربية", value, re.I):
-        return "ar"
-    if re.search(r"\b(?:in|answer|respond|reply|write)\s+(?:in\s+)?chinese\b|用中文|中文回答|中文回复", value, re.I):
-        return "zh"
+    directives: list[tuple[int, str]] = []
+    patterns = (
+        ("en", r"\b(?:answer|respond|reply|write|provide|use)\s+(?:in\s+)?english\b|(?:أجب|اجب|جاوب|رد|اكتب|أكتب|قدم|قدّم|الإجابة|الرد)\s+(?:باللغة\s+|ب)الإنجليزية"),
+        ("ar", r"\b(?:answer|respond|reply|write|provide|use)\s+(?:in\s+)?arabic\b|(?:أجب|اجب|جاوب|رد|اكتب|أكتب|قدم|قدّم|الإجابة|الرد)\s+(?:باللغة\s+|ب)العربية"),
+        ("zh", r"\b(?:answer|respond|reply|write|provide|use)\s+(?:in\s+)?chinese\b|用中文|中文回答|中文回复"),
+    )
+    for code, pattern in patterns:
+        directives.extend((match.start(), code) for match in re.finditer(pattern, value, re.I))
+    if directives:
+        return max(directives, key=lambda item: item[0])[1]
+    trailing = re.search(r"(?:\bin\s+(english|arabic|chinese)\b|ب(?:اللغة\s+)?(العربية|الإنجليزية))\s*(?:please)?[.!?؟\s]*$", value, re.I)
+    if trailing:
+        label = (trailing.group(1) or trailing.group(2) or "").casefold()
+        return {"english": "en", "arabic": "ar", "chinese": "zh",
+                "العربية": "ar", "الإنجليزية": "en"}.get(label)
     return None
 
 

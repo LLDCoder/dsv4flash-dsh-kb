@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     warm_pool_min_idle: int = 1
     llm_base_url: str = ""
     llm_api_key: str = ""
-    llm_model: str = "deepseek-v4-flash"
+    llm_model: str = "deepseek-flash"
     llm_timeout_seconds: float = 60.0
     reader_total_timeout_seconds: float = Field(
         default=READER_TOTAL_TIMEOUT_SECONDS,

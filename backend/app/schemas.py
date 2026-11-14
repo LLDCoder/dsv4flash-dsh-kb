@@ -12,6 +12,11 @@ class APIModel(BaseModel):
 
 class ConversationCreate(APIModel):
     workspace: str = "default"
+    client_request_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$",
+        validation_alias=AliasChoices("clientRequestId", "client_request_id"),
+        description="Optional stable creation-operation key. Retries by the same authenticated owner return the same conversation; never grants access.",
+    )
 
 
 class MessageCreate(APIModel):

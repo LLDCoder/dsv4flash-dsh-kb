@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from contextvars import ContextVar
 from collections import Counter
 from datetime import date, datetime, timezone, timedelta
@@ -430,6 +431,7 @@ def _trace_id(request_id: str | None) -> str:
 
 
 async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None, authorization: str | None = None, request_id: str | None = None, identity_retry: bool = False) -> Any:
+    request_started = time.perf_counter()
     forwarded = _require_umc_token(authorization)
     trace_id = _trace_id(request_id)
     token_ref = _token_ref(forwarded)
@@ -458,17 +460,21 @@ async def _umc_request(method: str, path: str, *, json: dict[str, Any] | None = 
                     logger.info('umc_identity_retry request_id=%s attempt=%s error_type=%s', trace_id, attempt + 1, type(exc).__name__)
                     await asyncio.sleep(0.2 * (attempt + 1))
         logger.info(
-            "umc_response portal=%s request_id=%s token_ref=%s method=%s path=%s status=%s",
+            "umc_response portal=%s request_id=%s token_ref=%s method=%s path=%s status=%s duration_ms=%.2f",
             UMC_PORTAL,
             trace_id,
             token_ref,
             method,
             path,
             response.status_code,
+            (time.perf_counter() - request_started) * 1000,
         )
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as exc:
+        logger.info('umc_error request_id=%s method=%s path=%s status=%s duration_ms=%.2f',
+                    trace_id, method, path, exc.response.status_code,
+                    (time.perf_counter() - request_started) * 1000)
         status = exc.response.status_code if exc.response.status_code in {401, 403, 404, 422} else 502
         permission_response = {}
         if exc.response.status_code in {401, 403}:
@@ -1711,7 +1717,7 @@ def _page_read_target(spec, portal_origin):
     if not policy_allowed and method == 'GET':
         policy_template = re.sub(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', r':\1', template)
         policy_allowed = (
-            origin == portal_origin
+            f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" == portal_origin
             and policy_template in READER_READ_ONLY_GET_PATHS
             and not _reader_is_mutation_route(template)
         )
@@ -2018,7 +2024,7 @@ async def _reader_related(page, specs, portal_origin):
     return outcomes
 
 
-async def _reader_collect(page, specs, portal_origin):
+async def _reader_collect(page, specs, portal_origin, request_id=None):
     health = getattr(page, "_reader_health", {})
     result = []
     for spec in specs:
@@ -2045,7 +2051,11 @@ async def _reader_collect(page, specs, portal_origin):
                 raise ValueError("collection_source_not_authorized")
             for attempt in range(3):
                 try:
+                    collection_started = time.perf_counter()
                     response = await page.context.request.fetch(url, **kwargs)
+                    logger.info('reader_collection_api request_id=%s operation=%s status=%s duration_ms=%.2f',
+                                _trace_id(request_id), spec.operationKey, response.status,
+                                (time.perf_counter() - collection_started) * 1000)
                     try:
                         if not 200 <= response.status < 300:
                             raise CollectionDependencyError('collection_response_failed',
@@ -4836,6 +4846,7 @@ async def admin_portal_read(
             "summary": "The requested numeric page anchor is presentation-only and was not treated as a clickable control.",
             "limitations": ["presentation_page_link_ignored"],
         })
+    portal_started = time.perf_counter()
     progress = {'stage': 'identity'}
     progress_token = READER_PROGRESS.set(progress)
     try:
@@ -4848,6 +4859,9 @@ async def admin_portal_read(
                                         "limitations": ["reader_total_timeout"],
                                         "diagnostics": {"stage": progress['stage'], "budgetSeconds": request.timeout_seconds}})
     finally:
+        logger.info('reader_portal_total request_id=%s stage=%s duration_ms=%.2f',
+                    _trace_id(x_request_id), progress['stage'],
+                    (time.perf_counter() - portal_started) * 1000)
         READER_PROGRESS.reset(progress_token)
 
 
@@ -4906,10 +4920,13 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
         if async_playwright is None:
             raise RuntimeError("reader_browser_unavailable")
         async with async_playwright() as playwright:
+            browser_started = time.perf_counter()
             browser: Browser = await playwright.chromium.launch(
                 headless=True,
                 args=["--disable-dev-shm-usage", "--no-sandbox"],
             )
+            logger.info('reader_phase request_id=%s phase=browser_launch duration_ms=%.2f',
+                        _trace_id(x_request_id), (time.perf_counter() - browser_started) * 1000)
             auxiliary_context = None
             try:
                 context = await browser.new_context(
@@ -4924,7 +4941,7 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                 await context.add_init_script(_auth_init_script(raw_token))
                 reader_health.update({
                     "blocked": [], "failed": {}, "pending": {}, "responses": {},
-                    "responseCaptureTasks": set(),
+                    "responseCaptureTasks": set(), "requestStarted": {},
                 })
 
                 async def route_handler(route: Route) -> None:
@@ -4939,6 +4956,7 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     ):
                         declared_path_values.update((*permission_context["pages"], *permission_context["subpages"]))
                     declared_paths = frozenset(declared_path_values)
+                    reader_health['requestStarted'][id(route.request)] = time.perf_counter()
                     await _guard_reader_request(route, portal_origin, declared_paths, reader_health=reader_health)
 
                 await context.route("**/*", route_handler)
@@ -4955,13 +4973,24 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                 def request_finished(request_obj: Any) -> None:
                     request_id = id(request_obj)
                     request_path = reader_health["pending"].pop(request_id, "")
+                    request_started = reader_health['requestStarted'].pop(request_id, None)
+                    response_status = int(reader_health['responses'].get(request_id, 200))
+                    if request_started is not None and request_path.startswith('/api/'):
+                        logger.info('reader_browser_api request_id=%s method=%s path=%s status=%s duration_ms=%.2f',
+                                    _trace_id(x_request_id), request_obj.method, request_path, response_status,
+                                    (time.perf_counter() - request_started) * 1000)
                     if request_path and int(reader_health["responses"].pop(request_id, 200)) < 400:
                         reader_health["failed"].pop(request_path, None)
                     _reader_api_discovery_state(reader_health)["requestKeys"].pop(request_id, None)
                 def request_failed(request_obj: Any) -> None:
                     request_id = id(request_obj)
                     request_path = reader_health["pending"].pop(request_id, "")
+                    request_started = reader_health['requestStarted'].pop(request_id, None)
                     _reader_api_discovery_state(reader_health)["requestKeys"].pop(request_id, None)
+                    if request_started is not None and request_path.startswith('/api/'):
+                        logger.info('reader_browser_api request_id=%s method=%s path=%s status=failed duration_ms=%.2f',
+                                    _trace_id(x_request_id), request_obj.method, request_path,
+                                    (time.perf_counter() - request_started) * 1000)
                     if request_path:
                         reader_health["failed"][request_path] = reader_health["failed"].get(request_path, 0) + 1
                 def response_seen(response: Any) -> None:
@@ -4991,14 +5020,20 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                 start_url = urljoin(portal_origin + "/", request.start_path.lstrip("/"))
                 stage = 'navigation'
                 progress['stage'] = stage
+                phase_started = time.perf_counter()
                 response = await page.goto(start_url, wait_until="domcontentloaded")
+                logger.info('reader_phase request_id=%s phase=navigation duration_ms=%.2f',
+                            _trace_id(x_request_id), (time.perf_counter() - phase_started) * 1000)
                 if response and response.status in {401, 403}:
                     raise PermissionError("portal_login_required" if response.status == 401 else "page_not_permitted")
                 if response and (response.status == 404 or response.status >= 500):
                     raise HTTPException(status_code=response.status, detail="page_response_failed")
                 stage = 'settle'
                 progress['stage'] = stage
+                phase_started = time.perf_counter()
                 await _settle_page(page)
+                logger.info('reader_phase request_id=%s phase=settle duration_ms=%.2f',
+                            _trace_id(x_request_id), (time.perf_counter() - phase_started) * 1000)
                 if urlsplit(page.url).path.casefold().rstrip("/").endswith("/login"):
                     raise PermissionError("portal_login_required")
                 stage = 'dashboard_context'
@@ -5007,6 +5042,7 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     page, request.dashboard_context, portal_origin, permission_context['userId'])
                 stage = 'actions'
                 progress['stage'] = stage
+                phase_started = time.perf_counter()
                 result = await _execute_reader_actions(
                     page,
                     request,
@@ -5014,6 +5050,8 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     (*permission_context["pages"], *permission_context["subpages"]),
                     initially_settled=True,
                 )
+                logger.info('reader_phase request_id=%s phase=actions duration_ms=%.2f',
+                            _trace_id(x_request_id), (time.perf_counter() - phase_started) * 1000)
                 if dashboard_receipt is not None:
                     # Every answer observation must retain the verified constraints.
                     # Conflicting planner actions never reuse the pre-action receipt.
@@ -5042,7 +5080,10 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
                     stage = 'collection'
                     progress['stage'] = stage
                     observation = result[4] or {}
-                    observation["collections"] = await _reader_collect(page, request.collections, portal_origin)
+                    phase_started = time.perf_counter()
+                    observation["collections"] = await _reader_collect(page, request.collections, portal_origin, x_request_id)
+                    logger.info('reader_phase request_id=%s phase=collection duration_ms=%.2f',
+                                _trace_id(x_request_id), (time.perf_counter() - phase_started) * 1000)
                     result = (*result[:4], observation)
                 if request.completion_period:
                     stage = 'completion'
@@ -5101,7 +5142,10 @@ async def _execute_admin_portal_read(request, authorization, x_request_id, x_use
         # the Admin Portal. Serialize execution until isolation is proven.
         stage = 'queue'
         progress['stage'] = stage
+        queue_started = time.perf_counter()
         async with READER_LOCK:
+            logger.info('reader_phase request_id=%s phase=queue duration_ms=%.2f',
+                        _trace_id(x_request_id), (time.perf_counter() - queue_started) * 1000)
             facts, pages, observed_fields, confirmed_empty, observation = await asyncio.wait_for(execute(), timeout=request.timeout_seconds)
     except PermissionError as exc:
         return _sanitize_reader_output({"status": "no_permission", "summary": "The requested Admin Portal page is not permitted.",

@@ -1,5 +1,5 @@
 """Versioned, business-neutral contracts for the local Reader V3 pipeline."""
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,7 +79,7 @@ class TaskSpec(Contract):
     readOnly: bool
     responseMode: Literal["answer", "draft"] = "answer"
     # Direct requested acts only; untrusted business content never sets authority.
-    requestBoundaries: list[RequestBoundary] = Field(default_factory=list, max_length=7)
+    requestBoundaries: list[RequestBoundary] = Field(default_factory=list, max_length=len(get_args(RequestBoundary)))
     searchQuery: str = Field(min_length=1, max_length=800)
     unresolvedSlots: list[str] = Field(max_length=10)
     recordIdentity: str = ""
@@ -92,7 +92,7 @@ class TaskSpec(Contract):
 class RequestBoundaryCheck(Contract):
     stage: Literal["request_boundary"]
     decision: Literal["direct_request", "not_established"]
-    requestBoundaries: list[RequestBoundary] = Field(default_factory=list, max_length=7)
+    requestBoundaries: list[RequestBoundary] = Field(default_factory=list, max_length=len(get_args(RequestBoundary)))
 
 
 class KnowledgeResolution(Contract):

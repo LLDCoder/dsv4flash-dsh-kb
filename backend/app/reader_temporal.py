@@ -1,7 +1,35 @@
 """Bounded calendar/interval execution. Field meaning and source timezone are KB facts."""
+from calendar import month_name
 from datetime import datetime, timedelta, timezone
 import re
 from zoneinfo import ZoneInfo
+
+
+def clarify_numeric_date(question, language):
+    """Explain either ordering only when the question explicitly asks about dates."""
+    question = question.translate(str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'))
+    pairs = set(re.findall(r'(?<![\w/.-])([0-9]{1,2})[/.]([0-9]{1,2})(?![\w/.-])', question))
+    if len(pairs) != 1:
+        return None
+    left, right = next(iter(pairs))
+    first, second = int(left), int(right)
+    if not (1 <= first <= 12 and 1 <= second <= 12 and first != second):
+        return None
+    order_question = re.search(r'\b(?:date\s+format|month[/ -]day|day[/ -]month)\b'
+        r'|صيغة\s+التاريخ|تنسيق\s+التاريخ|شهر/يوم|يوم/شهر', question, re.I)
+    months = '|'.join(month_name[1:])
+    alternative_question = (re.search(rf'\b(?:{months})\b[^?؟]*\b(?:or)\b[^?؟]*\b(?:{months})\b',
+        question, re.I) or re.search(r'(?:هل|يعني).+(?:أو|أم).+(?:\?|؟)', question))
+    if not (order_question or alternative_question):
+        return None
+    if language == 'ar':
+        return (f'إذا كانت الصيغة شهر/يوم فالمقصود اليوم {second} من الشهر {first}، '
+                f'وإذا كانت يوم/شهر فالمقصود اليوم {first} من الشهر {second}. '
+                'أي التاريخين تقصد؟ اكتب اسم الشهر أو التاريخ بصيغة YYYY-MM-DD مع السنة.')
+    month_day = datetime(2000, first, second).strftime('%B %d').replace(' 0', ' ')
+    day_month = datetime(2000, second, first).strftime('%B %d').replace(' 0', ' ')
+    return (f'In month/day format it means {month_day}; in day/month format it means {day_month}. '
+            'Which date did you mean? Please spell out the month or use YYYY-MM-DD with the year.')
 
 
 def interval_for(expression, reference):

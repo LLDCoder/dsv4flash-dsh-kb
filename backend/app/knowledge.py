@@ -1,4 +1,5 @@
 import asyncio
+import re
 from typing import Any
 
 import httpx
@@ -15,6 +16,8 @@ class KnowledgeGatewayClient:
         self.base_url = settings.knowledge_gateway_url.rstrip("/")
         self.timeout = settings.knowledge_timeout_seconds
         self.retry_attempts = max(1, settings.knowledge_retry_attempts)
+        self._content_route_checked = False
+        self._content_route = '/files/{file_id}/content'
 
     @staticmethod
     def _headers(umc_token: str | None) -> dict[str, str] | None:
@@ -106,4 +109,32 @@ class KnowledgeGatewayClient:
     async def document(self, file_id: str, folder_id: str, *, umc_token: str | None = None) -> dict[str, Any]:
         if not file_id.isalnum() or len(file_id) > 128:
             raise ValueError("invalid_document_id")
-        return await self._get(f"/files/{file_id}/content", {"folder_id": folder_id}, umc_token=umc_token)
+        if not self._content_route_checked:
+            try:
+                spec = await self._get('/openapi.json', umc_token=umc_token)
+                paths = spec.get('paths') if isinstance(spec, dict) else None
+                if isinstance(spec, dict) and spec.get('openapi') and isinstance(paths, dict) and paths:
+                    routes = [path for path, methods in paths.items()
+                              if re.fullmatch(r'/files/\{[A-Za-z_][A-Za-z_0-9]*\}/content', path)
+                              and isinstance(methods, dict) and 'get' in methods]
+                    self._content_route = routes[0] if routes else None
+                    self._content_route_checked = True
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in {401, 403}:
+                    raise
+            except (httpx.HTTPError, ValueError, TypeError):
+                pass  # Unavailable schema is not proof that a route is absent.
+        if self._content_route_checked and self._content_route is None:
+            return {'available': False, 'reason': 'document_content_transport_unavailable',
+                    'capabilityEvidence': 'configured_gateway_openapi_has_no_content_get'}
+        path = re.sub(r'\{[A-Za-z_][A-Za-z_0-9]*\}', file_id, self._content_route)
+        try:
+            return await self._get(path, {"folder_id": folder_id}, umc_token=umc_token)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in {404, 405, 501}:
+                raise
+            # A missing optional transport is not proof that the source file
+            # is missing. The caller can still reconstruct exact authorized
+            # chunks and verify the directory version, size and SHA-256.
+            return {"available": False, "reason": "document_content_transport_unavailable",
+                    "httpStatus": exc.response.status_code}

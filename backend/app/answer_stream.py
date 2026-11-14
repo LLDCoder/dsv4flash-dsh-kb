@@ -171,12 +171,18 @@ def public_candidate(text: str) -> bool:
 def incomplete_stream_notice(language: str) -> str:
     """A failure receipt, never an invented business conclusion."""
     return {
+        "ur": "\n\nجواب مکمل نہیں ہوا۔ دکھایا گیا جواب جزوی ہے؛ براہ کرم دوبارہ کوشش کریں۔",
+        "ml": "\n\nമറുപടി പൂർത്തിയായില്ല. കാണിച്ചിരിക്കുന്നത് ഭാഗിക മറുപടിയാണ്; വീണ്ടും ശ്രമിക്കുക.",
+        "tl": "\n\nHindi kumpleto ang sagot. Bahagi lamang ang ipinapakita; pakisubukang muli.",
         "ar": "\n\nلم يكتمل الرد لأن الجزء المتبقي لم يجتز التحقق أو تعذر توليده. النص المعروض جزئي؛ يرجى إعادة المحاولة.",
         "zh": "\n\n回答未完成：剩余内容未通过校验或生成中断。当前显示的是部分回答，请重试。",
     }.get(language, "\n\nThe answer is incomplete because the remaining content could not be validated or generated. The displayed response is partial; please retry.")
 
 
 def cancelled_stream_notice(language: str) -> str:
-    return {"ar": "\n\nتم إيقاف الرد؛ النص المعروض جزئي.",
+    return {"ur": "\n\nجواب روک دیا گیا؛ دکھایا گیا جواب جزوی ہے۔",
+            "ml": "\n\nമറുപടി നിർത്തി; കാണിച്ചിരിക്കുന്നത് ഭാഗിക മറുപടിയാണ്.",
+            "tl": "\n\nItinigil ang sagot; bahagi lamang ang ipinapakita.",
+            "ar": "\n\nتم إيقاف الرد؛ النص المعروض جزئي.",
             "zh": "\n\n已停止输出，当前内容为部分回答。"}.get(
         language, "\n\nThe response was stopped; the displayed answer is partial.")

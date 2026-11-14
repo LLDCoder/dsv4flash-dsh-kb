@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import httpx
 import json
 import logging
@@ -15,11 +16,17 @@ _reader_presentation_log = logging.getLogger(__name__)
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .db import AuditRecord, ConfigEntry, Conversation, MessageIdempotency, ReaderClarificationClaim, SessionEvent, SessionLocal, Skill, purge_expired_audit_data
 from .console_auth import CONSOLE_PASSWORD_CONFIG_KEY, DEFAULT_CONSOLE_PASSWORD
 from .llm import LLMAdapter
+
+
+
+from .translation_bridge import TranslationBridge, WORKFLOW_GUIDANCE, TranslationError, VERSION as TRANSLATION_VERSION, LANGUAGES as BRIDGE_LANGUAGES, error_message as translation_error_message, needs_business_label_localization
+from .turn_http_timing import trace_http, http_stage
 from .answer_stream import AnswerStream, incomplete_stream_notice, cancelled_stream_notice
 from .message_compression import (MESSAGE_COMPRESSION_THRESHOLD_CHARS, MessageCompressionError,
                                   compression_failure_message, message_source_hash, prepare_reader_input)
@@ -54,6 +61,8 @@ from .reader_limits import (
 from .runtime import RuntimeManager
 from .skills import detect_unsupported_message_language, message_language_notice, response_language_for
 from .tool_gateway import ToolGateway
+from .reader_turn_semantics import previous_snapshot, temporal_guard, authorized_change_guidance, mutation_refusal_guidance
+from .reader_temporal import clarify_numeric_date
 
 
 def runtime_error_payload(request_id: str, exc: Exception) -> dict[str, str]:
@@ -158,6 +167,26 @@ def _answer_language_conflicts(text: str, language: str) -> bool:
         arabic_words = re.findall(r"[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]{2,}", value)
         return len(arabic_words) >= 2 and len(re.findall(r"\b[A-Za-z]{3,}\b", value)) < 3
     return False
+
+
+def _arabic_answer_needs_repair(text: str) -> bool:
+    """Detect untranslated English prose, not IDs or official bilingual labels."""
+    latin_prose_lines = 0
+    for line in str(text or '').splitlines():
+        plain = re.sub(r'`[^`]*`|https?://\S+|\([^)]*/[^)]*\)', ' ', line)
+        english = re.findall(r"\b(?:the|this|that|these|those|no|not|cannot|could|current|read|from|page|record|records|task|tasks|account|information|requested|available|confirmed|open|check|status|pending|overdue|search|target|matching|history|contact|source|inspection|detail|return|shown|visible|complete|all)\b", plain, re.I)
+        arabic = re.findall(r'[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff]', plain)
+        if re.search(r'\b(?:due\s+in\s+\d+d|\d+d\s+overdue)\b', plain, re.I):
+            return True
+        if len(arabic) < 4 and len(english) >= 4:
+            return True
+        # A single Latin address or proper name is valid; several long
+        # English-only bullet lines mean the actual answer body was not
+        # localized. Count whole lines rather than particular checklist codes.
+        latin_words = re.findall(r'\b[A-Za-z]{3,}\b', plain)
+        if len(arabic) < 4 and len(latin_words) >= 5:
+            latin_prose_lines += 1
+    return latin_prose_lines >= 3
 
 
 def _language_support_note(language: str) -> str:
@@ -523,6 +552,10 @@ def reader_evidence_only_response(
 ) -> str:
     """Render the bounded Reader result without another source of business facts."""
     content_facts = reader_result.get("facts")
+    if (reader_result.get('result')=='success'and reader_result.get('workflowState')in
+            {'previous_answer_fields_verified','requested_fields_only_verified'}):
+        from .reader_turn_semantics import render_field_values_only
+        return render_field_values_only(content_facts,language)
     if reader_result.get('workflowState') == 'overdue_object_clarification':
         return '\n'.join(str(fact) for fact in content_facts or [] if str(fact).strip())
     if reader_result.get('workflowState') == 'inspection_target_history_guard':
@@ -590,9 +623,12 @@ def reader_evidence_only_response(
             )
     if "requested_group_scope_unverified" in (reader_result.get("missing") or []):
         messages = {
-            "en": "I could not verify that the visible list is restricted to the requested team or department, so I will not disclose people or application records from a broader queue.",
-            "ar": "لم أتحقق من أن القائمة مقيدة بالفريق أو القسم المطلوب، لذلك لن أعرض سجلات الأشخاص أو الطلبات من قائمة أوسع.",
-            "zh": "无法确认当前列表仅包含所请求团队或部门的记录，因此不会从更大范围的队列披露人员或申请数据。",
+            "en": "I could not verify that the visible list is restricted to the requested team or department, so I will not disclose people or application records from a broader queue. To verify, open the task source page with a role that renders that team\'s own queue, or ask the team owner to share it.",
+            "ar": "لم أتحقق من أن القائمة مقيدة بالفريق أو القسم المطلوب، لذلك لن أعرض سجلات الأشخاص أو الطلبات من قائمة أوسع. للتحقق، افتح صفحة مصدر المهام بحساب يعرض قائمة الفريق نفسه، أو اطلب من مسؤول الفريق مشاركتها.",
+            "zh": "无法确认当前列表仅包含所请求团队或部门的记录，因此不会从更大范围的队列披露人员或申请数据。如需核对，请用可显示该团队自身队列的账号打开任务来源页，或请团队负责人共享。",
+            "ur": "یہ تصدیق نہیں ہو سکی کہ نظر آنے والی فہرست صرف مطلوبہ ٹیم یا شعبے تک محدود ہے، اس لیے میں وسیع قطار سے افراد یا درخواستوں کا ریکارڈ ظاہر نہیں کروں گا۔ تصدیق کے لیے، ٹاسک کے ماخذ صفحے کو ایسے کردار سے کھولیں جو اسی ٹیم کی قطار دکھاتا ہو، یا ٹیم کے ذمہ دار سے اشتراک کرنے کو کہیں۔",
+            "ml": "ദൃശ്യമായ പട്ടിക അഭ്യർത്ഥിച്ച ടീമിലേക്കോ വിഭാഗത്തിലേക്കോ മാത്രം പരിമിതമാണെന്ന് സ്ഥിരീകരിക്കാനായില്ല, അതിനാൽ വിശാലമായ ക്യൂവിൽ നിന്ന് വ്യക്തികളുടെയോ അപേക്ഷകളുടെയോ രേഖകൾ ഞാൻ വെളിപ്പെടുത്തില്ല. പരിശോധിക്കാൻ, ആ ടീമിന്റെ ക്യൂ കാണിക്കുന്ന റോളോടെ ടാസ്ക് ഉറവിട പേജ് തുറക്കുക, അല്ലെങ്കിൽ ടീം ഉടമയോട് പങ്കിടാൻ ആവശ്യപ്പെടുക.",
+            "tl": "Hindi ko maipapatunay na ang nakikitang listahan ay limitado lamang sa hiniling na team o departamento, kaya hindi ako magbubunyag ng mga tao o rekord ng aplikasyon mula sa mas malawak na pila. Para i-verify, buksan ang task source page gamit ang role na nagpapakita ng sariling pila ng team na iyon, o hilingin sa may-ari ng team na ibahagi ito.",
         }
         return messages.get(language, messages["en"])
     if re.search(r"支持中文|support(?:ed)?\s+(?:language|languages|chinese)|official(?:ly)?\s+support", question or "", re.I):
@@ -663,12 +699,58 @@ def reader_evidence_only_response(
             'ar': 'يمكن لهذا الحساب قراءة مهام فريقه الحالي، وليس فريق مدير آخر. لم أقرأ أو أفصح عن أي مهمة أو مسؤول خارج نطاق الفريق.',
         }.get(language, "This account may read its current team's tasks, not another manager's team.")
     if (reader_result.get('result') == 'no_permission'
+            and 'global_scope_not_authorized' in (reader_result.get('missing') or [])):
+        return {
+            'en': ("You do not have permission to read the requested scope, so no records were disclosed. "
+                   "Confirmed: nothing was read or verified for this request. Unverified: the requested records "
+                   "and any counts derived from them. To verify, open the source page with an account that holds "
+                   "the module's view permission, or ask your administrator to grant it."),
+            'zh': ('当前账号无权读取所请求的范围，本次未披露任何记录。已确认：本次没有读取或核实任何记录；'
+                   '未核实：所请求的记录及由其得出的任何计数。核对方式：用具备该模块查看权限的账号打开来源页，或请管理员授权。'),
+            'ar': ('ليس لديك إذن لقراءة النطاق المطلوب، ولم يتم الكشف عن أي سجل. المؤكد: لم يُقرأ أو يُتحقق من أي سجل '
+                   'في هذا الطلب. غير المؤكد: السجلات المطلوبة وأي أعداد مشتقة منها. للتحقق: افتح صفحة المصدر '
+                   'بحساب يملك صلاحية عرض هذه الوحدة، أو اطلب من المسؤول منحها.'),
+            'ur': ('آپ کو درخواست کردہ دائرہ پڑھنے کی اجازت نہیں ہے، اس لیے کوئی ریکارڈ ظاہر نہیں کیا گیا۔ '
+                   'تصدیق شدہ: اس درخواست میں کوئی ریکارڈ نہیں پڑھا اور نہ تصدیق کیا گیا۔ غیر مصدقہ: درخواست کردہ '
+                   'ریکارڈز اور ان سے حاصل ہونے والی گنتی۔ تصدیق کے لیے: ایسے اکاؤنٹ سے ماخذ صفحہ کھولیں جسے اس '
+                   'ماڈیول کی دیکھنے کی اجازت ہو، یا منتظم سے اجازت طلب کریں۔'),
+            'ml': ('അഭ്യർത്ഥിച്ച പരിധി വായിക്കാൻ നിങ്ങൾക്ക് അനുമതിയില്ല, അതിനാൽ ഒരു രേഖയും വെളിപ്പെടുത്തിയിട്ടില്ല. '
+                   'സ്ഥിരീകരിച്ചത്: ഈ അഭ്യർത്ഥനയിൽ ഒരു രേഖയും വായിച്ചിട്ടില്ല. സ്ഥിരീകരിക്കാത്തത്: അഭ്യർത്ഥിച്ച '
+                   'രേഖകളും അവയിൽ നിന്നുള്ള എണ്ണങ്ങളും. പരിശോധിക്കാൻ: ഈ മൊഡ്യൂളിന്റെ കാഴ്ചാനുമതിയുള്ള അക്കൗണ്ടിൽ '
+                   'സ്രോതസ്സ് പേജ് തുറക്കുക.'),
+            'tl': ('Wala kang pahintulot na basahin ang hiniling na saklaw, kaya walang rekord na isiniwalat. '
+                   'Nakumpirma: walang binasa o na-verify para sa kahilingang ito. Hindi pa tiyak: ang hiniling na '
+                   'mga rekord at anumang bilang na nagmula sa mga ito. Para ma-verify: buksan ang pinagmulang pahina '
+                   'gamit ang account na may pahintulot na makita ang module na ito.'),
+        }.get(language, ('You do not have permission to read the requested scope. Confirmed: nothing was read or '
+                         'verified. Unverified: the requested records. Open the source page with an authorized account.'))
+    if (reader_result.get('result') == 'no_permission'
             and 'page_not_permitted' in (reader_result.get('missing') or [])):
         return {
-            'en': "You do not have permission to read the requested records. No records were disclosed.",
-            'zh': '当前账号的权限未授权本次请求的页面读取，因此尚未核实所请求的记录。这不代表其他页面也不可访问。',
-            'ar': 'ليس لديك صلاحية قراءة السجلات المطلوبة. لم يتم الكشف عن أي سجلات.',
-        }.get(language, 'Current permissions do not authorize the requested page read. The requested records have not been verified.')
+            'en': ("You do not have permission to read the requested records, so no records were disclosed. "
+                   "Confirmed: nothing was read or verified for this request. Unverified: the requested records "
+                   "and any counts derived from them. To verify, open the source page with an account that holds "
+                   "that module's view permission, or ask your administrator to grant it."),
+            'zh': ('当前账号的权限未授权本次请求的页面读取，因此尚未核实所请求的记录，也未披露任何记录。'
+                   '已确认：本次没有读取或核实任何记录；未确认：所请求的记录及由其得出的任何计数。'
+                   '核对方式：用具备该模块查看权限的账号打开来源页，或请管理员授予权限。这不代表其他页面也不可访问。'),
+            'ar': ('ليس لديك صلاحية قراءة السجلات المطلوبة، لذلك لم يتم الكشف عن أي سجلات. '
+                   'المؤكد: لم يُقرأ أو يُتحقق من أي سجل في هذا الطلب. غير المؤكد: السجلات المطلوبة وأي أعداد مشتقة منها. '
+                   'للتحقق: افتح صفحة المصدر بحساب يملك صلاحية عرض هذه الوحدة، أو اطلب من المسؤول منحها.'),
+            'ur': ('آپ کو درخواست کردہ ریکارڈز پڑھنے کی اجازت نہیں ہے، اس لیے کوئی ریکارڈ ظاہر نہیں کیا گیا۔ '
+                   'تصدیق شدہ: اس درخواست میں کوئی ریکارڈ نہیں پڑھا اور نہ تصدیق کیا گیا۔ غیر مصدقہ: درخواست کردہ ریکارڈز '
+                   'اور ان سے حاصل ہونے والی کوئی بھی گنتی۔ تصدیق کے لیے: ایسے اکاؤنٹ سے ماخذ صفحہ کھولیں جسے اس ماڈیول '
+                   'کی دیکھنے کی اجازت ہو، یا اپنے منتظم سے یہ اجازت طلب کریں۔'),
+            'ml': ('അഭ്യർത്ഥിച്ച രേഖകൾ വായിക്കാൻ നിങ്ങൾക്ക് അനുമതിയില്ല, അതിനാൽ ഒരു രേഖയും വെളിപ്പെടുത്തിയിട്ടില്ല. '
+                   'സ്ഥിരീകരിച്ചത്: ഈ അഭ്യർത്ഥനയിൽ ഒരു രേഖയും വായിച്ചിട്ടില്ല, സ്ഥിരീകരിച്ചിട്ടില്ല. സ്ഥിരീകരിക്കാത്തത്: '
+                   'അഭ്യർത്ഥിച്ച രേഖകളും അവയിൽ നിന്നുള്ള എണ്ണങ്ങളും. പരിശോധിക്കാൻ: ഈ മൊഡ്യൂളിന്റെ കാഴ്ചാനുമതിയുള്ള '
+                   'അക്കൗണ്ടിൽ സ്രോതസ്സ് പേജ് തുറക്കുക, അല്ലെങ്കിൽ അഡ്മിനിസ്ട്രേറ്ററിനോട് അനുമതി ആവശ്യപ്പെടുക.'),
+            'tl': ('Wala kang pahintulot na basahin ang hiniling na mga rekord, kaya walang rekord na isiniwalat. '
+                   'Nakumpirma: walang binasa o na-verify para sa kahilingang ito. Hindi pa tiyak: ang hiniling na mga '
+                   'rekord at anumang bilang na nagmula sa mga ito. Para ma-verify: buksan ang pinagmulang pahina gamit '
+                   'ang account na may pahintulot na makita ang module na ito, o hilingin ito sa administrator.'),
+        }.get(language, ('Current permissions do not authorize the requested page read. Confirmed: nothing was read '
+                         'or verified. Unverified: the requested records. Open the source page with an authorized account.'))
     if (reader_result.get('result') == 'no_permission' and not reader_result.get('facts')
             and reader_result.get('missing') == ['private_customer_data_forbidden']):
         return {
@@ -763,7 +845,9 @@ def reader_evidence_only_response(
         if not isinstance(value, str) or not value.strip():
             return ""
         fact = value.strip()
-        fact = fact[:3000 if fact.startswith("Inspection checklist materials/steps returned for ") else 500]
+        # Source/transport budgets belong to evidence collection. Silently
+        # slicing an accepted fact here can remove a negation, an approval
+        # condition or the end of a procedure before translation sees it.
         team_page_coverage = re.fullmatch(
             r'Current Team Tasks page shows (\d+) of (\d+) tasks; this is not a complete team-task list\.',
             fact,
@@ -840,12 +924,8 @@ def reader_evidence_only_response(
         except (TypeError, ValueError):
             return ""
 
-    fact_limit = 500 if workflow in {
-        "inspection_overdue_full", "inspection_date_list_full", "inspection_team_assignment_full",
-        "license_overdue_full",
-        "inspection_detail_full",
-        "team_member_cards_full",
-    } else 20
+    from .reader_query_requirements import fact_output_limit
+    fact_limit = fact_output_limit(reader_result.get('completeness'), workflow)
     facts = [fact for fact in (
         deliverable_fact(value) for value in raw_facts[:fact_limit]
     ) if fact] if isinstance(raw_facts, list) else []
@@ -1017,19 +1097,26 @@ def reader_evidence_only_response(
         "ar": {
             "not_confirmed": "تعذر تأكيد المعلومات المطلوبة.",
             "load_failed": "تعذر تحميل المعلومات المطلوبة.",
-            "no_permission": "ليس لديك إذن لقراءة المعلومات المطلوبة.",
+            "no_permission": ("ليس لديك إذن لقراءة المعلومات المطلوبة، ولم يتم الكشف عن أي سجل. "
+                              "المؤكد: لم يُقرأ أو يُتحقق من أي سجل في هذا الطلب. غير المؤكد: السجلات المطلوبة وأي أعداد مشتقة منها. "
+                              "للتحقق: افتح صفحة المصدر بحساب يملك صلاحية عرض هذه الوحدة."),
             "no_data": "لا توجد معلومات مطابقة ضمن النطاق المطلوب.",
         },
         "zh": {
             "not_confirmed": "无法确认所请求的信息。",
             "load_failed": "无法加载所请求的信息。",
-            "no_permission": "你没有权限读取所请求的信息。",
+            "no_permission": ("你没有权限读取所请求的信息，本次未披露任何记录。"
+                              "已确认：本次没有读取或核实任何记录；未核实：所请求的记录及由其得出的任何计数。"
+                              "核对方式：用具备该模块查看权限的账号打开来源页。"),
             "no_data": "在所请求范围内没有匹配信息。",
         },
         "en": {
             "not_confirmed": "I could not confirm the requested information.",
             "load_failed": "I could not load the requested information.",
-            "no_permission": "You do not have permission to read the requested information.",
+            "no_permission": ("You do not have permission to read the requested information. The requested scope is "
+                              "outside this account's verified access. Confirmed: nothing was read or verified for this "
+                              "request. Unverified: the requested records and any counts derived from them. To verify, "
+                              "open the source page with an account that holds that permission."),
             "no_data": "No matching information is available for the requested scope.",
         },
     }
@@ -1050,7 +1137,19 @@ def reader_evidence_only_response(
             "zh": "已确认数量：",
             "en": "Confirmed count:",
         },
+        "count_bounded": {
+            "ar": "عدد محسوب على الصفوف المقروءة فقط:",
+            "zh": "仅按已读行计算的数字：",
+            "en": "Count over the rows read only:",
+            "ur": "صرف پڑھی گئی قطاروں پر شمار:",
+            "ml": "വായിച്ച വരികളിൽ മാത്രമുള്ള എണ്ണം:",
+            "tl": "Bilang sa mga na-read na row lamang:",
+        },
     }
+    if answer_shape == "count" and str(reader_result.get("result") or "") not in {"success", "no_data"}:
+        answer_shape = "detail"
+    elif answer_shape == "count" and str(reader_result.get("completeness") or "") != "complete":
+        answer_shape = "count_bounded"
     fact_prefix = prefixes.get(answer_shape, {
         "ar": "التفاصيل المؤكدة:",
         "zh": "已确认的信息：",
@@ -1085,6 +1184,8 @@ def reader_evidence_only_response(
             "لم تُسجَّل أي غرامة مقررة للقضية المطلوبة ضمن سجلات المخالفات التي يمكن لهذا الحساب قراءتها؛ وهذا لا يعني أن المبلغ صفر، بل لا يوجد سجل لهذه القضية حتى الآن. افتح التفتيش > المخالفات وطبّق مرشح رقم القضية للتحقق.",
         "The committee has not decided a fine amount for the matched record yet; the portal value is empty, not zero.":
             "لم تقرر اللجنة مبلغ الغرامة للسجل المطابق بعد؛ فقيمة البوابة فارغة وليست صفرًا.",
+        "The readable violation response did not supply a legal-basis field. Whether an approved legal basis exists elsewhere is unverified; no unrelated regulation was substituted.":
+            "لم تتضمن استجابة المخالفة المتاحة للقراءة حقلًا للأساس القانوني. ولم يُتحقق مما إذا كان هناك أساس قانوني معتمد في مصدر آخر؛ ولم تُستبدل به أي لائحة غير مرتبطة.",
         "No legal basis is recorded on this violation record; no unrelated regulation was attached.":
             "لا يوجد أساس قانوني مسجل في سجل المخالفة هذا؛ ولم تتم إضافة أي لائحة غير مرتبطة.",
         "For this date, completed tasks: 0; overdue tasks: 0; completion rate: not calculable because no tasks were returned. There is no per-inspector breakdown for an empty date.":
@@ -1554,7 +1655,10 @@ def reader_evidence_only_response(
         "submission time": "وقت التقديم",
         "team member": "عضو الفريق",
         "category": "الفئة",
+        "task category": "فئة المهمة",
+        "queue scope": "نطاق قائمة المهام",
         "pending tasks": "المهام المعلّقة",
+        "pending tasks without a supplied responsible person": "المهام المعلّقة التي لم يُرجع لها المصدر مسؤولاً",
         "overdue tasks": "المهام المتأخرة",
         "completed tasks": "المهام المكتملة",
         "total assigned tasks": "إجمالي المهام المكلّفة",
@@ -1577,24 +1681,21 @@ def reader_evidence_only_response(
     }
 
     def display_name(key: str) -> str:
-        display_segments: list[str] = []
-        for segment in re.split(r"[_\-.]+", key):
-            words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", segment)
-            words = re.sub(r"\s+", " ", words).strip()
-            display_segments.append(words[:1].upper() + words[1:] if words else segment)
-        rendered = " ".join(segment for segment in display_segments if segment) or key
+        def words(value):
+            value=re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+            return re.sub(r"\s+", " ", re.sub(r"[_\-.]+", " ", value)).strip()
+        rendered=words(key) or key
+        rendered=rendered[:1].upper()+rendered[1:]
         if language == "ar":
-            localized = arabic_field_names.get(rendered.casefold())
-            if localized:
-                return localized
-            # Nested API objects commonly arrive as ``items.taskNo`` or
-            # ``data.createdByDisplay``.  The parent is an API envelope, not a
-            # user-facing label; localize the leaf using the same dictionary
-            # so new endpoints do not require one-off bug-specific rules.
-            leaf = rendered.rsplit(" ", 1)[-1]
-            localized = arabic_field_names.get(leaf.casefold())
-            if localized:
-                return localized
+            localized=arabic_field_names.get(rendered.casefold())
+            if localized:return localized
+            # Only actual API envelope paths may expose their full leaf label.
+            # The last word of an ordinary field is not its meaning: stripping
+            # qualifiers would turn an unavailable-count into the metric value.
+            path=key.split('.')
+            if len(path)>1 and all(v.casefold()in {'data','items','result','page'}for v in path[:-1]):
+                localized=arabic_field_names.get(words(path[-1]).casefold())
+                if localized:return localized
         return rendered
 
     def display_enum_value(key: str, value: str) -> str:
@@ -1610,6 +1711,10 @@ def reader_evidence_only_response(
         }.get(normalized_key, normalized_key)
         normalized_value = re.sub(r"\s+", " ", value.casefold()).strip()
         enum_maps = {
+            "assigned to": {"no responsible person returned": "لم يرجع المصدر مسؤولاً"},
+            "queue scope": {"all task categories": "جميع فئات المهام"},
+            "task category": {"applications": "الطلبات", "enquiries & complaints": "الاستفسارات والشكاوى",
+                              "violations": "المخالفات", "refunds": "الاستردادات", "appeals": "الاعتراضات"},
             "status": {
                 "queued": "في قائمة الانتظار",
                 "in progress": "قيد التنفيذ",
@@ -1693,6 +1798,10 @@ def reader_evidence_only_response(
             if field_name in normalized_key and normalized_value in values:
                 return values[normalized_value]
         return value
+    if workflow == 'inspection_sla_api_verified':
+        from .inspection_sla_api import render_result
+        return render_result(reader_result,language,lambda value:display_enum_value('Status',value))
+
     def display_value(value: str) -> str:
         """Make strict ISO date-times readable without changing their timezone."""
         match = re.fullmatch(
@@ -1920,6 +2029,16 @@ def reader_evidence_only_response(
                       'zh': '以下仅为部分匹配记录，并非完整列表。',
                       'ar': 'هذه بعض السجلات المطابقة وليست القائمة الكاملة.'}
             rendered_facts = sample.get(language, sample['en']) + '\n\n' + rendered_facts
+        if reader_result.get('completeness') == 'bounded' and answer_shape in {'count', 'metric', 'summary', 'table'}:
+            bounded_total = {
+                'en': 'This figure covers only the rows read in the current view; it is not an exhaustive total.',
+                'zh': '该数字仅覆盖当前视图已读取的行，并非全量总数。',
+                'ar': 'هذا الرقم يغطي فقط الصفوف المقروءة في العرض الحالي وليس إجماليًا شاملًا.',
+                'ur': 'یہ عدد صرف موجودہ ویو میں پڑھی گئی قطاروں پر مشتمل ہے، مکمل مجموعہ نہیں۔',
+                'ml': 'ഈ കണക്ക് നിലവിലെ വ്യൂവിൽ വായിച്ച വരികളെ മാത്രം ഉൾക്കൊള്ളുന്നു; മുഴുവൻ ആകെത്തുകയല്ല.',
+                'tl': 'Ang bilang na ito ay sumasaklaw lamang sa mga na-read na row sa kasalukuyang view; hindi ito kumpletong total.',
+            }.get(language, 'This figure covers only the rows read in the current view; it is not an exhaustive total.')
+            rendered_facts = bounded_total + '\n\n' + rendered_facts
         if re.search(r'\b(?:currenc(?:y|ies))\b|币种|عملة|عملات', question, re.I):
             if not re.search(r'\b(?:USD|AED|EUR|GBP|CNY|SAR)\b|[$€£¥]', " ".join(str(item) for item in raw_facts), re.I):
                 missing_currency = {
@@ -2084,7 +2203,11 @@ def ensure_partial_list_note(answer: str, language: str) -> str:
 
 def _needs_partial_record_note(evidence: dict[str, Any]) -> bool:
     """A bounded knowledge answer is not a partially read business queue."""
-    return bool(evidence.get('page')) and str(evidence.get('completeness') or '') != 'complete' and evidence.get('answerShape') in {'list', 'overview', 'attention', 'due'}
+    # A scalar KPI may be a bounded observation, but it is never a sample of
+    # record rows. Apply the queue caveat only to actual list answers.
+    return (bool(evidence.get('page'))
+            and str(evidence.get('completeness') or '') != 'complete'
+            and evidence.get('answerShape') == 'list')
 
 
 def reader_natural_answer_is_grounded(answer: str, verified_text: str, question: str, *, completeness: str = "") -> bool:
@@ -2277,26 +2400,34 @@ def _reader_focus_anchor(result: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _reader_select_requested_records(result: dict[str, Any], question: str) -> dict[str, Any]:
+def _reader_select_requested_records(result: dict[str, Any], question: str, *,
+                                     semantic_limit: int | None = None,
+                                     semantic_bound: bool = False) -> dict[str, Any]:
     result = _reader_select_requested_single_record(result, question)
-    limit = requested_record_limit(question)
-    if not limit or result.get('result') != 'success' or result.get('answerShape') != 'list':
+    limit = semantic_limit if semantic_bound else requested_record_limit(question)
+    if limit is None or result.get('result') != 'success' or result.get('answerShape') != 'list':
         return result
     facts, count = [], 0
     for fact in result.get('facts') or []:
         try:
             fields = json.loads(fact)
         except (ValueError, TypeError):
-            return result  # Do not truncate narrative evidence or field fragments.
+            # Collection receipts are annotations, not records. Preserve them
+            # without discarding an otherwise valid record projection.
+            facts.append(fact)
+            continue
         if not isinstance(fields, dict):
-            return result
+            facts.append(fact)
+            continue
         is_record = bool(_reader_semantic_anchors({**result, 'facts': [fact]}).get('recordIdentity'))
         if is_record:
             count += 1
             if count > limit:
                 continue
         facts.append(fact)
-    return {**result, 'facts': facts, 'completeness': 'bounded'} if count > limit else result
+    return {**result, 'facts': facts,
+            'outputSelection': {'requestedLimit': limit, 'returnedRecords': limit,
+                                'sourceRecordCount': count}} if count > limit else result
 
 
 def _reader_presentation_metadata(result: dict[str, Any]) -> dict[str, Any]:
@@ -2361,6 +2492,21 @@ def _reader_history_question(history: list[SessionEvent], user_index: int, end_i
     """Resolve a saved summary only for its original message, never another turn."""
     user = history[user_index]
     original = str((user.event_json or {}).get("content") or "")
+    # Bind normalization to the exact original user event, never another turn.
+    for event in reversed(history[user_index + 1:end_index]):
+        if event.event_type != "reader.input_translation":
+            continue
+        value = event.event_json or {}
+        if value.get("userSeq") != getattr(user, "seq", None) or value.get("sourceSha256") != message_source_hash(original):
+            continue
+        if value.get("status") != "complete":
+            return ""
+        if (value.get("language") in BRIDGE_LANGUAGES
+                and value.get("version") == TRANSLATION_VERSION):
+            # Cached normalizations from an older policy may contain a repaired
+            # semantic error; retain the immutable user question instead.
+            original = str(value.get("englishQuestion") or original)
+        break
     if len(original) <= MESSAGE_COMPRESSION_THRESHOLD_CHARS:
         return DSHService._redact_audit_string(original.strip())
     for event in reversed(history[user_index + 1:end_index]):
@@ -2430,6 +2576,20 @@ def _reader_conversation_context(
             "intentContext": resolved,
             **_reader_presentation_metadata(previous_result),
         }
+        # A verified exact-record read can have several explanatory facts.
+        # Preserve its explicit identity for a same-record follow-up instead
+        # of requiring a one-fact answer or reusing an arbitrary list row.
+        if (previous_result.get('result') == 'success'
+                and isinstance(previous_result.get('recordIdentity'), str)
+                and previous_result['recordIdentity'].strip()):
+            current['recordIdentity'] = DSHService._redact_audit_string(
+                previous_result['recordIdentity'])[:300]
+        if isinstance(previous_result.get('unavailableFields'), list):
+            current['unavailableFields'] = [
+                DSHService._redact_audit_string(field)[:100]
+                for field in previous_result['unavailableFields'][:10]
+                if isinstance(field, str) and field.strip()
+            ]
         slots = resolved.get("slots", {})
         for key in ("businessObject", "businessFocus", "recordIdentity", "view", "dateRange", "filter", "requestedScope", "answerShape"):
             slot = slots.get(key, {}) if isinstance(slots, dict) else {}
@@ -2557,6 +2717,12 @@ def _reader_conversation_context(
         )[:500],
     }
     intent.update(_reader_focus_anchor(previous_result))
+    if isinstance(previous_result.get('unavailableFields'), list):
+        intent['unavailableFields'] = [
+            DSHService._redact_audit_string(field)[:100]
+            for field in previous_result['unavailableFields'][:10]
+            if isinstance(field, str) and field.strip()
+        ]
     if isinstance(previous_result.get('sourceHint'), dict):
         navigation = semantic_source_hint({'previousIntent': {'sourceHint': previous_result['sourceHint']}})
         if navigation.get('page'):
@@ -2796,9 +2962,27 @@ class DSHService:
     def writer_lock_for(self, conversation_id: str) -> asyncio.Lock:
         return self._writer_locks.setdefault(conversation_id, asyncio.Lock())
 
-    async def create_conversation(self, db: AsyncSession, principal: Principal, workspace: str) -> Conversation:
+    async def create_conversation(self, db: AsyncSession, principal: Principal, workspace: str,
+                                  client_request_id: str | None = None) -> Conversation:
+        # The operation key is scoped to an already authenticated owner. It
+        # identifies chat metadata only, never business records or authority.
+        # The existing owner uniqueness constraint also covers multi-process
+        # races and a response lost after a successful commit; no migration.
+        conversation_id = ("conv_" + hashlib.sha256(json.dumps(
+            [principal.tenant_id, principal.user_id, client_request_id],
+            ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()[:40]
+            if client_request_id is not None else f"conv_{uuid4().hex[:20]}")
+        if client_request_id is not None:
+            try:
+                existing = await self.get_owned_conversation(db, principal, conversation_id)
+            except LookupError:
+                pass
+            else:
+                if existing.workspace != workspace:
+                    raise ValueError("conversation_creation_key_conflict")
+                return existing
         conversation = Conversation(
-            conversation_id=f"conv_{uuid4().hex[:20]}",
+            conversation_id=conversation_id,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             dsh_session_id=f"dsh_{uuid4().hex[:20]}",
@@ -2810,7 +2994,19 @@ class DSHService:
             last_activity_at=datetime.now(timezone.utc),
         )
         db.add(conversation)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError as conflict:
+            await db.rollback()
+            if client_request_id is None:
+                raise
+            try:
+                existing = await self.get_owned_conversation(db, principal, conversation_id)
+            except LookupError:
+                raise conflict
+            if existing.workspace != workspace:
+                raise ValueError("conversation_creation_key_conflict")
+            return existing
         await db.refresh(conversation)
         return conversation
 
@@ -3273,6 +3469,7 @@ class DSHService:
         skill_content: str = "",
         prior_answer_coverage: bool = False,
         answer_stream: AnswerStream | None = None,
+        compact_list: bool = False,
     ) -> tuple[str, bool, str]:
         """Let the model present verified facts naturally, with a deterministic fallback."""
 
@@ -3282,6 +3479,8 @@ class DSHService:
             prior_answer_coverage=prior_answer_coverage,
             question=question,
         )))
+        if evidence.get('workflowState')in {'previous_answer_fields_verified','requested_fields_only_verified'}:
+            return fallback,False,'deterministic_fields_only'
         if prior_answer_coverage:
             return fallback, False, "prior_answer_coverage"
         verified_profile = evidence.get("presentationMode") == "verified_profile" or evidence.get('workflowState') == 'verified_profile'
@@ -3292,9 +3491,36 @@ class DSHService:
             # not let prose generation soften a verified scope into "unknown"
             # or promote a page-level view into portal-wide access.
             return fallback, False, "deterministic_verified_profile"
+        if (evidence.get('result')=='success' and evidence.get('answerShape')=='list'
+                and evidence.get('completeness')=='complete' and not evidence.get('missing')):
+            structured_rows=[]
+            for fact in evidence.get('facts')or[]:
+                try:value=json.loads(fact)
+                except (ValueError,TypeError):continue
+                if isinstance(value,dict):structured_rows.append(fact)
+            if structured_rows and all(_reader_semantic_anchors({'facts':[fact]}).get('recordIdentity')
+                                       for fact in structured_rows):
+                if compact_list and not evidence.get('workflowState'):
+                    records=[json.loads(fact)for fact in structured_rows]
+                    identities=[str(_reader_semantic_anchors({'facts':[fact]})['recordIdentity'])for fact in structured_rows]
+                    identity_keys=[key for key in records[0] if all(key in row and str(row[key])==identity for row,identity in zip(records,identities))]
+                    status_keys=[key for key in records[0] if re.sub(r'[^a-z]','',key.casefold()) in {'status','currentstatus'} and all(key in row for row in records)]
+                    if len(identity_keys)==1 and len(status_keys)==1:
+                        keys=[identity_keys[0],status_keys[0]]
+                        display_facts=[]
+                        for fact in evidence.get('facts')or[]:
+                            try:row=json.loads(fact)
+                            except (ValueError,TypeError):display_facts.append(fact);continue
+                            if not isinstance(row,dict):display_facts.append(fact);continue
+                            display_facts.append(json.dumps({key:row[key]for key in keys},ensure_ascii=False))
+                        display={**evidence,'facts':display_facts}
+                        compact=_dedupe_reader_notes(_sanitize_reader_internal_ids(reader_evidence_only_response(
+                            display,language,prior_answer_coverage=prior_answer_coverage,question=question)))
+                        return compact,False,'deterministic_complete_structured_list_compact'
+                return fallback,False,'deterministic_complete_structured_list'
         if evidence.get('result') == 'no_permission':
             return fallback, False, 'deterministic_permission_denial'
-        if evidence.get('workflowState') in {'team_member_cards_full', 'inspection_detail_full', 'inspection_target_history_guard', 'inspection_overdue_full', 'overdue_object_clarification'}:
+        if evidence.get('workflowState') in {'previous_answer_fields_verified','inspection_sla_api_verified', 'team_member_cards_full', 'inspection_detail_full', 'inspection_target_history_guard', 'inspection_overdue_full', 'overdue_object_clarification'}:
             return fallback, False, 'deterministic_bound_business_facts'
         if evidence.get('workflowState') == 'assignment_rechecked':
             return fallback, False, 'deterministic_assignment_comparison'
@@ -3349,6 +3575,9 @@ class DSHService:
             operator_prompt,
             skill_content,
         )
+        if evidence.get('workflowState')=='documentation_grounded':
+            from .reader_turn_semantics import GROUNDED_REFERENCE_INSTRUCTION
+            system += '\n'+GROUNDED_REFERENCE_INSTRUCTION
         attention_guidance = ""
         if evidence.get("answerShape") == "attention":
             attention_guidance = (
@@ -3555,6 +3784,10 @@ class DSHService:
         return effective
 
     async def _run_turn(self, principal: Principal, conversation_id: str) -> None:
+        with trace_http(self.settings) as http_calls:
+            await self._run_translated_turn(principal, conversation_id, http_calls)
+
+    async def _run_translated_turn(self, principal: Principal, conversation_id: str, http_calls: list) -> None:
         """Execute the fixed generic Reader/knowledge runtime.
 
         Business-module Skill routing and workflow-generated Tool selection are
@@ -3562,6 +3795,14 @@ class DSHService:
         uses ``admin_portal_reader``.
         """
 
+        turn_started = time.perf_counter()
+        bridge = TranslationBridge(self.settings)
+        bridge_language = ""
+        bridge_failed = None
+        bridge_mutation = False
+        credential_recovery = False
+        workflow_guidance = ''
+        stage_times = {}
         if not hasattr(self, "_answer_streams"):
             self._answer_streams = {}
         async with self.writer_lock_for(conversation_id):
@@ -3591,6 +3832,44 @@ class DSHService:
                         "turn.started",
                         {"requestId": principal.request_id, "runtimeId": conversation.runtime_id},
                     )
+                    previous_bridge_language = ""
+                    if latest_user:
+                        previous_bridge_event = next((event for event in reversed(history)
+                            if event.seq < latest_user.seq and event.event_type == "reader.input_translation"), None)
+                        if previous_bridge_event:
+                            previous_bridge_language = str((previous_bridge_event.event_json or {}).get("replyLanguage") or (previous_bridge_event.event_json or {}).get("language") or "")
+                    normalization_previous = (_reader_conversation_context(history, latest_user).get('previousIntent') or {}).get('question','')
+                    normalization_started = time.perf_counter()
+                    try:
+                        try:
+                            normalized = await bridge.normalize(latest_content, previous_bridge_language, normalization_previous)
+                        except TranslationError:
+                            # One retry: a transient bridge hiccup must not discard the question.
+                            await asyncio.sleep(0.8)
+                            normalized = await bridge.normalize(latest_content, previous_bridge_language, normalization_previous)
+                        bridge_language = normalized.reply_language or normalized.language
+                        bridge_mutation = normalized.business_mutation
+                        credential_recovery = normalized.credential_recovery
+                        workflow_guidance = normalized.workflow_guidance
+                        reader_question = normalized.english
+                        if normalized.active:
+                            language = "en"
+                        normalization_data = {"status": "complete", "language": normalized.language or "unchanged",
+                            "englishQuestion": reader_question if normalized.active else "",
+                            "sourceSha256": normalized.original_sha256,
+                            "businessMutationRequested": bridge_mutation,
+                            "credentialRecoveryRequested": credential_recovery,
+                            "verificationMethod": normalized.verification_method,
+                            "inputLanguage":normalized.language or "unchanged", "replyLanguage":bridge_language}
+                    except TranslationError as exc:
+                        bridge_failed = exc.code
+                        bridge_language = exc.language
+                        normalization_data = {"status": "failed", "language": bridge_language,
+                            "failureCode": exc.code, "sourceSha256": message_source_hash(latest_content)}
+                    stage_times["inputNormalizationMs"] = round((time.perf_counter()-normalization_started)*1000, 2)
+                    await self.append_event(db, conversation, "reader.input_translation", {
+                        **normalization_data, "userSeq": latest_user.seq if latest_user else None,
+                        "requestId": principal.request_id, "version": TRANSLATION_VERSION})
                     await self.append_status(db, conversation, "routing", language, request_id=principal.request_id)
                     await self.append_event(
                         db,
@@ -3606,8 +3885,48 @@ class DSHService:
 
                     evidence: dict[str, Any] = {}
                     audit_evidence: dict[str, Any] = {}
+                    # A policy refusal proves only this runtime's non-execution.
+                    # It is not a business-record or permission snapshot.
+                    runtime_boundary: dict[str, Any] | None = None
                     mutation_response_language: str | None = None
-                    if not skill_ready:
+                    if bridge_failed:
+                        evidence = {"result": "not_confirmed", "page": "", "section": "", "scope": "unknown",
+                            "facts": [], "workflowState": "translation_failed", "missing": [bridge_failed]}
+                        audit_evidence = {"stage": "input_translation_failed", "failureCode": bridge_failed}
+                        await self.append_event(db, conversation, "reader.result", {
+                            **evidence, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
+                    elif bridge_mutation or credential_recovery or workflow_guidance:
+                        runtime_boundary = {
+                            'authority': 'assistant_runtime_policy',
+                            'requestedActionExecuted': False,
+                            'businessToolsInvoked': False,
+                            'requestId': principal.request_id,
+                        }
+                        guidance_language = 'en' if bridge_language else language
+                        policy = WORKFLOW_GUIDANCE.get(workflow_guidance) if not credential_recovery else None
+                        guidance_facts = policy.get(guidance_language, policy['en']) if policy else mutation_refusal_guidance(
+                            credential_recovery=credential_recovery, language=guidance_language)
+                        evidence = {"result": "success", "page": "", "section": "", "scope": "unknown",
+                            "facts": list(guidance_facts),
+                            "workflowState": "read_only_request_refused", "missing": ["business_mutation_not_allowed"]}
+                        audit_evidence = {"stage": "credential_request_refused_input_preflight" if credential_recovery else "mutation_request_refused_translation_preflight", "businessToolsInvoked": False,
+                            "requestedActionExecuted": False, "terminalBoundary": True, "workflowGuidance": workflow_guidance or None}
+                        stage_times['businessReaderMs'] = 0.0
+                        stage_times['businessProjectionMs'] = 0.0
+                        await self.append_audit(db, conversation, 'reader.evidence', audit_evidence,
+                            request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                        await self.append_event(db, conversation, "reader.result", {
+                            **evidence, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
+                    elif date_clarification := clarify_numeric_date(
+                        reader_question, 'en' if bridge_language else language
+                    ):
+                        evidence = {"result": "not_confirmed", "page": "", "section": "",
+                            "scope": "unknown", "facts": [date_clarification],
+                            "workflowState": "numeric_date_order_ambiguous"}
+                        audit_evidence = {"stage": "numeric_date_order_ambiguous", "liveDataRead": False}
+                        await self.append_event(db, conversation, "reader.result", {
+                            **evidence, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
+                    elif not skill_ready:
                         evidence = {
                             "result": "not_confirmed",
                             "page": "",
@@ -3659,13 +3978,24 @@ class DSHService:
                             total_timeout = bounded_reader_total_timeout(self.settings.reader_total_timeout_seconds)
                             input_started = time.perf_counter()
                             reader_question = await self._prepare_reader_question(
-                                db, conversation, latest_user, latest_content, principal, language, total_timeout,
+                                db, conversation, latest_user, reader_question, principal, language, total_timeout,
                             )
                             conversation_context = _reader_conversation_context(history, latest_user)
+                            snapshot = previous_snapshot(history, latest_user)
+                            from .reader_dashboard_context import dashboard_scope_changed
+                            repeated_with_new_filter = (
+                                isinstance(snapshot.get("sourceQuestion"), str)
+                                and snapshot["sourceQuestion"].strip().casefold() == latest_content.strip().casefold()
+                                and dashboard_scope_changed(snapshot.get("sourcePageContext"),
+                                                            latest_event_payload.get("pageContext"))
+                            )
+                            if repeated_with_new_filter:
+                                conversation_context = {}
+                            conversation_context["completedAnswerSnapshot"] = {} if repeated_with_new_filter else snapshot
                             if latest_user:
                                 conversation_context["currentPage"] = latest_event_payload.get("pageContext")
                                 conversation_context["responseLanguage"] = language
-                            if generic_reader and latest_user:
+                            if generic_reader and latest_user and not repeated_with_new_filter:
                                 from .reader_previous_answer import completed_previous_result
                                 conversation_context["completedPreviousAnswer"] = completed_previous_result(history, latest_user)
                             # Enforce the write boundary at the service entry
@@ -3675,15 +4005,16 @@ class DSHService:
                             # cannot surface a planner/runtime error instead of
                             # a safe refusal in any supported language.
                             mutation_response_language = response_language_for(reader_question, None)
-                            mutation_refusal = _mutation_request_refusal_result(
-                                reader_question,
-                                mutation_response_language,
-                            )
+                            mutation_refusal = (await reader.preflight_mutation_refusal(
+                                reader_question,mutation_response_language)
+                                if not generic_reader else _mutation_request_refusal_result(
+                                    reader_question,mutation_response_language))
                             if mutation_refusal is not None:
                                 evidence = mutation_refusal.public_json()
                                 audit_evidence = {
                                     "stage": "mutation_request_refused_service_preflight",
                                     "result": evidence,
+                                    "mutationIntentReview": getattr(reader,'_mutation_intent_review',None),
                                 }
                             else:
                                 outcome = await asyncio.wait_for(
@@ -3694,9 +4025,63 @@ class DSHService:
                                     ),
                                     timeout=max(0.001, total_timeout - (time.perf_counter() - input_started)),
                                 )
+                                semantic_result = outcome.audit_evidence.get('semanticTask') or {}
                                 evidence = (outcome.result.public_json() if generic_reader else
-                                            _reader_select_requested_records(outcome.result.public_json(), reader_question))
+                                            _reader_select_requested_records(outcome.result.public_json(), reader_question,
+                                                semantic_limit=semantic_result.get('outputLimit'),
+                                                semantic_bound=bool(semantic_result)))
                                 audit_evidence = outcome.audit_evidence
+                                if (not generic_reader and semantic_result.get('outputStyle')=='fields_only'
+                                        and evidence.get('result')=='success'
+                                        and evidence.get('workflowState')not in {
+                                            'previous_answer_fields_verified','read_only_request_refused'}):
+                                    from .reader_turn_semantics import select_output_fields,project_selected_fields,verify_exclusive_field_output
+                                    from .inspection_sla_api import verified_summary_facts
+                                    source_facts=list(evidence.get('facts')or[])
+                                    aggregates=verified_summary_facts({
+                                        'sourceWorkflow':evidence.get('workflowState'),
+                                        'sourceIntentContext':evidence.get('intentContext')or{},
+                                        'sourceApiCollection':audit_evidence.get('apiCollection')or{}})
+                                    source_facts=[*aggregates,*source_facts]
+                                    async def project_live_values():
+                                        fields,selection=await select_output_fields(reader.planner.generic_reader_json,
+                                            reader_question,(conversation_context.get('previousIntent')or{}).get('question')or'')
+                                        if fields is None:return None,{'fieldRequestSelection':selection,'applied':False,'reason':'data_scope_not_exhaustive_fields'}
+                                        projected,receipt=await project_selected_fields(reader.planner.generic_reader_json,
+                                            fields,source_facts,question=reader_question,preserve_sparse=True)
+                                        exclusive,coverage=await verify_exclusive_field_output(reader.planner.generic_reader_json,reader_question,source_facts,projected,(conversation_context.get('previousIntent')or{}).get('question')or'')
+                                        if not exclusive:return None,{'fieldRequestSelection':selection,'applied':False,'coverage':coverage}
+                                        return projected,{**receipt,'fieldRequestSelection':selection,'coverage':coverage,'applied':True}
+                                    try:
+                                        projected,receipt=await asyncio.wait_for(project_live_values(),
+                                            timeout=max(0.001,min(30,total_timeout-(time.perf_counter()-input_started))))
+                                        audit_evidence={**audit_evidence,'fieldOutput':receipt,
+                                            'fieldOutputSourceWorkflow':evidence.get('workflowState')}
+                                        if projected is not None:
+                                            evidence={**evidence,'facts':projected,'workflowState':'requested_fields_only_verified'}
+                                    except(ValueError,TypeError,KeyError,asyncio.TimeoutError)as exc:
+                                        # A formatting constraint cannot turn a missing/unbound
+                                        # field into a fabricated value or broaden the query.
+                                        audit_evidence={**audit_evidence,'fieldOutputFailure':{
+                                            'code':str(exc),'candidate':getattr(exc,'candidate',None),
+                                            'attempts':getattr(exc,'attempts',[])}}
+                                        evidence={**evidence,'result':'not_confirmed',
+                                            'workflowState':'previous_answer_projection_failed',
+                                            'facts':[('تعذر تأكيد قيم الحقول المطلوبة من المصدر.'if language=='ar'else
+                                                'The requested field values could not be verified from the source.')],
+                                            'missing':[*evidence.get('missing',[]),'requested_field_projection_unverified']}
+                                if (audit_evidence.get('stage') == 'previous_runtime_refusal'
+                                        and audit_evidence.get('businessToolsInvoked') is False
+                                        and audit_evidence.get('requestedActionExecuted') is False
+                                        and evidence.get('workflowState') == 'read_only_request_refused'):
+                                    # The reader verified the owner-bound preceding receipt.
+                                    # Renew only the runtime-policy receipt for another follow-up.
+                                    runtime_boundary = {
+                                        'authority': 'assistant_runtime_policy',
+                                        'requestedActionExecuted': False,
+                                        'businessToolsInvoked': False,
+                                        'requestId': principal.request_id,
+                                    }
                         except MessageCompressionError as exc:
                             evidence = {"result": "not_confirmed", "page": "", "section": "", "scope": "unknown",
                                         "facts": [], "workflowState": "input_compression_failed",
@@ -3750,6 +4135,42 @@ class DSHService:
                                 "stage": "reader_runtime_guard",
                                 "failureCode": "optional_reader_field_missing",
                             }
+                        stage_times["businessReaderMs"] = round((time.perf_counter() - input_started)*1000, 2)
+                        projection_started = time.perf_counter()
+                        evidence = temporal_guard(evidence, audit_evidence.get('semanticTask') or {}, language)
+                        semantic = audit_evidence.get('semanticTask') or {}
+                        if (audit_evidence.get('stage') == 'rule_evidence_not_documented'
+                                and semantic.get('needsLiveData') is False
+                                and semantic.get('requestKind') == 'business_read'
+                                and semantic.get('presentationMode') == 'none'):
+                            # A definition/purpose request cannot be fulfilled
+                            # by incidental live rows returned during discovery.
+                            message = ('لم تُسترجع إرشادات رسمية تجيب عن هذا السؤال؛ لذلك لا أستطيع تأكيد الشرح المطلوب. '
+                                       'راجع الدليل المنشور ذي الصلة أو تواصل مع الفريق المسؤول. '
+                                       'سجلات قائمة المهام لا تثبت هذه الإرشادات.' if language == 'ar' else
+                                       'No authoritative guidance answering this question was retrieved, so I cannot confirm '
+                                       'the requested explanation. Check the relevant published manual or contact the responsible '
+                                       'team. Task queue records do not establish this guidance.')
+                            evidence = {**evidence, 'result':'not_confirmed','facts':[message],
+                                'answerShape':'overview','workflowState':'documentation_source_unavailable',
+                                'missing':['authoritative_guidance_not_retrieved']}
+                        elif (semantic.get('needsLiveData') is False
+                                and semantic.get('requestKind') == 'business_read'
+                                and semantic.get('presentationMode') == 'none'):
+                            relevant = []
+                            for fact in evidence.get('facts') or []:
+                                try:
+                                    value = json.loads(fact)
+                                except (TypeError, ValueError):
+                                    value = None
+                                if isinstance(value, dict) and _reader_semantic_anchors(
+                                        {'facts':[fact], 'answerShape':'list'}).get('recordIdentity'):
+                                    continue
+                                relevant.append(fact)
+                            evidence = {**evidence, 'facts':relevant, 'answerShape':'overview',
+                                'sourcePage':evidence.get('page') or '', 'page':'', 'selectedState':'',
+                                'scope':'unknown'}
+                        stage_times['businessProjectionMs'] = round((time.perf_counter()-projection_started)*1000, 2)
                         if generic_reader and reader.intent_state and "intentState" not in evidence:
                             # A transient read timeout must not erase the already
                             # validated task. Live data is still re-read next turn.
@@ -3808,6 +4229,8 @@ class DSHService:
                         # The existing grounded presenter translates the
                         # wording while retaining all cited numbers/identities.
                         evidence = {**evidence, "presentationMode": "llm_localized"}
+                    if bridge_language:
+                        language = "en"
                     await self.append_status(db, conversation, "drafting", language, request_id=principal.request_id)
                     async def publish_answer_block(payload):
                         return await self.publish_stream_event(
@@ -3816,28 +4239,70 @@ class DSHService:
                              "runtimeId": conversation.runtime_id},
                         )
                     answer_stream = AnswerStream(publish_answer_block, max_block_chars=6000)
+                    # Keep the original guarded presenter active. Passing None
+                    # selects the legacy non-streaming fact-card fallback;
+                    # instead, retain its stream privately until translation.
+                    async def hold_english_block(_payload):
+                        return None
+                    private_english_stream = (AnswerStream(hold_english_block, max_block_chars=6000)
+                                              if bridge_language and not bridge_failed else None)
                     self._answer_streams[conversation_id] = (answer_stream, language)
                     assembly_started = time.perf_counter()
-                    bilingual_requested = bool(re.search(
+                    bilingual_requested = not bridge_language and not bridge_failed and bool(re.search(
                         r"双语作答|雙語作答|(?:answer|respond)\s+(?:in\s+)?(?:both\s+)?english\s+(?:and|&)\s+arabic|"
                         r"(?:باللغتين|باللغة\s+الإنجليزية\s+والعربية)", latest_content, re.I,
                     ))
-                    if "input_compression_failed" in evidence.get("missing", []):
+                    if bridge_failed:
+                        content = ((str(locals().get('content') or '').rstrip() + '\n\n'
+                                    + translation_error_message(bridge_language)).strip()
+                                   if locals().get('content') else translation_error_message(bridge_language))
+                        formatting_failed, assembly_strategy = True, "input_translation_kept_verified"
+                    elif evidence.get('workflowState') in {
+                        'previous_answer_presentation', 'requested_time_meaning_ambiguous', 'numeric_date_order_ambiguous',
+                        'verified_dashboard_period',
+                        'requested_visit_time_unavailable', 'documentation_source_unavailable', 'semantic_interpretation_failed',
+                        'previous_answer_projection_failed', 'previous_answer_passthrough',
+                    }:
+                        if evidence.get('workflowState') == 'previous_answer_presentation':
+                            # Format retained source fields without another model,
+                            # current-page claim, or newly generated aggregate.
+                            content = reader_evidence_only_response(
+                                {**evidence, 'answerShape':'detail', 'page':'', 'section':'', 'sourceSection':''}, language)
+                        else:
+                            content = '\n\n'.join(evidence.get('facts') or [])
+                        formatting_failed, assembly_strategy = False, 'verified_turn_semantics'
+                    elif "input_compression_failed" in evidence.get("missing", []):
                         content = compression_failure_message(language)
                         formatting_failed, assembly_strategy = False, "input_compression_failed"
                     elif self.settings.reader_pipeline == "generic_v3":
                         content = render_generic_answer(evidence, language)
                         formatting_failed, assembly_strategy = False, "generic_verified_projection"
                     else:
-                        content, formatting_failed, assembly_strategy = await self._natural_reader_response(
-                            reader_question,
-                            evidence,
-                            language,
-                            operator_prompt=str(self.settings.system_prompt or ""),
-                            skill_content=str(getattr(selected_skill, "content", "") or ""),
-                            prior_answer_coverage=audit_evidence.get("stage") == "prior_answer_coverage",
-                            answer_stream=None if bilingual_requested else answer_stream,
-                        )
+                        with http_stage('answer_assembly'):
+                            content, formatting_failed, assembly_strategy = await self._natural_reader_response(
+                                reader_question,
+                                evidence,
+                                language,
+                                operator_prompt=str(self.settings.system_prompt or "") + (
+                                    '\nThis is the INTERNAL English answer stage before application-controlled '
+                                    'translation into the original input language. Produce the business answer '
+                                    'in English for this intermediate stage, even when the normalized question '
+                                    'contains a requested output language. The application handles that request '
+                                    'afterwards. Do not discuss language selection, apologize for English, or '
+                                    'claim that the final user-visible answer is in English.' if bridge_language else ''),
+                                skill_content=str(getattr(selected_skill, "content", "") or ""),
+                                prior_answer_coverage=audit_evidence.get("stage") == "prior_answer_coverage",
+                                compact_list=(isinstance(audit_evidence.get('semanticTask'),dict)
+                                    and audit_evidence['semanticTask'].get('outputShape')=='list'
+                                    and audit_evidence['semanticTask'].get('needsLiveData')is True
+                                    and not any(audit_evidence['semanticTask'].get(key)for key in
+                                        ['requestedAttributes','requestedMeasures','requestedOrdering','groupBy'])),
+                                # Validate the entire model answer before publishing
+                                # any user-visible block. A truncated stream or rejected
+                                # later paragraph cannot retract a previously shown
+                                # prefix. SSE delivers the completed answer as one block.
+                                answer_stream=None,
+                            )
                     if bilingual_requested:
                         # Both renderings project the same verified fact set.
                         # An explicit two-language request is not a request to
@@ -3845,7 +4310,138 @@ class DSHService:
                         render = render_generic_answer if self.settings.reader_pipeline == "generic_v3" else reader_evidence_only_response
                         content = "English:\n" + render(evidence, "en") + "\n\nالعربية:\n" + render(evidence, "ar")
                         formatting_failed, assembly_strategy = False, "explicit_bilingual_verified_projection"
-                    notice = None if bilingual_requested else _language_notice_for(latest_content, language)
+                    stage_times["englishAnswerMs"] = round((time.perf_counter()-assembly_started)*1000, 2)
+                    presentation_source, presentation_language = content, language
+                    from .reader_turn_semantics import presentation_localization_facts
+                    localization_facts = presentation_localization_facts(
+                        evidence, audit_evidence,
+                        (locals().get('conversation_context') or {}).get('completedAnswerSnapshot') or {})
+                    await self.append_audit(db, conversation, 'reader.localization_context', {
+                        'currentFactCount': len(evidence.get('facts') or ()),
+                        'localizationFactCount': len(localization_facts),
+                        'sourceRequestId': audit_evidence.get('sourceRequestId') or '',
+                        'usedRetainedTypedContext': localization_facts != list(evidence.get('facts') or ()),
+                        'businessRecordsRefreshed': audit_evidence.get('liveDataRead') is True,
+                    }, request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                    output_started = time.perf_counter()
+                    if (language == 'ar' and not bilingual_requested
+                            and (_arabic_answer_needs_repair(content)
+                                 or needs_business_label_localization(content, localization_facts))):
+                        # Keep the original Arabic input path. Repair only a
+                        # demonstrably untranslated final fallback, using the
+                        # same verified facts without another business read.
+                        from .reader_turn_semantics import arabic_repair_source
+                        english_source = arabic_repair_source(evidence, content, assembly_strategy, reader_evidence_only_response)
+                        try:
+                            content = await bridge.translate_answer(
+                                english_source, 'ar', original_question=latest_content,
+                                identity_facts=localization_facts)
+                            presentation_source, presentation_language = content, 'ar'
+                            assembly_strategy = 'arabic_fallback_translation_verified'
+                            await self.append_audit(db, conversation, 'reader.translation_answer_source', {
+                                'englishAnswer': english_source, 'targetLanguage': 'ar',
+                                'repair': 'untranslated_fallback'},
+                                request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                        except TranslationError as exc:
+                            # Keep the verified answer; append the notice instead of
+                            # delivering only the notice.
+                            content = (str(english_source or '').rstrip() + '\n\n'
+                                       + translation_error_message('ar'))
+                            formatting_failed, assembly_strategy = True, 'output_translation_kept_verified'
+                            evidence = {**evidence, 'result': 'not_confirmed',
+                                'workflowState': 'output_translation_failed',
+                                'missing': [*evidence.get('missing', []), exc.code]}
+                            await self.append_event(db, conversation, 'reader.result', {
+                                **evidence, 'requestId': principal.request_id,
+                                'runtimeId': conversation.runtime_id})
+                    if bridge_language and not bridge_failed:
+                        english_answer = content
+                        try:
+                            content = await bridge.translate_answer(english_answer, bridge_language,
+                                original_question=latest_content, identity_facts=localization_facts)
+                            _script_ranges = {'ml': (0x0D00, 0x0D7F), 'ur': (0x0600, 0x06FF),
+                                              'ar': (0x0600, 0x06FF), 'hi': (0x0900, 0x097F)}
+                            _range = _script_ranges.get(str(bridge_language or '').lower())
+                            if _range and english_answer:
+                                def _script_ratio(value):
+                                    letters = [char for char in str(value or '') if char.isalpha()]
+                                    if not letters:
+                                        return 0.0
+                                    inside = sum(1 for char in letters if _range[0] <= ord(char) <= _range[1])
+                                    return inside / len(letters)
+                                if _script_ratio(content) < 0.15:
+                                    try:
+                                        retried = await bridge.translate_answer(
+                                            english_answer, bridge_language,
+                                            original_question=latest_content,
+                                            identity_facts=localization_facts)
+                                        if _script_ratio(retried) > _script_ratio(content):
+                                            content = retried
+                                    except Exception:
+                                        pass
+                            await self.append_audit(db, conversation, "reader.translation_answer_source", {
+                                "englishAnswer": english_answer, "targetLanguage": bridge_language},
+                                request_id=principal.request_id, runtime_id=conversation.runtime_id)
+                        except TranslationError as exc:
+                            # Keep the verified facts; add the translation note instead of
+                            # replacing the answer with it.
+                            content = (english_answer.rstrip() + '\n\n'
+                                       + translation_error_message(bridge_language))
+                            formatting_failed, assembly_strategy = True, "output_translation_failed"
+                            evidence = {**evidence, "result": "not_confirmed",
+                                "workflowState": "output_translation_failed",
+                                "missing": [*evidence.get("missing", []), exc.code]}
+                            await self.append_event(db, conversation, "reader.result", {
+                                **evidence, "requestId": principal.request_id, "runtimeId": conversation.runtime_id})
+                        language = bridge_language
+                        if language != 'en' and content:
+                            import re as _re
+                            _label_re = _re.compile(
+                                r'\*\*([A-Z][A-Za-z0-9 /()\-]{1,40}):\*\*'
+                                r'|(?m:^\s*[-*]\s*)([A-Z][A-Za-z0-9 /()\-]{1,40}):(?=\s)')
+                            _labels = sorted({(m.group(1) or m.group(2)).strip()
+                                              for m in _label_re.finditer(content)
+                                              if (m.group(1) or m.group(2))})
+                            if _labels:
+                                try:
+                                    _payload = '\n'.join(_labels)
+                                    _translated = await bridge.translate_answer(
+                                        _payload, language, original_question='field labels')
+                                    for _line in str(_translated or '').splitlines():
+                                        if '||' not in _line:
+                                            continue
+                                        _left, _, _right = _line.partition('||')
+                                        _src = _left.strip(' -*`')
+                                        _dst = _right.strip(' -*`')
+                                        if not _src or not _dst or _src not in _labels or _src == _dst:
+                                            continue
+                                        content = (content.replace(f'**{_src}:**', f'**{_dst}:**')
+                                                          .replace(f'- {_src}:', f'- {_dst}:')
+                                                          .replace(f'* {_src}:', f'* {_dst}:'))
+                                except Exception:
+                                    pass
+                            _items = []
+                            if _items:
+                                try:
+                                    _payload = '\n'.join(f'{text}||{text}' for _, text in _items)
+                                    _translated = await bridge.translate_answer(
+                                        _payload, language, original_question='checklist items')
+                                    _pairs = {}
+                                    for _line in str(_translated or '').splitlines():
+                                        if '||' in _line:
+                                            _left, _, _right = _line.partition('||')
+                                            if _left.strip() and _right.strip() and _left.strip() != _right.strip():
+                                                _pairs[_left.strip()] = _right.strip()
+                                    for _prefix_text, _text in _items:
+                                        if _text in _pairs:
+                                            content = content.replace(f'{_prefix_text}{_text}',
+                                                                      f'{_prefix_text}{_pairs[_text]}')
+                                except Exception:
+                                    pass
+                        self._answer_streams[conversation_id] = (answer_stream, language)
+                    stage_times["outputTranslationMs"] = round((time.perf_counter()-output_started)*1000, 2)
+                    notice = None if (bilingual_requested or bridge_language or bridge_failed
+                        or evidence.get('workflowState')in {'previous_answer_fields_verified','requested_fields_only_verified'}) else _language_notice_for(latest_content, language)
                     if content and notice:
                         content = f"{content}\n\n{notice}"
                     guarded_facts = evidence.get("facts") if isinstance(evidence.get("facts"), list) else []
@@ -3886,6 +4482,31 @@ class DSHService:
                         request_id=principal.request_id,
                         runtime_id=conversation.runtime_id,
                     )
+                    if (not bridge_failed and content and assembly_strategy not in {
+                            'input_translation_failed', 'output_translation_failed'}):
+                        await self.append_event(db, conversation, 'reader.answer_snapshot', {
+                            'content': presentation_source, 'language': presentation_language,
+                            'sourcePage': evidence.get('page') or '',
+                            'sourceQuestion': reader_question,
+                            'sourceWorkflow': evidence.get('workflowState') or '',
+                            'sourceRuntimeBoundary': runtime_boundary,
+                            'sourcePermissionFingerprint': (audit_evidence.get('permission') or {}).get('fingerprint') or '',
+                            'sourceResult': evidence.get('result'),
+                            'sourceFacts': (evidence.get('facts') or [])[:2000],
+                            'sourceFactCount': len(evidence.get('facts') or []),
+                            'sourceCompleteness': evidence.get('completeness') or 'unknown',
+                            'sourceScope': evidence.get('scope') or 'unknown',
+                            'sourceFactsComplete': len(evidence.get('facts') or []) <= 2000,
+                            'sourceLocalizationFacts': localization_facts[:2000],
+                            'sourceLocalizationFactsComplete': len(localization_facts) <= 2000,
+                            'sourceMissing': evidence.get('missing') or [],
+                            'sourceIntentContext': evidence.get('intentContext') or {},
+                            'sourceStatusRequests': (audit_evidence.get('semanticTask') or {}).get('statusRequests') or [],
+                            'sourceVerifiedPopulation': (audit_evidence.get('verifiedPopulation') or {}) if evidence.get('workflowState') == 'inspection_sla_api_verified' else {},
+                            'sourceApiCollection': (audit_evidence.get('apiCollection') or {}) if evidence.get('workflowState') == 'inspection_sla_api_verified' else {},
+                            'requestId': principal.request_id,
+                            'userSeq': latest_user.seq if latest_user else None,
+                        })
                     await self.append_event(
                         db,
                         conversation,
@@ -3894,6 +4515,14 @@ class DSHService:
                          "streamVersion": answer_stream.protocol_version,
                          "streamStatus": "partial" if assembly_strategy == "guarded_stream_incomplete" else "complete"},
                     )
+                    stage_times["totalMs"] = round((time.perf_counter()-turn_started)*1000, 2)
+                    stage_times["otherMs"] = round(stage_times["totalMs"] - sum(stage_times.get(k, 0) for k in
+                        ("inputNormalizationMs", "businessReaderMs", "englishAnswerMs", "outputTranslationMs")), 2)
+                    await self.append_audit(db, conversation, "reader.translation_timing", {
+                        **bridge.metadata(), "language": bridge_language or "unchanged", "stages": stage_times,
+                        "httpCalls": http_calls,
+                        "status": "failed" if formatting_failed and "translation" in assembly_strategy else "complete"},
+                        request_id=principal.request_id, runtime_id=conversation.runtime_id)
                     await self.append_event(
                         db,
                         conversation,

@@ -11,11 +11,15 @@ from .portal_reader import (
     ReadOnlyPortalPolicy,
     UserPermissionContext,
     bounded_portal_read_result,
+    permission_context_from_user_info,
+    permission_audit_summary,
+    _reader_reference_utc,
 )
 
 SYSTEM_DEFAULT_TOOL_NAMES = frozenset({"knowledge.search", "admin.portal.read"})
 
 logger = logging.getLogger("uvicorn.error")
+
 
 
 class ToolGateway:
@@ -84,6 +88,34 @@ class ToolGateway:
             policy_error = policy.validate(request, UserPermissionContext(), require_permission_context=False)
             if policy_error:
                 return {"ok": False, "code": policy_error, "toolName": tool_name}
+            if 'inspectionSlaCollection' in arguments:
+                # One fixed read projection inside the existing capability,
+                # never a model-supplied URL, scope override or business Tool.
+                if (arguments['inspectionSlaCollection'] is not True
+                        or set(arguments)-{'startPath','actions','inspectionSlaCollection','expectedPermissionFingerprint'}
+                        or request.start_path != '/inspection/tasks'
+                        or request.actions != ({'type':'observe'},)):
+                    return {'ok':False,'code':'invalid_inspection_sla_projection','toolName':tool_name}
+                from .turn_http_timing import http_stage
+                from .inspection_sla_api import read_population
+                with http_stage('inspection_sla_authority'):
+                    identity = await self.get_user_info(principal)
+                if not identity.get('ok'):
+                    return {'ok':False,'code':identity.get('code','permission_denied'),'toolName':tool_name}
+                permission = permission_context_from_user_info(identity.get('result'))
+                if (permission.user_id != principal.user_id
+                        or policy.validate(request, permission)
+                        or arguments.get('expectedPermissionFingerprint') != permission_audit_summary(permission)['fingerprint']):
+                    return {'ok':False,'code':'permission_denied','toolName':tool_name}
+                try:
+                    value = await read_population(self.platform.portal_base_url, principal, permission.buttons,
+                                                  reference_utc=_reader_reference_utc.get())
+                    return {'ok':True,'code':'ok','toolName':tool_name,'result':{'inspectionSlaCollection':value}}
+                except PermissionError:
+                    return {'ok':False,'code':'permission_denied','toolName':tool_name}
+                except (httpx.HTTPError, ValueError) as exc:
+                    return {'ok':False,'code':'inspection_sla_source_unverified','toolName':tool_name,
+                            'reason':str(exc)[:180] if isinstance(exc,ValueError) else type(exc).__name__}
             try:
                 payload = request.as_payload()
                 if 'dashboardContext' in arguments:

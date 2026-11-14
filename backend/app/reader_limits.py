@@ -10,12 +10,17 @@ def requested_record_limit(question: str) -> int | None:
              'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10}
     match = re.search(r'\b(?:show|list|give|return|display|provide)\s+(?:(?:me|us)\s+)?'
                       r'(?:(?:only|up to|the|first)\s+)*'
-                      r'(?P<n>\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+'
+                      r'(?P<n>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+'
                       r'(?P<noun>[a-z]+)', question, re.I)
     if not match or match['noun'].lower() in {'day','days','week','weeks','month','months','year','years','hour','hours','percent'}:
         return None
-    n = words.get(match['n'].lower()) or int(match['n'])
-    return n if 1 <= n <= 20 else None
+    if match['noun'].lower() in {'hundred','thousand','million','billion'}:
+        return None  # Compound number words belong to the semantic contract.
+    try:
+        n = words.get(match['n'].lower()) or int(match['n'])
+    except ValueError:
+        return None
+    return n if n >= 0 else None
 
 
 # Page capture plus at most two policy-checked auxiliary reads share this cap.

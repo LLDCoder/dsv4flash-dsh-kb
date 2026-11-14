@@ -2,8 +2,9 @@ import asyncio
 import hmac
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import parse_qs
 from uuid import uuid4
 from dataclasses import replace
@@ -41,6 +42,12 @@ from .testcases import generate_test_cases, run_test_cases
 # Uvicorn configures this logger at INFO for container output. Using it keeps
 # correlation records visible without changing the global logging policy.
 logger = logging.getLogger("uvicorn.error")
+
+
+def transport_diagnostic_id(value):
+    """A bounded technical correlation label, never arbitrary error text."""
+    return value if isinstance(value,str) and 1<=len(value)<=128 and all(
+        c.isascii() and (c.isalnum() or c in '._:-') for c in value) else 'none'
 _DUMMY_AUDIT_PASSWORD_HASH = hash_password("audit-console-invalid-password")
 
 
@@ -141,7 +148,19 @@ def make_router(service: DSHService) -> APIRouter:
     audit_login_limiter = LoginRateLimiter()
 
     async def conversation_principal(principal: Principal = Depends(get_principal)) -> Principal:
-        return await authenticate_conversation_principal(principal, service.tool_gateway.platform)
+        started = time.perf_counter()
+        status = 200
+        try:
+            return await authenticate_conversation_principal(principal, service.tool_gateway.platform)
+        except HTTPException as exc:
+            status = exc.status_code
+            raise
+        except Exception:
+            status = 500
+            raise
+        finally:
+            logger.info("conversation_identity request_id=%s status=%s duration_ms=%.2f",
+                        principal.request_id[:128], status, (time.perf_counter() - started) * 1000)
 
     def raw_config_value(item: ConfigEntry) -> object:
         value = item.value
@@ -391,10 +410,33 @@ def make_router(service: DSHService) -> APIRouter:
         response.delete_cookie(key=AUDIT_SESSION_COOKIE, path="/")
         return response
 
-    @router.post("/conversations")
+    @router.post("/conversations", summary="Create an authenticated owner-scoped conversation, optionally idempotently",
+        description="clientRequestId is an optional stable operation key for bounded transport retries. "
+        "The same authenticated owner and key reuse one conversation, including a lost response after commit. "
+        "A different workspace with the same key returns 409. Existing clients without a key retain fresh-create behavior. "
+        "Identity is checked on every attempt; no business operation is executed. Safe request-ID, status and elapsed-time logs omit tokens and prompts.",
+        responses={401:{"description":"Sign-in missing or expired"},403:{"description":"Identity/workspace access denied"},
+                   409:{"description":"Creation key already used with a different workspace"},
+                   422:{"description":"Invalid creation key"},503:{"description":"Identity dependency temporarily unavailable; no access granted"}})
     async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_principal)):
-        conversation = await service.create_conversation(db, principal, payload.workspace)
-        return service.conversation_json(conversation)
+        started = time.perf_counter()
+        status = 200
+        try:
+            conversation = await service.create_conversation(db, principal, payload.workspace, payload.client_request_id)
+            return service.conversation_json(conversation)
+        except ValueError as exc:
+            if str(exc) != "conversation_creation_key_conflict":
+                status = 500
+                raise
+            status = 409
+            raise HTTPException(status_code=409, detail="Creation key is already bound to another workspace.") from None
+        except Exception:
+            status = 500
+            raise
+        finally:
+            logger.info("conversation_create request_id=%s client_request_id=%s status=%s duration_ms=%.2f",
+                        principal.request_id[:128], payload.client_request_id or "none", status,
+                        (time.perf_counter() - started) * 1000)
 
     def pagination_json(total: int, page: int, page_size: int) -> dict[str, int]:
         return {
@@ -945,12 +987,107 @@ def make_router(service: DSHService) -> APIRouter:
         return {"deleted": True, "conversationId": conversation_id}
 
     @router.post("/conversations/{conversation_id}/messages", summary="Submit an owner-scoped assistant request with KB-backed page routing",
-                 responses={401: {"description": "Authentication required"},
+                 responses={200: {"description": "Accepted, duplicate, or explicitly not-accepted busy; business results arrive as conversation events.",
+                                  "content":{"application/json":{"schema":{"type":"object",
+                                    "required":["accepted","duplicate","conversationId","requestId"],
+                                    "properties":{"accepted":{"type":"boolean"},"duplicate":{"type":"boolean"},
+                                      "busy":{"type":"boolean"},"code":{"type":"string"},"conversationId":{"type":"string"},
+                                      "requestId":{"type":"string"},"seq":{"type":"integer"},"runtimeId":{"type":"string"}}}}}},
+                            401: {"description": "Authentication required"},
                             404: {"description": "Conversation not owned by the current principal"}})
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(conversation_principal)):
         """Queue a message; read the eventual answer and reader.result in conversation events.
 
+        Urdu, Malayalam and Tagalog questions are detected server-side, translated
+        into English for the existing read-only pipeline, then answered in the input
+        language. All other inputs retain existing language behavior. Literal IDs,
+        dates and numbers are preserved; translation failures return an explicit
+        not_confirmed result instead of executing an unverified query. Original
+        user messages remain unchanged. Request-correlated translation timings
+        are recorded in the audit; WebSocket submissions use the same service.
         Admin Portal requests use GetUserInfo permissions and read-only page operations.
+        Native read adapters are dispatched inside the legacy Reader after the same
+        permission checks. Verified previous-answer field projections terminate before live-page enrichers or live-history guards. Verified source populations are retained separately from display limits for compatible follow-ups. Presentation of mixed JSON fields and textual facts uses validated original references only; absent fields remain unverified. Explicit status subjects absent from the completed snapshot require a new permission-checked read. Exact institution and multi-record bindings are checked
+        before presentation; unrelated visible rows cannot substitute for a match.
+        Missing fields remain unverified while verified detail fields are retained.
+        Application-party identities distinguish the beneficiary/applicant entity,
+        the actual submitter recorded by a Submitted workflow event, and the
+        current handler. If the original question leaves applicant versus
+        submitter ambiguous, a source capability returns both with separate
+        labels; planner attribute hints cannot silently replace the original
+        question's meaning. Missing actors remain explicitly unverified.
+        A busy rejection has accepted=false, duplicate=false, busy=true and
+        code=conversation_busy: this message has not started a business turn.
+        Reuse its exact clientMessageId for a bounded retry only after this
+        explicit rejection. An accepted or uncertain turn must be recovered
+        through history rather than submitted under a new key. WebSocket
+        rejections additionally carry requestId and phase (authenticate,
+        subscribe or message_accept), including failures before a user.message
+        can be written. Diagnostics exclude tokens and message contents.
+        Inspection task SLA uses inspection-deadline/1: shared deadline, Dubai wire timezone, positive elapsed-day ceiling, recorded terminal SLA and explicit unknowns; no nominal SLA budget substitutes for remaining time. Filter-role coverage is server-enumerated and fail-closed; semantic explanations of observed labels preserve evidence limits without a new business read. Verified field-only responses render only selected field labels and values. The full original request and verified source are independently checked for output completeness and record association; a broad permitted-data restriction keeps the existing full response,
+        without added provenance, freshness or blanket uncertainty paragraphs.
+        Output fields are independently bound to the current user question; a
+        narrowed request does not inherit unrequested columns from earlier turns.
+        Ordinary follow-ups retain checked prose presentation when an exclusive
+        field layout was not requested. Exact indexed source spans avoid retyping
+        timestamp punctuation or source identifiers.
+        Prose values require exact source quotes and an independent semantic/exclusivity
+        check. Unavailable requested fields remain explicitly unverified; permission
+        denials and read-only refusals are never hidden by a display constraint.
+        Cross-language presentations retain typed localization context from the
+        exact completed snapshot only after the Reader's source-request and
+        permission-fingerprint checks. This context cannot grant access, refresh
+        records or add answer facts. Already-localized state headings use the
+        same field validation contract as fresh answers. Localization-context
+        receipts and translation durations are request-correlated in the audit.
+        A proposed new status subject must be independently bound to the user's
+        current words and preceding question before it forces a source refresh;
+        a generic same-answer status reference cannot invent a business module.
+        Dated aggregates independently bind the user's event-date meaning; a
+        period alone never implies a creation or assignment timestamp. Ranked
+        output caps and extreme-only selection are separate query requirements.
+        Follow-ups comparing available and unavailable concepts retain their
+        source qualifications instead of silently dropping unmapped columns.
+        A principal-bound completed answer independently gates presentation
+        continuations even if the proposed topic label is new; a same-answer
+        continuation does not authorize a default page read.
+        Permission refusals do not offer navigation to unauthorized workspaces.
+        Content application details are bound through the caller-authorized Content
+        queues, not Content Library. Requested history and next-action fields have
+        independent availability; absent controls cannot establish an executable step.
+        Recorded submitters come from submission timeline events; the business
+        applicant and current handler are separate fields. Suspected identity
+        escalation receives a bounded semantic review, never an ACL override.
+        Lexical change-verb matches receive a bounded act review before refusal:
+        recorded-event queries can continue through the normal TaskSpec and ACL
+        checks. Affirmative or mixed change requests remain refused; missing or
+        invalid act reviews fail closed. The per-question review is audited.
+        A live-data continuation is checked against the requested execution mode.
+        Reusing a completed answer does not refresh a default queue; validated
+        inherited record identities remain bound through native and page paths.
+        Existing-field projections can retain verified aggregate and record fields
+        at their separate source grains without recomputation or joining totals
+        onto individual rows. Missing fields remain explicitly unverified.
+        Inspection overdue-day badges follow the deployed portal's Dubai deadline
+        ceiling for active tasks. The trusted UTC reference and source labels remain
+        in audit evidence. List ordering and maximum/minimum record selection are
+        separate; an extrema-only request does not redisplay the entire collection.
+        Application source-flag overdue totals include rows missing overdue-day
+        values; the rankable subset is counted separately and cannot establish
+        a global maximum while day values remain unavailable.
+        Requested organizational scope is compiled independently from row ownership:
+        current-team records never substitute for another manager/team or all teams.
+        Cross-team requests require independently verified authority before any read.
+        Normalized account-access requirements are independent of identity-field
+        selection. Display-label enrichment does not change the authorization
+        fingerprint used for same-conversation follow-ups; a real permission
+        change still prevents reusing the previous answer. Team overdue counts
+        require the complete authorized queue and never substitute a first-page
+        sample or the all-task total. An SLA ordering plus an urgency request
+        preserves the ordering and any explicit row limit, rather than returning
+        only the maximum ties. Application lifecycle, payment completion,
+        quoted service fee and actual paid amount are separate requested fields;
+        unavailable values are explicitly unverified and never inferred.
         Reader results distinguish success, no_data, no_permission, load_failed and
         not_confirmed. A bounded row sample is not a collection total or proof of
         personal assignment. Knowledge answers require retrieved supporting text.
@@ -966,16 +1103,131 @@ def make_router(service: DSHService) -> APIRouter:
         Multiple explicit identifiers are bound independently. Requested
         licence details unavailable in Finance are not silently omitted or
         replaced by transaction type; their unread source is stated explicitly.
+        Caller-authorized inspection task detail, task-bound checklist and violation
+        records can be read directly through reviewed UMC GET operations without
+        portal observation. Public IDs are bound to stable authorized queues,
+        checklist parent keys are verified, all collection pages are checked, and
+        status exclusions are preserved. Unsupported requirements retain the
+        permission-checked fallback; an absent field is never proof of global absence.
+        Member aggregates map requested counters by meaning to implemented source
+        counters, separating output dimensions from actual row restrictions. Any
+        exclusion, date, category or ownership predicate remains a predicate;
+        unsupported measures and omitted original requirements cannot become a
+        complete unfiltered aggregate. No business count is supplied by the model.
         Concurrent accounts cannot share a TaskSpec. Verified live reads and
         current permissions remain required; extra requested fields and filters
         must not be dropped to fit a simpler collection or aggregate shape.
+        A publisher table-filter envelope with an explicitly empty filter
+        mapping is metadata only; active, malformed and unknown filters still
+        prevent substituting an unfiltered queue. Team summaries name the actual
+        task surface, without mislabelling all categories as a single category.
+        Credential creation, disclosure and reset requests receive a no-execution
+        refusal plus conditional account-owner recovery guidance; business changes
+        and ordinary reference questions do not inherit password-recovery steps.
+        Translation binds typed person/organization fields from authorized result
+        facts to their rendered values, preserving display names separately from
+        translatable roles and statuses. Missing assignee data is distinct from
+        an access denial and from a fabricated person in workload totals.
+        Output translation retains
+        clickable Markdown links and verifies their source destinations. Actual
+        source status and role display values are separately distinguished from
+        immutable identities. Target-language answers must localize those values;
+        retaining an English status cannot pass on a model verifier verdict alone.
+        The labels are obtained from the current authorized result, with no
+        preconfigured status translations, account names or business answers.
+        Arabic output checks the same source-bound display labels even when
+        surrounding headings are already Arabic; mixed-language enum values
+        trigger verified output repair without a new business read.
+        Label validation follows each source field's opaque presentation template:
+        an identically spelled official navigation/view name in another template
+        is not classified as a record status. Actual unlocalized field values
+        still fail closed even when a model verifier accepts them. Failure receipts
+        identify the affected templates and source values. Unconfirmed counts use
+        a details heading, and personal native queues do not claim department totals.
+        Explicit role-restricted disclosure boundaries also apply to read requests;
+        a read-only label does not authorize a different role's private records.
+        Output-field aliases preserve their original membership condition even
+        when that condition is unsupported by the chosen executor. Payment amount
+        measures and attributes share the same receipt-versus-fee evidence guard.
+        Failed output translations supply grounded semantic diagnostics to a fresh
+        rendition, with the rejected target phrase removed; unchanged candidates
+        are not rejudged until accepted.
+        Live queries independently inventory literal named business subjects
+        before dispatch. An earlier parser's omission cannot erase that subject;
+        the inventory retains all filters and grants no permissions. Every native
+        and page result passes a final named-subject coverage postcondition.
+        Field labels preserve all qualifiers; only actual known API envelope paths
+        may use their complete leaf label. Unknown labels are not shortened to
+        their last word. Profile restrictions referring to an area inventory
+        carry that inventory in the same projection; identity-only answers do
+        not imply that omitted business areas are denied. Retained short answers
+        use the localized fact renderer, and typed state fields bind to their
+        translation templates for short and long answers alike.
+        Institution-history output attributes are mapped by meaning to the
+        existing read-source capability catalog, with every original attribute
+        bound by index and literal value. This mapping grants no permission;
+        unresolved attributes remain explicit rather than silently dropped.
+        Requested public contacts use the same selection for reading and
+        presentation, without a contact-word spelling switch.
+        The institution source catalog includes the identity already verified
+        by matched task details, so it is not mislabeled as missing. Field-only
+        follow-ups project existing requested measures as well as attributes;
+        single unqualified numeric facts preserve their units and use the same
+        column contract instead of free prose. Dates and qualified limitations
+        are not reduced to bare numbers. Short untranslated source-key headings
+        also enter the existing verified Arabic localization path.
+        The reader freezes a trusted server clock for each turn; inspection date
+        selection and receipt verification share that business-day reference
+        and cannot disagree across midnight. Subject coverage is checked:
+        unrelated rows are withheld rather than presented as a successful answer.
         Team task lists disclose the verified Application Tasks Only filter
         state when changing categories; totals retain the observed queue scope.
+        Unqualified officer/member workload summaries resolve against the
+        current authorized team surface, not a generic Inspection queue.
+        Eligible single personal Licensing application status,
+        payment-event and fee queries bind the current account's To Do/Completed
+        queue result to its task detail and the same application fee directly,
+        without a browser read. Other predicates and unsupported output fields
+        retain the ordinary permission-checked Reader path. A quoted service fee
+        is not an independently verified Finance settlement amount. Final Approval
+        outcomes are read from the exact application timeline and remain distinct
+        from application completion, payment completion and issued-licence validity.
+        A date-field clarification preserves predicates and does not run optional
+        filter-role projection or claim that an unread page lacks SLA data.
+        Proposed output maxima are independently checked against actual user
+        clauses; ranking a list and highlighting one extreme item does not cap
+        the list at one. Unverified caps fail visibly rather than broadening data.
+        Exact application details distinguish the current assignee from past
+        timeline actors; next steps use observed page actions only. Missing
+        handlers or actions remain not_confirmed, never silently successful.
         Displayed workflow enum labels are localized without changing task
         identifiers, owners, source values or access boundaries.
         Per-person metric questions retain their requested grouping even when
         intent interpretation degrades. Missing returned-task card metrics are
         explicitly unconfirmed, never omitted or silently treated as zero.
+        Read-only references to a completed transfer, approval or refund are
+        interpreted as history requests; actual change commands remain refused
+        before any business read. A verified exact-record identity can be reused
+        by a same-record follow-up within the same conversation, with fresh
+        permission checks and live reads. A follow-up cannot inherit a prior
+        source page for a field that source
+        explicitly marked unavailable; its new object is routed and authorized
+        separately, avoiding unrelated list rows as a substitute.
+        Global-scope requests are denied when GetUserInfo grants only a narrower
+        scope, before date clarification.
+        A named Dashboard KPI is projected from that one verified metric, and
+        partial-record warnings apply only to bounded record lists. Inspection
+        history lookup can search independent permitted status tabs concurrently;
+        it never substitutes an unrelated task when an identity is absent.
+        A penalty-history query without a verified task or violation number does
+        not become a claim that no fine decision exists. Finance comparisons
+        distinguish documented application-number families from transaction
+        types and state when the owning module's details were not read.
+        A named inspection target without a unique authorized task retains
+        the safe search guidance instead of returning unrelated history.
+        For exact inspection history, the caller's authorized UMC task-number
+        search is checked before repeated portal-tab reads. An empty authorized
+        search yields an explicit unverified answer, not a claimed global zero.
         Direct unsafe acts reuse the closed runtime request-boundary policy;
         business-change requests are explicitly refused before page execution.
         Intent hints can restrict actions but cannot authorize a mutation.
@@ -1246,6 +1498,85 @@ def make_router(service: DSHService) -> APIRouter:
         account/employee grammar variants share that boundary. Scoped task
         owners and organization history remain ordinary authorized reads.
 
+        18382 validation repair: exact ticket identity is resolved through two real
+        stable reads of authorized To Do/Completed task queues. EnquiryInfo and
+        Timeline GET reads run concurrently, retaining fresh caller permissions;
+        no match never guesses an internal ID. Every HTTP read has request-correlated
+        owner, operation, start timestamp and client wall duration. Terminal
+        read-only refusals bypass business-result enrichment and cannot become
+        no-record claims. Transient semantic transport failures receive at most
+        one bounded retry; they never establish missing data.
+
+        On this validation copy, Team Members publishes only dates echoed by a
+        successful same-origin members GET and the actual selected card category.
+        Draft or stale dates remain unverified. These pageContext filters narrow
+        an authenticated read and never supply business counts or permission.
+        Selected-period pending counts are not inferred from assigned minus
+        completed or replaced with an all-date task count. An exact institution
+        name binds through authorized task queues before linked history/contacts
+        are read. Contradictory source populations are reported explicitly.
+        A missing optional knowledge content endpoint falls back to authorized
+        chunks; full-text claims still require version, size and integrity checks.
+        Input language and explicitly requested reply language are logged separately.
+        Completed-answer presentation does not re-enter unrelated business guards.
+        Read-executor projections apply only to live business reads; they cannot
+        invalidate a no-read refusal, knowledge request or previous-answer projection.
+        Workflow-set conditions use closed open/closed/all enum values. A current
+        caller reference is distinct from a literal employee name and binds to
+        the independently verified principal ID. Inspection assignee queries
+        exclude the signed-in actor by returned assignment IDs, never nickname
+        matching. Native To Do/Completed reads execute two stable scans; missing
+        assignment IDs and routes remain explicit gaps. Failed or cancelled
+        parallel reads cancel and join siblings before final timing is persisted.
+        Previous-answer snapshots retain bounded complete field sets, missing
+        fields and executed-query receipts. Early read-only refusals retain a
+        server-issued non-execution receipt, linked to the completed owned turn.
+        A summary of that receipt needs no knowledge or business query and
+        cannot establish a record's current status or bypass page permissions.
+        Repeated summaries renew only that policy receipt, not business evidence.
+        Accepted evidence facts are rendered without a second silent per-fact
+        character cut. Collection/transport budgets still bound source results;
+        missing-field notes, negations and final permission conditions survive
+        internal presentation and therefore reach output translation intact.
+        Urdu, Malayalam and Tagalog output also rejects newly introduced
+        foreign-script letters absent from the authoritative answer and user
+        question. Original names/literals remain unchanged. A fresh rendition
+        is tried once; repeated failure is explicit and never reruns business
+        reads. English and Arabic keep their existing language paths.
+        Presentation preserves those verified
+        filters and collection coverage while distinguishing them from freshness.
+        Exhaustive native assignee lists retain route-gap guidance ahead of rows;
+        display-budget omissions downgrade completeness explicitly. A broader
+        requested scope never expands reads beyond the caller's team permissions.
+        Long-summary prompts retain existing aggregates, missing-field statements
+        and verified coverage while omitting repeated table rows from that prompt
+        only; complete field snapshots remain available for field projections.
+        Live list/detail interpretation rejects an empty requested projection.
+        Native inspection-assignee projection checks every requested output against
+        a fixed non-executable field contract; free-text attribute synonyms never
+        choose URLs or expand permissions. Internal presentation language is a
+        trusted stage instruction separate from final display-language preferences.
+        Internal missing-reason codes remain audit metadata and are never joined
+        into user-visible follow-up notes; the grounded answer states actual gaps.
+        Own-profile labels use the documented caller-bound profile GET directly;
+        the returned actor must match the freshly verified principal. Only role
+        and department display labels are retained; no identity-document/contact
+        fields are projected. Denial or identity mismatch cannot fall back to a
+        broader page read. Dashboard workload scope remains independently observed.
+        Requested output fields are distinguished from record-membership predicates
+        before native queue execution. Semantic role repair preserves every genuine
+        constraint and requires exact user evidence; unsupported predicates stay
+        unsupported rather than being silently discarded. Interpretation retries
+        remain bounded by the turn deadline.
+        Subject and filter bindings reference the current or a compatible previous
+        original user message. Literal names remain checked against that text;
+        model-authored quotations cannot replace the referenced source. Previous
+        record facts and permissions do not become authority for a new query.
+        Requested status subjects are distinct typed outputs: application lifecycle,
+        licensing workflow/issued licence, payment, complaint or another object.
+        Finance emits an explicit field-specific unavailable statement for requested
+        cross-object states rather than silently omitting them or reusing payment.
+
         Named-group data checks do not replace an explicit no-read security
         refusal with an unverified-list answer. This exception applies only
         to trusted refusal results without a business page; business-row
@@ -1285,6 +1616,23 @@ def make_router(service: DSHService) -> APIRouter:
         Leading Arabic assignment imperatives, including verbal-noun commands,
         are refused before a record read; assignment-history and field questions
         remain read-only queries. No assignment is executed through chat.
+        Optional knowledge-body transport is discovered from the configured gateway
+        OpenAPI; an absent route falls back to version/size/hash-verified chunks,
+        never to a claim that a business document is absent.
+        Fields-only follow-ups retain requested prior fields and their material
+        uncertainty, without appending an unrequested generic missing-data paragraph.
+        An independently validated empty status inventory stays empty; incidental
+        module nouns cannot add unrelated license-state requests. Fine/legal-basis
+        questions about one violation are not expanded into institution history.
+        Staff ticket roll-ups use complete caller-authorized query populations and
+        a verified roster; Completed-tab membership is not a closed status.
+        Generic queue routing prefers only a currently authorized queue context.
+        Relationship phrases containing a task reference are not institution names;
+        task-to-institution history resolves the exact authenticated source binding.
+        Prior-answer summaries retain source aggregates without inventing absent
+        rows or new date groupings. Long facts are not silently cut mid-record;
+        transport budgets explicitly mark bounded output. Ambiguous event dates
+        never become creation/assignment counts through a default-view fallback.
         Live collection lists do not use manual example counters as rule evidence.
         A combined collection request names any independently unread or denied
         collection rather than treating one permitted list as both collections.
@@ -1451,26 +1799,49 @@ def make_router(service: DSHService) -> APIRouter:
             principal=principal,
         )
 
-    @router.get("/conversations/{conversation_id}/events")
-    async def sse_events(conversation_id: str, after_seq: int = Query(default=0, alias="afterSeq"), event_type: str | None = Query(default=None, alias="eventType"), db: AsyncSession = Depends(get_db), principal: Principal = Depends(conversation_principal)):
+    @router.get("/conversations/{conversation_id}/events", responses={
+        200: {"description": "Owned event replay followed by live SSE. The replay database session is released before streaming; waiting for events holds no database connection.",
+              "headers": {"X-DSH-Replay-Ms": {"description": "Caller-side ownership/replay/session scope duration in milliseconds, including connection wait. Not database query-only time.", "schema": {"type": "number"}}},
+              "content": {"text/event-stream": {"schema": {"type": "string"}}}},
+        401: {"description": "Admin sign-in missing or expired."},
+        403: {"description": "Authenticated identity or workspace mismatch."},
+        404: {"description": "Conversation is unavailable to the current owner."},
+        503: {"description": "Admin identity dependency unavailable."}})
+    async def sse_events(conversation_id: str, after_seq: int = Query(default=0, alias="afterSeq"), event_type: str | None = Query(default=None, alias="eventType"), principal: Principal = Depends(conversation_principal)):
+        queue = None
+        started = time.perf_counter()
         try:
-            conversation = await service.get_owned_conversation(db, principal, conversation_id)
+            # A live event subscription must not pin a database transaction.
+            # Materialize replay while the short session is open, then return
+            # its connection before starting the indefinitely-lived stream.
+            async with service_runtime_db() as db:
+                conversation = await service.get_owned_conversation(db, principal, conversation_id)
+                queue = service.broker.subscribe(conversation_id)
+                # Subscribe after owner authorization and before replay so
+                # events arriving during replay are queued, not lost.
+                events = await service.list_events(db, conversation, after_seq=after_seq, event_type=event_type)
+                replay = [{"seq": event.seq, "eventType": event.event_type,
+                           "data": event.event_json} for event in events]
         except LookupError as exc:
+            if queue is not None:
+                service.broker.unsubscribe(conversation_id, queue)
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except BaseException:
+            if queue is not None:
+                service.broker.unsubscribe(conversation_id, queue)
+            raise
+        replay_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.info("conversation_event_replay request_id=%s duration_ms=%.2f replay_count=%s",
+                    principal.request_id, replay_ms, len(replay))
 
         async def stream() -> AsyncIterator[str]:
-            queue = service.broker.subscribe(conversation_id)
             cursor = after_seq
             try:
-                # Subscribe before replay so events arriving during the DB read are
-                # queued and cannot be lost at the reconnect boundary.
-                replay = await service.list_events(db, conversation, after_seq=after_seq, event_type=event_type)
-                for event in replay:
-                    if event.seq <= cursor:
+                for payload in replay:
+                    if payload['seq'] <= cursor:
                         continue
-                    payload = {"seq": event.seq, "eventType": event.event_type, "data": event.event_json}
-                    cursor = event.seq
-                    yield f"id: {event.seq}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    cursor = payload['seq']
+                    yield f"id: {cursor}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 while True:
                     event = await queue.get()
                     if event["seq"] <= cursor or (event_type and event["eventType"] != event_type):
@@ -1480,7 +1851,7 @@ def make_router(service: DSHService) -> APIRouter:
             finally:
                 service.broker.unsubscribe(conversation_id, queue)
 
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-DSH-Replay-Ms": str(replay_ms)})
 
     @router.get("/config")
     async def get_config(scope: str = "system", db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
@@ -1601,8 +1972,23 @@ def make_router(service: DSHService) -> APIRouter:
         subscriptions: dict[str, asyncio.Queue[dict]] = {}
         forwarders: dict[str, asyncio.Task[None]] = {}
         send_lock = asyncio.Lock()
+        transport_phase = "authenticate"
+        transport_client_message_id = None
 
         async def send(payload: dict) -> None:
+            # Rejections can happen before user.message exists, so they need
+            # session diagnostics independent of the conversation event audit.
+            # Keep only fixed technical identifiers and codes, never tokens,
+            # raw messages, claims, headers or upstream response bodies.
+            rejected = payload.get("type") == "error" or (
+                payload.get("type") == "accepted" and not payload.get("accepted")
+                and not payload.get("duplicate"))
+            if rejected:
+                payload={**payload,"requestId":payload.get("requestId")or principal.request_id,
+                         "phase":transport_phase}
+                logger.info("umc_ws_rejected request_id=%s client_message_id=%s phase=%s code=%s",
+                    transport_diagnostic_id(payload["requestId"]), transport_diagnostic_id(transport_client_message_id),
+                    transport_phase, payload.get("code")or"message_not_accepted")
             async with send_lock:
                 await websocket.send_json(payload)
 
@@ -1614,6 +2000,8 @@ def make_router(service: DSHService) -> APIRouter:
                 raw = await websocket.receive_json()
                 message = WSMessage.model_validate(raw)
                 if message.type == "auth":
+                    transport_phase="authenticate"
+                    transport_client_message_id=message.client_message_id
                     # Browser WebSocket clients cannot set an Authorization
                     # header, so they send the UMC token once as the first
                     # application frame. Keep the raw token only in memory;
@@ -1649,6 +2037,7 @@ def make_router(service: DSHService) -> APIRouter:
                     )
                     await send({"type": "authenticated", "token": "umctoken"})
                 elif message.type == "subscribe" or message.type == "resume":
+                    transport_phase="subscribe"
                     if not message.conversation_id:
                         continue
                     conversation_id = message.conversation_id
@@ -1665,6 +2054,8 @@ def make_router(service: DSHService) -> APIRouter:
                             await send({"type": "event", "seq": event.seq, "eventType": event.event_type, "data": event.event_json})
                         await send({"type": "subscribed", "conversationId": conversation_id, "afterSeq": message.after_seq})
                 elif message.type == "message" and message.conversation_id and message.client_message_id:
+                    transport_phase="message_accept"
+                    transport_client_message_id=message.client_message_id
                     try:
                         # A socket is a session, not a single request. Every
                         # accepted message needs its own response correlation.

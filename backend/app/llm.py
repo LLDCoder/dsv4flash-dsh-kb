@@ -1301,6 +1301,8 @@ class LLMAdapter:
         url = self.settings.llm_base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {self.settings.llm_api_key}", "Content-Type": "application/json"}
         payload = {"model": self.settings.llm_model, "messages": messages, "stream": True}
+        done = False
+        finish_reason = None
         async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
             async with client.stream("POST", url, headers=headers, json=payload) as response:
                 response.raise_for_status()
@@ -1309,15 +1311,26 @@ class LLMAdapter:
                         continue
                     data = line.removeprefix("data:").strip()
                     if data == "[DONE]":
+                        done = True
                         break
                     try:
                         chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                        if reasoning and on_reasoning:
-                            await on_reasoning(str(reasoning))
-                        text = delta.get("content")
-                        if text:
-                            yield text
                     except json.JSONDecodeError:
                         continue
+                    choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                        continue
+                    choice = choices[0]
+                    if choice.get("finish_reason") is not None:
+                        finish_reason = choice["finish_reason"]
+                    delta = choice.get("delta") or {}
+                    if not isinstance(delta, dict):
+                        continue
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    if reasoning and on_reasoning:
+                        await on_reasoning(str(reasoning))
+                    text = delta.get("content")
+                    if text:
+                        yield str(text)
+        if not done or finish_reason != "stop":
+            raise RuntimeError("LLM stream ended without a complete stop signal")

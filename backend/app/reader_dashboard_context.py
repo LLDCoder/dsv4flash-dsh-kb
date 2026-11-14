@@ -2,6 +2,19 @@
 from urllib.parse import urlsplit
 
 
+def dashboard_scope_changed(previous, current):
+    if not isinstance(current, dict) or current.get('route') != '/dashboard':
+        return False
+    names = {'timeFilter', 'department', 'roleVariant'}
+
+    def selected(page):
+        return {item['name']: item.get('value') for item in (page.get('filters') or [])
+                if isinstance(item, dict) and item.get('name') in names}
+
+    return (not isinstance(previous, dict) or previous.get('route') != '/dashboard'
+            or selected(previous) != selected(current))
+
+
 def dashboard_read_context(page, current_page, user_id):
     if (urlsplit(page).path != '/dashboard' or not current_page
             or current_page.get('route') != '/dashboard'

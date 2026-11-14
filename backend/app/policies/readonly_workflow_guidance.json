@@ -1,0 +1,24 @@
+{
+  "application_rejection": {
+    "intent": "The user asks whether to reject an application without a reason, requests rejection while omitting a reason, or asks for the authorized rejection steps or whether a reason is required. Exclude questions about a rejection already recorded.",
+    "en": [
+      "I cannot reject an application in chat. A rejection reason is required in the portal.",
+      "Open the application in Licensing or the relevant application queue. If your role and the current review stage permit it, choose Reject, select the required reason, review the decision, and confirm it in the portal."
+    ],
+    "ar": [
+      "لا يمكنني رفض الطلب عبر المحادثة. يجب تحديد سبب الرفض في البوابة.",
+      "افتح الطلب في قسم التراخيص أو قائمة الطلبات المعنية. إذا كانت صلاحياتك ومرحلة المراجعة تسمحان بالرفض، اختر «رفض»، وحدد السبب المطلوب، وراجع القرار ثم أكده في البوابة."
+    ]
+  },
+  "failed_payment_status_change": {
+    "intent": "The user asks to mark a failed payment as successful, to edit its payment status directly, or whether the assistant can do that. Exclude read-only checks on whether a past payment succeeded or already changed.",
+    "en": [
+      "I cannot change a failed payment to Successful or override its status in chat.",
+      "In Finance > Transactions, find the original payment and have the authorized finance team reconcile its reference and amount with the payment gateway. If the outcome is pending or disputed, verify it with the gateway before paying again. If it is confirmed Failed and the portal offers a retry, use that official retry option."
+    ],
+    "ar": [
+      "لا يمكنني تغيير حالة الدفعة الفاشلة إلى ناجحة أو تجاوز حالتها عبر المحادثة.",
+      "افتح المعاملة الأصلية ضمن المالية > المعاملات، واطلب من فريق المالية المخوّل مطابقة رقم المعاملة والمبلغ مع بوابة الدفع. إذا كانت النتيجة معلقة أو محل خلاف، تحقق منها مع بوابة الدفع قبل تكرار الدفع. إذا تأكد الفشل وكان خيار إعادة المحاولة متاحاً، استخدم خيار البوابة الرسمي."
+    ]
+  }
+}
