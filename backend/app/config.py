@@ -126,6 +126,13 @@ class Settings(BaseSettings):
         override = (self.umc_document_base_url or "").strip().rstrip("/")
         return override or self.umc_base_url
 
+    # UMC payment-preview rule catalog. Deployment can override this catalog
+    # if the upstream service changes the renewal/cancellation workflow IDs.
+    application_payable_penalty_service_ids: dict[str, int] = {
+        "902": 902, "904": 902, "1204": 1204, "1202": 1204, "802": 802, "806": 802,
+    }
+    application_payable_penalty_scenario: str = "RENEWAL_DELAY_FINE"
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     @property

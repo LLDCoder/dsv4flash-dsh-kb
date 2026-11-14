@@ -1,0 +1,32 @@
+{
+  "skill_id": "refund_portal_navigation",
+  "version": 1,
+  "name": "Refunds portal navigation",
+  "domain": "payments",
+  "scope": "system",
+  "source": "portal_navigation",
+  "status": "PUBLISHED",
+  "enabled": true,
+  "allowed_tools": [],
+  "content": "Direct users to the Refunds list in the Customer Portal when they ask where to view refunds. Navigation does not look up a refund record or submit a request.",
+  "workflow": {
+    "navigation": {
+      "path": "/refund",
+      "labels": {"en": "Refunds", "ar": "طلبات الاسترداد"},
+      "followUp": {
+        "anyTerms": ["clickable link", "give me the link", "send me the link", "direct link", "رابط", "قابل للنقر"]
+      }
+    },
+    "deterministicRouting": [
+      {
+        "priority": 1500,
+        "anyTermGroups": [
+          ["where", "refund"], ["which page", "refund"], ["link", "refund"],
+          ["refund portal"], ["أين", "استرداد"], ["رابط", "استرداد"]
+        ],
+        "noneTerms": ["submit", "cancel", "delete", "approve", "pay again", "إلغاء", "تقديم", "حذف"],
+        "route": {"category": "portal_navigation", "mode": "portal_navigation", "routingLocked": true}
+      }
+    ]
+  }
+}

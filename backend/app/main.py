@@ -136,7 +136,11 @@ def custom_openapi():
             "profileConfirmation": {
                 "profileContext.confirmedTargetProfileId": "Optional user-selected intent resolution; only honored when it equals the authenticated token Profile and matches the named candidates. It cannot authorize another Profile.",
             },
+            "paymentPreview": {
+                "description": "A selected-profile Pending Payment detail can include a verified total payable from the frozen order and applicable UMC read-only penalty preview. No payment is initiated.",
+            },
             "assistantMessage": {
+                "content": "May contain a clickable relative Markdown link for a published tool-free portal navigation workflow. A compatible follow-up can repeat that link without a business record lookup.",
                 "profileAction": {
                     "type": "open_profile_menu",
                     "code": [

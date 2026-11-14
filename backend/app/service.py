@@ -28,6 +28,8 @@ from .customer_record_listing import (
 )
 from .service_fees import CustomerServiceFeeClient, is_public_service_fee_query, fee_answer
 from .application_listing import application_list_answer, application_page_arguments, is_basic_application_list, ordered_application_result
+from .application_payable import read_application_payable
+from .portal_navigation import continuation_route, navigation_answer
 from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requested_profile_candidates, requires_profile_switch
 from .response_safety import contains_unexpected_response_script, is_internal_tool_protocol
 from .runtime import RuntimeManager
@@ -608,6 +610,8 @@ class DSHService:
                 "status": masked.get("status"),
                 "result": ordered_application_result(masked.get("result")) if tool_name == "umc.applications" else masked.get("result"),
             }
+        if isinstance(masked.get("paymentPreview"), dict):
+            source["paymentPreview"] = masked["paymentPreview"]
         # The current portal identity was bound to the token's Profile claim.
         # Its label is scope metadata, not an inferred field of each record.
         if profile_context and not profile_context.is_global_view:
@@ -1458,7 +1462,9 @@ class DSHService:
                         resolve_configured_skill(latest_content, route_catalog, canonicalize=False)
                         or resolve_skill(latest_content)
                     )
-                    if basic_application_list or self.is_application_list_request(latest_content):
+                    if keyword_route.mode != "portal_navigation" and (
+                        basic_application_list or self.is_application_list_request(latest_content)
+                    ):
                         application_status_entry = next(
                             (item for item in route_catalog if str(item.get("skillId") or "") == "application_status"),
                             None,
@@ -1505,6 +1511,9 @@ class DSHService:
                             cross_skill_handoff = self.configured_cross_skill_handoff(
                                 active_skill, latest_content, history, route_catalog
                             )
+                        navigation_continuation = continuation_route(latest_content, keyword_route, active_skill)
+                        if navigation_continuation and not cross_skill_handoff:
+                            keyword_route = navigation_continuation
                         if cross_skill_handoff:
                             target_skill_id = str(cross_skill_handoff.get("targetSkillId") or "")
                             target_entry = next(
@@ -1591,7 +1600,7 @@ class DSHService:
                         tool_request = parse_tool_request(latest_content) if latest_user else None
                     if handoff_tool_request and not latest_attachment:
                         tool_request = handoff_tool_request
-                    if route.mode == "portal_action":
+                    if route.mode in {"portal_action", "portal_navigation"}:
                         # Downloads, exports, payments, and refunds are visible
                         # Portal actions only for this read-only release.
                         tool_request = None
@@ -1886,6 +1895,16 @@ class DSHService:
                                 tool_definition=tool_definition_by_name.get(tool_name),
                                 profile_context=profile_context,
                             )
+                        previous_question = next((
+                            str(event.event_json.get("content") or "") for event in reversed(history)
+                            if event.event_type == "user.message" and event.event_json.get("requestId") != principal.request_id
+                        ), "")
+                        payable = await read_application_payable(
+                            self.tool_gateway.platform, principal, profile_context, self.settings,
+                            tool_name, arguments, tool_result, latest_content, previous_question,
+                        )
+                        if payable is not None:
+                            tool_result = {**tool_result, "paymentPreview": payable}
                         masking_policy = str((tool_definition_by_name.get(tool_name) or {}).get("maskingPolicy") or "default")
                         masked_tool_result = mask_tool_result(tool_result, masking_policy)
                         if tool_name == "umc.applications" and not latest_attachment and not forced_response_message:
@@ -1962,6 +1981,9 @@ class DSHService:
                                         "Do not ask the user to confirm a profile, category, or record that is already present, "
                                         "and never claim there are no records when this result contains items.\n"
                                         "currentPortalProfile is the current portal identity label; use it to explain the selected data scope, even when the records omit a Profile name column. Do not request another switch to that same Profile. evidenceTruncated means this is a bounded excerpt, not missing source records.\n"
+                                        "For Pending Payment amounts, report paymentPreview.totalPayable and its currency when confirmed, distinguishing the frozen baseOrderAmount and any pendingPaymentSurcharge. "
+                                        "If the preview is unavailable, say the payable total could not be confirmed; never present amount or baseOrderAmount by itself as the payable total. "
+                                        "Direct the user to My Requests > the matching application > Make Payment to see or pay the live amount. Do not imply that payment was initiated.\n"
                                         + self.answer_tool_evidence(tool_name, tool_result, masking_policy, profile_context)
                                         + related_document_instruction
                                     ),
@@ -2144,6 +2166,8 @@ class DSHService:
                             if response_language == "ar"
                             else "I couldn’t retrieve your applications from the portal right now. Please try again."
                         )
+                    if route.mode == "portal_navigation" and not latest_attachment:
+                        forced_response_message = navigation_answer(selected_skill, response_language) or forced_response_message
                     if forced_response_message:
                         await self.append_event(db, conversation, "assistant.message", {"content": forced_response_message, "requestId": principal.request_id})
                     elif isbn_response:
