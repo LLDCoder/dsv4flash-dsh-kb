@@ -5,6 +5,7 @@ match references locally. Only payment fields survive the projection. No
 applicant account/contact data, dynamic URL or write operation is accepted.
 """
 import hashlib,json,re
+from decimal import Decimal, InvalidOperation
 import httpx
 from .ticket_read_api import unwrap,gather_reads
 from .turn_http_timing import http_stage
@@ -87,3 +88,105 @@ async def read_exact(principal,origin,identities,*,include_lifecycle=False,trans
                 await gather_reads(*(detail(identity,row)for identity,row in pending[index:index+2]))
     fingerprint=hashlib.sha256(json.dumps(second,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     return found,details,{'stablePasses':2,'fingerprint':fingerprint,'total':len(second),'pages':receipts,'exactReferences':list(identities)}
+
+
+FINANCE_NUMBER = re.compile(r"\b(?:RFD-\d{12,25}-\d+|\d{16,25})\b", re.I)
+APPLICATION_REVIEW_PAGES = {
+    1: "/licensing/team-management",
+    2: "/content/team-management",
+}
+
+
+def _fee_money(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("finance_fee_amount_invalid")
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError("finance_fee_amount_invalid") from exc
+    if not amount.is_finite() or abs(amount) >= Decimal("1e12"):
+        raise ValueError("finance_fee_amount_invalid")
+    return amount
+
+
+async def read_application_fee_lines(principal, origin, application_number, *, can_read, transport=None):
+    """Follow the portal's linked application route, then project its fee snapshot."""
+    if not principal.umc_token:
+        raise PermissionError("finance_missing_identity")
+    headers = {"Authorization": "Bearer " + principal.umc_token, "X-Request-ID": principal.request_id}
+    async with httpx.AsyncClient(timeout=6, follow_redirects=False, transport=transport) as client:
+        async def get(path, stage, params=None):
+            with http_stage(stage):
+                response = await client.get(origin.rstrip("/") + path, headers=headers, params=params)
+            if response.status_code in (401, 403, 404):
+                return None
+            response.raise_for_status()
+            if len(response.content) > 2 * 1024 * 1024:
+                raise ValueError("finance_response_budget")
+            return unwrap(response.json())
+
+        review = await get("/api/Enquiry/Management/Application/Task", "finance_api.review_route",
+                           {"applicationNo": application_number})
+        if not isinstance(review, dict) or review.get("applicationNumber") != application_number:
+            return None
+        page = APPLICATION_REVIEW_PAGES.get(review.get("departmentId"))
+        application_id = review.get("applicationId")
+        if not page or not can_read(page) or type(application_id) is not int or application_id <= 0 or not review.get("taskId"):
+            return None
+        snapshot = await get(f"/api/admin/application/{application_id}", "finance_api.application_fees")
+        if not isinstance(snapshot, dict) or snapshot.get("applicationId") != application_id:
+            return None
+
+    raw_quote = json.loads(snapshot.get("feeQuoteRawResponseJson") or "null")
+    quote = raw_quote.get("data") if isinstance(raw_quote, dict) else None
+    if not isinstance(quote, dict):
+        quote = {}
+    rows = quote.get("breakdown") or json.loads(snapshot.get("feeBreakdownJson") or "null")
+    currency = quote.get("currency") or snapshot.get("currencyCode")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 50 or not re.fullmatch(r"[A-Z]{3}", str(currency)):
+        return None
+    lines = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("currency") not in (None, "", currency):
+            return None
+        name = row.get("chargeName") or row.get("chargeNameAr")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        lines.append((name, row.get("chargeNameAr"), _fee_money(row.get("amount"))))
+    total = _fee_money(quote.get("totalAmount", snapshot.get("amount")))
+    if sum(value for _, _, value in lines) != total:
+        return None
+    return lines, total, currency
+
+
+async def read_transaction_number(principal, origin, number, *, transport=None):
+    """Read the same transaction detail endpoint as the authenticated Finance page."""
+    if not FINANCE_NUMBER.fullmatch(number):
+        raise ValueError("finance_transaction_number_invalid")
+    if not principal.umc_token:
+        raise PermissionError("finance_missing_identity")
+    headers = {"Authorization": "Bearer " + principal.umc_token, "X-Request-ID": principal.request_id}
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=False, transport=transport) as client:
+            with http_stage("finance_api.exact_transaction"):
+                response = await client.get(origin.rstrip("/") + "/api/admin/finance/transactions/" + number, headers=headers)
+        if response.status_code in (401, 403):
+            raise PermissionError("finance_read_denied")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        if len(response.content) > 2 * 1024 * 1024:
+            raise ValueError("finance_response_budget")
+        detail = unwrap(response.json())
+    except httpx.InvalidURL as exc:
+        raise ValueError("finance_transaction_url_invalid") from exc
+    row = (detail.get("transaction") or detail.get("paymentTransactionInfo")) if isinstance(detail, dict) else None
+    if not isinstance(row, dict) or str(row.get("transactionNo") or "").casefold() != number.casefold():
+        raise ValueError("finance_transaction_binding")
+    record = project({**row, "referenceNumber": str(row.get("referenceNumber") or "")})
+    record["paymentDescription"] = str(row.get("description") or "").strip()[:180]
+    record["applicationNumbers"] = tuple(dict.fromkeys(
+        item["applicationNumber"] for item in (detail.get("applicationItems") or detail.get("applicationDatas") or [])
+        if isinstance(item, dict) and re.fullmatch(r"[A-Z]{2}-\d+(?:-\d+)+", str(item.get("applicationNumber") or ""))
+    ))
+    return record

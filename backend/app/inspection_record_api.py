@@ -223,6 +223,45 @@ async def read_violation_rows(principal,origin,*,number='',transport=None):
     return safe,{'source':'caller_authorized_violations','stablePasses':2,
         'fingerprint':scans[-1][0],'sourceRowsRead':len(rows),'exactRows':len(safe),'portalReadCount':0}
 
+async def read_violation_detail(principal, origin, reference, *, transport=None):
+    rows, receipt = await read_violation_rows(principal, origin, number=reference, transport=transport)
+    if len(rows) != 1:
+        return None, receipt
+    source = rows[0]
+    record_id = str(source.get("id") or "")
+    if not re.fullmatch(r"[1-9]\d*", record_id):
+        raise ValueError("inspection_violation_source_id_invalid")
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False, transport=transport) as client:
+            detail = await Reader(client, principal, origin).get(
+                f"/api/admin/inspection/violations/{record_id}", stage="inspection_violation.detail",
+            )
+    except PermissionError:
+        return {**source, "evidenceSource": "denied"}, receipt
+    if (not isinstance(detail, dict) or str(detail.get("id")) != record_id
+            or str(detail.get("violationNo") or "").casefold() != reference.casefold()):
+        raise ValueError("inspection_violation_detail_binding")
+    attachments = detail.get("attachments")
+    if not isinstance(attachments, list):
+        raise ValueError("inspection_violation_attachment_shape")
+
+    def filename(attachment):
+        name = str(attachment.get("fileName") or "").strip()
+        return name if re.fullmatch(r"[\w .()+-]{1,180}\.[A-Za-z0-9]{1,10}", name) else ""
+
+    for finding in detail.get("checklistViolations") or []:
+        if isinstance(finding, dict) and isinstance(finding.get("reportAttachment"), list):
+            attachments = [*attachments, *finding["reportAttachment"]]
+    names = tuple(dict.fromkeys(
+        name for row in attachments if isinstance(row, dict) if (name := filename(row))
+    ))
+    return {
+        **source,
+        **{k: detail[k] for k in ("violationTypeName", "statusName", "sourceTaskNo") if detail.get(k)},
+        "evidenceSource": "detail", "attachmentNames": names,
+    }, receipt
+
+
 async def compile_status_predicates(task,question,rows,structured):
     """Map every predicate to observed status values, or decline this adapter.
 
@@ -294,3 +333,69 @@ async def compile_status_predicates(task,question,rows,structured):
 def filter_status_rows(rows,predicates):
     return [r for r in rows if all((str(r.get('statusName')or'')==value)==(op=='eq')
                                   for op,value in predicates)]
+
+
+async def read_history_from_violation_refs(principal, origin, references, *, read_tasks, target_name="", transport=None):
+    """Bind an institution by the actual identities on the authorized violations."""
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False, transport=transport) as client:
+        reader = Reader(client, principal, origin)
+        if references:
+            matches = await gather_reads(*(read_violation_rows(principal, origin, number=number, transport=transport) for number in references))
+            if any(len(rows) != 1 for rows, _ in matches):
+                raise ValueError("inspection_history_reference_unconfirmed")
+            anchors = [rows[0] for rows, _ in matches]
+        else:
+            candidates = await reader.collection("/api/admin/inspection/violations",
+                stage="inspection_history.named_violations", params={"Search": target_name}, max_rows=100)
+            anchors = [
+                row for row in candidates
+                if str(row.get("violatorName") or "").strip().casefold() == target_name.casefold()
+                and re.fullmatch(r"VN-\d{4}-\d+", str(row.get("violationNo") or ""))
+            ]
+            if not 1 <= len(anchors) <= 25 or len({row["violationNo"] for row in anchors}) != len(anchors):
+                raise ValueError("inspection_history_named_violations_unconfirmed")
+
+        async def get_anchor(row):
+            identifier = str(row.get("id") or "")
+            if not re.fullmatch(r"[1-9]\d*", identifier):
+                raise ValueError("inspection_history_violation_id")
+            detail = await reader.get(f"/api/admin/inspection/violations/{identifier}", stage="inspection_history.anchor")
+            if str(detail.get("id")) != identifier or detail.get("violationNo") != row["violationNo"]:
+                raise ValueError("inspection_history_anchor_mismatch")
+            return detail
+
+        details = []
+        for index in range(0, len(anchors), 5):
+            details.extend(await gather_reads(*(get_anchor(row) for row in anchors[index:index + 5])))
+        ids = {str(row.get("establishmentId") or "") for row in details}
+        task_ids = {str(row.get("sourceTaskId") or "") for row in details}
+        def institution_names(row):
+            return {
+                value.strip() for key in ("establishmentName", "establishmentNameAr", "establishmentNameEn",
+                                          "targetName", "violatorName")
+                if isinstance(value := row.get(key), str) and value.strip()
+            }
+
+        anchors_names = [institution_names(row) for row in details]
+        common_names = set.intersection(*({name.casefold() for name in names} for names in anchors_names))
+        if len(ids) != 1 or not next(iter(ids)).isdigit() or not common_names:
+            raise ValueError("inspection_history_institution_mismatch")
+        names = set.union(*anchors_names)
+        penalties = []
+        task_history = None
+        params = {"establishmentId": int(next(iter(ids)))}
+        penalties_page = await reader.get("/api/admin/inspection/violations/by-target", stage="inspection_history.penalties", params=params)
+        if isinstance(penalties_page, dict) and isinstance(penalties_page.get("items"), list):
+            penalties = penalties_page["items"]
+        if read_tasks:
+            try:
+                task_history = await reader.collection("/api/admin/inspection/tasks/by-target", stage="inspection_history.tasks", params=params)
+            except PermissionError:
+                task_history = None
+    known = {row["violationNo"]: row for row in anchors}
+    for row in penalties:
+        if not isinstance(row, dict) or not re.fullmatch(r"VN-\d{4}-\d+", str(row.get("violationNo") or "")):
+            continue
+        if str(row.get("violatorName") or "").strip().casefold() in {name.casefold() for name in names}:
+            known[row["violationNo"]] = {**known.get(row["violationNo"], {}), **row}
+    return names, known, task_history, task_ids

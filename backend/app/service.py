@@ -3522,6 +3522,8 @@ class DSHService:
             return fallback, False, 'deterministic_permission_denial'
         if evidence.get('workflowState') in {'previous_answer_fields_verified','inspection_sla_api_verified', 'team_member_cards_full', 'inspection_detail_full', 'inspection_target_history_guard', 'inspection_overdue_full', 'overdue_object_clarification'}:
             return fallback, False, 'deterministic_bound_business_facts'
+        if evidence.get('workflowState') in {'issued_license_exact', 'pending_ticket_sla', 'ticket_application_reference', 'violation_exact_evidence', 'exact_finance_record', 'inspection_history_by_violations', 'application_related_status'}:
+            return fallback, False, 'deterministic_verified_records'
         if evidence.get('workflowState') == 'assignment_rechecked':
             return fallback, False, 'deterministic_assignment_comparison'
         if evidence.get('workflowState') in {'filter_return_verified', 'filter_return_unverified'}:

@@ -63,6 +63,100 @@ from .reader_query_requirements import (
 )
 
 
+_ISSUED_LICENSE_PAGE = "/licensing/licenses"
+_ISSUED_LICENSE_LIST = "/api/LicenseManagement/list"
+_ISSUED_LICENSE_NUMBER = r"(?:[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|[0-9]{5,20})"
+_ISSUED_LICENSE_BOUND = re.compile(
+    rf"(?<!\w)(?:licen[cs]e|permit|الترخيص|رخصة|الرخصة|许可证)"
+    rf"\s*(?:(?:number|no\.?|رقم|编号)\s*)?[:#]?\s*({_ISSUED_LICENSE_NUMBER})(?![\w-])",
+    re.I,
+)
+_ISSUED_LICENSE_STATUS = {
+    "201": ("Active", "ساري"), "202": ("Expired", "منتهي"),
+    "203": ("Cancelled", "ملغى"), "204": ("Suspended", "موقوف"),
+    "205": ("Expire Soon", "ينتهي قريباً"),
+}
+
+
+def _issued_license_number(text):
+    matches = {value.upper() for value in _ISSUED_LICENSE_BOUND.findall(text)}
+    if len(matches) != 1:
+        return ""
+    number = matches.pop()
+    return number if any(char.isdigit() for char in number) and not re.fullmatch(
+        r"(?:ML|MC|HC|FM|RE)-\d+-\d+-\d+", number
+    ) else ""
+
+
+def _prior_issued_license_number(question, snapshot, permission_fingerprint):
+    if (not permission_fingerprint or snapshot.get("sourcePermissionFingerprint") != permission_fingerprint
+            or snapshot.get("sourcePage") != _ISSUED_LICENSE_PAGE
+            or snapshot.get("sourceWorkflow") != "issued_license_exact"
+            or snapshot.get("sourceResult") != "success"):
+        return ""
+    if re.search(r"\b(?:this|that|same)\s+(?:license|licence|permit|record)\b|الترخيص نفسه|السجل نفسه|هذا الترخيص|هذا السجل", question, re.I):
+        context = snapshot.get("sourceIntentContext") or {}
+        number = str(context.get("issuedLicenseNumber") or "")
+        qualifiers = set(re.findall(r"(?<!\w)\d{5,20}(?!\w)", question))
+        if re.fullmatch(_ISSUED_LICENSE_NUMBER, number) and qualifiers <= {number}:
+            return number
+    return ""
+
+
+async def _read_issued_license(principal, origin, number, *, transport=None):
+    from .ticket_read_api import unwrap
+    from .turn_http_timing import http_stage
+
+    if not principal.umc_token or not re.fullmatch(_ISSUED_LICENSE_NUMBER, number):
+        raise PermissionError("issued_license_identity_required")
+    async with httpx.AsyncClient(timeout=10, follow_redirects=False, transport=transport) as client:
+        with http_stage("issued_license.exact_search"):
+            response = await client.post(
+                origin.rstrip("/") + _ISSUED_LICENSE_LIST,
+                json={"pageIndex": 1, "pageSize": 50, "department": 1, "keyword": number},
+                headers={"Authorization": f"Bearer {principal.umc_token}", "X-Request-ID": principal.request_id},
+            )
+        if response.status_code in (401, 403):
+            raise PermissionError("issued_license_source_denied")
+        response.raise_for_status()
+        data = unwrap(response.json())
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list) or type(data.get("total")) is not int:
+        raise ValueError("issued_license_list_invalid")
+    if len(data["items"]) != data["total"]:
+        raise ValueError("issued_license_exact_search_incomplete")
+    matches = [
+        row for row in data["items"] if isinstance(row, dict) and number in {
+            str(row.get(key) or "").strip().upper()
+            for key in ("showLicenseNumber", "licenseNumber", "mediaLicenseNumber")
+        }
+    ]
+    if len(matches) > 1:
+        raise ValueError("issued_license_identity_ambiguous")
+    return matches[0] if matches else None
+
+
+def _issued_license_facts(row, number, language, question):
+    ar = language == "ar"
+    code = str(row.get("status") or "").strip()
+    status = _ISSUED_LICENSE_STATUS[code][int(ar)] if code in _ISSUED_LICENSE_STATUS else (
+        ("غير مؤكد" if ar else "Unverified") if not code or code.isdigit() else code
+    )
+    fields = (
+        ("رقم الترخيص" if ar else "License number", row.get("showLicenseNumber") or row.get("licenseNumber") or number),
+        ("الحالة" if ar else "Status", status),
+        ("النوع" if ar else "License type", row.get("licenseTypeAr" if ar else "licenseType")),
+        ("تاريخ السريان" if ar else "Effective date", row.get("issuanceTime")),
+        ("تاريخ الانتهاء" if ar else "Expiry date", row.get("expirationTime")),
+        ("آخر تحديث" if ar else "Last updated", row.get("updatedOn") or row.get("lastUpdatedOn")),
+    )
+    if re.search(r"\b(?:holder|held by|issued to|applicant|licensee)\b|حامل|صاحب|صاحب[ةه]|مقدم الطلب|لمن صدر", question, re.I):
+        holder = str(row.get("applicant") or "").strip()
+        if not holder or holder.casefold() == "unknown":
+            holder = "غير متاح في قائمة التراخيص" if ar else "Unavailable in the Licenses list"
+        fields += (("حامل الترخيص" if ar else "License holder (Apply For)", holder),)
+    return tuple(f"{label}: {value}" for label, value in fields if value not in (None, ""))
+
+
 ReaderStatus = Literal["success", "no_data", "no_permission", "load_failed", "not_confirmed"]
 READER_STATUSES = frozenset({"success", "no_data", "no_permission", "load_failed", "not_confirmed"})
 MAX_API_CANDIDATES_BEFORE_DRILL = 10
@@ -4766,6 +4860,121 @@ def _team_open_work_requested(question: str) -> bool:
 
 _CLOSED_STATUS_PATTERN = (r"(?:clos|complet|done|finish|cancel|reject|resolv|revo|withdraw|expir"
                            r"|مكتم|منته|ملغ|مرفوض|منجز)")
+
+
+_TICKET_QUEUE_PAGE = "/happiness/tickets"
+_TICKET_TYPES = {
+    1: ("Enquiries", "الاستفسارات"),
+    2: ("Complaints", "الشكاوى"),
+    3: ("Notices", "البلاغات"),
+    4: ("Suggestions", "الاقتراحات"),
+    5: ("Compliments", "الإشادات"),
+}
+
+
+def _pending_ticket_sla_requested(question: str) -> bool:
+    query = question.casefold()
+    concepts = (
+        r"\b(?:complaints?|enquir(?:y|ies)|inquir(?:y|ies)|tickets?)\b|الشكاوى|الاستفسارات|التذاكر",
+        r"\b(?:pending|outstanding|open|to do|unresolved)\b|معلق|قيد المعالجة|قيد الانتظار",
+        r"\bsla\b|اتفاقية مستوى الخدمة",
+        r"\b(?:how many|count|break\s+.*down|group|total)\b|كم|عدد|حسب|وزع|صنف",
+    )
+    return (all(re.search(pattern, query) for pattern in concepts)
+            and not re.search(r"\b(?:completed|closed|yesterday|ytd|today|assigned|filter|only|my team)\b"
+                              r"|المكتملة|أمس|اليوم|المسندة|فريقي|فقط|HC-\d", query, re.I))
+
+
+async def _read_pending_ticket_sla(principal, origin, *, transport=None, application=None):
+    from .ticket_read_api import unwrap
+    from .turn_http_timing import http_stage
+
+    if not principal.umc_token:
+        raise PermissionError("ticket_queue_identity_unavailable")
+    headers = {"Authorization": "Bearer " + principal.umc_token,
+               "X-Request-ID": principal.request_id}
+    rows = {}
+    total = None
+    page_size = 50
+    async with httpx.AsyncClient(timeout=10, follow_redirects=False, transport=transport) as client:
+        async def get(path, stage, params=None):
+            with http_stage(stage):
+                response = await client.get(origin.rstrip("/") + path, headers=headers, params=params)
+            if response.status_code in {401, 403}:
+                raise PermissionError("ticket_queue_read_denied")
+            response.raise_for_status()
+            if len(response.content) > 4 * 1024 * 1024:
+                raise ValueError("ticket_queue_response_budget")
+            return unwrap(response.json())
+
+        base = "/api/Enquiry/Management"
+        account = await get(base + "/UserInfo", "tickets.pending_sla.scope")
+        if not isinstance(account, dict) or type(account.get("isLeader")) is not bool:
+            raise ValueError("ticket_queue_scope_unverified")
+        path = base + ("/TeamTask/List" if account["isLeader"] else "/List")
+        for index in range(1, 41):
+            params = {"IsEnquiryComplete": "false", "PageIndex": index,
+                      "PageSize": page_size, "SortBy": "id", "SortDirection": 1}
+            if application:
+                params["SearchKey"] = application
+            data = await get(path, "tickets.pending_sla.list", params)
+            if not isinstance(data, dict):
+                raise ValueError("ticket_queue_shape")
+            count, items = data.get("total"), data.get("items")
+            if (type(count) is not int or not 0 <= count <= 2000
+                    or (total is not None and total != count) or not isinstance(items, list)
+                    or len(items) != min(page_size, max(0, count - len(rows)))
+                    or data.get("pageIndex") != index):
+                raise ValueError("ticket_queue_pagination_unverified")
+            total = count
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("ticket_queue_row_invalid")
+                reference = item.get("enquiryNumber")
+                if not isinstance(reference, str) or not reference or reference in rows:
+                    raise ValueError("ticket_queue_identity_unverified")
+                type_id = item.get("enquiryTypeId")
+                sla = str(item.get("sla") or "").strip()
+                overdue = item.get("isOverDue")
+                bucket = ("exceeded" if overdue is True else "within"
+                          if overdue is False and sla not in {"", "-", "—"} else "unknown")
+                if application:
+                    status = item.get("enquiryStatusObj")
+                    rows[reference] = (str(item.get("applicationNo") or "").upper(), type_id,
+                                       status if isinstance(status, dict) else {})
+                else:
+                    rows[reference] = type_id if type(type_id) is int else None, bucket
+            if len(rows) == total:
+                if application:
+                    return tuple((ref, status) for ref, (app, kind, status) in rows.items()
+                                 if app == application and kind == 2
+                                 and re.fullmatch(r"HC-\d{2}-\d{4}-\d+", ref, re.I))
+                return total, tuple(rows.values())
+    raise ValueError("ticket_queue_collection_incomplete")
+
+
+def _pending_ticket_sla_facts(total, rows, language):
+    arabic = language == "ar"
+    counts = defaultdict(lambda: defaultdict(int))
+    for type_id, bucket in rows:
+        counts[type_id if type_id in _TICKET_TYPES else None][bucket] += 1
+    named = sum(sum(counts[type_id].values()) for type_id in (1, 2))
+    facts = [(
+        f"إجمالي الشكاوى والاستفسارات قيد المعالجة: {named}. إجمالي قائمة «المهام المطلوبة» ضمن نطاق الحساب: {total}."
+        if arabic else f"Pending complaints and enquiries: {named}. Total in this account’s To Do queue: {total}."
+    )]
+    for type_id in (*_TICKET_TYPES, None):
+        if type_id not in (1, 2) and not counts[type_id]:
+            continue
+        labels = _TICKET_TYPES.get(type_id, ("Unverified ticket type", "نوع غير مؤكد"))
+        label = labels[int(arabic)]
+        bucket = counts[type_id]
+        facts.append(
+            f"{label}: {sum(bucket.values())}، تجاوز مستوى الخدمة: {bucket['exceeded']}، ضمن المهلة: {bucket['within']}، غير مؤكد: {bucket['unknown']}."
+            if arabic else
+            f"{label}: {sum(bucket.values())}. SLA exceeded: {bucket['exceeded']}, within SLA: {bucket['within']}, unverified: {bucket['unknown']}."
+        )
+    return tuple(facts)
 
 
 async def _team_task_api_population(principal, portal_origin, module: str, view: str, *,
@@ -12811,7 +13020,7 @@ def _inspection_history_request(question: str) -> bool:
                 r'\b(?:histor(?:y|ical)|penalt(?:y|ies)|contacts?|past|previous)\b', requested, re.I):
             return True
     return bool(re.search(
-        r"\b(?:past|previous|historical|history|all)\s+(?:inspection|inspections|penalt|violations?|contacts?)\b|"
+        r"\b(?:past|previous|prior|historical|history|all)\s+(?:inspections?|penalt\w*|violations?|contacts?)\b|"
         r"\b(?:inspection|inspections)\s+(?:history|historical)\b|"
         r"历史(?:检查|巡查|处罚|违规)|过去的?(?:检查|巡查)|机构.*(?:历史|联系人)|"
         r"(?:سجل|تاريخ)\s*(?:التفتيش|الفحص|المخالفات)|سجلات\s+(?:الفحص|التفتيش).{0,50}(?:التاريخية|السابقة)|"
@@ -16611,7 +16820,7 @@ class AdminPortalReader:
             )
             raise
         if outcome.result.workflow_state in {
-            'inspection_team_assignment_full', 'inspection_detail_full', 'authorized_record_detail',
+            'inspection_team_assignment_full', 'inspection_detail_full', 'violation_exact_evidence', 'authorized_record_detail',
             'license_overdue_full', 'application_overdue_unverified',
             'application_review_collection', 'application_status_summary', 'team_work_query',
         }:
@@ -18989,6 +19198,395 @@ class AdminPortalReader:
                 "permission": permission_audit,
                 "result": mutation_refusal.public_json(),
             })
+        current_application = _application_numbers(question)
+        follow = re.search(r"\b(?:same|that|this) application\b|نفس الطلب|الطلب نفسه|هذا الطلب", question, re.I)
+        past_intent = bounded_conversation_context.get("previousIntent") or {}
+        if not current_application and follow:
+            current_application = _application_numbers(str((past_intent.get("intentContext") or {}).get("applicationNumber") or ""))
+        if not current_application and follow:
+            questions = [past_intent.get("question", ""), *(item.get("question", "") for item in past_intent.get("recentIntents", []) if isinstance(item, dict))]
+            for earlier in questions:
+                if current_application := _application_numbers(str(earlier)):
+                    break
+        terms = {
+            "complaint": r"\bcomplaint status\b|حالة الشكوى",
+            "payment": r"\bpayment status\b|حالة الدفع",
+            "license": r"\blicen[sc]e status\b|حالة الترخيص|حالة الرخصة",
+        }
+        subjects = [name for name, pattern in terms.items() if re.search(pattern, question, re.I)]
+        if len(current_application) == 1 and len(subjects) == 1 and (
+                follow or subjects[0] == "license" or subjects[0] == "complaint" and re.search(r"linked|مرتبط", question, re.I)):
+            number, subject = current_application[0], subjects[0]
+            page = {"complaint": _TICKET_QUEUE_PAGE, "payment": "/financial-payment/transactions", "license": "/licensing/licenses"}[subject]
+            denied = validate_policy(PortalReadRequest(page, ({"type": "observe"},)), reason="application_related_status")
+            ar = turn_language == "ar"
+            header = ("رقم الطلب: " if ar else "Application number: ") + number
+            facts, status, missing = (header,), "no_permission", (denied,) if denied else ()
+            if denied:
+                facts += (("لا يتاح التحقق من هذه الحالة من مصدرها لحسابك الحالي." if ar else "The source for this status is unavailable to the current account."),)
+            else:
+                async def read_subject():
+                    from .ticket_read_api import unwrap
+                    headers = {"Authorization": f"Bearer {principal.umc_token}", "X-Request-ID": principal.request_id}
+                    if subject == "complaint":
+                        linked = await _read_pending_ticket_sla(principal, self.policy.portal_origin, application=number)
+                        return tuple((f"رقم الشكوى: {key}؛ الحالة: " if ar else f"Complaint {key}: ") +
+                                     str(labels.get("nameAr" if ar else "nameEn") or "") for key, labels in linked)
+                    origin = self.policy.portal_origin.rstrip("/")
+                    async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+                        if subject == "license":
+                            response = await client.post(origin + _ISSUED_LICENSE_LIST, headers=headers,
+                                                         json={"pageIndex": 1, "pageSize": 50, "department": 1, "keyword": number})
+                        else:
+                            response = await client.get(origin + "/api/admin/finance/transactions", headers=headers,
+                                                        params={"PageIndex": 1, "PageSize": 50, "KeyWord": number})
+                    if response.status_code in (401,403):
+                        raise PermissionError("application_related_status_denied")
+                    response.raise_for_status()
+                    data = unwrap(response.json())
+                    if not isinstance(data, dict) or not isinstance(data.get("items"), list) or len(data["items"]) != data.get("total", data.get("totalCount")):
+                        raise ValueError("application_related_status_incomplete")
+                    if subject == "license":
+                        return tuple(fact for row in data["items"] if row.get("applicationNumber") == number for fact in _issued_license_facts(row, number, turn_language, question))
+                    verified = []
+                    for row in data["items"]:
+                        if row.get("referenceNumber") != number:
+                            continue
+                        labels = row.get("statusObj") or {}
+                        label = labels.get("nameAr" if ar else "nameEn") or labels.get("name") or row.get("status")
+                        verified.append(f"{row.get('transactionNo')} · {label} · AED {row.get('amount')}")
+                    return tuple(verified)
+                try:
+                    detail = await _await_reader_stage(read_subject(), stage="application_related_status",
+                                                       cap_seconds=budget.portal_read_seconds, deadline=deadline)
+                    if detail:
+                        facts += detail
+                        status = "success"
+                    else:
+                        status = "not_confirmed"
+                        facts += (("لا يظهر سجل مطابق في المصدر المصرح به لهذه الحالة." if ar else "The authorized source did not return a matching record for this status."),)
+                except PermissionError:
+                    missing = ("application_related_status_denied",)
+                except (ReaderStageTimeout, httpx.HTTPError, ValueError, TypeError):
+                    status, missing = "load_failed", ("application_related_status_unverified",)
+            result = ReaderResult(status=status, summary="Checks a single linked business status for the verified application reference.",
+                                  page=page, answer_shape="detail", scope=_permission_result_scope(permission_context),
+                                  facts=facts, missing=missing, workflow_state="application_related_status",
+                                  intent_context={"applicationNumber": number})
+            return ReaderOutcome(result, {"stage": "application_related_status", "terminalBoundary": True,
+                                          "permission": permission_audit, "result": result.public_json()})
+        from .finance_read_api import FINANCE_NUMBER, read_application_fee_lines, read_transaction_number
+        exact_finance_numbers = {value.upper() for value in FINANCE_NUMBER.findall(question)}
+        if (len(exact_finance_numbers) == 1
+                and re.search(r"\b(?:transaction|payment|refund|charged)\b|معاملة|الرسوم|دفع|استرداد", question, re.I)):
+            page = "/financial-payment/transactions"
+            denied = validate_policy(PortalReadRequest(page, ({"type": "observe"},)), reason="exact_finance_record")
+            status, facts, missing = "no_permission", (), (denied,) if denied else ()
+            if not denied:
+                number = next(iter(exact_finance_numbers))
+                ar = turn_language == "ar"
+                try:
+                    row = await _await_reader_stage(
+                        read_transaction_number(principal, self.policy.portal_origin, number),
+                        stage="exact_finance_record", cap_seconds=budget.portal_read_seconds, deadline=deadline,
+                    )
+                    if row is None:
+                        status = "not_confirmed"
+                        facts = ("تعذر العثور على المعاملة المطابقة في عرض المدفوعات المصرح به." if ar else
+                                 "The exact transaction was unavailable in the current authorized Payments view.",)
+                    else:
+                        obj = row.get("statusObj") or {}
+                        state = obj.get("nameAr" if ar else "nameEn") or obj.get("name") or row.get("status")
+                        status = "success"
+                        amount = row.get("amount")
+                        facts = tuple(f"{label}: {value}" for label, value in (
+                            ("رقم المعاملة" if ar else "Transaction number", number),
+                            ("الحالة" if ar else "Status", state),
+                            ("المبلغ بالدرهم" if ar else "Amount in AED", f"{amount:,.2f}" if isinstance(amount, (int, float)) and not isinstance(amount, bool) else None),
+                        ) if value)
+                        if row["applicationNumbers"]:
+                            facts += (("الطلبات المرتبطة: " if ar else "Related applications: ") + ", ".join(row["applicationNumbers"]),)
+                        if number.startswith("RFD-"):
+                            completed = str(obj.get("nameEn") or obj.get("name") or row.get("status") or "").strip().casefold() in {"completed", "successful", "success"}
+                            if completed:
+                                facts += ("الاسترداد مكتمل في سجل المدفوعات. راجع تفاصيل الاسترداد لمطابقة المعاملة. إذا لم يظهر المبلغ في وسيلة الدفع، أرسل رقم المعاملة إلى فريق المالية للمطابقة." if ar else
+                                          "The refund is complete in Payments. Open the refund details to reconcile it. If the refund is absent from the original payment method, give Finance this transaction number to reconcile it.",)
+                            else:
+                                facts += ("راجع سجل الاسترداد في المدفوعات أو تواصل مع فريق المالية برقم المعاملة." if ar else
+                                          "Check the refund details in Payments or contact Finance with this transaction number.",)
+                        else:
+                            if row.get("paymentDescription") and not ar:
+                                facts += ("Payment description: " + row["paymentDescription"],)
+                            if (len(row["applicationNumbers"]) == 1 and re.search(
+                                    r"\b(?:fees?|tax(?:es)?|vat|breakdown|charges?|why|charged)\b|حقاً|لماذا|رسوم|الضرائب|بنود|تفصيل", question, re.I)):
+                                application_number = row["applicationNumbers"][0]
+                                try:
+                                    fees = await _await_reader_stage(
+                                        read_application_fee_lines(
+                                            principal, self.policy.portal_origin, application_number,
+                                            can_read=lambda path: not validate_policy(
+                                                PortalReadRequest(path, ({"type": "observe"},)), reason="linked_application_fee_lines",
+                                            ),
+                                        ),
+                                        stage="linked_application_fee_lines", cap_seconds=budget.portal_read_seconds, deadline=deadline,
+                                    )
+                                except (ReaderStageTimeout, httpx.HTTPError, PermissionError, ValueError, TypeError):
+                                    fees = None
+                                if fees:
+                                    lines, fee_total, fee_currency = fees
+                                    facts += (f"بنود الرسوم المسجلة في الطلب المرتبط {application_number}:" if ar else
+                                              f"Fee lines recorded on linked application {application_number}:",)
+                                    for en_name, ar_name, fee_amount in lines:
+                                        name = _sanitize_untrusted_text((ar_name or en_name) if ar else en_name, max_length=180)
+                                        facts += (f"{name} · {fee_currency} {fee_amount:,.2f}",)
+                                    facts += (f"إجمالي رسوم الطلب: {fee_currency} {fee_total:,.2f}" if ar else
+                                              f"Application fee total: {fee_currency} {fee_total:,.2f}",)
+                            facts += ("لا تعرض تفاصيل المعاملة توزيع المبلغ المحصل على الضرائب والرسوم. الفاتورة الرسمية هي مصدر هذا التوزيع." if ar else
+                                      "The transaction detail does not verify how the amount collected was split between fees and taxes. Check the official invoice for that breakdown.",)
+                except PermissionError:
+                    missing = ("finance_read_denied",)
+                except (ReaderStageTimeout, httpx.HTTPError, ValueError, TypeError):
+                    status, missing = "load_failed", ("finance_record_unverified",)
+            result = ReaderResult(status=status, page=page, answer_shape="detail",
+                                  scope=_permission_result_scope(permission_context), facts=facts, missing=missing,
+                                  summary="Reads exact transaction details from the authorized Payments source.",
+                                  workflow_state="exact_finance_record")
+            return ReaderOutcome(result, {"stage": "exact_finance_record", "terminalBoundary": True,
+                                          "permission": permission_audit, "result": result.public_json()})
+        # Arabic conjunctions can directly precede an ASCII reference.
+        violation_refs = {value.upper() for value in re.findall(
+            r"(?<![A-Za-z0-9_-])VN-[0-9]{4}-[0-9]+(?![A-Za-z0-9_-])", question, re.I,
+        )}
+        inspection_history = _inspection_history_request(question)
+        history_target = _inspection_target_history_name(question) if inspection_history else ""
+        if not history_target and inspection_history:
+            named = re.search(
+                r"(?:\b(?:organization|organisation|institution|establishment)\s+(?:is|named)\s+"
+                r"|(?:للمنشأة|لهذه المنشأة)\s+)([^.!?؟،]{1,100})[.!?؟]?\s*$",
+                question, re.I,
+            )
+            if named:
+                history_target = named.group(1).strip(" \"'«»")
+        if inspection_history and (2 <= len(violation_refs) <= 4 or (not violation_refs and history_target)):
+            from .inspection_record_api import read_history_from_violation_refs
+            page = "/inspection/violations"
+            denied = validate_policy(PortalReadRequest(page, ({"type": "observe"},)), reason="inspection_history_by_violations")
+            status, facts, missing = "no_permission", (), (denied,) if denied else ()
+            ar = turn_language == "ar"
+            if not denied:
+                try:
+                    tasks_allowed = not validate_policy(
+                        PortalReadRequest("/inspection/tasks", ({"type": "observe"},)), reason="inspection_history_by_violations_tasks",
+                    )
+                    institution_names, penalties, tasks, _ = await _await_reader_stage(
+                        read_history_from_violation_refs(principal, self.policy.portal_origin, sorted(violation_refs),
+                                                         read_tasks=tasks_allowed, target_name=history_target),
+                        stage="inspection_history_by_violations", cap_seconds=budget.portal_read_seconds, deadline=deadline,
+                    )
+                    institution = next((name for name in sorted(institution_names, key=lambda name: (-len(name), name))
+                                        if re.search(r"(?<!\w)" + re.escape(name.casefold()) + r"(?!\w)", question.casefold())), None)
+                    if institution:
+                        facts = ((f"المنشأة: {institution}" if ar else f"Institution: {institution}"),)
+                        if tasks is not None:
+                            facts += ((f"مهام التفتيش السابقة الظاهرة في المصدر: {len(tasks)}." if ar else f"Inspection tasks visible in the related history: {len(tasks)}."),)
+                            facts += tuple(f"{row.get('taskNo')} · {row.get('statusName', '')}" for row in tasks if row.get("taskNo"))
+                        else:
+                            facts += (("تعذر تأكيد قائمة التفتيش التاريخية الكاملة." if ar else "The complete inspection history could not be verified."),)
+                        facts += (("المخالفات المرتبطة التي تم التحقق منها:" if ar else "Verified linked violations:"),)
+                        for row in penalties.values():
+                            amount = row.get("fineAmount")
+                            if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount > 0:
+                                amount_label = f" · AED {amount:,.2f}"
+                            else:
+                                amount_label = ""
+                            facts += (f"{row['violationNo']} · {row.get('sourceTaskNo') or row.get('taskNo') or '-'} · {row.get('statusName') or '-'}{amount_label}",)
+                        facts += (("لم تتحقق هذه القراءة من بيانات الاتصال التجارية. راجع قسم معلومات الجهة في مهمة التفتيش." if ar else
+                                   "This read did not verify business contact details. Check the institution information on an authorized inspection task."),)
+                        status, missing = "not_confirmed", ("history_contact_fields_unverified",)
+                    else:
+                        status, missing = "not_confirmed", ("history_target_name_unverified",)
+                except PermissionError:
+                    missing = ("inspection_history_read_denied",)
+                except (ReaderStageTimeout, httpx.HTTPError, ValueError, TypeError):
+                    status, missing = "load_failed", ("inspection_history_unverified",)
+            result = ReaderResult(status=status, page=page, answer_shape="detail",
+                                  scope=_permission_result_scope(permission_context), facts=facts, missing=missing,
+                                  summary="Binds inspection history to exact authorized violations and their institution.",
+                                  workflow_state="inspection_history_by_violations")
+            if facts or violation_refs:
+                return ReaderOutcome(result, {"stage": "inspection_history_by_violations", "terminalBoundary": True,
+                                              "permission": permission_audit, "result": result.public_json()})
+        exact_violation_evidence = (
+            len(violation_refs) == 1
+            and re.search(r"\b(?:evidence|attachments?)\b|الأدلة|أدلة|المرفقات", question, re.I)
+            and not _inspection_history_request(question)
+        )
+        if exact_violation_evidence:
+            from .inspection_record_api import read_violation_detail
+            page = "/inspection/violations"
+            denied = validate_policy(PortalReadRequest(page, ({"type": "observe"},)), reason="violation_exact_evidence")
+            status, facts, missing = "no_permission", (), (denied,) if denied else ()
+            receipt = {}
+            if not denied:
+                try:
+                    reference = next(iter(violation_refs))
+                    row, receipt = await _await_reader_stage(
+                        read_violation_detail(principal, self.policy.portal_origin, reference),
+                        stage="violation_exact_evidence", cap_seconds=budget.portal_read_seconds, deadline=deadline,
+                    )
+                    status = "not_confirmed"
+                    if row:
+                        ar = turn_language == "ar"
+                        facts = tuple(f"{label}: {value}" for label, value in (
+                            ("رقم المخالفة" if ar else "Violation number", row.get("violationNo")),
+                            ("نوع المخالفة" if ar else "Violation type", row.get("violationTypeName")),
+                            ("حالة المعالجة" if ar else "Resolution status", row.get("statusName")),
+                            ("مهمة المصدر" if ar else "Source task", row.get("sourceTaskNo") or row.get("taskNo")),
+                        ) if value)
+                        names = row.get("attachmentNames")
+                        if names:
+                            facts += (("ملفات الأدلة المتاحة: " if ar else "Available evidence attachments: ") + ", ".join(names),)
+                        elif row["evidenceSource"] == "denied":
+                            facts += ("لم يُتح الوصول إلى مرفقات التفاصيل لهذا الحساب." if ar else "This account could not read the detail attachments.",)
+                        else:
+                            facts += ("لم تعرض تفاصيل المخالفة أسماء ملفات الأدلة." if ar else "The violation details did not provide any evidence attachment names.",)
+                        status = "success"
+                except PermissionError:
+                    status, missing = "no_permission", ("violation_read_denied",)
+                except (ReaderStageTimeout, httpx.HTTPError, ValueError, TypeError):
+                    status, missing = "load_failed", ("violation_read_unverified",)
+            result = ReaderResult(status=status, page=page, answer_shape="detail",
+                                  scope=_permission_result_scope(permission_context), facts=facts, missing=missing,
+                                  summary="Reads the authorized violation and verifies its available evidence filenames.",
+                                  workflow_state="violation_exact_evidence")
+            return ReaderOutcome(result, {"stage": "violation_exact_evidence", "terminalBoundary": True, "permission": permission_audit,
+                                          "nativeRead": receipt, "result": result.public_json()})
+        references = _application_numbers(question)
+        cross_reference = (
+            len(references) == 1
+            and re.search(r"\b(?:complaint|ticket)\b|شكوى|الشكوى|تذكرة", question, re.I)
+            and re.search(r"\b(?:licensing|application)\b|الترخيص|الطلب", question, re.I)
+            and re.search(r"\b(?:clarify|identify|which|distinguish)\b|وضح|وضّح|ميّز|أي رقم", question, re.I)
+        )
+        if cross_reference:
+            request = PortalReadRequest(_TICKET_QUEUE_PAGE, ({"type": "observe"},))
+            denied = validate_policy(request, reason="ticket_application_reference")
+            facts, status = (), "no_permission"
+            missing = (denied,) if denied else ()
+            if not denied:
+                try:
+                    linked = await _await_reader_stage(
+                        _read_pending_ticket_sla(principal, self.policy.portal_origin, application=references[0]),
+                        stage="ticket_application_reference", cap_seconds=budget.portal_read_seconds, deadline=deadline,
+                    )
+                    status = "success" if linked else "not_confirmed"
+                    ar = turn_language == "ar"
+                    if linked:
+                        facts = (f"رقم الطلب المرتبط المعروض في قائمة الشكاوى: {references[0]}" if ar else
+                                 f"Linked application number shown in the complaint list: {references[0]}",)
+                        for number, labels in linked:
+                            state = labels.get("nameAr" if ar else "nameEn")
+                            facts += (
+                                f"رقم الشكوى: {number}" + (f"؛ الحالة: {state}" if state else "") if ar else
+                                f"Complaint number: {number}" + (f". Status: {state}." if state else ""),
+                            )
+                    else:
+                        facts = (("تعذر تأكيد شكوى مرتبطة بهذا الرقم في قائمة المهام الحالية. يرجى تزويدي برقم الشكوى إذا كان متاحاً."
+                                  if ar else "I could not confirm a complaint linked to this number in the current To Do queue. Provide the complaint number if available."),)
+                except PermissionError:
+                    missing = ("ticket_queue_read_denied",)
+                except (ReaderStageTimeout, httpx.HTTPError, ValueError, TypeError):
+                    status, missing = "load_failed", ("ticket_queue_unverified",)
+            result = ReaderResult(status=status, page=_TICKET_QUEUE_PAGE, section="To Do", answer_shape="detail",
+                                  scope=_permission_result_scope(permission_context), facts=facts, missing=missing,
+                                  summary="Distinguishes an application reference from its linked complaint reference.",
+                                  workflow_state="ticket_application_reference")
+            return ReaderOutcome(result, {"stage": "ticket_application_reference", "permission": permission_audit,
+                                          "result": result.public_json()})
+        if _pending_ticket_sla_requested(question):
+            request = PortalReadRequest(_TICKET_QUEUE_PAGE, ({"type": "observe"},))
+            denied = validate_policy(request, reason="pending_ticket_sla")
+            status, facts, missing = "no_permission", (), (denied,) if denied else ()
+            if not denied:
+                try:
+                    total, rows = await _await_reader_stage(
+                        _read_pending_ticket_sla(principal, self.policy.portal_origin),
+                        stage="pending_ticket_sla", cap_seconds=budget.portal_read_seconds, deadline=deadline,
+                    )
+                    status = "success"
+                    facts = _pending_ticket_sla_facts(total, rows, turn_language)
+                except PermissionError:
+                    missing = ("ticket_queue_read_denied",)
+                except (ReaderStageTimeout, httpx.HTTPError, ValueError, TypeError):
+                    status, missing = "load_failed", ("ticket_queue_unverified",)
+            result = ReaderResult(
+                status=status, page=_TICKET_QUEUE_PAGE, section="To Do",
+                scope=_permission_result_scope(permission_context), answer_shape="detail",
+                summary="Authorized To Do ticket totals grouped by type and SLA.",
+                workflow_state="pending_ticket_sla", facts=facts, missing=missing,
+                completeness="complete" if status == "success" else "unknown",
+            )
+            return ReaderOutcome(result, {"stage": "pending_ticket_sla", "permission": permission_audit,
+                "result": result.public_json()})
+        issued_number = _issued_license_number(question)
+        page_hint = bounded_conversation_context.get("currentPage") or {}
+        if not issued_number and isinstance(page_hint, dict) and _canonical_documented_page(
+                str(page_hint.get("route") or page_hint.get("currentPage") or "")) == _ISSUED_LICENSE_PAGE:
+            if re.search(r"\b(?:record|reference|number|status)\b|السجل|المرجع|الحالة", question, re.I):
+                references = set(re.findall(r"(?<![\w-])\d{5,20}(?![\w-])", question))
+                if len(references) == 1:
+                    issued_number = references.pop()
+        if not issued_number:
+            issued_number = _prior_issued_license_number(
+                question, getattr(self, "_completed_answer_snapshot", {}) or {}, permission_audit.get("fingerprint"),
+            )
+        # A qualified issued license identity outranks unrelated module words.
+        # The same fresh page and upstream record permissions still apply.
+        if (issued_number and not finance_visibility_requested and not re.search(
+                r"\b(?:applications?|complaints?|inspections?|appeals?)\b", question, re.I)):
+            request = PortalReadRequest(_ISSUED_LICENSE_PAGE, ({"type": "observe"},))
+            denied = validate_policy(request, reason="issued_license_exact")
+            status, facts, missing = "no_permission", (), (denied,) if denied else ()
+            if not denied:
+                try:
+                    row = await _await_reader_stage(
+                        _read_issued_license(principal, self.policy.portal_origin, issued_number),
+                        stage="issued_license_exact", cap_seconds=budget.portal_read_seconds, deadline=deadline,
+                    )
+                    status = "success" if row else "no_data"
+                    if row:
+                        facts = _issued_license_facts(row, issued_number, turn_language, question)
+                        if re.search(r"\b(?:source|timestamp|difference|previously|conflict)\b|المصدر|الاختلاف|التوقيت", question, re.I):
+                            checked = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Dubai")).isoformat(timespec="seconds")
+                            facts += (f"وقت التحقق من القائمة: {checked}" if turn_language == "ar"
+                                      else f"Licenses list checked at: {checked}",)
+                            facts += ((
+                                "حدّث قائمة التراخيص وقارن حالة رقم الترخيص نفسه. يعرض المصدر تواريخ السريان والانتهاء."
+                                if turn_language == "ar" else
+                                "Refresh Licensing / Licenses and compare the status for the same license number. "
+                                "The source supplies effective and expiry dates."
+                            ),)
+                            if not (row.get("updatedOn") or row.get("lastUpdatedOn")):
+                                facts += ((
+                                    "وقت آخر تحديث للحالة غير متاح في هذا المصدر."
+                                    if turn_language == "ar" else
+                                    "The source does not provide a timestamp for the last status change."
+                                ),)
+                except PermissionError:
+                    missing = ("issued_license_source_denied",)
+                except (ReaderStageTimeout, httpx.HTTPError, ValueError, TypeError):
+                    status, missing = "load_failed", ("issued_license_source_unverified",)
+            result = ReaderResult(
+                status=status, page=_ISSUED_LICENSE_PAGE, section="Licenses list",
+                scope=_permission_result_scope(permission_context), answer_shape="detail",
+                summary="Exact issued license lookup in the authorized Licenses list.",
+                workflow_state="issued_license_exact", facts=facts, missing=missing,
+                completeness="complete" if status in {"success", "no_data"} else "unknown",
+                intent_context={"issuedLicenseNumber": issued_number} if status == "success" else {},
+                record_identity=issued_number if status == "success" else "",
+            )
+            return ReaderOutcome(result, {"stage": "issued_license_exact", "permission": permission_audit,
+                "result": result.public_json()})
         async def verified_rollup(rollup_page, rollup_module, measures, rollup_category, workload_scope):
             try:
                 facts, unavailable, unattributed_closed = await _await_reader_stage(

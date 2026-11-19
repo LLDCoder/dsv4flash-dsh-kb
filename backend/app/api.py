@@ -998,6 +998,10 @@ def make_router(service: DSHService) -> APIRouter:
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(conversation_principal)):
         """Queue a message; read the eventual answer and reader.result in conversation events.
 
+        Exact finance lookups can include fee lines from the authorized linked
+        application. The reply identifies application fees separately from the
+        amount collected and reports when a transaction-level split is unavailable.
+
         Urdu, Malayalam and Tagalog questions are detected server-side, translated
         into English for the existing read-only pipeline, then answered in the input
         language. All other inputs retain existing language behavior. Literal IDs,
