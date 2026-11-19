@@ -31,7 +31,7 @@ class _MeasuredStream(httpx.AsyncByteStream):
 
 async def _timed_send(client, request, *args, **kwargs):
     current = _CURRENT.get()
-    if current is None:
+    if current is None or request.extensions.get("dsh_internal_mcp") is True:
         return await _ORIGINAL_SEND(client, request, *args, **kwargs)
     receipts, settings = current
     started = time.perf_counter()

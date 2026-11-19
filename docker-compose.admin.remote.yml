@@ -31,6 +31,7 @@ services:
       file: docker-compose.lite.yml
       service: backend
     environment:
+      DSH_ADMIN_MCP_ENABLED: ${DSH_ADMIN_MCP_ENABLED:-0}
       DATABASE_URL: ${DSH_DATABASE_URL:?Set the authorized existing Admin database URL}
       DATABASE_INIT_ENABLED: "false"
       AUDIT_CLEANUP_ENABLED: "false"

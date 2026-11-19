@@ -70,6 +70,7 @@ services:
     build:
       context: ./backend
     environment:
+      DSH_ADMIN_MCP_ENABLED: ${DSH_ADMIN_MCP_ENABLED:-0}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-dsh}:${POSTGRES_PASSWORD:-dsh}@postgres:5432/${POSTGRES_DB:-dsh}
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: ${CORS_ORIGINS:-*}

@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .admin_mcp import MCPAdminToolGateway, admin_mcp_transport
 from .api import make_router
 from .config import get_settings
 from .console_auth import ConsoleAuthMiddleware
@@ -58,7 +59,8 @@ async def lifespan(app: FastAPI):
     if settings.audit_cleanup_enabled:
         tasks.append(asyncio.create_task(audit_sweeper()))
     try:
-        yield
+        async with admin_mcp_transport(service):
+            yield
     finally:
         stop.set()
         for background_task in tasks:
@@ -100,7 +102,14 @@ app.include_router(make_router(service))
 
 @app.get("/healthz")
 async def healthz():
+    """Report service health and the active Admin tool transport.
+
+    `toolTransport` is `direct` or `mcp`. `mcpConnected` is true after the internal MCP startup check.
+    """
+    mcp_active = isinstance(service.tool_gateway, MCPAdminToolGateway)
     return {
+        "toolTransport": "mcp" if mcp_active else "direct",
+        "mcpConnected": mcp_active,
         "status": "ok",
         "service": settings.app_name,
         "environment": settings.environment,
