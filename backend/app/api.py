@@ -1640,6 +1640,10 @@ def make_router(service: DSHService) -> APIRouter:
     async def post_message(conversation_id: str, payload: MessageCreate, principal: Principal = Depends(get_principal)):
         """Submit a conversation turn with read-only cross-Skill handoff support.
 
+        A fine payment deadline follow-up can use the exact fine bound to the
+        immediately preceding answer in the same selected profile. A payment
+        deadline is reported only when the authorized record supplies it.
+
         A valid ``attachment`` always takes priority over text-only Skill
         routing: the turn is locked to ``document_ocr`` and invokes document
         analysis before any knowledge retrieval.  If OCR is unavailable, the

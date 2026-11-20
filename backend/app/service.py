@@ -24,11 +24,20 @@ from .answer_stream import AnswerStream, incomplete_stream_notice, cancelled_str
 from .customer_answer_stream import customer_generated_answer
 from .customer_record_intent import customer_record_intent
 from .customer_record_listing import (
-    LIST_REQUESTS, REFUND_STATUSES_TOOL, isbn_lookup_answer, record_list_answer, record_list_query, successful_data,
+    LIST_REQUESTS, REFUND_STATUSES_TOOL, isbn_lookup_answer, record_list_answer, record_list_query, record_list_scope_text, successful_data,
 )
 from .service_fees import CustomerServiceFeeClient, is_public_service_fee_query, fee_answer
 from .application_listing import application_list_answer, application_page_arguments, is_basic_application_list, ordered_application_result
 from .application_payable import read_application_payable
+from .establishment_review import establishment_reply, establishment_request, read_establishment_reviews
+from .refund_application import REFUND, read_refund_application, refund_application_query
+from .fine_lookup import fine_query, fine_reply, read_fine
+from .enquiry_lookup import (
+    linked_application_reply, enquiry_query, enquiry_reply, is_general_enquiry_policy,
+    read_enquiry, read_enquiry_application,
+)
+from .issued_license_lookup import issued_license_query, issued_license_reply, read_issued_license
+from .payment_transaction_read import read_transaction, transaction_reply, transaction_request
 from .portal_navigation import continuation_route, navigation_answer
 from .profile_scope import ProfileContext, profile_context_from_payload, profile_scope_for_definition, requested_profile, requested_profile_candidates, requires_profile_switch
 from .response_safety import contains_unexpected_response_script, is_internal_tool_protocol
@@ -1319,6 +1328,16 @@ class DSHService:
         data = await read(tool_name, arguments)
         statuses = await read(REFUND_STATUSES_TOOL, {}) if kind == "refunds" and isinstance(data, dict) and data.get("items") else None
         answer = record_list_answer(kind, data, statuses, limit, language, profile_context)
+        if answer and kind == "refunds" and not profile_context.is_global_view and principal.profile_id == profile_context.active_profile_id:
+            references = [
+                row["applicationNumber"] for row in data.get("items", [])[:limit]
+                if REFUND.fullmatch(str(row.get("applicationNumber") or ""))
+                and (row.get("profileId") is None or str(row["profileId"]) == principal.profile_id)
+            ]
+            await self.append_event(db, conversation, "refund.list.binding", {
+                "profileId": principal.profile_id, "references": references,
+                "requestId": principal.request_id,
+            })
         return answer or (
             "تعذر جلب هذه السجلات من البوابة حالياً. يرجى المحاولة مرة أخرى."
             if language == "ar" else "I couldn’t retrieve these records from the portal right now. Please try again."
@@ -1373,7 +1392,8 @@ class DSHService:
                         else None
                     )
                     scope_guard = self.profile_scope_guard(
-                        latest_content, response_language, profile_context,
+                        record_list_scope_text(latest_content) if customer_list else latest_content,
+                        response_language, profile_context,
                         allow_global_application_list=global_application_list or bool(customer_list and principal.profile_id == "0"),
                     )
                     if scope_guard:
@@ -1408,8 +1428,180 @@ class DSHService:
                         if lease:
                             lease.state = "READY"
                         return
-                    if customer_list or (is_public_service_fee_query(latest_content) and not latest_attachment):
-                        if customer_list:
+                    payment_query = (
+                        transaction_request(latest_content, history, principal.profile_id)
+                        if not latest_attachment and principal.umc_token and self.settings.external_tools_enabled
+                        and profile_context and not profile_context.is_global_view
+                        and principal.profile_id and principal.profile_id == profile_context.active_profile_id
+                        else None
+                    )
+                    license_query = (
+                        issued_license_query(latest_content, history, principal.profile_id)
+                        if not latest_attachment and principal.umc_token and self.settings.external_tools_enabled
+                        and profile_context and not profile_context.is_global_view
+                        and principal.profile_id and principal.profile_id == profile_context.active_profile_id
+                        else None
+                    )
+                    enquiry = (
+                        enquiry_query(latest_content, history, principal.profile_id)
+                        if not latest_attachment and principal.umc_token and self.settings.external_tools_enabled
+                        and profile_context and not profile_context.is_global_view
+                        and principal.profile_id and principal.profile_id == profile_context.active_profile_id
+                        else None
+                    )
+                    fine = (
+                        fine_query(latest_content, history, principal.profile_id)
+                        if not latest_attachment and principal.umc_token and self.settings.external_tools_enabled
+                        and profile_context and not profile_context.is_global_view
+                        and principal.profile_id and principal.profile_id == profile_context.active_profile_id
+                        else None
+                    )
+                    refund_application = (
+                        refund_application_query(latest_content, history, principal.profile_id)
+                        if not latest_attachment and principal.umc_token and self.settings.external_tools_enabled
+                        and profile_context and not profile_context.is_global_view
+                        and principal.profile_id and principal.profile_id == profile_context.active_profile_id
+                        else None
+                    )
+                    establishment = (
+                        establishment_request(latest_content, history, principal.user_id)
+                        if not latest_attachment and principal.umc_token and self.settings.external_tools_enabled
+                        else None
+                    )
+                    if establishment or refund_application or fine or enquiry or license_query or payment_query or customer_list or (is_public_service_fee_query(latest_content) and not latest_attachment):
+                        if payment_query:
+                            await self.append_event(db, conversation, "skill.route", {
+                                "skillId": "payment_transaction_history", "category": "data_query",
+                                "mode": "answer", "requestId": principal.request_id,
+                            })
+                            try:
+                                verified_payment = await asyncio.wait_for(
+                                    read_transaction(self.tool_gateway.platform, principal, payment_query), timeout=20,
+                                )
+                                direct_content = transaction_reply(verified_payment, response_language)
+                                if verified_payment is not None:
+                                    await self.append_event(db, conversation, "payment.transaction.binding", {
+                                        "profileId": principal.profile_id,
+                                        "transactionNo": verified_payment[0]["transactionNo"],
+                                        "requestId": principal.request_id,
+                                    })
+                            except (asyncio.TimeoutError, httpx.HTTPError, PermissionError, ValueError, TypeError):
+                                direct_content = (
+                                    "تعذر التحقق من المعاملة من صفحة المدفوعات للملف المحدد."
+                                    if response_language == "ar" else
+                                    "I could not verify the transaction from Payments for the selected profile."
+                                )
+                        elif establishment:
+                            try:
+                                rows = await asyncio.wait_for(
+                                    read_establishment_reviews(self.tool_gateway.platform, principal), timeout=20,
+                                )
+                                direct_content, keys = establishment_reply(rows, establishment, response_language)
+                                await self.append_event(db, conversation, "establishment.review.binding", {
+                                    "userId": principal.user_id, "keys": keys, "requestId": principal.request_id,
+                                })
+                            except (asyncio.TimeoutError, httpx.HTTPError, PermissionError, TypeError, ValueError):
+                                direct_content = (
+                                    "تعذر التحقق من حالات ملفات المنشآت في حسابك."
+                                    if response_language == "ar" else "I could not verify the establishment review statuses for your account."
+                                )
+                        elif refund_application:
+                            mode, refund_number = refund_application
+                            ar = response_language == "ar"
+                            direct_content = (
+                                "أرسل رقم طلب الاسترداد من الصفحة لاختيار السجل المرتبط."
+                                if ar else "Enter a refund request number from the Refunds page to select the linked record."
+                            )
+                            if mode != "choose":
+                                try:
+                                    linked_refund = await asyncio.wait_for(
+                                        read_refund_application(self.tool_gateway.platform, principal, refund_application), timeout=20,
+                                    )
+                                    if mode == "reference" and linked_refund[0]:
+                                        direct_content = (
+                                            f"طلب الاسترداد {refund_number} مرتبط بالطلب {linked_refund[0]}."
+                                            if ar else f"Refund request {refund_number} is linked to application {linked_refund[0]}."
+                                        )
+                                    else:
+                                        direct_content = linked_application_reply(linked_refund, refund_number, response_language, subject="refund")
+                                except (asyncio.TimeoutError, httpx.HTTPError, PermissionError, TypeError, ValueError):
+                                    direct_content = linked_application_reply(("", None), refund_number, response_language, subject="refund")
+                            await self.append_event(db, conversation, "refund.lookup.binding", {
+                                "profileId": principal.profile_id, "number": refund_number,
+                                "requestId": principal.request_id,
+                            })
+                        elif fine:
+                            await self.append_event(db, conversation, "skill.route", {
+                                "skillId": "violations_fines", "category": "data_query",
+                                "mode": "answer", "requestId": principal.request_id,
+                            })
+                            try:
+                                fine_result = await asyncio.wait_for(
+                                    read_fine(self.tool_gateway.platform, principal, fine), timeout=20,
+                                )
+                                direct_content, number = fine_reply(fine_result, fine, response_language)
+                                if number:
+                                    await self.append_event(db, conversation, "fine.lookup.binding", {
+                                        "profileId": principal.profile_id, "number": number,
+                                        "requestId": principal.request_id,
+                                    })
+                            except (asyncio.TimeoutError, httpx.HTTPError, PermissionError, TypeError, ValueError):
+                                direct_content = (
+                                    "تعذر التحقق من المخالفة في الملف المحدد."
+                                    if response_language == "ar" else
+                                    "I could not verify the violation in the selected Profile."
+                                )
+                        elif enquiry:
+                            await self.append_event(db, conversation, "skill.route", {
+                                "skillId": "enquiries_complaints", "category": "data_query", "mode": "answer",
+                                "requestId": principal.request_id,
+                            })
+                            try:
+                                if enquiry[0] == "application":
+                                    linked = await asyncio.wait_for(
+                                        read_enquiry_application(self.tool_gateway.platform, principal, enquiry[1]), timeout=20,
+                                    )
+                                    direct_content = linked_application_reply(linked, enquiry[1], response_language, subject="enquiry")
+                                    result = (0, [])
+                                else:
+                                    result = await asyncio.wait_for(
+                                        read_enquiry(self.tool_gateway.platform, principal, enquiry), timeout=20,
+                                    )
+                                    direct_content = enquiry_reply(result, response_language, enquiry)
+                                if result[1]:
+                                    await self.append_event(db, conversation, "enquiry.lookup.binding", {
+                                        "profileId": principal.profile_id, "mode": enquiry[0],
+                                        "references": [row["enquiryNumber"] for row in result[1]],
+                                        "requestId": principal.request_id,
+                                    })
+                            except (asyncio.TimeoutError, httpx.HTTPError, PermissionError, TypeError, ValueError):
+                                direct_content = (
+                                    "تعذر التحقق من الاستفسارات والشكاوى في الملف المحدد."
+                                    if response_language == "ar" else
+                                    "I could not verify the enquiries and complaints in the selected profile."
+                                )
+                        elif license_query:
+                            await self.append_event(db, conversation, "skill.route", {
+                                "skillId": "license_query", "category": "data_query", "mode": "answer",
+                                "requestId": principal.request_id,
+                            })
+                            try:
+                                verified_license = await asyncio.wait_for(
+                                    read_issued_license(self.tool_gateway.platform, principal, license_query), timeout=20,
+                                )
+                                direct_content = issued_license_reply(verified_license, license_query, response_language)
+                                if verified_license is not None:
+                                    await self.append_event(db, conversation, "license.record.binding", {
+                                        "profileId": principal.profile_id, "number": license_query[0],
+                                        "requestId": principal.request_id,
+                                    })
+                            except (asyncio.TimeoutError, httpx.HTTPError, PermissionError, TypeError, ValueError):
+                                direct_content = (
+                                    "تعذر التحقق من الترخيص في الملف المحدد."
+                                    if response_language == "ar" else
+                                    "I could not verify this license in the selected profile."
+                                )
+                        elif customer_list:
                             direct_content = await self.read_customer_record_list(
                                 db, conversation, principal, profile_context, customer_list, response_language,
                             )
@@ -1476,7 +1668,11 @@ class DSHService:
                             keyword_route = self.route_shape_for_skill(
                                 "application_status", route_catalog, routing_locked=True
                             )
-                    route_context = route_context_from_history(history, route_catalog)
+                    general_enquiry_policy = not latest_attachment and is_general_enquiry_policy(latest_content)
+                    if general_enquiry_policy:
+                        keyword_route = SkillRoute("general_knowledge", "knowledge", "knowledge.search", "summary", routing_locked=True)
+                        messages = [{"role": "user", "content": latest_content}]
+                    route_context = {} if general_enquiry_policy else route_context_from_history(history, route_catalog)
                     # The current question is sent separately to the router;
                     # keep only preceding turns in the auxiliary context.
                     if route_context.get("recentMessages") and route_context["recentMessages"][-1].get("role") == "user" and route_context["recentMessages"][-1].get("content") == latest_content:
@@ -1751,7 +1947,7 @@ class DSHService:
                                 response_language=response_language,
                                 operator_prompt=str(getattr(self.settings, "system_prompt", "") or ""),
                                 skill_content=selected_skill.content if selected_skill else "",
-                                profile_context=profile_context,
+                                profile_context=None if general_enquiry_policy else profile_context,
                             ),
                         },
                     )
@@ -1976,6 +2172,9 @@ class DSHService:
                                 {
                                     "role": "system",
                                     "content": (
+                                        "Address only the general policy stated in public-facing knowledge. Omit internal identifiers, internal-only workflow details, and personal or Profile data.\n"
+                                        + self.answer_tool_evidence(tool_name, tool_result, masking_policy)
+                                        if general_enquiry_policy else
                                         "TRUSTED TOOL RESULT: The lookup below has already completed. "
                                         "Use these returned values as the authoritative source for the answer. "
                                         "Do not ask the user to confirm a profile, category, or record that is already present, "

@@ -24,6 +24,7 @@ AR_RECORD_NOUNS = {
     "طلب": "applications", "طلبات": "applications",
     "استرداد": "refunds", "استرجاع": "refunds",
     "رخصه": "licenses", "رخص": "licenses", "ترخيص": "licenses", "تراخيص": "licenses",
+    "تصريح": "licenses", "تصاريح": "licenses",
     "غرامه": "fines", "غرامات": "fines", "مخالفه": "fines", "مخالفات": "fines",
     "مهام": "pending", "اجراء": "pending", "اجراءات": "pending",
 }
@@ -92,19 +93,27 @@ def customer_record_intent(content: str, context: ProfileContext | None = None) 
     owner_patterns = (
         r"\b(?:show|find|query|list|check|search|view|display)\s+(?:me\s+)?([\w@.+-]+)(?:['’]s|\s+(?=(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?|refunds?|pending)\b))",
         r"\b(?:licenses?|licences?|permits?|fines?|violations?|applications?|requests?|refunds?)\s+(?:for|of|belonging\s+to)\s+([\w@.+-]+)",
-        r"(?:" + "|".join(map(re.escape, AR_RECORD_NOUNS)) + r")\s+(?:الخاصه\s+ب)?([\w@.+-]+)",
+        r"(?:" + "|".join(map(re.escape, AR_RECORD_NOUNS)) + r")\s+(?:(?P<explicit_owner>الخاصه)\s+ب)?([\w@.+-]+)",
         r"(?:\bprofile\s+|ملف\s+)([\w@.+-]+)",
     )
     non_owners = SELF_WORDS | QUERY_WORDS | frozenset(EN_RECORD_NOUNS) | frozenset(AR_RECORD_NOUNS) | {
         "and", "in", "the", "a", "this", "current", "selected", "to", "all", "جميع", "كل", "لحسابي", "حسابنا", "و", "والغرامات", "والمهام", "المعلقه", "الشخصي", "الحالي", "المحدد",
         "في", "من", "ضمن", "تحت", "هذا", "هذه", "الرسوم", "رسوم", "المبالغ", "مبالغ",
+        "وتفاصيله", "وتفاصيلها", "وتفاصيلهم",
     }
     for pattern in owner_patterns:
         for match in re.finditer(pattern, owner_text):
             # Removing an authorized name may leave only sentence punctuation
             # after "profile"/"ملف". It is not an unknown account owner.
-            candidate = match.group(1).strip(" .،؟?!")
+            candidate = match.group(match.lastindex).strip(" .،؟?!")
             if not candidate:
+                continue
+            groups = match.groupdict()
+            if "explicit_owner" in groups and not groups["explicit_owner"] and (
+                candidate.isdecimal() or candidate in {"نفسه", "نفسها", "ذاته", "ذاتها"}
+            ):
+                # A document number or reflexive after the noun refers to the
+                # record itself. Explicit owner grammar still applies.
                 continue
             arabic_candidate = candidate.removeprefix("و").removeprefix("ال")
             is_record_word = arabic_candidate in AR_RECORD_NOUNS or any(

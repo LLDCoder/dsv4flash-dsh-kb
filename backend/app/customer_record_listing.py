@@ -33,11 +33,22 @@ LIST_WORDS = QUERY_WORDS | frozenset(normalize_record_text(
 ).split())
 
 
+def record_list_scope_text(content: str) -> str:
+    """Strip a closed, trailing separation instruction before owner parsing."""
+    return re.sub(
+        r"(?:[.!?؟]+\s*|[،,]\s*)(?:do not|don't|never) mix (?:the )?"
+        r"(?:applications?(?: records?)?|requests?) with (?:the )?(?:violations?|fines?)[.!? ]*$"
+        r"|(?:[.!?؟]+\s*|[،,]\s*)لا تخلط (?:الطلبات|سجلات الطلبات) مع "
+        r"(?:المخالفات|الغرامات)[.!?؟ ]*$", "", content, flags=re.I,
+    )
+
+
 def record_list_query(content: str, context: ProfileContext | None) -> tuple[str, int] | None:
     """Accept simple read requests. Leave filters, references and actions to existing routes."""
     if not context:
         return None
-    text = normalize_record_text(content)
+    text = normalize_record_text(record_list_scope_text(content))
+    text = re.sub(r"^(?:now|next|الان|ثم)\s+", "", text)
     for target in requested_profile_candidates(content, context):
         for name in (target.name, *target.aliases):
             normalized = normalize_record_text(name)

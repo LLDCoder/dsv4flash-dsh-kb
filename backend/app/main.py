@@ -136,6 +136,16 @@ def custom_openapi():
             "profileConfirmation": {
                 "profileContext.confirmedTargetProfileId": "Optional user-selected intent resolution; only honored when it equals the authenticated token Profile and matches the named candidates. It cannot authorize another Profile.",
             },
+            "applicationCount": "Counts My Requests totals and displays available status counts for status overviews from the authenticated selected Profile.",
+            "establishmentReview": "Uses the authenticated My Account establishment list to confirm review status. No user or Profile identifier is accepted from the question.",
+            "refundApplicationLookup": "Verifies refund references against the active Profile and reads their linked application from My Requests.",
+            "fineLookup": "Reads fines and appeal eligibility in the selected Profile. Verified fine references may be reused in a later turn. Payment guidance returns only portal navigation.",
+            "enquiryLookup": "Reads selected-Profile enquiries and complaints. Exact and positional follow-ups use verified references in the same conversation. Customer-status filtering preserves the current Profile. General policy questions use public-facing knowledge independently of personal enquiry results. Linked applications are verified in the selected Profile through My Requests.",
+            "issuedLicenseLookup": "Reads an exact license or permit from the current Profile and rechecks Action Needed for a bound follow-up.",
+            "paymentTransactionLookup": {
+                "description": "Read-only exact or most-recent transaction from the authenticated selected Profile. Compatible follow-ups are bound to the last verified transaction in the same Profile and conversation.",
+                "response": "Shows the recorded status and amount, receipt readiness when verifiable, and the Payments entry point. Does not download or initiate payment.",
+            },
             "paymentPreview": {
                 "description": "A selected-profile Pending Payment detail can include a verified total payable from the frozen order and applicable UMC read-only penalty preview. No payment is initiated.",
             },

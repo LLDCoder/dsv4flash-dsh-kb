@@ -61,7 +61,34 @@ def ordered_application_result(result: Any) -> Any:
     return {**body, "data": {**data, "applicationPage": {**page, "items": sorted(items, key=sort_key, reverse=True)}}}
 
 
+def _application_count_question(content: str) -> bool:
+    text = normalize_record_text(content).strip(" ?.؟。")
+    nouns = r"(?:applications?|requests?)"
+    return bool(re.fullmatch(
+        rf"(?:how many {nouns} (?:do (?:i|we) have|are (?:in|on) (?:my|our) (?:profile|account))|"
+        rf"(?:(?:what is|show me|tell me) )?(?:the )?(?:total |number of )?(?:my |our )?{nouns} (?:count|total)|"
+        rf"(?:(?:what is|show me|tell me) )?(?:the )?number of (?:my |our )?{nouns}|"
+        r"(?:كم|ما) (?:هو )?(?:عدد )?(?:(?:ال)?طلبات(?:ي|نا)?|طلبي)(?: (?:لدي|عندي|في (?:ملفي|حسابي|الملف الحالي)))?|"
+        r"عدد طلباتي|我(?:的|有)多少(?:个|条)?申请|我的申请(?:总数|数量)(?:是多少)?)",
+        text, re.I,
+    ))
+
+
+def _application_status_overview(content: str) -> bool:
+    text = normalize_record_text(content).strip(" ?.؟。")
+    return bool(re.fullmatch(
+        r"(?:what (?:applications|requests) do i (?:currently )?have(?: in my requests)?|"
+        r"(?:summarize|show|list) my (?:applications|requests))"
+        r"[, ]+(?:and )?(?:how many are in each status|(?:grouped |broken down )?by status)|"
+        r"(?:ما|اعرض|لخص) (?:هي )?(?:طلباتي|طلباتي الحاليه|الطلبات في طلباتي)"
+        r"(?:[ ،]+)?(?:و)?(?:عددها (?:حسب|لكل) (?:الحاله|حاله)|كم (?:عددها |منها )?في كل حاله)",
+        text, re.I,
+    ))
+
+
 def _display_limit(content: str, context: ProfileContext) -> int | None:
+    if _application_count_question(content) or _application_status_overview(content):
+        return 1
     text = normalize_record_text(content)
     # Names are removed only from the authenticated inventory, not a lookup of
     # arbitrary user input. No account/test-question-specific substitutions.
@@ -90,6 +117,8 @@ def _display_limit(content: str, context: ProfileContext) -> int | None:
 def is_basic_application_list(content: str, context: ProfileContext | None) -> bool:
     if not context or re.search(r"\d", content):
         return False
+    if _application_count_question(content) or _application_status_overview(content):
+        return True
     intent = customer_record_intent(content, context)
     return (
         intent.query
@@ -158,6 +187,12 @@ def application_list_answer(
         for count in counts:
             if isinstance(count, dict) and isinstance(count.get("count"), int) and not isinstance(count.get("count"), bool):
                 lines.append(f"| {_cell(count.get('applicationStatusName'+suffix), unavailable)} | {count['count']} |")
+    if _application_count_question(content) or _application_status_overview(content):
+        if re.search(r"[\u3400-\u9fff]", content):
+            lines = ["## 我的申请", f"当前档案：**{name}**。", f"总数：**{total}**。"]
+            return "\n".join([*lines, "", "打开 [我的申请](/my-requests) 查看列表。"])
+        link = "راجع [طلباتي](/my-requests) للتحقق من القائمة." if ar else "Open [My Requests](/my-requests) to verify the list."
+        return "\n".join([*lines, "", link])
     selected = items[:limit]
     known_dates = all(_date(item.get("createdOn")) for item in items)
     complete_result = total == len(items)
