@@ -284,7 +284,7 @@ class DSHService:
         subsequent turns and tool calls.
         """
 
-        restart_only = {"database_url", "redis_url"}
+        restart_only = {"database_url", "redis_url", "mcp_server_url"}
         numeric = {
             "llm_timeout_seconds": float,
             "knowledge_timeout_seconds": float,
@@ -339,6 +339,8 @@ class DSHService:
 
         # Keep the already-instantiated gateway clients aligned with the
         # effective config. They all read these attributes for the next call.
+        from mcp_server.settings import publish_gateway_settings
+        publish_gateway_settings(self.settings)
         self.llm.settings = self.settings
         knowledge = self.tool_gateway.knowledge
         knowledge.base_url = self.settings.knowledge_gateway_url.rstrip("/")

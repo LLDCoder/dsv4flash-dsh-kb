@@ -29,7 +29,7 @@ service = DSHService(runtime_manager, llm, broker, ocr, knowledge, platform)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _runtime_lifespan(app: FastAPI):
     # Code-only restarts must not migrate or reseed the existing database.
     if settings.database_init_enabled:
         await init_db()
@@ -59,15 +59,37 @@ async def lifespan(app: FastAPI):
 
     task = asyncio.create_task(sweeper())
     audit_task = asyncio.create_task(audit_sweeper())
-    yield
-    stop.set()
-    task.cancel()
-    audit_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
-    with suppress(asyncio.CancelledError):
-        await audit_task
-    await service.skill_catalog.close()
+    try:
+        yield
+    finally:
+        stop.set()
+        task.cancel()
+        audit_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        with suppress(asyncio.CancelledError):
+            await audit_task
+        await service.skill_catalog.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from mcp_server.client import MCPToolClient
+    from .mcp_gateway import mcp_tool_gateway
+
+    async with _runtime_lifespan(app):
+        previous_gateway, previous_ocr = service.tool_gateway, service.ocr
+        client = MCPToolClient(settings.mcp_server_url, timeout=max(
+            settings.ocr_timeout_seconds, settings.platform_timeout_seconds,
+            settings.knowledge_timeout_seconds * max(1, settings.knowledge_retry_attempts)
+        ) + 10)
+        async with client.connection():
+            gateway = mcp_tool_gateway(client)
+            service.tool_gateway, service.ocr = gateway, gateway.ocr
+            try:
+                yield
+            finally:
+                service.tool_gateway, service.ocr = previous_gateway, previous_ocr
 
 
 app = FastAPI(
@@ -187,7 +209,10 @@ app.openapi = custom_openapi
 
 @app.get("/healthz")
 async def healthz():
+    """Report the active Customer tool transport. MCP indicates a completed startup handshake."""
+    from .mcp_gateway import MCPPlatformGateway
     return {
+        "toolTransport": "mcp" if isinstance(service.tool_gateway.platform, MCPPlatformGateway) else "direct",
         "status": "ok",
         "service": settings.app_name,
         "runtimeMode": "embedded-lease-mvp",

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     app_name: str = "DSH External Service"
     environment: str = "development"
     # Opt in only for an explicit fresh install/approved migration.
+    mcp_server_url: str = "http://127.0.0.1:18190"
     database_init_enabled: bool = False
     database_url: str = "postgresql+asyncpg://dsh:dsh@postgres:5432/dsh"
     redis_url: str = "redis://redis:6379/0"

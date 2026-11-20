@@ -64,10 +64,27 @@ services:
       timeout: 5s
       retries: 10
 
+  mcp-server:
+    build:
+      context: ./backend
+    command: python -m mcp_server
+    environment:
+      DSH_MCP_SOCKET: /run/customer-mcp/tools.sock
+      DSH_MCP_GATEWAY_CONFIG: /run/customer-mcp/gateways.json
+    volumes:
+      - customer_mcp_runtime:/run/customer-mcp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; c=httpx.Client(transport=httpx.HTTPTransport(uds='/run/customer-mcp/tools.sock')); c.get('http://127.0.0.1/healthz').raise_for_status()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   backend:
     build:
       context: ./backend
     environment:
+      DSH_MCP_SOCKET: /run/customer-mcp/tools.sock
+      DSH_MCP_GATEWAY_CONFIG: /run/customer-mcp/gateways.json
       DATABASE_URL: ${DSH_DATABASE_URL:?Set DSH_DATABASE_URL in .env.lite}
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
@@ -103,6 +120,8 @@ services:
       PLATFORM_TIMEOUT_SECONDS: ${PLATFORM_TIMEOUT_SECONDS:-30}
       EXTERNAL_TOOLS_ENABLED: ${EXTERNAL_TOOLS_ENABLED:-true}
     depends_on:
+      mcp-server:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -114,6 +133,7 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
+      - customer_mcp_runtime:/run/customer-mcp
       - ./backend/app:/app/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
@@ -132,5 +152,6 @@ services:
       - "127.0.0.1:${FRONTEND_PORT:-18080}:80"
 
 volumes:
+  customer_mcp_runtime:
   postgres_data:
   redis_data:
